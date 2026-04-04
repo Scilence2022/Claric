@@ -408,6 +408,15 @@
     border-radius: 3px;
   }
 
+  /* ── Table scroll wrapper ── */
+  .table-wrap {
+    margin: 1rem 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 10px;
+  }
+  .table-wrap table { margin: 0; }
+
   /* ── Lists ── */
   ul, ol { margin: 0.5rem 0 0.75rem 1.5rem; }
   li { margin: 0.3rem 0; }
@@ -609,9 +618,8 @@
     /* Diagrams: scroll horizontally instead of squishing */
     .diagram-container { padding: 1rem; }
     .diagram-container svg { width: auto; min-width: 600px; }
-    /* Tables: horizontal scroll */
-    table { display: block; overflow-x: auto; white-space: nowrap; }
-    thead, tbody, tr { display: table; width: 100%; table-layout: auto; }
+    /* Tables: ensure nowrap inside scroll wrapper */
+    .table-wrap table { white-space: nowrap; }
     /* Feature grid: 2 columns on mobile */
     .feature-grid { grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
     .feature-card { padding: 1rem; }
@@ -811,7 +819,7 @@
         <text x="80" y="328" font-size="10" fill="var(--fg-muted)">doc-parser</text>
         <text x="200" y="328" font-size="10" fill="var(--fg-muted)">Context Extractor</text>
         <text x="335" y="328" font-size="10" fill="var(--fg-muted)">Reassembler</text>
-        <text x="335" y="345" font-size="10" fill="var(--accent)">(bookmark &rarr; tracked changes)</text>
+        <text x="335" y="345" font-size="9" fill="var(--accent)">bookmark &rarr; changes</text>
         <path d="M 120 150 L 120 200" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrowBlue)"/>
         <defs>
           <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="var(--accent)"/></marker>
@@ -859,6 +867,7 @@
     <h3>Heading detection fallback chain</h3>
     <p>Legal documents frequently use custom styles rather than Word's built-in Heading1&ndash;Heading9. The parser applies a three-tier fallback to classify headings:</p>
 
+    <div class="table-wrap">
     <table>
       <thead><tr><th>Tier</th><th>Source</th><th>Example</th></tr></thead>
       <tbody>
@@ -867,6 +876,7 @@
         <tr><td>3 Text pattern inference</td><td>Paragraph text</td><td>ARTICLE IV &rarr; level 1, short ALL-CAPS &rarr; level 2</td></tr>
       </tbody>
     </table>
+    </div>
 
     <p>Tier 3 only fires for paragraphs with no custom style applied (Normal or empty), preventing false positives on styled body text.</p>
 
@@ -1039,6 +1049,7 @@
     <h2>Response Post-Processing</h2>
     <p>LLM output passes through a cleaning pipeline before reaching the reassembler:</p>
 
+    <div class="table-wrap">
     <table>
       <thead><tr><th>Stage</th><th>Function</th><th>Purpose</th></tr></thead>
       <tbody>
@@ -1048,6 +1059,7 @@
         <tr><td>4</td><td><code>stripChunkDelimiters</code></td><td>Remove echoed <code>[AMEND THIS TEXT]</code> / <code>[END TEXT]</code> markers</td></tr>
       </tbody>
     </table>
+    </div>
 
     <p>A <strong>truncation guard</strong> rejects LLM output that is less than 30% the length of the original chunk text, preventing silently truncated responses from destroying document content.</p>
   </section>
@@ -1170,6 +1182,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     <h2>The Diff Engine</h2>
     <p>Word-level tracked changes are produced by the <code>office-word-diff</code> npm package, which implements a cascading strategy:</p>
 
+    <div class="table-wrap">
     <table>
       <thead><tr><th>Strategy</th><th>Mechanism</th><th>Preserves</th><th>Scope</th></tr></thead>
       <tbody>
@@ -1178,6 +1191,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
         <tr><td>Block Replace</td><td>Full <code>range.insertText(text, 'Replace')</code></td><td>Nothing (last resort)</td><td>Full range</td></tr>
       </tbody>
     </table>
+    </div>
 
     <p>The <code>ParagraphBlock</code> model (<code>structure-model.js</code>) maintains the token map: an array of <code>{ text, range: Word.Range }</code> objects. This allows the diff engine to map individual word changes to their exact <code>Word.Range</code> in the document, producing surgical tracked changes without touching surrounding formatting.</p>
   </section>
