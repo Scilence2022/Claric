@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Word AI Redliner &mdash; Technical Architecture</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a2e;
+    --accent: #2563eb;
+    --code-bg: #f4f5f7;
+    --border: #e2e8f0;
+    --heading: #0f172a;
+    --pre-bg: #1e293b;
+    --pre-fg: #e2e8f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a;
+      --fg: #cbd5e1;
+      --accent: #60a5fa;
+      --code-bg: #1e293b;
+      --border: #334155;
+      --heading: #f1f5f9;
+      --pre-bg: #020617;
+      --pre-fg: #e2e8f0;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.7;
+    max-width: 52rem;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+  h1 { font-size: 2rem; color: var(--heading); margin: 0 0 0.25rem; }
+  h1 + p.subtitle { color: var(--accent); font-size: 1.05rem; margin-bottom: 2rem; }
+  h2 { font-size: 1.4rem; color: var(--heading); margin: 2.5rem 0 0.75rem; border-bottom: 2px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { font-size: 1.15rem; color: var(--heading); margin: 1.8rem 0 0.5rem; }
+  p { margin: 0.6rem 0; }
+  a { color: var(--accent); }
+  code {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 0.15em 0.35em;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    padding: 1rem 1.25rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 1rem 0;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  blockquote {
+    border-left: 4px solid var(--accent);
+    padding: 0.5rem 1rem;
+    margin: 1rem 0;
+    background: var(--code-bg);
+    border-radius: 0 6px 6px 0;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--code-bg); font-weight: 600; }
+  .diagram {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    padding: 1rem 1.25rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 1rem 0;
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    white-space: pre;
+  }
+  .caption { font-size: 0.85rem; color: var(--accent); margin: -0.5rem 0 1rem; font-style: italic; }
+  .license { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.88rem; }
+  ul, ol { margin: 0.5rem 0 0.5rem 1.5rem; }
+  li { margin: 0.25rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Word AI Redliner</h1>
+<p class="subtitle">Technical Architecture</p>
+
+<p>Technical architecture of an AI-powered Microsoft Word add-in that applies LLM-suggested edits as native tracked changes. This post focuses on the intermediate representation that bridges the gap between Word's object model and LLM text processing.</p>
+
+<h2>1. The Problem</h2>
+
+<p>Microsoft Word documents are not flat text. They are deeply nested XML structures (OOXML) where every paragraph carries style metadata, list numbering, table membership, and character-level formatting runs. An LLM, however, operates on plain text strings.</p>
+
+<p>The core engineering challenge is: how do you send a Word document to an LLM, get back amended text, and apply those amendments as word-level tracked changes&mdash;without destroying the document's formatting, structure, or semantic markup?</p>
+
+<p>Word AI Redliner solves this with a structured <strong>intermediate representation (IR)</strong> that preserves document semantics through a <strong>parse &rarr; chunk &rarr; dispatch &rarr; reassemble</strong> pipeline.</p>
+
+<h2>2. System Overview</h2>
+
+<div class="diagram">&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502;  Microsoft Word (WebView2 / Office.js Runtime)                      &#x2502;
+&#x2502;                                                                     &#x2502;
+&#x2502;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  &#x2502;
+&#x2502;  &#x2502;  Taskpane UI &#x2502;&#x2500;&#x2500;&#x2500;&#x25B6;&#x2502; Orchestrator &#x2502;&#x2500;&#x2500;&#x2500;&#x25B6;&#x2502; webpack dev server     &#x2502;  &#x2502;
+&#x2502;  &#x2502;  (taskpane.  &#x2502;    &#x2502;              &#x2502;    &#x2502; /vllm  &#x2500;&#x2500;&#x25B6; localhost: &#x2502;  &#x2502;
+&#x2502;  &#x2502;   js)        &#x2502;&#x25C0;&#x2500;&#x2500;&#x2500;&#x2502;  (parallel   &#x2502;&#x25C0;&#x2500;&#x2500;&#x2500;&#x2502;          8026          &#x2502;  &#x2502;
+&#x2502;  &#x2502;              &#x2502;    &#x2502;   dispatch)  &#x2502;    &#x2502; /ollama &#x25B6; localhost: &#x2502;  &#x2502;
+&#x2502;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;    &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;    &#x2502;          11434         &#x2502;  &#x2502;
+&#x2502;         &#x2502;                                &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;  &#x2502;
+&#x2502;         &#x25BC;                                                           &#x2502;
+&#x2502;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;                           &#x2502;
+&#x2502;  &#x2502;        Intermediate Representation    &#x2502;                          &#x2502;
+&#x2502;  &#x2502;                                       &#x2502;                          &#x2502;
+&#x2502;  &#x2502;  DocumentModel &#x2500;&#x2500;&#x25B6; DocumentChunk[] &#x2500;&#x2500;&#x25B6; ChunkResult[]             &#x2502;
+&#x2502;  &#x2502;       &#x25B2;                                      &#x2502;                   &#x2502;
+&#x2502;  &#x2502;       &#x2502;            Context                   &#x25BC;                   &#x2502;
+&#x2502;  &#x2502;   doc-parser    Extractor            Reassembler                 &#x2502;
+&#x2502;  &#x2502;                                    (bookmark &#x2500;&#x2500;&#x25B6; tracked         &#x2502;
+&#x2502;  &#x2502;                                     ranges      changes)        &#x2502;
+&#x2502;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                           &#x2502;
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;</div>
+<p class="caption">Figure 1: High-level system architecture. The IR pipeline sits between the Word API and the LLM backends.</p>
+
+<p>The add-in runs as an Office.js taskpane inside Word's WebView2 container. Two LLM backends are supported via OpenAI-compatible <code>/v1/chat/completions</code> endpoints: a local vLLM instance (Qwen 3.5-35B-A3B) and Ollama. Webpack dev server proxies API requests from the browser sandbox to the local LLM servers.</p>
+
+<h2>3. The Intermediate Representation</h2>
+
+<p>The IR is the central data structure of the system. It consists of three layers, each progressively further from the Word object model and closer to LLM-compatible text.</p>
+
+<h3>3.1 Layer 1: DocumentModel (Parsed Paragraphs)</h3>
+
+<p>The document parser (<code>document-parser.js</code>) traverses the active Word document via Office.js and produces a <code>DocumentModel</code>&mdash;an array of <code>ParsedParagraph</code> objects:</p>
+
+<pre><code>// ParsedParagraph &mdash; the atom of the IR
+{
+  index: 42,              // Original paragraph index in document
+  text: "The Seller shall...",
+  headingLevel: 0,        // 0 = body, 1-9 = heading level
+  style: "TitleClause",   // Custom Word style name
+  styleBuiltIn: "Normal", // Built-in style enum
+  isListItem: true,
+  listString: "(a)",      // Bullet/number prefix
+  listLevel: 1,           // Nesting depth
+  inTable: false,
+  tokenEstimate: 47       // ceil(chars / 4)
+}</code></pre>
+
+<p>This is the foundational IR. Every downstream module operates on paragraph index references back to this model. The parser uses a <strong>batched load pattern</strong> with four sequential <code>context.sync()</code> calls to minimize Office.js round-trips:</p>
+
+<ol>
+  <li>Load paragraph collection items</li>
+  <li>Load text, style, styleBuiltIn, isListItem for all paragraphs</li>
+  <li>Load listItem details (level, listString) for list paragraphs</li>
+  <li>Load parentTableOrNullObject for table membership detection</li>
+</ol>
+
+<h3>Heading detection fallback chain</h3>
+
+<p>Legal documents frequently use custom styles rather than Word's built-in Heading1&ndash;Heading9. The parser applies a three-tier fallback to classify headings:</p>
+
+<table>
+  <thead><tr><th>Tier</th><th>Source</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>1 Built-in style</td><td><code>styleBuiltIn</code></td><td>Heading2 &rarr; level 2</td></tr>
+    <tr><td>2 Custom style mapping</td><td><code>style</code> name</td><td>TitleClause &rarr; level 2, Schedule &rarr; level 1</td></tr>
+    <tr><td>3 Text pattern inference</td><td>Paragraph text</td><td>ARTICLE IV &rarr; level 1, short ALL-CAPS &rarr; level 2</td></tr>
+  </tbody>
+</table>
+
+<p>Tier 3 only fires for paragraphs with no custom style applied (Normal or empty), preventing false positives on styled body text.</p>
+
+<h3>3.2 Layer 2: DocumentChunk (Token-Budgeted Segments)</h3>
+
+<p>The chunker (<code>document-chunker.js</code>) splits the DocumentModel into <code>DocumentChunk[]</code>&mdash;segments sized for LLM context windows:</p>
+
+<pre><code>// DocumentChunk &mdash; the unit of LLM dispatch
+{
+  id: "chunk-3",
+  paragraphs: [ParsedParagraph, ...],  // References to Layer 1
+  startIndex: 42,                       // First paragraph index
+  endIndex: 67,                         // Last paragraph index
+  tokenCount: 11200,                    // Sum of paragraph estimates
+  sectionTitle: "ARTICLE IV &mdash; ...",     // Nearest heading (for logging)
+  overlapBefore: "...prior context..."  // Tail of previous chunk
+}</code></pre>
+
+<blockquote><strong>Design decision:</strong> Chunks reference paragraph objects from the DocumentModel rather than copying text. This means the chunk's <code>startIndex</code> / <code>endIndex</code> remain valid pointers into the Word document's paragraph collection throughout the pipeline. These indices are used later by the reassembler to create bookmarks on exact paragraph ranges.</blockquote>
+
+<p>The chunking algorithm enforces three structural constraints:</p>
+
+<ol>
+  <li><strong>Heading boundaries.</strong> H1/H2 headings are primary split points. A chunk always starts at a heading boundary when possible, so the LLM sees complete logical sections.</li>
+  <li><strong>Table atomicity.</strong> Consecutive <code>inTable=true</code> paragraphs are accumulated as an indivisible unit. Tables are never split mid-way through.</li>
+  <li><strong>Token budget.</strong> Each chunk targets a maximum of 12,000 tokens (configurable). When no heading boundary exists, the chunker falls back to paragraph-boundary splitting. A minimum threshold (500 tokens) prevents tiny fragments from becoming their own chunks&mdash;trailing runts are merged into the previous chunk.</li>
+</ol>
+
+<h3>Overlap for continuity</h3>
+
+<p>Each chunk after the first carries an <code>overlapBefore</code> field containing the text of the previous chunk's last paragraph(s). This overlap is injected into the LLM prompt with explicit markers:</p>
+
+<pre><code>[CONTEXT - DO NOT AMEND]
+...last paragraph of previous chunk...
+[END CONTEXT]
+
+[AMEND THIS TEXT]
+...this chunk's paragraphs...
+[END TEXT]</code></pre>
+
+<p>The markers serve a dual purpose: they provide semantic continuity for the LLM (it can see the clause context it just left) while explicitly fencing the non-editable region. A post-processing step (<code>stripChunkDelimiters</code>) removes these markers if the LLM echoes them.</p>
+
+<h3>3.3 Layer 3: ChunkResult (LLM Response + Metadata)</h3>
+
+<p>After parallel LLM dispatch, each chunk yields a <code>ChunkResult</code>:</p>
+
+<pre><code>// ChunkResult &mdash; the output of LLM processing
+{
+  chunkId: "chunk-3",
+  chunkIndex: 3,
+  status: "fulfilled",       // | "rejected" | "cancelled"
+  amendment: "The Seller...",  // Amended text (or null)
+  comment: "Risk: ...",        // Comment text (or null)
+  error: null,
+  chunk: DocumentChunk         // Back-reference to Layer 2
+}</code></pre>
+
+<p>The three statuses follow <code>Promise.allSettled</code> semantics: a failed chunk does not block successful ones. The orchestrator tracks per-chunk timing for real-time ETA calculation and reports progress after each chunk completes.</p>
+
+<h2>4. Context Extraction</h2>
+
+<p>Before chunks are sent to the LLM, a context extractor (<code>context-extractor.js</code>) scans the full DocumentModel to build a <code>DocumentContext</code> object:</p>
+
+<pre><code>{
+  definitions: [
+    { term: "Seller", definition: "\"Seller\" means Acme Corp...", paragraphIndex: 12 },
+    ...
+  ],
+  abbreviations: [
+    { abbreviation: "SPA", expansion: "Share Purchase Agreement", paragraphIndex: 3 },
+    ...
+  ],
+  outline: [
+    { level: 1, text: "ARTICLE I &mdash; DEFINITIONS", paragraphIndex: 0 },
+    { level: 2, text: "Section 1.1 Definitions", paragraphIndex: 1 },
+    ...
+  ]
+}</code></pre>
+
+<p>Definitions are extracted using eight regex patterns covering legal drafting conventions: <code>"Term" means...</code>, <code>(the "Term")</code>, <code>(hereinafter "Term")</code>, colon-delimited definitions, and more. Abbreviations are detected via the <code>(XX)</code> parenthetical pattern, with initial-matching expansion extraction.</p>
+
+<p>The context is formatted into a text prefix and prepended to every chunk's system message. Critically, it is <strong>filtered per-chunk</strong>: only definitions whose term appears in the chunk text are included, keeping the prefix within a 4,000-token budget.</p>
+
+<h2>5. Parallel LLM Dispatch</h2>
+
+<p>The orchestrator (<code>orchestrator.js</code>) implements a worker-pool concurrency pattern. N workers (default 4) pull from a shared index, each processing one chunk at a time:</p>
+
+<div class="diagram">                    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+                    &#x2502;   Chunk Queue    &#x2502;
+                    &#x2502; [0] [1] [2] [3]  &#x2502;
+                    &#x2502; [4] [5] [6] [7]  &#x2502;
+                    &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+                           &#x2502;
+              &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x253C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+              &#x25BC;            &#x25BC;            &#x25BC;
+         &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510; &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510; &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+         &#x2502;Worker 1 &#x2502; &#x2502;Worker 2 &#x2502; &#x2502;Worker 3 &#x2502;  ...
+         &#x2502;         &#x2502; &#x2502;         &#x2502; &#x2502;         &#x2502;
+         &#x2502; compose &#x2502; &#x2502; compose &#x2502; &#x2502; compose &#x2502;
+         &#x2502; messages&#x2502; &#x2502; messages&#x2502; &#x2502; messages&#x2502;
+         &#x2502;    &#x25BC;    &#x2502; &#x2502;    &#x25BC;    &#x2502; &#x2502;    &#x25BC;    &#x2502;
+         &#x2502;sendMsg()&#x2502; &#x2502;sendMsg()&#x2502; &#x2502;sendMsg()&#x2502;
+         &#x2502;    &#x25BC;    &#x2502; &#x2502;    &#x25BC;    &#x2502; &#x2502;    &#x25BC;    &#x2502;
+         &#x2502;  parse  &#x2502; &#x2502;  parse  &#x2502; &#x2502;  parse  &#x2502;
+         &#x2502; response&#x2502; &#x2502; response&#x2502; &#x2502; response&#x2502;
+         &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518; &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518; &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+              &#x2502;            &#x2502;            &#x2502;
+              &#x25BC;            &#x25BC;            &#x25BC;
+         ChunkResult  ChunkResult  ChunkResult</div>
+<p class="caption">Figure 2: Worker-pool parallel dispatch. Each worker independently composes prompts, calls the LLM, and parses responses.</p>
+
+<p>Each worker composes a message array per chunk:</p>
+
+<ul>
+  <li><strong>System message:</strong> User's context prompt template + filtered document context prefix (definitions, abbreviations, outline)</li>
+  <li><strong>User message:</strong> Active amendment/comment prompt template with <code>{selection}</code> replaced by the chunk text (with overlap markers)</li>
+</ul>
+
+<p>An <code>AbortController</code> signal threads through every worker, enabling instant cancellation. The controller avoids <code>AbortSignal.any()</code> (unsupported in Office's WebView2 runtime), manually wiring external abort signals to local controllers.</p>
+
+<h2>6. Response Post-Processing</h2>
+
+<p>LLM output passes through a cleaning pipeline before reaching the reassembler:</p>
+
+<table>
+  <thead><tr><th>Stage</th><th>Function</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>stripThinkTags</code></td><td>Remove <code>&lt;think&gt;...&lt;/think&gt;</code> reasoning artifacts (4-pass regex: complete blocks, orphaned closers, orphaned openers, whitespace collapse)</td></tr>
+    <tr><td>2</td><td><code>parseDelimitedResponse</code></td><td>Split <code>===AMENDMENT===</code> / <code>===COMMENT===</code> sections for merged mode</td></tr>
+    <tr><td>3</td><td><code>stripMarkdown</code></td><td>Remove bold, italic, heading markers, code fences, bullet asterisks (preserves numbered lists common in contracts)</td></tr>
+    <tr><td>4</td><td><code>stripChunkDelimiters</code></td><td>Remove echoed <code>[AMEND THIS TEXT]</code> / <code>[END TEXT]</code> markers</td></tr>
+  </tbody>
+</table>
+
+<p>A <strong>truncation guard</strong> rejects LLM output that is less than 30% the length of the original chunk text, preventing silently truncated responses from destroying document content.</p>
+
+<h2>7. Reassembly: IR Back to Word</h2>
+
+<p>The reassembler (<code>reassembler.js</code>) is where the IR is converted back into Word document mutations. This is the most complex module, because it must bridge the text-oriented LLM output with Word's paragraph-level object model.</p>
+
+<h3>7.1 Bookmark Persistence</h3>
+
+<p>Before any LLM calls begin, the reassembler creates hidden bookmarks on each chunk's paragraph range:</p>
+
+<pre><code>// For each chunk:
+startRange = paragraphs[chunk.startIndex].getRange('Start')
+endRange   = paragraphs[chunk.endIndex].getRange('End')
+fullRange  = startRange.expandTo(endRange)
+fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></pre>
+
+<p>Bookmarks are prefixed with <code>_</code> (hidden in Word's UI) and use hex timestamps to ensure uniqueness. They persist across context switches and Word API sessions, surviving the potentially long LLM processing time.</p>
+
+<h3>7.2 Paragraph-Level Alignment (LCS + Similarity)</h3>
+
+<p>The central algorithm of reassembly is <code>_alignParagraphs</code>, which maps LLM output paragraphs back to original document paragraphs. It uses a two-phase approach:</p>
+
+<div class="diagram">Phase 1: LCS on exact (trimmed) text matches
+&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;
+  Original:  [A] [B] [C] [D] [E] [F]
+  Amended:   [A] [B'] [X] [D] [E'] [F]
+
+  LCS anchors: A &#x2500;&#x2500;&#x2500; D &#x2500;&#x2500;&#x2500; F   (exact matches)
+
+Phase 2: Greedy forward matching in gaps
+&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;
+  Gap 1 (between A..D):
+    Orig: [B] [C]     Amended: [B'] [X]
+    B&#x2194;B' similarity=0.82 &#x2192; keep (modified)
+    C has no match     &#x2192; delete
+    X has no match     &#x2192; insert
+
+  Gap 2 (between D..F):
+    Orig: [E]          Amended: [E']
+    E&#x2194;E' similarity=0.71 &#x2192; keep (modified)
+
+  Result ops: keep(A), keep(B&#x2194;B'), delete(C),
+              insert(X), keep(D), keep(E&#x2194;E'), keep(F)</div>
+<p class="caption">Figure 3: Two-phase paragraph alignment. LCS finds exact anchors; greedy matching fills gaps with a 0.4 similarity threshold.</p>
+
+<p>The similarity function uses word-level set overlap: <code>|shared words| / max(|words_a|, |words_b|)</code>. A threshold of 0.4 captures paragraphs where the LLM has substantively rewritten content while avoiding false matches between unrelated paragraphs.</p>
+
+<p>The alignment produces an operation sequence: <strong>keep</strong> (paragraph pair, possibly with text edits), <strong>delete</strong> (original paragraph removed), <strong>insert</strong> (new paragraph added).</p>
+
+<h3>7.3 Applying Changes in Reverse Document Order</h3>
+
+<p>Amendments are applied from the end of the document forward. This is critical: inserting or deleting paragraphs shifts all subsequent paragraph indices. By processing in reverse order, earlier ranges remain valid.</p>
+
+<p>For each alignment operation:</p>
+
+<ul>
+  <li><strong>keep with text difference:</strong> Applies word-level diff within the single paragraph using the <code>office-word-diff</code> library's token-map strategy. At paragraph scope, this preserves character-level formatting (bold, italic, font, color) while generating tracked changes. Falls back to full text replacement if the word-level diff fails.</li>
+  <li><strong>delete:</strong> Calls <code>paragraph.delete()</code>, which generates a tracked deletion in Word.</li>
+  <li><strong>insert:</strong> Calls <code>anchorParagraph.insertParagraph(text, 'After')</code>, which generates a tracked insertion.</li>
+</ul>
+
+<blockquote><strong>Why paragraph-level, not range-level?</strong> The initial implementation used range-level text replacement (replacing the entire chunk range at once). This destroyed paragraph boundaries, list numbering, heading styles, and table structure. The paragraph-level strategy preserves all OOXML paragraph properties (<code>w:pPr</code>) because each paragraph's properties are untouched&mdash;only the text runs within are modified.</blockquote>
+
+<h3>7.4 Comment Insertion</h3>
+
+<p>Comments are inserted in a separate phase after all amendments complete. This ordering is required because Word's tracked-changes mode (<code>ChangeTrackingMode.trackAll</code>) can cause <code>AccessDenied</code> errors when inserting comments on ranges that contain pending tracked changes. The reassembler explicitly disables change tracking before the comment phase.</p>
+
+<h2>8. The Diff Engine</h2>
+
+<p>Word-level tracked changes are produced by the <code>office-word-diff</code> npm package, which implements a cascading strategy:</p>
+
+<table>
+  <thead><tr><th>Strategy</th><th>Mechanism</th><th>Preserves</th><th>Scope</th></tr></thead>
+  <tbody>
+    <tr><td>Token Map</td><td>Splits paragraph into <code>Word.Range</code> objects via <code>getTextRanges([" "])</code>, maps each word to its range, applies insertions/deletions per-word</td><td>Character-level formatting (bold, italic, font, color)</td><td>Single paragraph</td></tr>
+    <tr><td>Sentence Diff</td><td>Tokenizes by sentence boundaries, computes diff, applies at sentence granularity</td><td>Paragraph structure</td><td>Single paragraph (fallback)</td></tr>
+    <tr><td>Block Replace</td><td>Full <code>range.insertText(text, 'Replace')</code></td><td>Nothing (last resort)</td><td>Full range</td></tr>
+  </tbody>
+</table>
+
+<p>The <code>ParagraphBlock</code> model (<code>structure-model.js</code>) maintains the token map: an array of <code>{ text, range: Word.Range }</code> objects. This allows the diff engine to map individual word changes to their exact <code>Word.Range</code> in the document, producing surgical tracked changes without touching surrounding formatting.</p>
+
+<h2>9. The Four-Category Prompt System</h2>
+
+<p>The <code>PromptManager</code> maintains four independent prompt categories, each with its own CRUD, activation state, and <code>localStorage</code> persistence:</p>
+
+<table>
+  <thead><tr><th>Category</th><th>Role in LLM Message</th><th>Placeholder</th></tr></thead>
+  <tbody>
+    <tr><td>Context</td><td>System message (static preamble)</td><td>None</td></tr>
+    <tr><td>Amendment</td><td>User message (rewriting instructions)</td><td><code>{selection}</code></td></tr>
+    <tr><td>Comment</td><td>User message (analysis instructions)</td><td><code>{selection}</code></td></tr>
+    <tr><td>Summary</td><td>User message (summarization instructions)</td><td><code>{comments}</code>, <code>{whole document}</code>, <code>{tracked changes}</code></td></tr>
+  </tbody>
+</table>
+
+<p>Amendment and comment are mutually exclusive (activating one deactivates the other). However, a <strong>merged mode</strong> allows both in a single LLM call: the amendment prompt's <code>commentInstructions</code> field appends delimiter instructions, and the response parser splits the output on <code>===AMENDMENT===</code> / <code>===COMMENT===</code> markers.</p>
+
+<h2>10. Summary Document Generation</h2>
+
+<p>The summary workflow extracts comments, document text, and tracked changes from the active document; composes a prompt with placeholder substitution; sends it to the LLM; and creates a new Word document with the formatted result.</p>
+
+<p>Tracked changes are extracted via OOXML parsing: <code>body.getOoxml()</code> returns the raw XML, which is parsed with the browser's <code>DOMParser</code>. The parser handles the <code>pkg:package</code> wrapper, normalizes <code>w:proofErr</code> elements, pairs adjacent <code>w:del</code>/<code>w:ins</code> elements (same author) as replacements, and detects move operations via <code>w:moveFrom</code>/<code>w:moveTo</code>.</p>
+
+<p>LLM markdown output is converted to HTML via <code>marked.parse()</code>, with inline table border styles injected (Word's <code>insertHtml</code> renders borderless tables by default). The HTML is inserted into a new document created via <code>context.application.createDocument()</code>.</p>
+
+<h2>11. Data Flow Summary</h2>
+
+<div class="diagram">Word Document
+     &#x2502;
+     &#x25BC;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502; document-parser &#x2502;  Office.js API (4 sync batches)
+&#x2502;                 &#x2502;  Word paragraphs &#x2500;&#x2500;&#x25B6; ParsedParagraph[]
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+        &#x25BC;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502; context-extract &#x2502;  Regex patterns on paragraph text
+&#x2502;                 &#x2502;  ParsedParagraph[] &#x2500;&#x2500;&#x25B6; DocumentContext
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+        &#x25BC;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502; document-chunker&#x2502;  Structure-aware splitting
+&#x2502;                 &#x2502;  ParsedParagraph[] &#x2500;&#x2500;&#x25B6; DocumentChunk[]
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+        &#x25BC;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502;  reassembler   &#x2502;  bookmarkChunkRanges()
+&#x2502;  (pre-phase)   &#x2502;  DocumentChunk[] &#x2500;&#x2500;&#x25B6; Bookmark Map
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+        &#x25BC;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502;  orchestrator   &#x2502;  Parallel LLM dispatch (N workers)
+&#x2502;                 &#x2502;  DocumentChunk[] + Context &#x2500;&#x2500;&#x25B6; ChunkResult[]
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+        &#x25BC;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502;  reassembler   &#x2502;  Reverse-order paragraph alignment
+&#x2502;  (apply-phase) &#x2502;  ChunkResult[] + Bookmarks &#x2500;&#x2500;&#x25B6; Tracked Changes
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;</div>
+<p class="caption">Figure 4: Complete data flow through the IR pipeline.</p>
+
+<div class="license">
+  <p><strong>Word AI Redliner</strong> &mdash; MIT License</p>
+  <p>Diff engine: <code>office-word-diff</code> (Apache 2.0)<br>
+  LLM backends: vLLM (Qwen 3.5-35B-A3B), Ollama</p>
+</div>
+
+</body>
+</html>
