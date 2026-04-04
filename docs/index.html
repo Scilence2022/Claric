@@ -4,153 +4,704 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Word AI Redliner &mdash; Technical Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #ffffff;
-    --fg: #1a1a2e;
-    --accent: #2563eb;
-    --code-bg: #f4f5f7;
-    --border: #e2e8f0;
+    --bg: #f8fafc;
+    --bg-alt: #ffffff;
+    --fg: #334155;
+    --fg-muted: #64748b;
     --heading: #0f172a;
+    --accent: #3b82f6;
+    --accent-dark: #2563eb;
+    --accent-light: #dbeafe;
+    --accent2: #8b5cf6;
+    --accent2-light: #ede9fe;
+    --code-bg: #f1f5f9;
+    --border: #e2e8f0;
+    --card-bg: #ffffff;
+    --card-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --card-shadow-hover: 0 10px 25px rgba(0,0,0,0.08), 0 4px 10px rgba(0,0,0,0.04);
     --pre-bg: #1e293b;
     --pre-fg: #e2e8f0;
+    --gradient-start: #3b82f6;
+    --gradient-end: #8b5cf6;
+    --hero-bg: #0f172a;
+    --hero-fg: #f1f5f9;
+    --nav-bg: rgba(255,255,255,0.85);
+    --table-header: #f1f5f9;
+    --table-stripe: #f8fafc;
+    --blockquote-bg: #eff6ff;
+    --blockquote-border: #3b82f6;
+    --tag-bg: #dbeafe;
+    --tag-fg: #1d4ed8;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f172a;
+      --bg-alt: #1e293b;
       --fg: #cbd5e1;
+      --fg-muted: #94a3b8;
+      --heading: #f1f5f9;
       --accent: #60a5fa;
+      --accent-dark: #3b82f6;
+      --accent-light: #1e3a5f;
+      --accent2: #a78bfa;
+      --accent2-light: #2e1f5e;
       --code-bg: #1e293b;
       --border: #334155;
-      --heading: #f1f5f9;
+      --card-bg: #1e293b;
+      --card-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.15);
+      --card-shadow-hover: 0 10px 25px rgba(0,0,0,0.3), 0 4px 10px rgba(0,0,0,0.2);
       --pre-bg: #020617;
       --pre-fg: #e2e8f0;
+      --hero-bg: #020617;
+      --hero-fg: #f1f5f9;
+      --nav-bg: rgba(15,23,42,0.85);
+      --table-header: #1e293b;
+      --table-stripe: #162032;
+      --blockquote-bg: #162032;
+      --blockquote-border: #60a5fa;
+      --tag-bg: #1e3a5f;
+      --tag-fg: #93c5fd;
     }
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--fg);
     line-height: 1.7;
-    max-width: 52rem;
-    margin: 0 auto;
-    padding: 2rem 1.5rem 4rem;
   }
-  h1 { font-size: 2rem; color: var(--heading); margin: 0 0 0.25rem; }
-  h1 + p.subtitle { color: var(--accent); font-size: 1.05rem; margin-bottom: 2rem; }
-  h2 { font-size: 1.4rem; color: var(--heading); margin: 2.5rem 0 0.75rem; border-bottom: 2px solid var(--border); padding-bottom: 0.3rem; }
-  h3 { font-size: 1.15rem; color: var(--heading); margin: 1.8rem 0 0.5rem; }
+
+  /* ── Sticky Nav ── */
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--nav-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0.6rem 1.5rem;
+  }
+  .nav-inner {
+    max-width: 72rem;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .nav-brand {
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--heading);
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .nav-brand svg { width: 22px; height: 22px; }
+  .nav-links {
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+    list-style: none;
+  }
+  .nav-links a {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--fg-muted);
+    text-decoration: none;
+    padding: 0.3rem 0.6rem;
+    border-radius: 6px;
+    transition: all 0.15s;
+  }
+  .nav-links a:hover {
+    color: var(--accent);
+    background: var(--accent-light);
+  }
+
+  /* ── Hero ── */
+  .hero {
+    background: var(--hero-bg);
+    color: var(--hero-fg);
+    position: relative;
+    overflow: hidden;
+    padding: 5rem 1.5rem 4rem;
+  }
+  .hero-grid {
+    position: absolute;
+    inset: 0;
+    opacity: 0.07;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.15) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.15) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+  .hero-glow {
+    position: absolute;
+    width: 600px;
+    height: 600px;
+    border-radius: 50%;
+    filter: blur(120px);
+    opacity: 0.15;
+  }
+  .hero-glow-1 { top: -200px; right: -100px; background: var(--gradient-start); }
+  .hero-glow-2 { bottom: -300px; left: -100px; background: var(--gradient-end); }
+  .hero-inner {
+    max-width: 72rem;
+    margin: 0 auto;
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3rem;
+    align-items: center;
+  }
+  .hero-text h1 {
+    font-size: 3rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+    margin-bottom: 1rem;
+  }
+  .hero-text h1 .gradient-text {
+    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .hero-text .subtitle {
+    font-size: 1.15rem;
+    color: #94a3b8;
+    line-height: 1.6;
+    margin-bottom: 1.5rem;
+  }
+  .hero-tags {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .hero-tag {
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.3rem 0.75rem;
+    border-radius: 50px;
+    background: rgba(59,130,246,0.15);
+    color: #93c5fd;
+    border: 1px solid rgba(59,130,246,0.25);
+  }
+  .hero-visual {
+    display: flex;
+    justify-content: center;
+  }
+  .hero-visual svg {
+    width: 100%;
+    max-width: 420px;
+    height: auto;
+  }
+
+  /* ── Main Content ── */
+  .content {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 5rem;
+  }
+
+  /* ── Section Cards ── */
+  .section {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 2.5rem;
+    margin-bottom: 2rem;
+    box-shadow: var(--card-shadow);
+    transition: box-shadow 0.3s;
+  }
+  .section:hover {
+    box-shadow: var(--card-shadow-hover);
+  }
+  .section-number {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+  }
+  h2 {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--heading);
+    margin-bottom: 1rem;
+    letter-spacing: -0.02em;
+  }
+  h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: var(--heading);
+    margin: 2rem 0 0.75rem;
+  }
   p { margin: 0.6rem 0; }
-  a { color: var(--accent); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Code ── */
   code {
-    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
-    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.85em;
     background: var(--code-bg);
-    padding: 0.15em 0.35em;
-    border-radius: 4px;
+    padding: 0.15em 0.4em;
+    border-radius: 5px;
+    color: var(--accent-dark);
   }
   pre {
     background: var(--pre-bg);
     color: var(--pre-fg);
-    padding: 1rem 1.25rem;
-    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    border-radius: 12px;
     overflow-x: auto;
     margin: 1rem 0;
-    font-size: 0.85rem;
-    line-height: 1.5;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    border: 1px solid rgba(255,255,255,0.06);
   }
   pre code { background: none; padding: 0; color: inherit; }
-  blockquote {
-    border-left: 4px solid var(--accent);
-    padding: 0.5rem 1rem;
-    margin: 1rem 0;
-    background: var(--code-bg);
-    border-radius: 0 6px 6px 0;
+  .code-label {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    margin-bottom: 0.5rem;
   }
+
+  /* ── Tables ── */
   table {
     width: 100%;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     margin: 1rem 0;
-    font-size: 0.92rem;
+    font-size: 0.9rem;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
   }
   th, td {
     text-align: left;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid var(--border);
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid var(--border);
   }
-  th { background: var(--code-bg); font-weight: 600; }
-  .diagram {
-    background: var(--pre-bg);
-    color: var(--pre-fg);
+  th {
+    background: var(--table-header);
+    font-weight: 600;
+    color: var(--heading);
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  tr:last-child td { border-bottom: none; }
+
+  /* ── Blockquotes ── */
+  blockquote {
+    border-left: 4px solid var(--blockquote-border);
     padding: 1rem 1.25rem;
-    border-radius: 8px;
-    overflow-x: auto;
-    margin: 1rem 0;
-    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
-    font-size: 0.78rem;
-    line-height: 1.4;
-    white-space: pre;
+    margin: 1.25rem 0;
+    background: var(--blockquote-bg);
+    border-radius: 0 10px 10px 0;
+    font-size: 0.92rem;
   }
-  .caption { font-size: 0.85rem; color: var(--accent); margin: -0.5rem 0 1rem; font-style: italic; }
-  .license { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.88rem; }
-  ul, ol { margin: 0.5rem 0 0.5rem 1.5rem; }
-  li { margin: 0.25rem 0; }
+
+  /* ── Diagrams ── */
+  .diagram-container {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+  }
+  .caption {
+    font-size: 0.82rem;
+    color: var(--fg-muted);
+    margin: 0.75rem 0 1rem;
+    font-style: italic;
+    text-align: center;
+  }
+
+  /* ── Lists ── */
+  ul, ol { margin: 0.5rem 0 0.75rem 1.5rem; }
+  li { margin: 0.3rem 0; }
+
+  /* ── Feature Grid ── */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .feature-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    text-align: center;
+  }
+  .feature-card svg {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 0.75rem;
+  }
+  .feature-card h4 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--heading);
+    margin-bottom: 0.35rem;
+  }
+  .feature-card p {
+    font-size: 0.82rem;
+    color: var(--fg-muted);
+    margin: 0;
+  }
+
+  /* ── Pipeline Steps ── */
+  .pipeline-steps {
+    display: flex;
+    gap: 0;
+    margin: 1.5rem 0;
+    flex-wrap: wrap;
+  }
+  .pipeline-step {
+    flex: 1;
+    min-width: 120px;
+    text-align: center;
+    padding: 1rem 0.75rem;
+    position: relative;
+  }
+  .pipeline-step::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 0;
+    height: 0;
+    border-top: 10px solid transparent;
+    border-bottom: 10px solid transparent;
+    border-left: 10px solid var(--accent);
+    opacity: 0.4;
+  }
+  .pipeline-step:last-child::after { display: none; }
+  .step-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 0.5rem;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.85rem;
+  }
+  .pipeline-step h4 {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--heading);
+    margin-bottom: 0.2rem;
+  }
+  .pipeline-step p {
+    font-size: 0.72rem;
+    color: var(--fg-muted);
+    margin: 0;
+  }
+
+  /* ── Footer ── */
+  .footer {
+    text-align: center;
+    padding: 2rem 1.5rem 3rem;
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+    border-top: 1px solid var(--border);
+    max-width: 72rem;
+    margin: 0 auto;
+  }
+  .footer a { color: var(--accent); }
+
+  /* ── Demo embed ── */
+  .demo-section {
+    text-align: center;
+    margin: 2rem 0;
+  }
+  .demo-section img {
+    max-width: 100%;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    box-shadow: var(--card-shadow);
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .hero-inner { grid-template-columns: 1fr; text-align: center; }
+    .hero-text h1 { font-size: 2.2rem; }
+    .hero-tags { justify-content: center; }
+    .hero-visual { display: none; }
+    .section { padding: 1.5rem; }
+    .nav-links { display: none; }
+    .pipeline-steps { flex-direction: column; }
+    .pipeline-step::after { display: none; }
+  }
 </style>
 </head>
 <body>
 
-<h1>Word AI Redliner</h1>
-<p class="subtitle">Technical Architecture</p>
+<!-- ── Navigation ── -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="#" class="nav-brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <path d="M9 15l2 2 4-4" stroke="url(#nav-grad)"/>
+        <defs><linearGradient id="nav-grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#8b5cf6"/></linearGradient></defs>
+      </svg>
+      Word AI Redliner
+    </a>
+    <ul class="nav-links">
+      <li><a href="#problem">Problem</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#ir">IR Design</a></li>
+      <li><a href="#context">Context</a></li>
+      <li><a href="#dispatch">Dispatch</a></li>
+      <li><a href="#postprocess">Post-Processing</a></li>
+      <li><a href="#reassembly">Reassembly</a></li>
+      <li><a href="#diff">Diff Engine</a></li>
+      <li><a href="#prompts">Prompts</a></li>
+      <li><a href="#summary">Summary</a></li>
+      <li><a href="https://github.com/yuch85/word-ai-redliner">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
 
-<p>Technical architecture of an AI-powered Microsoft Word add-in that applies LLM-suggested edits as native tracked changes. This post focuses on the intermediate representation that bridges the gap between Word's object model and LLM text processing.</p>
+<!-- ── Hero ── -->
+<header class="hero">
+  <div class="hero-grid"></div>
+  <div class="hero-glow hero-glow-1"></div>
+  <div class="hero-glow hero-glow-2"></div>
+  <div class="hero-inner">
+    <div class="hero-text">
+      <h1>Word AI <span class="gradient-text">Redliner</span></h1>
+      <p class="subtitle">AI-powered Microsoft Word add-in that applies LLM-suggested edits as native tracked changes. A structure-aware diff strategy bridges the gap between Word's object model and LLM text processing.</p>
+      <div class="hero-tags">
+        <span class="hero-tag">Office.js</span>
+        <span class="hero-tag">Tracked Changes</span>
+        <span class="hero-tag">Local LLM</span>
+        <span class="hero-tag">vLLM / Ollama</span>
+        <span class="hero-tag">OOXML</span>
+      </div>
+    </div>
+    <div class="hero-visual">
+      <!-- Hero illustration: document with AI neural connections -->
+      <svg viewBox="0 0 400 340" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Document shape -->
+        <rect x="100" y="40" width="200" height="260" rx="12" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+        <path d="M260 40V80H300L260 40Z" fill="#334155"/>
+        <!-- Document lines -->
+        <rect x="130" y="100" width="140" height="6" rx="3" fill="#334155"/>
+        <rect x="130" y="118" width="120" height="6" rx="3" fill="#334155"/>
+        <rect x="130" y="136" width="140" height="6" rx="3" fill="#334155"/>
+        <rect x="130" y="154" width="100" height="6" rx="3" fill="#334155"/>
+        <!-- Highlighted/changed lines -->
+        <rect x="126" y="172" width="148" height="14" rx="4" fill="rgba(239,68,68,0.15)" stroke="rgba(239,68,68,0.3)" stroke-width="0.5"/>
+        <rect x="130" y="176" width="140" height="6" rx="3" fill="#ef4444" opacity="0.6"/>
+        <rect x="126" y="192" width="148" height="14" rx="4" fill="rgba(34,197,94,0.15)" stroke="rgba(34,197,94,0.3)" stroke-width="0.5"/>
+        <rect x="130" y="196" width="130" height="6" rx="3" fill="#22c55e" opacity="0.6"/>
+        <rect x="130" y="218" width="110" height="6" rx="3" fill="#334155"/>
+        <rect x="130" y="236" width="140" height="6" rx="3" fill="#334155"/>
+        <rect x="130" y="254" width="80" height="6" rx="3" fill="#334155"/>
+        <!-- AI brain/network nodes -->
+        <circle cx="52" cy="140" r="8" fill="#3b82f6" opacity="0.8"/>
+        <circle cx="30" cy="180" r="6" fill="#8b5cf6" opacity="0.7"/>
+        <circle cx="60" cy="210" r="7" fill="#3b82f6" opacity="0.6"/>
+        <circle cx="40" cy="250" r="5" fill="#8b5cf6" opacity="0.5"/>
+        <circle cx="348" cy="120" r="7" fill="#8b5cf6" opacity="0.7"/>
+        <circle cx="360" cy="160" r="6" fill="#3b82f6" opacity="0.6"/>
+        <circle cx="340" cy="200" r="8" fill="#8b5cf6" opacity="0.8"/>
+        <circle cx="355" cy="240" r="5" fill="#3b82f6" opacity="0.5"/>
+        <!-- Connection lines to document -->
+        <line x1="60" y1="140" x2="100" y2="178" stroke="#3b82f6" stroke-width="1" opacity="0.3"/>
+        <line x1="36" y1="180" x2="100" y2="178" stroke="#8b5cf6" stroke-width="1" opacity="0.3"/>
+        <line x1="67" y1="210" x2="100" y2="198" stroke="#3b82f6" stroke-width="1" opacity="0.3"/>
+        <line x1="341" y1="120" x2="300" y2="178" stroke="#8b5cf6" stroke-width="1" opacity="0.3"/>
+        <line x1="354" y1="160" x2="300" y2="178" stroke="#3b82f6" stroke-width="1" opacity="0.3"/>
+        <line x1="332" y1="200" x2="300" y2="198" stroke="#8b5cf6" stroke-width="1" opacity="0.3"/>
+        <!-- Neural arcs -->
+        <path d="M52 140 Q 20 160 30 180" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
+        <path d="M30 180 Q 40 200 60 210" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
+        <path d="M60 210 Q 45 230 40 250" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
+        <path d="M348 120 Q 360 140 360 160" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
+        <path d="M360 160 Q 355 180 340 200" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
+        <path d="M340 200 Q 350 220 355 240" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
+        <!-- Sparkle accents -->
+        <circle cx="200" cy="70" r="2" fill="#60a5fa" opacity="0.8"/>
+        <circle cx="280" cy="270" r="1.5" fill="#a78bfa" opacity="0.7"/>
+      </svg>
+    </div>
+  </div>
+</header>
 
-<h2>1. The Problem</h2>
+<main class="content">
 
-<p>Microsoft Word documents are not flat text. They are deeply nested XML structures (OOXML) where every paragraph carries style metadata, list numbering, table membership, and character-level formatting runs. An LLM, however, operates on plain text strings.</p>
+  <!-- Demo -->
+  <div class="demo-section">
+    <a href="https://www.youtube.com/watch?v=SusffH8eT-Y">
+      <img src="word-ai-redliner.gif" alt="Word AI Redliner demo" loading="lazy"/>
+    </a>
+    <p class="caption">Click to watch the full demo on YouTube</p>
+  </div>
 
-<p>The core engineering challenge is: how do you send a Word document to an LLM, get back amended text, and apply those amendments as word-level tracked changes&mdash;without destroying the document's formatting, structure, or semantic markup?</p>
+  <!-- 1. The Problem -->
+  <section class="section" id="problem">
+    <div class="section-number">Section 1</div>
+    <h2>The Problem</h2>
+    <p>Microsoft Word documents are not flat text. They are deeply nested XML structures (OOXML) where every paragraph carries style metadata, list numbering, table membership, and character-level formatting runs. An LLM, however, operates on plain text strings.</p>
+    <p>The core engineering challenge: how do you send a Word document to an LLM, get back amended text, and apply those amendments as word-level tracked changes&mdash;without destroying the document's formatting, structure, or semantic markup?</p>
+    <p>Word AI Redliner solves this with a structured <strong>intermediate representation (IR)</strong> that preserves document semantics through a pipeline:</p>
+    <div class="pipeline-steps">
+      <div class="pipeline-step">
+        <div class="step-icon">1</div>
+        <h4>Parse</h4>
+        <p>Extract paragraphs via Office.js</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">2</div>
+        <h4>Chunk</h4>
+        <p>Split into token-budgeted segments</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">3</div>
+        <h4>Dispatch</h4>
+        <p>Send to LLM in parallel</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">4</div>
+        <h4>Reassemble</h4>
+        <p>Apply as tracked changes</p>
+      </div>
+    </div>
+  </section>
 
-<p>Word AI Redliner solves this with a structured <strong>intermediate representation (IR)</strong> that preserves document semantics through a <strong>parse &rarr; chunk &rarr; dispatch &rarr; reassemble</strong> pipeline.</p>
+  <!-- 2. System Overview -->
+  <section class="section" id="architecture">
+    <div class="section-number">Section 2</div>
+    <h2>System Overview</h2>
 
-<h2>2. System Overview</h2>
+    <div class="diagram-container">
+      <svg viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+        <!-- Background -->
+        <rect x="10" y="10" width="780" height="400" rx="16" fill="none" stroke="var(--border)" stroke-width="1.5" stroke-dasharray="6 3"/>
+        <text x="30" y="38" font-size="13" font-weight="600" fill="var(--fg-muted)">Microsoft Word (WebView2 / Office.js Runtime)</text>
 
-<div class="diagram">&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-&#x2502;  Microsoft Word (WebView2 / Office.js Runtime)                      &#x2502;
-&#x2502;                                                                     &#x2502;
-&#x2502;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  &#x2502;
-&#x2502;  &#x2502;  Taskpane UI &#x2502;&#x2500;&#x2500;&#x2500;&#x25B6;&#x2502; Orchestrator &#x2502;&#x2500;&#x2500;&#x2500;&#x25B6;&#x2502; webpack dev server     &#x2502;  &#x2502;
-&#x2502;  &#x2502;  (taskpane.  &#x2502;    &#x2502;              &#x2502;    &#x2502; /vllm  &#x2500;&#x2500;&#x25B6; localhost: &#x2502;  &#x2502;
-&#x2502;  &#x2502;   js)        &#x2502;&#x25C0;&#x2500;&#x2500;&#x2500;&#x2502;  (parallel   &#x2502;&#x25C0;&#x2500;&#x2500;&#x2500;&#x2502;          8026          &#x2502;  &#x2502;
-&#x2502;  &#x2502;              &#x2502;    &#x2502;   dispatch)  &#x2502;    &#x2502; /ollama &#x25B6; localhost: &#x2502;  &#x2502;
-&#x2502;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;    &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;    &#x2502;          11434         &#x2502;  &#x2502;
-&#x2502;         &#x2502;                                &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;  &#x2502;
-&#x2502;         &#x25BC;                                                           &#x2502;
-&#x2502;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;                           &#x2502;
-&#x2502;  &#x2502;        Intermediate Representation    &#x2502;                          &#x2502;
-&#x2502;  &#x2502;                                       &#x2502;                          &#x2502;
-&#x2502;  &#x2502;  DocumentModel &#x2500;&#x2500;&#x25B6; DocumentChunk[] &#x2500;&#x2500;&#x25B6; ChunkResult[]             &#x2502;
-&#x2502;  &#x2502;       &#x25B2;                                      &#x2502;                   &#x2502;
-&#x2502;  &#x2502;       &#x2502;            Context                   &#x25BC;                   &#x2502;
-&#x2502;  &#x2502;   doc-parser    Extractor            Reassembler                 &#x2502;
-&#x2502;  &#x2502;                                    (bookmark &#x2500;&#x2500;&#x25B6; tracked         &#x2502;
-&#x2502;  &#x2502;                                     ranges      changes)        &#x2502;
-&#x2502;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                           &#x2502;
-&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;</div>
-<p class="caption">Figure 1: High-level system architecture. The IR pipeline sits between the Word API and the LLM backends.</p>
+        <!-- Taskpane UI -->
+        <rect x="40" y="60" width="160" height="90" rx="10" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="120" y="95" text-anchor="middle" font-size="13" font-weight="600" fill="var(--heading)">Taskpane UI</text>
+        <text x="120" y="115" text-anchor="middle" font-size="11" fill="var(--fg-muted)">taskpane.js</text>
+        <text x="120" y="133" text-anchor="middle" font-size="11" fill="var(--fg-muted)">User controls</text>
 
-<p>The add-in runs as an Office.js taskpane inside Word's WebView2 container. Two LLM backends are supported via OpenAI-compatible <code>/v1/chat/completions</code> endpoints: a local vLLM instance (Qwen 3.5-35B-A3B) and Ollama. Webpack dev server proxies API requests from the browser sandbox to the local LLM servers.</p>
+        <!-- Orchestrator -->
+        <rect x="260" y="60" width="180" height="90" rx="10" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1.5"/>
+        <text x="350" y="95" text-anchor="middle" font-size="13" font-weight="600" fill="var(--heading)">Orchestrator</text>
+        <text x="350" y="115" text-anchor="middle" font-size="11" fill="var(--fg-muted)">Parallel dispatch</text>
+        <text x="350" y="133" text-anchor="middle" font-size="11" fill="var(--fg-muted)">Worker pool (N=4)</text>
 
-<h2>3. The Intermediate Representation</h2>
+        <!-- Webpack proxy -->
+        <rect x="500" y="60" width="270" height="90" rx="10" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1.5"/>
+        <text x="635" y="90" text-anchor="middle" font-size="13" font-weight="600" fill="var(--heading)">Webpack Dev Server</text>
+        <text x="565" y="115" text-anchor="middle" font-size="11" fill="var(--fg-muted)">/vllm</text>
+        <text x="565" y="133" text-anchor="middle" font-size="11" fill="var(--fg-muted)">/ollama</text>
+        <!-- Arrow labels for ports -->
+        <text x="700" y="115" text-anchor="middle" font-size="11" fill="var(--accent)">:8026</text>
+        <text x="700" y="133" text-anchor="middle" font-size="11" fill="var(--accent2)">:11434</text>
+        <!-- Port arrows -->
+        <line x1="600" y1="110" x2="670" y2="110" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+        <line x1="600" y1="128" x2="670" y2="128" stroke="var(--accent2)" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
 
-<p>The IR is the central data structure of the system. It consists of three layers, each progressively further from the Word object model and closer to LLM-compatible text.</p>
+        <!-- Arrows: Taskpane -> Orchestrator -->
+        <line x1="200" y1="105" x2="260" y2="105" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrowBlue)"/>
+        <!-- Arrows: Orchestrator -> Webpack -->
+        <line x1="440" y1="105" x2="500" y2="105" stroke="var(--accent2)" stroke-width="2" marker-end="url(#arrowPurple)"/>
 
-<h3>3.1 Layer 1: DocumentModel (Parsed Paragraphs)</h3>
+        <!-- IR Box -->
+        <rect x="40" y="200" width="400" height="190" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="60" y="228" font-size="13" font-weight="700" fill="var(--accent)">Intermediate Representation</text>
 
-<p>The document parser (<code>document-parser.js</code>) traverses the active Word document via Office.js and produces a <code>DocumentModel</code>&mdash;an array of <code>ParsedParagraph</code> objects:</p>
+        <!-- IR Flow boxes -->
+        <rect x="60" y="245" width="130" height="50" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
+        <text x="125" y="268" text-anchor="middle" font-size="11" font-weight="600" fill="var(--heading)">DocumentModel</text>
+        <text x="125" y="283" text-anchor="middle" font-size="10" fill="var(--fg-muted)">ParsedParagraph[]</text>
 
-<pre><code>// ParsedParagraph &mdash; the atom of the IR
-{
+        <rect x="215" y="245" width="100" height="50" rx="8" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
+        <text x="265" y="268" text-anchor="middle" font-size="11" font-weight="600" fill="var(--heading)">Chunks</text>
+        <text x="265" y="283" text-anchor="middle" font-size="10" fill="var(--fg-muted)">DocumentChunk[]</text>
+
+        <rect x="340" y="245" width="85" height="50" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
+        <text x="382" y="268" text-anchor="middle" font-size="11" font-weight="600" fill="var(--heading)">Results</text>
+        <text x="382" y="283" text-anchor="middle" font-size="10" fill="var(--fg-muted)">ChunkResult[]</text>
+
+        <!-- IR flow arrows -->
+        <line x1="190" y1="270" x2="215" y2="270" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+        <line x1="315" y1="270" x2="340" y2="270" stroke="var(--accent2)" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
+
+        <!-- Sub-labels -->
+        <text x="80" y="328" font-size="10" fill="var(--fg-muted)">doc-parser</text>
+        <text x="200" y="328" font-size="10" fill="var(--fg-muted)">Context Extractor</text>
+        <text x="335" y="328" font-size="10" fill="var(--fg-muted)">Reassembler</text>
+        <text x="335" y="345" font-size="10" fill="var(--accent)">(bookmark &rarr; tracked changes)</text>
+
+        <!-- Arrow from Taskpane down to IR -->
+        <path d="M 120 150 L 120 200" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrowBlue)"/>
+
+        <!-- Arrow defs -->
+        <defs>
+          <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="var(--accent)"/>
+          </marker>
+          <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="var(--accent2)"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+    <p class="caption">Figure 1: High-level system architecture. The IR pipeline sits between the Word API and the LLM backends.</p>
+
+    <p>The add-in runs as an Office.js taskpane inside Word's WebView2 container. Two LLM backends are supported via OpenAI-compatible <code>/v1/chat/completions</code> endpoints: a local vLLM instance (Qwen 3.5-35B-A3B) and Ollama. Webpack dev server proxies API requests from the browser sandbox to the local LLM servers.</p>
+  </section>
+
+  <!-- 3. Intermediate Representation -->
+  <section class="section" id="ir">
+    <div class="section-number">Section 3</div>
+    <h2>The Intermediate Representation</h2>
+    <p>The IR is the central data structure of the system. It consists of three layers, each progressively further from the Word object model and closer to LLM-compatible text.</p>
+
+    <h3>3.1 Layer 1: DocumentModel (Parsed Paragraphs)</h3>
+    <p>The document parser (<code>document-parser.js</code>) traverses the active Word document via Office.js and produces a <code>DocumentModel</code>&mdash;an array of <code>ParsedParagraph</code> objects:</p>
+
+    <div class="code-label">ParsedParagraph &mdash; the atom of the IR</div>
+    <pre><code>{
   index: 42,              // Original paragraph index in document
   text: "The Seller shall...",
   headingLevel: 0,        // 0 = body, 1-9 = heading level
@@ -163,36 +714,34 @@
   tokenEstimate: 47       // ceil(chars / 4)
 }</code></pre>
 
-<p>This is the foundational IR. Every downstream module operates on paragraph index references back to this model. The parser uses a <strong>batched load pattern</strong> with four sequential <code>context.sync()</code> calls to minimize Office.js round-trips:</p>
+    <p>This is the foundational IR. Every downstream module operates on paragraph index references back to this model. The parser uses a <strong>batched load pattern</strong> with four sequential <code>context.sync()</code> calls to minimize Office.js round-trips:</p>
 
-<ol>
-  <li>Load paragraph collection items</li>
-  <li>Load text, style, styleBuiltIn, isListItem for all paragraphs</li>
-  <li>Load listItem details (level, listString) for list paragraphs</li>
-  <li>Load parentTableOrNullObject for table membership detection</li>
-</ol>
+    <ol>
+      <li>Load paragraph collection items</li>
+      <li>Load text, style, styleBuiltIn, isListItem for all paragraphs</li>
+      <li>Load listItem details (level, listString) for list paragraphs</li>
+      <li>Load parentTableOrNullObject for table membership detection</li>
+    </ol>
 
-<h3>Heading detection fallback chain</h3>
+    <h3>Heading detection fallback chain</h3>
+    <p>Legal documents frequently use custom styles rather than Word's built-in Heading1&ndash;Heading9. The parser applies a three-tier fallback to classify headings:</p>
 
-<p>Legal documents frequently use custom styles rather than Word's built-in Heading1&ndash;Heading9. The parser applies a three-tier fallback to classify headings:</p>
+    <table>
+      <thead><tr><th>Tier</th><th>Source</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td>1 Built-in style</td><td><code>styleBuiltIn</code></td><td>Heading2 &rarr; level 2</td></tr>
+        <tr><td>2 Custom style mapping</td><td><code>style</code> name</td><td>TitleClause &rarr; level 2, Schedule &rarr; level 1</td></tr>
+        <tr><td>3 Text pattern inference</td><td>Paragraph text</td><td>ARTICLE IV &rarr; level 1, short ALL-CAPS &rarr; level 2</td></tr>
+      </tbody>
+    </table>
 
-<table>
-  <thead><tr><th>Tier</th><th>Source</th><th>Example</th></tr></thead>
-  <tbody>
-    <tr><td>1 Built-in style</td><td><code>styleBuiltIn</code></td><td>Heading2 &rarr; level 2</td></tr>
-    <tr><td>2 Custom style mapping</td><td><code>style</code> name</td><td>TitleClause &rarr; level 2, Schedule &rarr; level 1</td></tr>
-    <tr><td>3 Text pattern inference</td><td>Paragraph text</td><td>ARTICLE IV &rarr; level 1, short ALL-CAPS &rarr; level 2</td></tr>
-  </tbody>
-</table>
+    <p>Tier 3 only fires for paragraphs with no custom style applied (Normal or empty), preventing false positives on styled body text.</p>
 
-<p>Tier 3 only fires for paragraphs with no custom style applied (Normal or empty), preventing false positives on styled body text.</p>
+    <h3>3.2 Layer 2: DocumentChunk (Token-Budgeted Segments)</h3>
+    <p>The chunker (<code>document-chunker.js</code>) splits the DocumentModel into <code>DocumentChunk[]</code>&mdash;segments sized for LLM context windows:</p>
 
-<h3>3.2 Layer 2: DocumentChunk (Token-Budgeted Segments)</h3>
-
-<p>The chunker (<code>document-chunker.js</code>) splits the DocumentModel into <code>DocumentChunk[]</code>&mdash;segments sized for LLM context windows:</p>
-
-<pre><code>// DocumentChunk &mdash; the unit of LLM dispatch
-{
+    <div class="code-label">DocumentChunk &mdash; the unit of LLM dispatch</div>
+    <pre><code>{
   id: "chunk-3",
   paragraphs: [ParsedParagraph, ...],  // References to Layer 1
   startIndex: 42,                       // First paragraph index
@@ -202,21 +751,19 @@
   overlapBefore: "...prior context..."  // Tail of previous chunk
 }</code></pre>
 
-<blockquote><strong>Design decision:</strong> Chunks reference paragraph objects from the DocumentModel rather than copying text. This means the chunk's <code>startIndex</code> / <code>endIndex</code> remain valid pointers into the Word document's paragraph collection throughout the pipeline. These indices are used later by the reassembler to create bookmarks on exact paragraph ranges.</blockquote>
+    <blockquote><strong>Design decision:</strong> Chunks reference paragraph objects from the DocumentModel rather than copying text. This means the chunk's <code>startIndex</code> / <code>endIndex</code> remain valid pointers into the Word document's paragraph collection throughout the pipeline. These indices are used later by the reassembler to create bookmarks on exact paragraph ranges.</blockquote>
 
-<p>The chunking algorithm enforces three structural constraints:</p>
+    <p>The chunking algorithm enforces three structural constraints:</p>
+    <ol>
+      <li><strong>Heading boundaries.</strong> H1/H2 headings are primary split points. A chunk always starts at a heading boundary when possible, so the LLM sees complete logical sections.</li>
+      <li><strong>Table atomicity.</strong> Consecutive <code>inTable=true</code> paragraphs are accumulated as an indivisible unit. Tables are never split mid-way through.</li>
+      <li><strong>Token budget.</strong> Each chunk targets a maximum of 12,000 tokens (configurable). When no heading boundary exists, the chunker falls back to paragraph-boundary splitting. A minimum threshold (500 tokens) prevents tiny fragments from becoming their own chunks&mdash;trailing runts are merged into the previous chunk.</li>
+    </ol>
 
-<ol>
-  <li><strong>Heading boundaries.</strong> H1/H2 headings are primary split points. A chunk always starts at a heading boundary when possible, so the LLM sees complete logical sections.</li>
-  <li><strong>Table atomicity.</strong> Consecutive <code>inTable=true</code> paragraphs are accumulated as an indivisible unit. Tables are never split mid-way through.</li>
-  <li><strong>Token budget.</strong> Each chunk targets a maximum of 12,000 tokens (configurable). When no heading boundary exists, the chunker falls back to paragraph-boundary splitting. A minimum threshold (500 tokens) prevents tiny fragments from becoming their own chunks&mdash;trailing runts are merged into the previous chunk.</li>
-</ol>
+    <h3>Overlap for continuity</h3>
+    <p>Each chunk after the first carries an <code>overlapBefore</code> field containing the text of the previous chunk's last paragraph(s). This overlap is injected into the LLM prompt with explicit markers:</p>
 
-<h3>Overlap for continuity</h3>
-
-<p>Each chunk after the first carries an <code>overlapBefore</code> field containing the text of the previous chunk's last paragraph(s). This overlap is injected into the LLM prompt with explicit markers:</p>
-
-<pre><code>[CONTEXT - DO NOT AMEND]
+    <pre><code>[CONTEXT - DO NOT AMEND]
 ...last paragraph of previous chunk...
 [END CONTEXT]
 
@@ -224,14 +771,13 @@
 ...this chunk's paragraphs...
 [END TEXT]</code></pre>
 
-<p>The markers serve a dual purpose: they provide semantic continuity for the LLM (it can see the clause context it just left) while explicitly fencing the non-editable region. A post-processing step (<code>stripChunkDelimiters</code>) removes these markers if the LLM echoes them.</p>
+    <p>The markers serve a dual purpose: they provide semantic continuity for the LLM (it can see the clause context it just left) while explicitly fencing the non-editable region. A post-processing step (<code>stripChunkDelimiters</code>) removes these markers if the LLM echoes them.</p>
 
-<h3>3.3 Layer 3: ChunkResult (LLM Response + Metadata)</h3>
+    <h3>3.3 Layer 3: ChunkResult (LLM Response + Metadata)</h3>
+    <p>After parallel LLM dispatch, each chunk yields a <code>ChunkResult</code>:</p>
 
-<p>After parallel LLM dispatch, each chunk yields a <code>ChunkResult</code>:</p>
-
-<pre><code>// ChunkResult &mdash; the output of LLM processing
-{
+    <div class="code-label">ChunkResult &mdash; the output of LLM processing</div>
+    <pre><code>{
   chunkId: "chunk-3",
   chunkIndex: 3,
   status: "fulfilled",       // | "rejected" | "cancelled"
@@ -241,13 +787,16 @@
   chunk: DocumentChunk         // Back-reference to Layer 2
 }</code></pre>
 
-<p>The three statuses follow <code>Promise.allSettled</code> semantics: a failed chunk does not block successful ones. The orchestrator tracks per-chunk timing for real-time ETA calculation and reports progress after each chunk completes.</p>
+    <p>The three statuses follow <code>Promise.allSettled</code> semantics: a failed chunk does not block successful ones. The orchestrator tracks per-chunk timing for real-time ETA calculation and reports progress after each chunk completes.</p>
+  </section>
 
-<h2>4. Context Extraction</h2>
+  <!-- 4. Context Extraction -->
+  <section class="section" id="context">
+    <div class="section-number">Section 4</div>
+    <h2>Context Extraction</h2>
+    <p>Before chunks are sent to the LLM, a context extractor (<code>context-extractor.js</code>) scans the full DocumentModel to build a <code>DocumentContext</code> object:</p>
 
-<p>Before chunks are sent to the LLM, a context extractor (<code>context-extractor.js</code>) scans the full DocumentModel to build a <code>DocumentContext</code> object:</p>
-
-<pre><code>{
+    <pre><code>{
   definitions: [
     { term: "Seller", definition: "\"Seller\" means Acme Corp...", paragraphIndex: 12 },
     ...
@@ -263,208 +812,405 @@
   ]
 }</code></pre>
 
-<p>Definitions are extracted using eight regex patterns covering legal drafting conventions: <code>"Term" means...</code>, <code>(the "Term")</code>, <code>(hereinafter "Term")</code>, colon-delimited definitions, and more. Abbreviations are detected via the <code>(XX)</code> parenthetical pattern, with initial-matching expansion extraction.</p>
+    <p>Definitions are extracted using eight regex patterns covering legal drafting conventions: <code>"Term" means...</code>, <code>(the "Term")</code>, <code>(hereinafter "Term")</code>, colon-delimited definitions, and more. Abbreviations are detected via the <code>(XX)</code> parenthetical pattern, with initial-matching expansion extraction.</p>
 
-<p>The context is formatted into a text prefix and prepended to every chunk's system message. Critically, it is <strong>filtered per-chunk</strong>: only definitions whose term appears in the chunk text are included, keeping the prefix within a 4,000-token budget.</p>
+    <p>The context is formatted into a text prefix and prepended to every chunk's system message. Critically, it is <strong>filtered per-chunk</strong>: only definitions whose term appears in the chunk text are included, keeping the prefix within a 4,000-token budget.</p>
+  </section>
 
-<h2>5. Parallel LLM Dispatch</h2>
+  <!-- 5. Parallel LLM Dispatch -->
+  <section class="section" id="dispatch">
+    <div class="section-number">Section 5</div>
+    <h2>Parallel LLM Dispatch</h2>
+    <p>The orchestrator (<code>orchestrator.js</code>) implements a worker-pool concurrency pattern. N workers (default 4) pull from a shared index, each processing one chunk at a time:</p>
 
-<p>The orchestrator (<code>orchestrator.js</code>) implements a worker-pool concurrency pattern. N workers (default 4) pull from a shared index, each processing one chunk at a time:</p>
+    <div class="diagram-container">
+      <svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+        <!-- Chunk queue -->
+        <rect x="230" y="15" width="260" height="65" rx="10" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="360" y="36" text-anchor="middle" font-size="12" font-weight="600" fill="var(--heading)">Chunk Queue</text>
+        <!-- Queue items row 1 -->
+        <rect x="252" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="266" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">0</text>
+        <rect x="286" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="300" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">1</text>
+        <rect x="320" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="334" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">2</text>
+        <rect x="354" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="368" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">3</text>
+        <rect x="388" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="402" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">4</text>
+        <rect x="422" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="436" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">5</text>
+        <rect x="456" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="470" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">6</text>
 
-<div class="diagram">                    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-                    &#x2502;   Chunk Queue    &#x2502;
-                    &#x2502; [0] [1] [2] [3]  &#x2502;
-                    &#x2502; [4] [5] [6] [7]  &#x2502;
-                    &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
-                           &#x2502;
-              &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x253C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-              &#x25BC;            &#x25BC;            &#x25BC;
-         &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510; &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510; &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-         &#x2502;Worker 1 &#x2502; &#x2502;Worker 2 &#x2502; &#x2502;Worker 3 &#x2502;  ...
-         &#x2502;         &#x2502; &#x2502;         &#x2502; &#x2502;         &#x2502;
-         &#x2502; compose &#x2502; &#x2502; compose &#x2502; &#x2502; compose &#x2502;
-         &#x2502; messages&#x2502; &#x2502; messages&#x2502; &#x2502; messages&#x2502;
-         &#x2502;    &#x25BC;    &#x2502; &#x2502;    &#x25BC;    &#x2502; &#x2502;    &#x25BC;    &#x2502;
-         &#x2502;sendMsg()&#x2502; &#x2502;sendMsg()&#x2502; &#x2502;sendMsg()&#x2502;
-         &#x2502;    &#x25BC;    &#x2502; &#x2502;    &#x25BC;    &#x2502; &#x2502;    &#x25BC;    &#x2502;
-         &#x2502;  parse  &#x2502; &#x2502;  parse  &#x2502; &#x2502;  parse  &#x2502;
-         &#x2502; response&#x2502; &#x2502; response&#x2502; &#x2502; response&#x2502;
-         &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518; &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518; &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
-              &#x2502;            &#x2502;            &#x2502;
-              &#x25BC;            &#x25BC;            &#x25BC;
-         ChunkResult  ChunkResult  ChunkResult</div>
-<p class="caption">Figure 2: Worker-pool parallel dispatch. Each worker independently composes prompts, calls the LLM, and parses responses.</p>
+        <!-- Distribution arrows -->
+        <line x1="300" y1="80" x2="150" y2="120" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
+        <line x1="360" y1="80" x2="360" y2="120" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
+        <line x1="420" y1="80" x2="570" y2="120" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
 
-<p>Each worker composes a message array per chunk:</p>
+        <!-- Worker 1 -->
+        <rect x="60" y="120" width="180" height="160" rx="10" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
+        <text x="150" y="144" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent2)">Worker 1</text>
+        <rect x="80" y="156" width="140" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="0.8"/>
+        <text x="150" y="174" text-anchor="middle" font-size="10" fill="var(--heading)">Compose messages</text>
+        <line x1="150" y1="184" x2="150" y2="196" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
+        <rect x="80" y="196" width="140" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="150" y="214" text-anchor="middle" font-size="10" fill="var(--heading)">sendMsg()</text>
+        <line x1="150" y1="224" x2="150" y2="236" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
+        <rect x="80" y="236" width="140" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="0.8"/>
+        <text x="150" y="254" text-anchor="middle" font-size="10" fill="var(--heading)">Parse response</text>
 
-<ul>
-  <li><strong>System message:</strong> User's context prompt template + filtered document context prefix (definitions, abbreviations, outline)</li>
-  <li><strong>User message:</strong> Active amendment/comment prompt template with <code>{selection}</code> replaced by the chunk text (with overlap markers)</li>
-</ul>
+        <!-- Worker 2 -->
+        <rect x="270" y="120" width="180" height="160" rx="10" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
+        <text x="360" y="144" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent2)">Worker 2</text>
+        <rect x="290" y="156" width="140" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="0.8"/>
+        <text x="360" y="174" text-anchor="middle" font-size="10" fill="var(--heading)">Compose messages</text>
+        <line x1="360" y1="184" x2="360" y2="196" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
+        <rect x="290" y="196" width="140" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="360" y="214" text-anchor="middle" font-size="10" fill="var(--heading)">sendMsg()</text>
+        <line x1="360" y1="224" x2="360" y2="236" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
+        <rect x="290" y="236" width="140" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="0.8"/>
+        <text x="360" y="254" text-anchor="middle" font-size="10" fill="var(--heading)">Parse response</text>
 
-<p>An <code>AbortController</code> signal threads through every worker, enabling instant cancellation. The controller avoids <code>AbortSignal.any()</code> (unsupported in Office's WebView2 runtime), manually wiring external abort signals to local controllers.</p>
+        <!-- Worker 3 -->
+        <rect x="480" y="120" width="180" height="160" rx="10" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
+        <text x="570" y="144" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent2)">Worker 3</text>
+        <rect x="500" y="156" width="140" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="0.8"/>
+        <text x="570" y="174" text-anchor="middle" font-size="10" fill="var(--heading)">Compose messages</text>
+        <line x1="570" y1="184" x2="570" y2="196" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
+        <rect x="500" y="196" width="140" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="0.8"/>
+        <text x="570" y="214" text-anchor="middle" font-size="10" fill="var(--heading)">sendMsg()</text>
+        <line x1="570" y1="224" x2="570" y2="236" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
+        <rect x="500" y="236" width="140" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="0.8"/>
+        <text x="570" y="254" text-anchor="middle" font-size="10" fill="var(--heading)">Parse response</text>
 
-<h2>6. Response Post-Processing</h2>
+        <!-- Ellipsis -->
+        <text x="690" y="210" font-size="20" fill="var(--fg-muted)">...</text>
 
-<p>LLM output passes through a cleaning pipeline before reaching the reassembler:</p>
+        <!-- Result arrows -->
+        <line x1="150" y1="280" x2="150" y2="310" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
+        <line x1="360" y1="280" x2="360" y2="310" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
+        <line x1="570" y1="280" x2="570" y2="310" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
 
-<table>
-  <thead><tr><th>Stage</th><th>Function</th><th>Purpose</th></tr></thead>
-  <tbody>
-    <tr><td>1</td><td><code>stripThinkTags</code></td><td>Remove <code>&lt;think&gt;...&lt;/think&gt;</code> reasoning artifacts (4-pass regex: complete blocks, orphaned closers, orphaned openers, whitespace collapse)</td></tr>
-    <tr><td>2</td><td><code>parseDelimitedResponse</code></td><td>Split <code>===AMENDMENT===</code> / <code>===COMMENT===</code> sections for merged mode</td></tr>
-    <tr><td>3</td><td><code>stripMarkdown</code></td><td>Remove bold, italic, heading markers, code fences, bullet asterisks (preserves numbered lists common in contracts)</td></tr>
-    <tr><td>4</td><td><code>stripChunkDelimiters</code></td><td>Remove echoed <code>[AMEND THIS TEXT]</code> / <code>[END TEXT]</code> markers</td></tr>
-  </tbody>
-</table>
+        <!-- Results -->
+        <rect x="80" y="310" width="140" height="34" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="150" y="332" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">ChunkResult</text>
+        <rect x="290" y="310" width="140" height="34" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="360" y="332" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">ChunkResult</text>
+        <rect x="500" y="310" width="140" height="34" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="570" y="332" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">ChunkResult</text>
 
-<p>A <strong>truncation guard</strong> rejects LLM output that is less than 30% the length of the original chunk text, preventing silently truncated responses from destroying document content.</p>
+        <defs>
+          <marker id="arrB" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="var(--accent)"/></marker>
+          <marker id="arrG" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0, 6 2.5, 0 5" fill="var(--fg-muted)"/></marker>
+        </defs>
+      </svg>
+    </div>
+    <p class="caption">Figure 2: Worker-pool parallel dispatch. Each worker independently composes prompts, calls the LLM, and parses responses.</p>
 
-<h2>7. Reassembly: IR Back to Word</h2>
+    <p>Each worker composes a message array per chunk:</p>
+    <ul>
+      <li><strong>System message:</strong> User's context prompt template + filtered document context prefix (definitions, abbreviations, outline)</li>
+      <li><strong>User message:</strong> Active amendment/comment prompt template with <code>{selection}</code> replaced by the chunk text (with overlap markers)</li>
+    </ul>
+    <p>An <code>AbortController</code> signal threads through every worker, enabling instant cancellation. The controller avoids <code>AbortSignal.any()</code> (unsupported in Office's WebView2 runtime), manually wiring external abort signals to local controllers.</p>
+  </section>
 
-<p>The reassembler (<code>reassembler.js</code>) is where the IR is converted back into Word document mutations. This is the most complex module, because it must bridge the text-oriented LLM output with Word's paragraph-level object model.</p>
+  <!-- 6. Response Post-Processing -->
+  <section class="section" id="postprocess">
+    <div class="section-number">Section 6</div>
+    <h2>Response Post-Processing</h2>
+    <p>LLM output passes through a cleaning pipeline before reaching the reassembler:</p>
 
-<h3>7.1 Bookmark Persistence</h3>
+    <table>
+      <thead><tr><th>Stage</th><th>Function</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><code>stripThinkTags</code></td><td>Remove <code>&lt;think&gt;...&lt;/think&gt;</code> reasoning artifacts (4-pass regex: complete blocks, orphaned closers, orphaned openers, whitespace collapse)</td></tr>
+        <tr><td>2</td><td><code>parseDelimitedResponse</code></td><td>Split <code>===AMENDMENT===</code> / <code>===COMMENT===</code> sections for merged mode</td></tr>
+        <tr><td>3</td><td><code>stripMarkdown</code></td><td>Remove bold, italic, heading markers, code fences, bullet asterisks (preserves numbered lists common in contracts)</td></tr>
+        <tr><td>4</td><td><code>stripChunkDelimiters</code></td><td>Remove echoed <code>[AMEND THIS TEXT]</code> / <code>[END TEXT]</code> markers</td></tr>
+      </tbody>
+    </table>
 
-<p>Before any LLM calls begin, the reassembler creates hidden bookmarks on each chunk's paragraph range:</p>
+    <p>A <strong>truncation guard</strong> rejects LLM output that is less than 30% the length of the original chunk text, preventing silently truncated responses from destroying document content.</p>
+  </section>
 
-<pre><code>// For each chunk:
+  <!-- 7. Reassembly -->
+  <section class="section" id="reassembly">
+    <div class="section-number">Section 7</div>
+    <h2>Reassembly: IR Back to Word</h2>
+    <p>The reassembler (<code>reassembler.js</code>) is where the IR is converted back into Word document mutations. This is the most complex module, because it must bridge the text-oriented LLM output with Word's paragraph-level object model.</p>
+
+    <h3>7.1 Bookmark Persistence</h3>
+    <p>Before any LLM calls begin, the reassembler creates hidden bookmarks on each chunk's paragraph range:</p>
+
+    <pre><code>// For each chunk:
 startRange = paragraphs[chunk.startIndex].getRange('Start')
 endRange   = paragraphs[chunk.endIndex].getRange('End')
 fullRange  = startRange.expandTo(endRange)
 fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></pre>
 
-<p>Bookmarks are prefixed with <code>_</code> (hidden in Word's UI) and use hex timestamps to ensure uniqueness. They persist across context switches and Word API sessions, surviving the potentially long LLM processing time.</p>
+    <p>Bookmarks are prefixed with <code>_</code> (hidden in Word's UI) and use hex timestamps to ensure uniqueness. They persist across context switches and Word API sessions, surviving the potentially long LLM processing time.</p>
 
-<h3>7.2 Paragraph-Level Alignment (LCS + Similarity)</h3>
+    <h3>7.2 Paragraph-Level Alignment (LCS + Similarity)</h3>
+    <p>The central algorithm of reassembly is <code>_alignParagraphs</code>, which maps LLM output paragraphs back to original document paragraphs. It uses a two-phase approach:</p>
 
-<p>The central algorithm of reassembly is <code>_alignParagraphs</code>, which maps LLM output paragraphs back to original document paragraphs. It uses a two-phase approach:</p>
+    <div class="diagram-container">
+      <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+        <!-- Phase 1 -->
+        <text x="20" y="24" font-size="13" font-weight="700" fill="var(--accent)">Phase 1: LCS on exact (trimmed) text matches</text>
 
-<div class="diagram">Phase 1: LCS on exact (trimmed) text matches
-&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;
-  Original:  [A] [B] [C] [D] [E] [F]
-  Amended:   [A] [B'] [X] [D] [E'] [F]
+        <!-- Original paragraphs -->
+        <text x="20" y="55" font-size="11" font-weight="600" fill="var(--fg-muted)">Original:</text>
+        <rect x="100" y="40" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="122" y="59" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">A</text>
+        <rect x="156" y="40" width="44" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1"/>
+        <text x="178" y="59" text-anchor="middle" font-size="12" fill="var(--heading)">B</text>
+        <rect x="212" y="40" width="44" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1"/>
+        <text x="234" y="59" text-anchor="middle" font-size="12" fill="var(--heading)">C</text>
+        <rect x="268" y="40" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="290" y="59" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">D</text>
+        <rect x="324" y="40" width="44" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1"/>
+        <text x="346" y="59" text-anchor="middle" font-size="12" fill="var(--heading)">E</text>
+        <rect x="380" y="40" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="402" y="59" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">F</text>
 
-  LCS anchors: A &#x2500;&#x2500;&#x2500; D &#x2500;&#x2500;&#x2500; F   (exact matches)
+        <!-- Amended paragraphs -->
+        <text x="20" y="103" font-size="11" font-weight="600" fill="var(--fg-muted)">Amended:</text>
+        <rect x="100" y="88" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="122" y="107" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">A</text>
+        <rect x="156" y="88" width="44" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
+        <text x="178" y="107" text-anchor="middle" font-size="12" fill="var(--accent2)">B'</text>
+        <rect x="212" y="88" width="44" height="28" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
+        <text x="234" y="107" text-anchor="middle" font-size="12" fill="#16a34a">X</text>
+        <rect x="268" y="88" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="290" y="107" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">D</text>
+        <rect x="324" y="88" width="44" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
+        <text x="346" y="107" text-anchor="middle" font-size="12" fill="var(--accent2)">E'</text>
+        <rect x="380" y="88" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="402" y="107" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">F</text>
 
-Phase 2: Greedy forward matching in gaps
-&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;
-  Gap 1 (between A..D):
-    Orig: [B] [C]     Amended: [B'] [X]
-    B&#x2194;B' similarity=0.82 &#x2192; keep (modified)
-    C has no match     &#x2192; delete
-    X has no match     &#x2192; insert
+        <!-- LCS anchor lines -->
+        <line x1="122" y1="68" x2="122" y2="88" stroke="var(--accent)" stroke-width="2"/>
+        <line x1="290" y1="68" x2="290" y2="88" stroke="var(--accent)" stroke-width="2"/>
+        <line x1="402" y1="68" x2="402" y2="88" stroke="var(--accent)" stroke-width="2"/>
 
-  Gap 2 (between D..F):
-    Orig: [E]          Amended: [E']
-    E&#x2194;E' similarity=0.71 &#x2192; keep (modified)
+        <text x="490" y="55" font-size="11" fill="var(--fg-muted)">LCS anchors:</text>
+        <text x="490" y="75" font-size="11" font-weight="600" fill="var(--accent)">A &mdash; D &mdash; F</text>
+        <text x="490" y="95" font-size="10" fill="var(--fg-muted)">(exact text matches)</text>
 
-  Result ops: keep(A), keep(B&#x2194;B'), delete(C),
-              insert(X), keep(D), keep(E&#x2194;E'), keep(F)</div>
-<p class="caption">Figure 3: Two-phase paragraph alignment. LCS finds exact anchors; greedy matching fills gaps with a 0.4 similarity threshold.</p>
+        <!-- Divider -->
+        <line x1="20" y1="130" x2="700" y2="130" stroke="var(--border)" stroke-width="1" stroke-dasharray="4 3"/>
 
-<p>The similarity function uses word-level set overlap: <code>|shared words| / max(|words_a|, |words_b|)</code>. A threshold of 0.4 captures paragraphs where the LLM has substantively rewritten content while avoiding false matches between unrelated paragraphs.</p>
+        <!-- Phase 2 -->
+        <text x="20" y="158" font-size="13" font-weight="700" fill="var(--accent2)">Phase 2: Greedy forward matching in gaps</text>
 
-<p>The alignment produces an operation sequence: <strong>keep</strong> (paragraph pair, possibly with text edits), <strong>delete</strong> (original paragraph removed), <strong>insert</strong> (new paragraph added).</p>
+        <!-- Gap 1 -->
+        <rect x="20" y="172" width="330" height="70" rx="10" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1"/>
+        <text x="36" y="192" font-size="11" font-weight="600" fill="var(--heading)">Gap 1 (between A..D):</text>
+        <text x="36" y="210" font-size="10" fill="var(--fg)">B &harr; B' similarity = 0.82</text>
+        <circle cx="252" cy="206" r="6" fill="#22c55e" opacity="0.8"/>
+        <text x="266" y="210" font-size="10" font-weight="600" fill="#16a34a">keep (modified)</text>
+        <text x="36" y="228" font-size="10" fill="var(--fg)">C has no match</text>
+        <circle cx="168" cy="224" r="6" fill="#ef4444" opacity="0.8"/>
+        <text x="182" y="228" font-size="10" font-weight="600" fill="#dc2626">delete</text>
+        <text x="248" y="228" font-size="10" fill="var(--fg)">| X has no match</text>
+        <circle cx="378" cy="224" r="6" fill="#22c55e" opacity="0.8"/>
+        <text x="248" y="228" font-size="10" fill="var(--fg)">| X has no match</text>
 
-<h3>7.3 Applying Changes in Reverse Document Order</h3>
+        <!-- Gap 2 -->
+        <rect x="370" y="172" width="330" height="70" rx="10" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1"/>
+        <text x="386" y="192" font-size="11" font-weight="600" fill="var(--heading)">Gap 2 (between D..F):</text>
+        <text x="386" y="210" font-size="10" fill="var(--fg)">E &harr; E' similarity = 0.71</text>
+        <circle cx="576" cy="206" r="6" fill="#22c55e" opacity="0.8"/>
+        <text x="590" y="210" font-size="10" font-weight="600" fill="#16a34a">keep (modified)</text>
 
-<p>Amendments are applied from the end of the document forward. This is critical: inserting or deleting paragraphs shifts all subsequent paragraph indices. By processing in reverse order, earlier ranges remain valid.</p>
+        <!-- Result operations -->
+        <text x="20" y="272" font-size="12" font-weight="600" fill="var(--heading)">Result operations:</text>
+        <rect x="20" y="282" width="680" height="38" rx="8" fill="var(--bg-alt)" stroke="var(--border)" stroke-width="1"/>
+        <text x="36" y="306" font-size="11" fill="var(--fg)">
+          <tspan fill="var(--accent)" font-weight="600">keep</tspan><tspan>(A) </tspan>
+          <tspan fill="var(--accent2)" font-weight="600">keep</tspan><tspan>(B&harr;B') </tspan>
+          <tspan fill="#dc2626" font-weight="600">delete</tspan><tspan>(C) </tspan>
+          <tspan fill="#16a34a" font-weight="600">insert</tspan><tspan>(X) </tspan>
+          <tspan fill="var(--accent)" font-weight="600">keep</tspan><tspan>(D) </tspan>
+          <tspan fill="var(--accent2)" font-weight="600">keep</tspan><tspan>(E&harr;E') </tspan>
+          <tspan fill="var(--accent)" font-weight="600">keep</tspan><tspan>(F)</tspan>
+        </text>
+      </svg>
+    </div>
+    <p class="caption">Figure 3: Two-phase paragraph alignment. LCS finds exact anchors; greedy matching fills gaps with a 0.4 similarity threshold.</p>
 
-<p>For each alignment operation:</p>
+    <p>The similarity function uses word-level set overlap: <code>|shared words| / max(|words_a|, |words_b|)</code>. A threshold of 0.4 captures paragraphs where the LLM has substantively rewritten content while avoiding false matches between unrelated paragraphs.</p>
+    <p>The alignment produces an operation sequence: <strong>keep</strong> (paragraph pair, possibly with text edits), <strong>delete</strong> (original paragraph removed), <strong>insert</strong> (new paragraph added).</p>
 
-<ul>
-  <li><strong>keep with text difference:</strong> Applies word-level diff within the single paragraph using the <code>office-word-diff</code> library's token-map strategy. At paragraph scope, this preserves character-level formatting (bold, italic, font, color) while generating tracked changes. Falls back to full text replacement if the word-level diff fails.</li>
-  <li><strong>delete:</strong> Calls <code>paragraph.delete()</code>, which generates a tracked deletion in Word.</li>
-  <li><strong>insert:</strong> Calls <code>anchorParagraph.insertParagraph(text, 'After')</code>, which generates a tracked insertion.</li>
-</ul>
+    <h3>7.3 Applying Changes in Reverse Document Order</h3>
+    <p>Amendments are applied from the end of the document forward. This is critical: inserting or deleting paragraphs shifts all subsequent paragraph indices. By processing in reverse order, earlier ranges remain valid.</p>
 
-<blockquote><strong>Why paragraph-level, not range-level?</strong> The initial implementation used range-level text replacement (replacing the entire chunk range at once). This destroyed paragraph boundaries, list numbering, heading styles, and table structure. The paragraph-level strategy preserves all OOXML paragraph properties (<code>w:pPr</code>) because each paragraph's properties are untouched&mdash;only the text runs within are modified.</blockquote>
+    <p>For each alignment operation:</p>
+    <ul>
+      <li><strong>keep with text difference:</strong> Applies word-level diff within the single paragraph using the <code>office-word-diff</code> library's token-map strategy. At paragraph scope, this preserves character-level formatting (bold, italic, font, color) while generating tracked changes. Falls back to full text replacement if the word-level diff fails.</li>
+      <li><strong>delete:</strong> Calls <code>paragraph.delete()</code>, which generates a tracked deletion in Word.</li>
+      <li><strong>insert:</strong> Calls <code>anchorParagraph.insertParagraph(text, 'After')</code>, which generates a tracked insertion.</li>
+    </ul>
 
-<h3>7.4 Comment Insertion</h3>
+    <blockquote><strong>Why paragraph-level, not range-level?</strong> The initial implementation used range-level text replacement (replacing the entire chunk range at once). This destroyed paragraph boundaries, list numbering, heading styles, and table structure. The paragraph-level strategy preserves all OOXML paragraph properties (<code>w:pPr</code>) because each paragraph's properties are untouched&mdash;only the text runs within are modified.</blockquote>
 
-<p>Comments are inserted in a separate phase after all amendments complete. This ordering is required because Word's tracked-changes mode (<code>ChangeTrackingMode.trackAll</code>) can cause <code>AccessDenied</code> errors when inserting comments on ranges that contain pending tracked changes. The reassembler explicitly disables change tracking before the comment phase.</p>
+    <h3>7.4 Comment Insertion</h3>
+    <p>Comments are inserted in a separate phase after all amendments complete. This ordering is required because Word's tracked-changes mode (<code>ChangeTrackingMode.trackAll</code>) can cause <code>AccessDenied</code> errors when inserting comments on ranges that contain pending tracked changes. The reassembler explicitly disables change tracking before the comment phase.</p>
+  </section>
 
-<h2>8. The Diff Engine</h2>
+  <!-- 8. Diff Engine -->
+  <section class="section" id="diff">
+    <div class="section-number">Section 8</div>
+    <h2>The Diff Engine</h2>
+    <p>Word-level tracked changes are produced by the <code>office-word-diff</code> npm package, which implements a cascading strategy:</p>
 
-<p>Word-level tracked changes are produced by the <code>office-word-diff</code> npm package, which implements a cascading strategy:</p>
+    <table>
+      <thead><tr><th>Strategy</th><th>Mechanism</th><th>Preserves</th><th>Scope</th></tr></thead>
+      <tbody>
+        <tr><td>Token Map</td><td>Splits paragraph into <code>Word.Range</code> objects via <code>getTextRanges([" "])</code>, maps each word to its range, applies insertions/deletions per-word</td><td>Character-level formatting (bold, italic, font, color)</td><td>Single paragraph</td></tr>
+        <tr><td>Sentence Diff</td><td>Tokenizes by sentence boundaries, computes diff, applies at sentence granularity</td><td>Paragraph structure</td><td>Single paragraph (fallback)</td></tr>
+        <tr><td>Block Replace</td><td>Full <code>range.insertText(text, 'Replace')</code></td><td>Nothing (last resort)</td><td>Full range</td></tr>
+      </tbody>
+    </table>
 
-<table>
-  <thead><tr><th>Strategy</th><th>Mechanism</th><th>Preserves</th><th>Scope</th></tr></thead>
-  <tbody>
-    <tr><td>Token Map</td><td>Splits paragraph into <code>Word.Range</code> objects via <code>getTextRanges([" "])</code>, maps each word to its range, applies insertions/deletions per-word</td><td>Character-level formatting (bold, italic, font, color)</td><td>Single paragraph</td></tr>
-    <tr><td>Sentence Diff</td><td>Tokenizes by sentence boundaries, computes diff, applies at sentence granularity</td><td>Paragraph structure</td><td>Single paragraph (fallback)</td></tr>
-    <tr><td>Block Replace</td><td>Full <code>range.insertText(text, 'Replace')</code></td><td>Nothing (last resort)</td><td>Full range</td></tr>
-  </tbody>
-</table>
+    <p>The <code>ParagraphBlock</code> model (<code>structure-model.js</code>) maintains the token map: an array of <code>{ text, range: Word.Range }</code> objects. This allows the diff engine to map individual word changes to their exact <code>Word.Range</code> in the document, producing surgical tracked changes without touching surrounding formatting.</p>
+  </section>
 
-<p>The <code>ParagraphBlock</code> model (<code>structure-model.js</code>) maintains the token map: an array of <code>{ text, range: Word.Range }</code> objects. This allows the diff engine to map individual word changes to their exact <code>Word.Range</code> in the document, producing surgical tracked changes without touching surrounding formatting.</p>
+  <!-- 9. Prompt System -->
+  <section class="section" id="prompts">
+    <div class="section-number">Section 9</div>
+    <h2>The Four-Category Prompt System</h2>
+    <p>The <code>PromptManager</code> maintains four independent prompt categories, each with its own CRUD, activation state, and <code>localStorage</code> persistence:</p>
 
-<h2>9. The Four-Category Prompt System</h2>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+          <path d="M14 16h20M14 24h16M14 32h20" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <h4>Context</h4>
+        <p>System message (static preamble)</p>
+      </div>
+      <div class="feature-card">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1.5"/>
+          <path d="M14 24h10l4-8 4 16 4-8h8" stroke="var(--accent2)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <h4>Amendment</h4>
+        <p>User message with <code>{selection}</code></p>
+      </div>
+      <div class="feature-card">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="1.5"/>
+          <circle cx="24" cy="20" r="8" stroke="#22c55e" stroke-width="2" fill="none"/>
+          <path d="M16 36c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <h4>Comment</h4>
+        <p>User message with <code>{selection}</code></p>
+      </div>
+      <div class="feature-card">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+          <rect x="12" y="12" width="24" height="24" rx="4" stroke="#f59e0b" stroke-width="2" fill="none"/>
+          <path d="M18 20h12M18 26h8M18 32h12" stroke="#f59e0b" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <h4>Summary</h4>
+        <p><code>{comments}</code>, <code>{whole document}</code>, <code>{tracked changes}</code></p>
+      </div>
+    </div>
 
-<p>The <code>PromptManager</code> maintains four independent prompt categories, each with its own CRUD, activation state, and <code>localStorage</code> persistence:</p>
+    <p>Amendment and comment are mutually exclusive (activating one deactivates the other). However, a <strong>merged mode</strong> allows both in a single LLM call: the amendment prompt's <code>commentInstructions</code> field appends delimiter instructions, and the response parser splits the output on <code>===AMENDMENT===</code> / <code>===COMMENT===</code> markers.</p>
+  </section>
 
-<table>
-  <thead><tr><th>Category</th><th>Role in LLM Message</th><th>Placeholder</th></tr></thead>
-  <tbody>
-    <tr><td>Context</td><td>System message (static preamble)</td><td>None</td></tr>
-    <tr><td>Amendment</td><td>User message (rewriting instructions)</td><td><code>{selection}</code></td></tr>
-    <tr><td>Comment</td><td>User message (analysis instructions)</td><td><code>{selection}</code></td></tr>
-    <tr><td>Summary</td><td>User message (summarization instructions)</td><td><code>{comments}</code>, <code>{whole document}</code>, <code>{tracked changes}</code></td></tr>
-  </tbody>
-</table>
+  <!-- 10. Summary -->
+  <section class="section" id="summary">
+    <div class="section-number">Section 10</div>
+    <h2>Summary Document Generation</h2>
+    <p>The summary workflow extracts comments, document text, and tracked changes from the active document; composes a prompt with placeholder substitution; sends it to the LLM; and creates a new Word document with the formatted result.</p>
+    <p>Tracked changes are extracted via OOXML parsing: <code>body.getOoxml()</code> returns the raw XML, which is parsed with the browser's <code>DOMParser</code>. The parser handles the <code>pkg:package</code> wrapper, normalizes <code>w:proofErr</code> elements, pairs adjacent <code>w:del</code>/<code>w:ins</code> elements (same author) as replacements, and detects move operations via <code>w:moveFrom</code>/<code>w:moveTo</code>.</p>
+    <p>LLM markdown output is converted to HTML via <code>marked.parse()</code>, with inline table border styles injected (Word's <code>insertHtml</code> renders borderless tables by default). The HTML is inserted into a new document created via <code>context.application.createDocument()</code>.</p>
+  </section>
 
-<p>Amendment and comment are mutually exclusive (activating one deactivates the other). However, a <strong>merged mode</strong> allows both in a single LLM call: the amendment prompt's <code>commentInstructions</code> field appends delimiter instructions, and the response parser splits the output on <code>===AMENDMENT===</code> / <code>===COMMENT===</code> markers.</p>
+  <!-- 11. Data Flow Summary -->
+  <section class="section" id="dataflow">
+    <div class="section-number">Section 11</div>
+    <h2>Data Flow Summary</h2>
 
-<h2>10. Summary Document Generation</h2>
+    <div class="diagram-container">
+      <svg viewBox="0 0 700 560" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+        <!-- Source -->
+        <rect x="250" y="10" width="200" height="44" rx="22" fill="linear-gradient(135deg, var(--gradient-start), var(--gradient-end))" stroke="none"/>
+        <rect x="250" y="10" width="200" height="44" rx="22" fill="var(--accent)" opacity="0.9"/>
+        <text x="350" y="37" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Word Document</text>
 
-<p>The summary workflow extracts comments, document text, and tracked changes from the active document; composes a prompt with placeholder substitution; sends it to the LLM; and creates a new Word document with the formatted result.</p>
+        <line x1="350" y1="54" x2="350" y2="80" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
 
-<p>Tracked changes are extracted via OOXML parsing: <code>body.getOoxml()</code> returns the raw XML, which is parsed with the browser's <code>DOMParser</code>. The parser handles the <code>pkg:package</code> wrapper, normalizes <code>w:proofErr</code> elements, pairs adjacent <code>w:del</code>/<code>w:ins</code> elements (same author) as replacements, and detects move operations via <code>w:moveFrom</code>/<code>w:moveTo</code>.</p>
+        <!-- Stage 1: document-parser -->
+        <rect x="150" y="80" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
+        <rect x="165" y="90" width="130" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
+        <text x="230" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-parser</text>
+        <text x="165" y="138" font-size="10" fill="var(--fg-muted)">Office.js API (4 sync batches)</text>
+        <text x="380" y="110" font-size="10" fill="var(--fg)">Word paragraphs &rarr; ParsedParagraph[]</text>
 
-<p>LLM markdown output is converted to HTML via <code>marked.parse()</code>, with inline table border styles injected (Word's <code>insertHtml</code> renders borderless tables by default). The HTML is inserted into a new document created via <code>context.application.createDocument()</code>.</p>
+        <line x1="350" y1="150" x2="350" y2="176" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
 
-<h2>11. Data Flow Summary</h2>
+        <!-- Stage 2: context-extract -->
+        <rect x="150" y="176" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
+        <rect x="165" y="186" width="130" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
+        <text x="230" y="206" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">context-extract</text>
+        <text x="165" y="234" font-size="10" fill="var(--fg-muted)">Regex patterns on paragraph text</text>
+        <text x="380" y="206" font-size="10" fill="var(--fg)">ParsedParagraph[] &rarr; DocumentContext</text>
 
-<div class="diagram">Word Document
-     &#x2502;
-     &#x25BC;
-&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-&#x2502; document-parser &#x2502;  Office.js API (4 sync batches)
-&#x2502;                 &#x2502;  Word paragraphs &#x2500;&#x2500;&#x25B6; ParsedParagraph[]
-&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
-        &#x25BC;
-&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-&#x2502; context-extract &#x2502;  Regex patterns on paragraph text
-&#x2502;                 &#x2502;  ParsedParagraph[] &#x2500;&#x2500;&#x25B6; DocumentContext
-&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
-        &#x25BC;
-&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-&#x2502; document-chunker&#x2502;  Structure-aware splitting
-&#x2502;                 &#x2502;  ParsedParagraph[] &#x2500;&#x2500;&#x25B6; DocumentChunk[]
-&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
-        &#x25BC;
-&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-&#x2502;  reassembler   &#x2502;  bookmarkChunkRanges()
-&#x2502;  (pre-phase)   &#x2502;  DocumentChunk[] &#x2500;&#x2500;&#x25B6; Bookmark Map
-&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
-        &#x25BC;
-&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-&#x2502;  orchestrator   &#x2502;  Parallel LLM dispatch (N workers)
-&#x2502;                 &#x2502;  DocumentChunk[] + Context &#x2500;&#x2500;&#x25B6; ChunkResult[]
-&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
-        &#x25BC;
-&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
-&#x2502;  reassembler   &#x2502;  Reverse-order paragraph alignment
-&#x2502;  (apply-phase) &#x2502;  ChunkResult[] + Bookmarks &#x2500;&#x2500;&#x25B6; Tracked Changes
-&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;</div>
-<p class="caption">Figure 4: Complete data flow through the IR pipeline.</p>
+        <line x1="350" y1="246" x2="350" y2="272" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
 
-<div class="license">
+        <!-- Stage 3: document-chunker -->
+        <rect x="150" y="272" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
+        <rect x="165" y="282" width="140" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
+        <text x="235" y="302" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-chunker</text>
+        <text x="165" y="330" font-size="10" fill="var(--fg-muted)">Structure-aware splitting</text>
+        <text x="380" y="302" font-size="10" fill="var(--fg)">ParsedParagraph[] &rarr; DocumentChunk[]</text>
+
+        <line x1="350" y1="342" x2="350" y2="368" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
+
+        <!-- Stage 4: reassembler pre-phase -->
+        <rect x="150" y="368" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
+        <rect x="165" y="378" width="130" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
+        <text x="230" y="398" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">reassembler (pre)</text>
+        <text x="165" y="426" font-size="10" fill="var(--fg-muted)">bookmarkChunkRanges()</text>
+        <text x="380" y="398" font-size="10" fill="var(--fg)">DocumentChunk[] &rarr; Bookmark Map</text>
+
+        <line x1="350" y1="438" x2="350" y2="464" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
+
+        <!-- Stage 5: orchestrator -->
+        <rect x="150" y="464" width="400" height="34" rx="12" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="230" y="486" font-size="11" font-weight="600" fill="var(--accent)">orchestrator</text>
+        <text x="380" y="486" font-size="10" fill="var(--fg)">Parallel LLM dispatch (N workers)</text>
+
+        <line x1="350" y1="498" x2="350" y2="515" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
+
+        <!-- Stage 6: reassembler apply -->
+        <rect x="200" y="515" width="300" height="40" rx="20" fill="var(--accent2)" opacity="0.9"/>
+        <text x="350" y="540" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">Tracked Changes in Word</text>
+
+        <defs>
+          <marker id="aD" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="var(--accent)"/></marker>
+        </defs>
+      </svg>
+    </div>
+    <p class="caption">Figure 4: Complete data flow through the IR pipeline.</p>
+  </section>
+
+</main>
+
+<!-- ── Footer ── -->
+<footer class="footer">
   <p><strong>Word AI Redliner</strong> &mdash; MIT License</p>
-  <p>Diff engine: <code>office-word-diff</code> (Apache 2.0)<br>
-  LLM backends: vLLM (Qwen 3.5-35B-A3B), Ollama</p>
-</div>
+  <p>Diff engine: <a href="https://github.com/niclasgrunworked/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: vLLM (Qwen 3.5-35B-A3B), Ollama</p>
+  <p style="margin-top: 0.75rem;"><a href="https://github.com/yuch85/word-ai-redliner">View on GitHub</a></p>
+</footer>
 
 </body>
 </html>
