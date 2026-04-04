@@ -6,66 +6,81 @@
 <title>Word AI Redliner &mdash; Technical Architecture</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #f8fafc;
-    --bg-alt: #ffffff;
-    --fg: #334155;
-    --fg-muted: #64748b;
-    --heading: #0f172a;
+    /* ── Warm Gray palette ── */
+    --bg: #f0f0f0;
+    --bg-alt: #fafafa;
+    --fg: #404040;
+    --fg-muted: #6b6b6b;
+    --heading: #1a1a1a;
     --accent: #3b82f6;
     --accent-dark: #2563eb;
     --accent-light: #dbeafe;
     --accent2: #8b5cf6;
     --accent2-light: #ede9fe;
-    --code-bg: #f1f5f9;
-    --border: #e2e8f0;
-    --card-bg: #ffffff;
-    --card-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-    --card-shadow-hover: 0 10px 25px rgba(0,0,0,0.08), 0 4px 10px rgba(0,0,0,0.04);
-    --pre-bg: #1e293b;
-    --pre-fg: #e2e8f0;
+    --accent3: #06b6d4;
+    --code-bg: #e5e5e5;
+    --code-fg: #be185d;
+    --border: #d4d4d4;
+    --card-bg: #fafafa;
+    --card-shadow: 0 2px 6px rgba(0,0,0,0.10), 0 1px 3px rgba(0,0,0,0.06);
+    --card-shadow-hover: 0 12px 28px rgba(0,0,0,0.12), 0 4px 12px rgba(0,0,0,0.06);
+    --pre-bg: #1a1a1a;
+    --pre-fg: #d4d4d4;
     --gradient-start: #3b82f6;
     --gradient-end: #8b5cf6;
-    --hero-bg: #0f172a;
-    --hero-fg: #f1f5f9;
-    --nav-bg: rgba(255,255,255,0.85);
-    --table-header: #f1f5f9;
-    --table-stripe: #f8fafc;
-    --blockquote-bg: #eff6ff;
+    --hero-bg: #111111;
+    --hero-fg: #fafafa;
+    --nav-bg: rgba(240,240,240,0.85);
+    --table-header: #e5e5e5;
+    --table-stripe: #f0f0f0;
+    --blockquote-bg: #dbeafe;
     --blockquote-border: #3b82f6;
-    --tag-bg: #dbeafe;
+    --tag-bg: rgba(59,130,246,0.1);
     --tag-fg: #1d4ed8;
+    --success: #22c55e;
+    --success-light: rgba(34,197,94,0.12);
+    --error: #ef4444;
+    --error-light: rgba(239,68,68,0.12);
+    --warning: #f59e0b;
+    --info: #3b82f6;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0f172a;
-      --bg-alt: #1e293b;
-      --fg: #cbd5e1;
-      --fg-muted: #94a3b8;
-      --heading: #f1f5f9;
+      --bg: #1a1a1a;
+      --bg-alt: #262626;
+      --fg: #d4d4d4;
+      --fg-muted: #a3a3a3;
+      --heading: #fafafa;
       --accent: #60a5fa;
       --accent-dark: #3b82f6;
       --accent-light: #1e3a5f;
       --accent2: #a78bfa;
       --accent2-light: #2e1f5e;
-      --code-bg: #1e293b;
-      --border: #334155;
-      --card-bg: #1e293b;
-      --card-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.15);
-      --card-shadow-hover: 0 10px 25px rgba(0,0,0,0.3), 0 4px 10px rgba(0,0,0,0.2);
-      --pre-bg: #020617;
-      --pre-fg: #e2e8f0;
-      --hero-bg: #020617;
-      --hero-fg: #f1f5f9;
-      --nav-bg: rgba(15,23,42,0.85);
-      --table-header: #1e293b;
-      --table-stripe: #162032;
-      --blockquote-bg: #162032;
+      --accent3: #22d3ee;
+      --code-bg: #262626;
+      --code-fg: #f472b6;
+      --border: #404040;
+      --card-bg: #262626;
+      --card-shadow: 0 2px 6px rgba(0,0,0,0.25), 0 1px 3px rgba(0,0,0,0.18);
+      --card-shadow-hover: 0 12px 28px rgba(0,0,0,0.35), 0 4px 12px rgba(0,0,0,0.2);
+      --pre-bg: #111111;
+      --pre-fg: #d4d4d4;
+      --hero-bg: #111111;
+      --hero-fg: #fafafa;
+      --nav-bg: rgba(26,26,26,0.85);
+      --table-header: #262626;
+      --table-stripe: #1f1f1f;
+      --blockquote-bg: #1f2937;
       --blockquote-border: #60a5fa;
-      --tag-bg: #1e3a5f;
+      --tag-bg: rgba(59,130,246,0.15);
       --tag-fg: #93c5fd;
+      --success: #4ade80;
+      --success-light: rgba(74,222,128,0.12);
+      --error: #f87171;
+      --error-light: rgba(248,113,113,0.12);
     }
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -75,6 +90,23 @@
     background: var(--bg);
     color: var(--fg);
     line-height: 1.7;
+    font-size: 16px;
+  }
+
+  /* ── Scroll animations ── */
+  .reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+  .reveal.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .reveal.visible { transition: none; }
+    .hero-blob { animation: none !important; }
   }
 
   /* ── Sticky Nav ── */
@@ -83,8 +115,8 @@
     top: 0;
     z-index: 100;
     background: var(--nav-bg);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     border-bottom: 1px solid var(--border);
     padding: 0.6rem 1.5rem;
   }
@@ -108,20 +140,22 @@
   .nav-brand svg { width: 22px; height: 22px; }
   .nav-links {
     display: flex;
-    gap: 0.25rem;
+    gap: 0.2rem;
     flex-wrap: wrap;
     list-style: none;
   }
   .nav-links a {
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     font-weight: 500;
     color: var(--fg-muted);
     text-decoration: none;
-    padding: 0.3rem 0.6rem;
+    padding: 0.3rem 0.55rem;
     border-radius: 6px;
-    transition: all 0.15s;
+    transition: color 0.15s, background 0.15s;
+    position: relative;
   }
-  .nav-links a:hover {
+  .nav-links a:hover,
+  .nav-links a.active {
     color: var(--accent);
     background: var(--accent-light);
   }
@@ -137,22 +171,44 @@
   .hero-grid {
     position: absolute;
     inset: 0;
-    opacity: 0.07;
+    opacity: 0.05;
     background-image:
       linear-gradient(rgba(255,255,255,0.15) 1px, transparent 1px),
       linear-gradient(90deg, rgba(255,255,255,0.15) 1px, transparent 1px);
     background-size: 48px 48px;
   }
-  .hero-glow {
+  /* Aurora blobs */
+  .hero-blob {
     position: absolute;
-    width: 600px;
-    height: 600px;
     border-radius: 50%;
-    filter: blur(120px);
-    opacity: 0.15;
+    filter: blur(100px);
+    opacity: 0.12;
+    animation: aurora 12s ease-in-out infinite alternate;
   }
-  .hero-glow-1 { top: -200px; right: -100px; background: var(--gradient-start); }
-  .hero-glow-2 { bottom: -300px; left: -100px; background: var(--gradient-end); }
+  .hero-blob-1 {
+    width: 500px; height: 500px;
+    top: -150px; right: -50px;
+    background: #3b82f6;
+  }
+  .hero-blob-2 {
+    width: 400px; height: 400px;
+    bottom: -200px; left: -80px;
+    background: #8b5cf6;
+    animation-delay: -4s;
+  }
+  .hero-blob-3 {
+    width: 300px; height: 300px;
+    top: 20%; left: 30%;
+    background: #06b6d4;
+    animation-delay: -8s;
+    opacity: 0.08;
+  }
+  @keyframes aurora {
+    0% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(30px, -20px) scale(1.05); }
+    66% { transform: translate(-20px, 15px) scale(0.95); }
+    100% { transform: translate(10px, -10px) scale(1.02); }
+  }
   .hero-inner {
     max-width: 72rem;
     margin: 0 auto;
@@ -163,22 +219,25 @@
     gap: 3rem;
     align-items: center;
   }
+  /* Tracked Caps title */
   .hero-text h1 {
-    font-size: 3rem;
+    font-size: 3.2rem;
     font-weight: 800;
     letter-spacing: -0.03em;
     line-height: 1.1;
     margin-bottom: 1rem;
+    color: #fafafa;
   }
-  .hero-text h1 .gradient-text {
-    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+  .hero-text h1 .title-caps {
+    font-weight: 400;
+    font-size: 2.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: #d4d4d4;
   }
   .hero-text .subtitle {
-    font-size: 1.15rem;
-    color: #94a3b8;
+    font-size: 1.1rem;
+    color: #a3a3a3;
     line-height: 1.6;
     margin-bottom: 1.5rem;
   }
@@ -188,12 +247,12 @@
     flex-wrap: wrap;
   }
   .hero-tag {
-    font-size: 0.78rem;
+    font-size: 0.75rem;
     font-weight: 600;
-    padding: 0.3rem 0.75rem;
+    padding: 0.28rem 0.7rem;
     border-radius: 50px;
     background: rgba(59,130,246,0.15);
-    color: #93c5fd;
+    color: #bfdbfe;
     border: 1px solid rgba(59,130,246,0.25);
   }
   .hero-visual {
@@ -221,44 +280,48 @@
     padding: 2.5rem;
     margin-bottom: 2rem;
     box-shadow: var(--card-shadow);
-    transition: box-shadow 0.3s;
+    transition: box-shadow 0.25s ease, transform 0.25s ease;
   }
   .section:hover {
     box-shadow: var(--card-shadow-hover);
+    transform: translateY(-3px);
   }
   .section-number {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--accent);
     margin-bottom: 0.5rem;
   }
+  /* ── Typography scale (1.25 Major Third) ── */
   h2 {
-    font-size: 1.6rem;
+    font-size: 1.95rem;
     font-weight: 700;
     color: var(--heading);
     margin-bottom: 1rem;
     letter-spacing: -0.02em;
+    line-height: 1.2;
   }
   h3 {
-    font-size: 1.15rem;
+    font-size: 1.4rem;
     font-weight: 600;
     color: var(--heading);
     margin: 2rem 0 0.75rem;
+    letter-spacing: -0.01em;
   }
   p { margin: 0.6rem 0; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
 
-  /* ── Code ── */
+  /* ── Code (rose/pink -- distinct from links) ── */
   code {
     font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-    font-size: 0.85em;
+    font-size: 0.84em;
     background: var(--code-bg);
     padding: 0.15em 0.4em;
     border-radius: 5px;
-    color: var(--accent-dark);
+    color: var(--code-fg);
   }
   pre {
     background: var(--pre-bg);
@@ -270,6 +333,7 @@
     font-size: 0.82rem;
     line-height: 1.55;
     border: 1px solid rgba(255,255,255,0.06);
+    position: relative;
   }
   pre code { background: none; padding: 0; color: inherit; }
   .code-label {
@@ -281,6 +345,24 @@
     color: var(--fg-muted);
     margin-bottom: 0.5rem;
   }
+  /* Copy button */
+  .copy-btn {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.6rem;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #a3a3a3;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 0.25rem 0.55rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .copy-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+  .copy-btn.copied { background: rgba(34,197,94,0.2); color: var(--success); border-color: rgba(34,197,94,0.3); }
 
   /* ── Tables ── */
   table {
@@ -341,6 +423,26 @@
     font-style: italic;
     text-align: center;
   }
+  /* Diagram legend */
+  .diagram-legend {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 0.5rem 0 0.75rem;
+    font-size: 0.75rem;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--fg-muted);
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+  }
 
   /* ── Lists ── */
   ul, ol { margin: 0.5rem 0 0.75rem 1.5rem; }
@@ -359,6 +461,11 @@
     border-radius: 12px;
     padding: 1.25rem;
     text-align: center;
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+  }
+  .feature-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--card-shadow-hover);
   }
   .feature-card svg {
     width: 48px;
@@ -390,7 +497,9 @@
     text-align: center;
     padding: 1rem 0.75rem;
     position: relative;
+    transition: transform 0.2s ease;
   }
+  .pipeline-step:hover { transform: translateY(-2px); }
   .pipeline-step::after {
     content: '';
     position: absolute;
@@ -402,14 +511,14 @@
     border-top: 10px solid transparent;
     border-bottom: 10px solid transparent;
     border-left: 10px solid var(--accent);
-    opacity: 0.4;
+    opacity: 0.3;
   }
   .pipeline-step:last-child::after { display: none; }
   .step-icon {
     width: 40px;
     height: 40px;
     border-radius: 10px;
-    background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+    background: var(--accent);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -429,6 +538,37 @@
     color: var(--fg-muted);
     margin: 0;
   }
+
+  /* ── Back to top ── */
+  .back-to-top {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    box-shadow: var(--card-shadow);
+    color: var(--fg-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s, transform 0.25s, color 0.15s;
+    z-index: 50;
+  }
+  .back-to-top.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .back-to-top:hover {
+    color: var(--accent);
+    transform: translateY(-2px);
+  }
+  .back-to-top svg { width: 18px; height: 18px; }
 
   /* ── Footer ── */
   .footer {
@@ -454,20 +594,73 @@
     box-shadow: var(--card-shadow);
   }
 
+  /* ── Wide-screen sidebar TOC ── */
+  @media (min-width: 1340px) {
+    .nav-links { display: none; }
+    .sidebar-toc {
+      display: block;
+      position: fixed;
+      left: max(1rem, calc((100vw - 72rem) / 2 - 14rem));
+      top: 5rem;
+      width: 12rem;
+      z-index: 50;
+    }
+    .sidebar-toc a {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--fg-muted);
+      text-decoration: none;
+      padding: 0.3rem 0.6rem;
+      border-left: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+      margin-bottom: 0.1rem;
+    }
+    .sidebar-toc a:hover { color: var(--heading); }
+    .sidebar-toc a.active {
+      color: var(--accent);
+      border-left-color: var(--accent);
+      font-weight: 600;
+    }
+  }
+  @media (max-width: 1339px) {
+    .sidebar-toc { display: none; }
+  }
+
   /* ── Responsive ── */
   @media (max-width: 768px) {
     .hero-inner { grid-template-columns: 1fr; text-align: center; }
     .hero-text h1 { font-size: 2.2rem; }
+    .hero-text h1 .title-caps { font-size: 1.9rem; }
     .hero-tags { justify-content: center; }
     .hero-visual { display: none; }
     .section { padding: 1.5rem; }
+    .section:hover { transform: none; }
     .nav-links { display: none; }
     .pipeline-steps { flex-direction: column; }
     .pipeline-step::after { display: none; }
+    h2 { font-size: 1.5rem; }
+    h3 { font-size: 1.15rem; }
+    .back-to-top { bottom: 1rem; right: 1rem; }
   }
 </style>
 </head>
 <body>
+
+<!-- ── Sidebar TOC (wide screens) ── -->
+<nav class="sidebar-toc" aria-label="Table of contents">
+  <a href="#problem" data-section="problem">The Problem</a>
+  <a href="#architecture" data-section="architecture">Architecture</a>
+  <a href="#ir" data-section="ir">IR Design</a>
+  <a href="#context" data-section="context">Context</a>
+  <a href="#dispatch" data-section="dispatch">Dispatch</a>
+  <a href="#postprocess" data-section="postprocess">Post-Processing</a>
+  <a href="#reassembly" data-section="reassembly">Reassembly</a>
+  <a href="#diff" data-section="diff">Diff Engine</a>
+  <a href="#prompts" data-section="prompts">Prompts</a>
+  <a href="#summary" data-section="summary">Summary</a>
+  <a href="#dataflow" data-section="dataflow">Data Flow</a>
+</nav>
 
 <!-- ── Navigation ── -->
 <nav class="nav">
@@ -476,22 +669,21 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
         <polyline points="14 2 14 8 20 8"/>
-        <path d="M9 15l2 2 4-4" stroke="url(#nav-grad)"/>
-        <defs><linearGradient id="nav-grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#8b5cf6"/></linearGradient></defs>
+        <path d="M9 15l2 2 4-4" stroke="var(--accent)"/>
       </svg>
       Word AI Redliner
     </a>
     <ul class="nav-links">
-      <li><a href="#problem">Problem</a></li>
-      <li><a href="#architecture">Architecture</a></li>
-      <li><a href="#ir">IR Design</a></li>
-      <li><a href="#context">Context</a></li>
-      <li><a href="#dispatch">Dispatch</a></li>
-      <li><a href="#postprocess">Post-Processing</a></li>
-      <li><a href="#reassembly">Reassembly</a></li>
-      <li><a href="#diff">Diff Engine</a></li>
-      <li><a href="#prompts">Prompts</a></li>
-      <li><a href="#summary">Summary</a></li>
+      <li><a href="#problem" data-section="problem">Problem</a></li>
+      <li><a href="#architecture" data-section="architecture">Architecture</a></li>
+      <li><a href="#ir" data-section="ir">IR Design</a></li>
+      <li><a href="#context" data-section="context">Context</a></li>
+      <li><a href="#dispatch" data-section="dispatch">Dispatch</a></li>
+      <li><a href="#postprocess" data-section="postprocess">Post-Processing</a></li>
+      <li><a href="#reassembly" data-section="reassembly">Reassembly</a></li>
+      <li><a href="#diff" data-section="diff">Diff Engine</a></li>
+      <li><a href="#prompts" data-section="prompts">Prompts</a></li>
+      <li><a href="#summary" data-section="summary">Summary</a></li>
       <li><a href="https://github.com/yuch85/word-ai-redliner">GitHub</a></li>
     </ul>
   </div>
@@ -500,11 +692,12 @@
 <!-- ── Hero ── -->
 <header class="hero">
   <div class="hero-grid"></div>
-  <div class="hero-glow hero-glow-1"></div>
-  <div class="hero-glow hero-glow-2"></div>
+  <div class="hero-blob hero-blob-1"></div>
+  <div class="hero-blob hero-blob-2"></div>
+  <div class="hero-blob hero-blob-3"></div>
   <div class="hero-inner">
     <div class="hero-text">
-      <h1>Word AI <span class="gradient-text">Redliner</span></h1>
+      <h1>Word AI <span class="title-caps">Redliner</span></h1>
       <p class="subtitle">AI-powered Microsoft Word add-in that applies LLM-suggested edits as native tracked changes. A structure-aware diff strategy bridges the gap between Word's object model and LLM text processing.</p>
       <div class="hero-tags">
         <span class="hero-tag">Office.js</span>
@@ -515,50 +708,40 @@
       </div>
     </div>
     <div class="hero-visual">
-      <!-- Hero illustration: document with AI neural connections -->
       <svg viewBox="0 0 400 340" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <!-- Document shape -->
-        <rect x="100" y="40" width="200" height="260" rx="12" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
-        <path d="M260 40V80H300L260 40Z" fill="#334155"/>
-        <!-- Document lines -->
-        <rect x="130" y="100" width="140" height="6" rx="3" fill="#334155"/>
-        <rect x="130" y="118" width="120" height="6" rx="3" fill="#334155"/>
-        <rect x="130" y="136" width="140" height="6" rx="3" fill="#334155"/>
-        <rect x="130" y="154" width="100" height="6" rx="3" fill="#334155"/>
-        <!-- Highlighted/changed lines -->
+        <rect x="100" y="40" width="200" height="260" rx="12" fill="#262626" stroke="#404040" stroke-width="1.5"/>
+        <path d="M260 40V80H300L260 40Z" fill="#404040"/>
+        <rect x="130" y="100" width="140" height="6" rx="3" fill="#404040"/>
+        <rect x="130" y="118" width="120" height="6" rx="3" fill="#404040"/>
+        <rect x="130" y="136" width="140" height="6" rx="3" fill="#404040"/>
+        <rect x="130" y="154" width="100" height="6" rx="3" fill="#404040"/>
         <rect x="126" y="172" width="148" height="14" rx="4" fill="rgba(239,68,68,0.15)" stroke="rgba(239,68,68,0.3)" stroke-width="0.5"/>
         <rect x="130" y="176" width="140" height="6" rx="3" fill="#ef4444" opacity="0.6"/>
         <rect x="126" y="192" width="148" height="14" rx="4" fill="rgba(34,197,94,0.15)" stroke="rgba(34,197,94,0.3)" stroke-width="0.5"/>
         <rect x="130" y="196" width="130" height="6" rx="3" fill="#22c55e" opacity="0.6"/>
-        <rect x="130" y="218" width="110" height="6" rx="3" fill="#334155"/>
-        <rect x="130" y="236" width="140" height="6" rx="3" fill="#334155"/>
-        <rect x="130" y="254" width="80" height="6" rx="3" fill="#334155"/>
-        <!-- AI brain/network nodes -->
+        <rect x="130" y="218" width="110" height="6" rx="3" fill="#404040"/>
+        <rect x="130" y="236" width="140" height="6" rx="3" fill="#404040"/>
+        <rect x="130" y="254" width="80" height="6" rx="3" fill="#404040"/>
         <circle cx="52" cy="140" r="8" fill="#3b82f6" opacity="0.8"/>
         <circle cx="30" cy="180" r="6" fill="#8b5cf6" opacity="0.7"/>
-        <circle cx="60" cy="210" r="7" fill="#3b82f6" opacity="0.6"/>
+        <circle cx="60" cy="210" r="7" fill="#06b6d4" opacity="0.6"/>
         <circle cx="40" cy="250" r="5" fill="#8b5cf6" opacity="0.5"/>
         <circle cx="348" cy="120" r="7" fill="#8b5cf6" opacity="0.7"/>
-        <circle cx="360" cy="160" r="6" fill="#3b82f6" opacity="0.6"/>
-        <circle cx="340" cy="200" r="8" fill="#8b5cf6" opacity="0.8"/>
-        <circle cx="355" cy="240" r="5" fill="#3b82f6" opacity="0.5"/>
-        <!-- Connection lines to document -->
+        <circle cx="360" cy="160" r="6" fill="#06b6d4" opacity="0.6"/>
+        <circle cx="340" cy="200" r="8" fill="#3b82f6" opacity="0.8"/>
+        <circle cx="355" cy="240" r="5" fill="#8b5cf6" opacity="0.5"/>
         <line x1="60" y1="140" x2="100" y2="178" stroke="#3b82f6" stroke-width="1" opacity="0.3"/>
         <line x1="36" y1="180" x2="100" y2="178" stroke="#8b5cf6" stroke-width="1" opacity="0.3"/>
-        <line x1="67" y1="210" x2="100" y2="198" stroke="#3b82f6" stroke-width="1" opacity="0.3"/>
+        <line x1="67" y1="210" x2="100" y2="198" stroke="#06b6d4" stroke-width="1" opacity="0.3"/>
         <line x1="341" y1="120" x2="300" y2="178" stroke="#8b5cf6" stroke-width="1" opacity="0.3"/>
-        <line x1="354" y1="160" x2="300" y2="178" stroke="#3b82f6" stroke-width="1" opacity="0.3"/>
-        <line x1="332" y1="200" x2="300" y2="198" stroke="#8b5cf6" stroke-width="1" opacity="0.3"/>
-        <!-- Neural arcs -->
+        <line x1="354" y1="160" x2="300" y2="178" stroke="#06b6d4" stroke-width="1" opacity="0.3"/>
+        <line x1="332" y1="200" x2="300" y2="198" stroke="#3b82f6" stroke-width="1" opacity="0.3"/>
         <path d="M52 140 Q 20 160 30 180" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
         <path d="M30 180 Q 40 200 60 210" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
         <path d="M60 210 Q 45 230 40 250" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
         <path d="M348 120 Q 360 140 360 160" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
         <path d="M360 160 Q 355 180 340 200" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
         <path d="M340 200 Q 350 220 355 240" stroke="#6366f1" stroke-width="0.8" opacity="0.3" fill="none"/>
-        <!-- Sparkle accents -->
-        <circle cx="200" cy="70" r="2" fill="#60a5fa" opacity="0.8"/>
-        <circle cx="280" cy="270" r="1.5" fill="#a78bfa" opacity="0.7"/>
       </svg>
     </div>
   </div>
@@ -567,7 +750,7 @@
 <main class="content">
 
   <!-- Demo -->
-  <div class="demo-section">
+  <div class="demo-section reveal">
     <a href="https://www.youtube.com/watch?v=SusffH8eT-Y">
       <img src="word-ai-redliner.gif" alt="Word AI Redliner demo" loading="lazy"/>
     </a>
@@ -575,7 +758,7 @@
   </div>
 
   <!-- 1. The Problem -->
-  <section class="section" id="problem">
+  <section class="section reveal" id="problem">
     <div class="section-number">Section 1</div>
     <h2>The Problem</h2>
     <p>Microsoft Word documents are not flat text. They are deeply nested XML structures (OOXML) where every paragraph carries style metadata, list numbering, table membership, and character-level formatting runs. An LLM, however, operates on plain text strings.</p>
@@ -606,83 +789,53 @@
   </section>
 
   <!-- 2. System Overview -->
-  <section class="section" id="architecture">
+  <section class="section reveal" id="architecture">
     <div class="section-number">Section 2</div>
     <h2>System Overview</h2>
 
     <div class="diagram-container">
       <svg viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
-        <!-- Background -->
         <rect x="10" y="10" width="780" height="400" rx="16" fill="none" stroke="var(--border)" stroke-width="1.5" stroke-dasharray="6 3"/>
         <text x="30" y="38" font-size="13" font-weight="600" fill="var(--fg-muted)">Microsoft Word (WebView2 / Office.js Runtime)</text>
-
-        <!-- Taskpane UI -->
         <rect x="40" y="60" width="160" height="90" rx="10" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="120" y="95" text-anchor="middle" font-size="13" font-weight="600" fill="var(--heading)">Taskpane UI</text>
         <text x="120" y="115" text-anchor="middle" font-size="11" fill="var(--fg-muted)">taskpane.js</text>
         <text x="120" y="133" text-anchor="middle" font-size="11" fill="var(--fg-muted)">User controls</text>
-
-        <!-- Orchestrator -->
         <rect x="260" y="60" width="180" height="90" rx="10" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1.5"/>
         <text x="350" y="95" text-anchor="middle" font-size="13" font-weight="600" fill="var(--heading)">Orchestrator</text>
         <text x="350" y="115" text-anchor="middle" font-size="11" fill="var(--fg-muted)">Parallel dispatch</text>
         <text x="350" y="133" text-anchor="middle" font-size="11" fill="var(--fg-muted)">Worker pool (N=4)</text>
-
-        <!-- Webpack proxy -->
         <rect x="500" y="60" width="270" height="90" rx="10" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1.5"/>
         <text x="635" y="90" text-anchor="middle" font-size="13" font-weight="600" fill="var(--heading)">Webpack Dev Server</text>
         <text x="565" y="115" text-anchor="middle" font-size="11" fill="var(--fg-muted)">/vllm</text>
         <text x="565" y="133" text-anchor="middle" font-size="11" fill="var(--fg-muted)">/ollama</text>
-        <!-- Arrow labels for ports -->
         <text x="700" y="115" text-anchor="middle" font-size="11" fill="var(--accent)">:8026</text>
         <text x="700" y="133" text-anchor="middle" font-size="11" fill="var(--accent2)">:11434</text>
-        <!-- Port arrows -->
         <line x1="600" y1="110" x2="670" y2="110" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
         <line x1="600" y1="128" x2="670" y2="128" stroke="var(--accent2)" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
-
-        <!-- Arrows: Taskpane -> Orchestrator -->
         <line x1="200" y1="105" x2="260" y2="105" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrowBlue)"/>
-        <!-- Arrows: Orchestrator -> Webpack -->
         <line x1="440" y1="105" x2="500" y2="105" stroke="var(--accent2)" stroke-width="2" marker-end="url(#arrowPurple)"/>
-
-        <!-- IR Box -->
         <rect x="40" y="200" width="400" height="190" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="60" y="228" font-size="13" font-weight="700" fill="var(--accent)">Intermediate Representation</text>
-
-        <!-- IR Flow boxes -->
         <rect x="60" y="245" width="130" height="50" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
         <text x="125" y="268" text-anchor="middle" font-size="11" font-weight="600" fill="var(--heading)">DocumentModel</text>
         <text x="125" y="283" text-anchor="middle" font-size="10" fill="var(--fg-muted)">ParsedParagraph[]</text>
-
         <rect x="215" y="245" width="100" height="50" rx="8" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
         <text x="265" y="268" text-anchor="middle" font-size="11" font-weight="600" fill="var(--heading)">Chunks</text>
         <text x="265" y="283" text-anchor="middle" font-size="10" fill="var(--fg-muted)">DocumentChunk[]</text>
-
         <rect x="340" y="245" width="85" height="50" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
         <text x="382" y="268" text-anchor="middle" font-size="11" font-weight="600" fill="var(--heading)">Results</text>
         <text x="382" y="283" text-anchor="middle" font-size="10" fill="var(--fg-muted)">ChunkResult[]</text>
-
-        <!-- IR flow arrows -->
         <line x1="190" y1="270" x2="215" y2="270" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
         <line x1="315" y1="270" x2="340" y2="270" stroke="var(--accent2)" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
-
-        <!-- Sub-labels -->
         <text x="80" y="328" font-size="10" fill="var(--fg-muted)">doc-parser</text>
         <text x="200" y="328" font-size="10" fill="var(--fg-muted)">Context Extractor</text>
         <text x="335" y="328" font-size="10" fill="var(--fg-muted)">Reassembler</text>
         <text x="335" y="345" font-size="10" fill="var(--accent)">(bookmark &rarr; tracked changes)</text>
-
-        <!-- Arrow from Taskpane down to IR -->
         <path d="M 120 150 L 120 200" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrowBlue)"/>
-
-        <!-- Arrow defs -->
         <defs>
-          <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-            <polygon points="0 0, 8 3, 0 6" fill="var(--accent)"/>
-          </marker>
-          <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-            <polygon points="0 0, 8 3, 0 6" fill="var(--accent2)"/>
-          </marker>
+          <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="var(--accent)"/></marker>
+          <marker id="arrowPurple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="var(--accent2)"/></marker>
         </defs>
       </svg>
     </div>
@@ -692,7 +845,7 @@
   </section>
 
   <!-- 3. Intermediate Representation -->
-  <section class="section" id="ir">
+  <section class="section reveal" id="ir">
     <div class="section-number">Section 3</div>
     <h2>The Intermediate Representation</h2>
     <p>The IR is the central data structure of the system. It consists of three layers, each progressively further from the Word object model and closer to LLM-compatible text.</p>
@@ -791,7 +944,7 @@
   </section>
 
   <!-- 4. Context Extraction -->
-  <section class="section" id="context">
+  <section class="section reveal" id="context">
     <div class="section-number">Section 4</div>
     <h2>Context Extraction</h2>
     <p>Before chunks are sent to the LLM, a context extractor (<code>context-extractor.js</code>) scans the full DocumentModel to build a <code>DocumentContext</code> object:</p>
@@ -818,17 +971,15 @@
   </section>
 
   <!-- 5. Parallel LLM Dispatch -->
-  <section class="section" id="dispatch">
+  <section class="section reveal" id="dispatch">
     <div class="section-number">Section 5</div>
     <h2>Parallel LLM Dispatch</h2>
     <p>The orchestrator (<code>orchestrator.js</code>) implements a worker-pool concurrency pattern. N workers (default 4) pull from a shared index, each processing one chunk at a time:</p>
 
     <div class="diagram-container">
       <svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
-        <!-- Chunk queue -->
         <rect x="230" y="15" width="260" height="65" rx="10" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="360" y="36" text-anchor="middle" font-size="12" font-weight="600" fill="var(--heading)">Chunk Queue</text>
-        <!-- Queue items row 1 -->
         <rect x="252" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
         <text x="266" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">0</text>
         <rect x="286" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
@@ -843,13 +994,9 @@
         <text x="436" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">5</text>
         <rect x="456" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
         <text x="470" y="60" text-anchor="middle" font-size="10" fill="var(--accent)">6</text>
-
-        <!-- Distribution arrows -->
         <line x1="300" y1="80" x2="150" y2="120" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
         <line x1="360" y1="80" x2="360" y2="120" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
         <line x1="420" y1="80" x2="570" y2="120" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
-
-        <!-- Worker 1 -->
         <rect x="60" y="120" width="180" height="160" rx="10" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
         <text x="150" y="144" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent2)">Worker 1</text>
         <rect x="80" y="156" width="140" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="0.8"/>
@@ -860,8 +1007,6 @@
         <line x1="150" y1="224" x2="150" y2="236" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
         <rect x="80" y="236" width="140" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="0.8"/>
         <text x="150" y="254" text-anchor="middle" font-size="10" fill="var(--heading)">Parse response</text>
-
-        <!-- Worker 2 -->
         <rect x="270" y="120" width="180" height="160" rx="10" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
         <text x="360" y="144" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent2)">Worker 2</text>
         <rect x="290" y="156" width="140" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="0.8"/>
@@ -872,8 +1017,6 @@
         <line x1="360" y1="224" x2="360" y2="236" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
         <rect x="290" y="236" width="140" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="0.8"/>
         <text x="360" y="254" text-anchor="middle" font-size="10" fill="var(--heading)">Parse response</text>
-
-        <!-- Worker 3 -->
         <rect x="480" y="120" width="180" height="160" rx="10" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
         <text x="570" y="144" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent2)">Worker 3</text>
         <rect x="500" y="156" width="140" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="0.8"/>
@@ -884,23 +1027,16 @@
         <line x1="570" y1="224" x2="570" y2="236" stroke="var(--fg-muted)" stroke-width="1" marker-end="url(#arrG)"/>
         <rect x="500" y="236" width="140" height="28" rx="6" fill="var(--code-bg)" stroke="var(--border)" stroke-width="0.8"/>
         <text x="570" y="254" text-anchor="middle" font-size="10" fill="var(--heading)">Parse response</text>
-
-        <!-- Ellipsis -->
         <text x="690" y="210" font-size="20" fill="var(--fg-muted)">...</text>
-
-        <!-- Result arrows -->
         <line x1="150" y1="280" x2="150" y2="310" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
         <line x1="360" y1="280" x2="360" y2="310" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
         <line x1="570" y1="280" x2="570" y2="310" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrB)"/>
-
-        <!-- Results -->
         <rect x="80" y="310" width="140" height="34" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="150" y="332" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">ChunkResult</text>
         <rect x="290" y="310" width="140" height="34" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="360" y="332" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">ChunkResult</text>
         <rect x="500" y="310" width="140" height="34" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="570" y="332" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">ChunkResult</text>
-
         <defs>
           <marker id="arrB" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="var(--accent)"/></marker>
           <marker id="arrG" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0, 6 2.5, 0 5" fill="var(--fg-muted)"/></marker>
@@ -918,7 +1054,7 @@
   </section>
 
   <!-- 6. Response Post-Processing -->
-  <section class="section" id="postprocess">
+  <section class="section reveal" id="postprocess">
     <div class="section-number">Section 6</div>
     <h2>Response Post-Processing</h2>
     <p>LLM output passes through a cleaning pipeline before reaching the reassembler:</p>
@@ -937,7 +1073,7 @@
   </section>
 
   <!-- 7. Reassembly -->
-  <section class="section" id="reassembly">
+  <section class="section reveal" id="reassembly">
     <div class="section-number">Section 7</div>
     <h2>Reassembly: IR Back to Word</h2>
     <p>The reassembler (<code>reassembler.js</code>) is where the IR is converted back into Word document mutations. This is the most complex module, because it must bridge the text-oriented LLM output with Word's paragraph-level object model.</p>
@@ -958,10 +1094,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
 
     <div class="diagram-container">
       <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
-        <!-- Phase 1 -->
         <text x="20" y="24" font-size="13" font-weight="700" fill="var(--accent)">Phase 1: LCS on exact (trimmed) text matches</text>
-
-        <!-- Original paragraphs -->
         <text x="20" y="55" font-size="11" font-weight="600" fill="var(--fg-muted)">Original:</text>
         <rect x="100" y="40" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="122" y="59" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">A</text>
@@ -975,70 +1108,60 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
         <text x="346" y="59" text-anchor="middle" font-size="12" fill="var(--heading)">E</text>
         <rect x="380" y="40" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="402" y="59" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">F</text>
-
-        <!-- Amended paragraphs -->
         <text x="20" y="103" font-size="11" font-weight="600" fill="var(--fg-muted)">Amended:</text>
         <rect x="100" y="88" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="122" y="107" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">A</text>
         <rect x="156" y="88" width="44" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
         <text x="178" y="107" text-anchor="middle" font-size="12" fill="var(--accent2)">B'</text>
-        <rect x="212" y="88" width="44" height="28" rx="6" fill="rgba(34,197,94,0.15)" stroke="#22c55e" stroke-width="1"/>
-        <text x="234" y="107" text-anchor="middle" font-size="12" fill="#16a34a">X</text>
+        <rect x="212" y="88" width="44" height="28" rx="6" fill="var(--success-light)" stroke="var(--success)" stroke-width="1"/>
+        <text x="234" y="107" text-anchor="middle" font-size="12" fill="var(--success)">X</text>
         <rect x="268" y="88" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="290" y="107" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">D</text>
         <rect x="324" y="88" width="44" height="28" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
         <text x="346" y="107" text-anchor="middle" font-size="12" fill="var(--accent2)">E'</text>
         <rect x="380" y="88" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="402" y="107" text-anchor="middle" font-size="12" font-weight="600" fill="var(--accent)">F</text>
-
-        <!-- LCS anchor lines -->
         <line x1="122" y1="68" x2="122" y2="88" stroke="var(--accent)" stroke-width="2"/>
         <line x1="290" y1="68" x2="290" y2="88" stroke="var(--accent)" stroke-width="2"/>
         <line x1="402" y1="68" x2="402" y2="88" stroke="var(--accent)" stroke-width="2"/>
-
         <text x="490" y="55" font-size="11" fill="var(--fg-muted)">LCS anchors:</text>
         <text x="490" y="75" font-size="11" font-weight="600" fill="var(--accent)">A &mdash; D &mdash; F</text>
         <text x="490" y="95" font-size="10" fill="var(--fg-muted)">(exact text matches)</text>
-
-        <!-- Divider -->
         <line x1="20" y1="130" x2="700" y2="130" stroke="var(--border)" stroke-width="1" stroke-dasharray="4 3"/>
-
-        <!-- Phase 2 -->
         <text x="20" y="158" font-size="13" font-weight="700" fill="var(--accent2)">Phase 2: Greedy forward matching in gaps</text>
-
-        <!-- Gap 1 -->
         <rect x="20" y="172" width="330" height="70" rx="10" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1"/>
         <text x="36" y="192" font-size="11" font-weight="600" fill="var(--heading)">Gap 1 (between A..D):</text>
         <text x="36" y="210" font-size="10" fill="var(--fg)">B &harr; B' similarity = 0.82</text>
-        <circle cx="252" cy="206" r="6" fill="#22c55e" opacity="0.8"/>
-        <text x="266" y="210" font-size="10" font-weight="600" fill="#16a34a">keep (modified)</text>
+        <circle cx="252" cy="206" r="6" fill="var(--success)" opacity="0.8"/>
+        <text x="266" y="210" font-size="10" font-weight="600" fill="var(--success)">keep (modified)</text>
         <text x="36" y="228" font-size="10" fill="var(--fg)">C has no match</text>
-        <circle cx="168" cy="224" r="6" fill="#ef4444" opacity="0.8"/>
-        <text x="182" y="228" font-size="10" font-weight="600" fill="#dc2626">delete</text>
+        <circle cx="168" cy="224" r="6" fill="var(--error)" opacity="0.8"/>
+        <text x="182" y="228" font-size="10" font-weight="600" fill="var(--error)">delete</text>
         <text x="248" y="228" font-size="10" fill="var(--fg)">| X has no match</text>
-        <circle cx="378" cy="224" r="6" fill="#22c55e" opacity="0.8"/>
-        <text x="248" y="228" font-size="10" fill="var(--fg)">| X has no match</text>
-
-        <!-- Gap 2 -->
+        <circle cx="378" cy="224" r="6" fill="var(--success)" opacity="0.8"/>
         <rect x="370" y="172" width="330" height="70" rx="10" fill="var(--code-bg)" stroke="var(--border)" stroke-width="1"/>
         <text x="386" y="192" font-size="11" font-weight="600" fill="var(--heading)">Gap 2 (between D..F):</text>
         <text x="386" y="210" font-size="10" fill="var(--fg)">E &harr; E' similarity = 0.71</text>
-        <circle cx="576" cy="206" r="6" fill="#22c55e" opacity="0.8"/>
-        <text x="590" y="210" font-size="10" font-weight="600" fill="#16a34a">keep (modified)</text>
-
-        <!-- Result operations -->
+        <circle cx="576" cy="206" r="6" fill="var(--success)" opacity="0.8"/>
+        <text x="590" y="210" font-size="10" font-weight="600" fill="var(--success)">keep (modified)</text>
         <text x="20" y="272" font-size="12" font-weight="600" fill="var(--heading)">Result operations:</text>
         <rect x="20" y="282" width="680" height="38" rx="8" fill="var(--bg-alt)" stroke="var(--border)" stroke-width="1"/>
         <text x="36" y="306" font-size="11" fill="var(--fg)">
           <tspan fill="var(--accent)" font-weight="600">keep</tspan><tspan>(A) </tspan>
           <tspan fill="var(--accent2)" font-weight="600">keep</tspan><tspan>(B&harr;B') </tspan>
-          <tspan fill="#dc2626" font-weight="600">delete</tspan><tspan>(C) </tspan>
-          <tspan fill="#16a34a" font-weight="600">insert</tspan><tspan>(X) </tspan>
+          <tspan fill="var(--error)" font-weight="600">delete</tspan><tspan>(C) </tspan>
+          <tspan fill="var(--success)" font-weight="600">insert</tspan><tspan>(X) </tspan>
           <tspan fill="var(--accent)" font-weight="600">keep</tspan><tspan>(D) </tspan>
           <tspan fill="var(--accent2)" font-weight="600">keep</tspan><tspan>(E&harr;E') </tspan>
           <tspan fill="var(--accent)" font-weight="600">keep</tspan><tspan>(F)</tspan>
         </text>
       </svg>
+    </div>
+    <div class="diagram-legend">
+      <span class="legend-item"><span class="legend-dot" style="background:var(--accent);"></span> Exact match (anchored)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:var(--accent2);"></span> Modified (similarity &gt; 0.4)</span>
+      <span class="legend-item"><span class="legend-dot" style="background:var(--success);"></span> Inserted</span>
+      <span class="legend-item"><span class="legend-dot" style="background:var(--error);"></span> Deleted</span>
     </div>
     <p class="caption">Figure 3: Two-phase paragraph alignment. LCS finds exact anchors; greedy matching fills gaps with a 0.4 similarity threshold.</p>
 
@@ -1062,7 +1185,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   </section>
 
   <!-- 8. Diff Engine -->
-  <section class="section" id="diff">
+  <section class="section reveal" id="diff">
     <div class="section-number">Section 8</div>
     <h2>The Diff Engine</h2>
     <p>Word-level tracked changes are produced by the <code>office-word-diff</code> npm package, which implements a cascading strategy:</p>
@@ -1080,7 +1203,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   </section>
 
   <!-- 9. Prompt System -->
-  <section class="section" id="prompts">
+  <section class="section reveal" id="prompts">
     <div class="section-number">Section 9</div>
     <h2>The Four-Category Prompt System</h2>
     <p>The <code>PromptManager</code> maintains four independent prompt categories, each with its own CRUD, activation state, and <code>localStorage</code> persistence:</p>
@@ -1104,9 +1227,9 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
       </div>
       <div class="feature-card">
         <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="4" y="4" width="40" height="40" rx="8" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="1.5"/>
-          <circle cx="24" cy="20" r="8" stroke="#22c55e" stroke-width="2" fill="none"/>
-          <path d="M16 36c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/>
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="var(--success-light)" stroke="var(--success)" stroke-width="1.5"/>
+          <circle cx="24" cy="20" r="8" stroke="var(--success)" stroke-width="2" fill="none"/>
+          <path d="M16 36c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="var(--success)" stroke-width="2" stroke-linecap="round"/>
         </svg>
         <h4>Comment</h4>
         <p>User message with <code>{selection}</code></p>
@@ -1126,7 +1249,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   </section>
 
   <!-- 10. Summary -->
-  <section class="section" id="summary">
+  <section class="section reveal" id="summary">
     <div class="section-number">Section 10</div>
     <h2>Summary Document Generation</h2>
     <p>The summary workflow extracts comments, document text, and tracked changes from the active document; composes a prompt with placeholder substitution; sends it to the LLM; and creates a new Word document with the formatted result.</p>
@@ -1135,66 +1258,45 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   </section>
 
   <!-- 11. Data Flow Summary -->
-  <section class="section" id="dataflow">
+  <section class="section reveal" id="dataflow">
     <div class="section-number">Section 11</div>
     <h2>Data Flow Summary</h2>
 
     <div class="diagram-container">
       <svg viewBox="0 0 700 560" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
-        <!-- Source -->
-        <rect x="250" y="10" width="200" height="44" rx="22" fill="linear-gradient(135deg, var(--gradient-start), var(--gradient-end))" stroke="none"/>
         <rect x="250" y="10" width="200" height="44" rx="22" fill="var(--accent)" opacity="0.9"/>
         <text x="350" y="37" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Word Document</text>
-
         <line x1="350" y1="54" x2="350" y2="80" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-
-        <!-- Stage 1: document-parser -->
         <rect x="150" y="80" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
         <rect x="165" y="90" width="130" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
         <text x="230" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-parser</text>
         <text x="165" y="138" font-size="10" fill="var(--fg-muted)">Office.js API (4 sync batches)</text>
         <text x="380" y="110" font-size="10" fill="var(--fg)">Word paragraphs &rarr; ParsedParagraph[]</text>
-
         <line x1="350" y1="150" x2="350" y2="176" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-
-        <!-- Stage 2: context-extract -->
         <rect x="150" y="176" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
         <rect x="165" y="186" width="130" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
         <text x="230" y="206" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">context-extract</text>
         <text x="165" y="234" font-size="10" fill="var(--fg-muted)">Regex patterns on paragraph text</text>
         <text x="380" y="206" font-size="10" fill="var(--fg)">ParsedParagraph[] &rarr; DocumentContext</text>
-
         <line x1="350" y1="246" x2="350" y2="272" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-
-        <!-- Stage 3: document-chunker -->
         <rect x="150" y="272" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
         <rect x="165" y="282" width="140" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
         <text x="235" y="302" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-chunker</text>
         <text x="165" y="330" font-size="10" fill="var(--fg-muted)">Structure-aware splitting</text>
         <text x="380" y="302" font-size="10" fill="var(--fg)">ParsedParagraph[] &rarr; DocumentChunk[]</text>
-
         <line x1="350" y1="342" x2="350" y2="368" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-
-        <!-- Stage 4: reassembler pre-phase -->
         <rect x="150" y="368" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
         <rect x="165" y="378" width="130" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
         <text x="230" y="398" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">reassembler (pre)</text>
         <text x="165" y="426" font-size="10" fill="var(--fg-muted)">bookmarkChunkRanges()</text>
         <text x="380" y="398" font-size="10" fill="var(--fg)">DocumentChunk[] &rarr; Bookmark Map</text>
-
         <line x1="350" y1="438" x2="350" y2="464" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-
-        <!-- Stage 5: orchestrator -->
         <rect x="150" y="464" width="400" height="34" rx="12" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="230" y="486" font-size="11" font-weight="600" fill="var(--accent)">orchestrator</text>
         <text x="380" y="486" font-size="10" fill="var(--fg)">Parallel LLM dispatch (N workers)</text>
-
         <line x1="350" y1="498" x2="350" y2="515" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-
-        <!-- Stage 6: reassembler apply -->
         <rect x="200" y="515" width="300" height="40" rx="20" fill="var(--accent2)" opacity="0.9"/>
         <text x="350" y="540" text-anchor="middle" font-size="12" font-weight="700" fill="#fff">Tracked Changes in Word</text>
-
         <defs>
           <marker id="aD" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="var(--accent)"/></marker>
         </defs>
@@ -1211,6 +1313,65 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   <p>Diff engine: <a href="https://github.com/niclasgrunworked/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: vLLM (Qwen 3.5-35B-A3B), Ollama</p>
   <p style="margin-top: 0.75rem;"><a href="https://github.com/yuch85/word-ai-redliner">View on GitHub</a></p>
 </footer>
+
+<!-- ── Back to top ── -->
+<button class="back-to-top" id="backToTop" aria-label="Back to top" onclick="window.scrollTo({top:0})">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="18 15 12 9 6 15"/>
+  </svg>
+</button>
+
+<script>
+// ── Scroll-triggered reveal animations ──
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach((e, i) => {
+    if (e.isIntersecting) {
+      // Stagger children slightly
+      e.target.style.transitionDelay = '0.05s';
+      e.target.classList.add('visible');
+      obs.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.08 });
+document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+
+// ── Back to top visibility ──
+const btn = document.getElementById('backToTop');
+window.addEventListener('scroll', () => {
+  btn.classList.toggle('visible', window.scrollY > 600);
+}, { passive: true });
+
+// ── Scroll-spy for nav + sidebar ──
+const sections = document.querySelectorAll('.section[id]');
+const navLinks = document.querySelectorAll('.nav-links a[data-section], .sidebar-toc a[data-section]');
+const spyObs = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      const id = e.target.id;
+      navLinks.forEach(a => {
+        a.classList.toggle('active', a.dataset.section === id);
+      });
+    }
+  });
+}, { rootMargin: '-20% 0px -70% 0px' });
+sections.forEach(s => spyObs.observe(s));
+
+// ── Copy buttons on code blocks ──
+document.querySelectorAll('pre').forEach(pre => {
+  const btn = document.createElement('button');
+  btn.className = 'copy-btn';
+  btn.textContent = 'Copy';
+  btn.addEventListener('click', () => {
+    const code = pre.querySelector('code');
+    navigator.clipboard.writeText(code ? code.textContent : pre.textContent).then(() => {
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+    });
+  });
+  pre.appendChild(btn);
+});
+</script>
 
 </body>
 </html>
