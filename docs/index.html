@@ -598,7 +598,7 @@
     .hero-text h1 .title-caps { font-size: 1.9rem; }
     .hero-tags { justify-content: center; }
     .hero-visual { display: none; }
-    .section { padding: 1.5rem; }
+    .section { padding: 1.25rem; }
     .section:hover { transform: none; }
     .nav-links { display: none; }
     .pipeline-steps { flex-direction: column; }
@@ -606,6 +606,22 @@
     h2 { font-size: 1.5rem; }
     h3 { font-size: 1.15rem; }
     .back-to-top { bottom: 1rem; right: 1rem; }
+    /* Diagrams: scroll horizontally instead of squishing */
+    .diagram-container { padding: 1rem; }
+    .diagram-container svg { width: auto; min-width: 600px; }
+    /* Tables: horizontal scroll */
+    table { display: block; overflow-x: auto; white-space: nowrap; }
+    thead, tbody, tr { display: table; width: 100%; table-layout: auto; }
+    /* Feature grid: 2 columns on mobile */
+    .feature-grid { grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+    .feature-card { padding: 1rem; }
+    .feature-card svg { width: 36px; height: 36px; }
+    /* Tighter spacing */
+    .content { padding: 2rem 1rem 4rem; }
+    .hero { padding: 3.5rem 1rem 3rem; }
+    .hero-text .subtitle { font-size: 0.95rem; }
+    pre { font-size: 0.78rem; padding: 1rem; }
+    blockquote { padding: 0.75rem 1rem; font-size: 0.85rem; }
   }
 </style>
 </head>
