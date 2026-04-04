@@ -1263,36 +1263,36 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     <h2>Data Flow Summary</h2>
 
     <div class="diagram-container">
-      <svg viewBox="0 0 700 560" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+      <svg viewBox="0 0 800 560" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
         <rect x="250" y="10" width="200" height="44" rx="22" fill="var(--accent)" opacity="0.9"/>
         <text x="350" y="37" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Word Document</text>
         <line x1="350" y1="54" x2="350" y2="80" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-        <rect x="150" y="80" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
-        <rect x="165" y="90" width="130" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
-        <text x="230" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-parser</text>
-        <text x="165" y="138" font-size="10" fill="var(--fg-muted)">Office.js API (4 sync batches)</text>
+        <rect x="100" y="80" width="560" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
+        <rect x="120" y="90" width="150" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
+        <text x="195" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-parser</text>
+        <text x="120" y="138" font-size="10" fill="var(--fg-muted)">Office.js API (4 sync batches)</text>
         <text x="380" y="110" font-size="10" fill="var(--fg)">Word paragraphs &rarr; ParsedParagraph[]</text>
         <line x1="350" y1="150" x2="350" y2="176" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-        <rect x="150" y="176" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
-        <rect x="165" y="186" width="130" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
-        <text x="230" y="206" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">context-extract</text>
-        <text x="165" y="234" font-size="10" fill="var(--fg-muted)">Regex patterns on paragraph text</text>
+        <rect x="100" y="176" width="560" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
+        <rect x="120" y="186" width="150" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
+        <text x="195" y="206" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">context-extract</text>
+        <text x="120" y="234" font-size="10" fill="var(--fg-muted)">Regex patterns on paragraph text</text>
         <text x="380" y="206" font-size="10" fill="var(--fg)">ParsedParagraph[] &rarr; DocumentContext</text>
         <line x1="350" y1="246" x2="350" y2="272" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-        <rect x="150" y="272" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
-        <rect x="165" y="282" width="140" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
-        <text x="235" y="302" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-chunker</text>
-        <text x="165" y="330" font-size="10" fill="var(--fg-muted)">Structure-aware splitting</text>
+        <rect x="100" y="272" width="560" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
+        <rect x="120" y="282" width="150" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
+        <text x="195" y="302" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-chunker</text>
+        <text x="120" y="330" font-size="10" fill="var(--fg-muted)">Structure-aware splitting</text>
         <text x="380" y="302" font-size="10" fill="var(--fg)">ParsedParagraph[] &rarr; DocumentChunk[]</text>
         <line x1="350" y1="342" x2="350" y2="368" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-        <rect x="150" y="368" width="400" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
-        <rect x="165" y="378" width="130" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
-        <text x="230" y="398" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">reassembler (pre)</text>
-        <text x="165" y="426" font-size="10" fill="var(--fg-muted)">bookmarkChunkRanges()</text>
+        <rect x="100" y="368" width="560" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
+        <rect x="120" y="378" width="150" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
+        <text x="195" y="398" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">reassembler (pre)</text>
+        <text x="120" y="426" font-size="10" fill="var(--fg-muted)">bookmarkChunkRanges()</text>
         <text x="380" y="398" font-size="10" fill="var(--fg)">DocumentChunk[] &rarr; Bookmark Map</text>
         <line x1="350" y1="438" x2="350" y2="464" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
-        <rect x="150" y="464" width="400" height="34" rx="12" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
-        <text x="230" y="486" font-size="11" font-weight="600" fill="var(--accent)">orchestrator</text>
+        <rect x="100" y="464" width="560" height="34" rx="12" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="195" y="486" font-size="11" font-weight="600" fill="var(--accent)">orchestrator</text>
         <text x="380" y="486" font-size="10" fill="var(--fg)">Parallel LLM dispatch (N workers)</text>
         <line x1="350" y1="498" x2="350" y2="515" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
         <rect x="200" y="515" width="300" height="40" rx="20" fill="var(--accent2)" opacity="0.9"/>
