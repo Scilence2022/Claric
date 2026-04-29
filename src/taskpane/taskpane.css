@@ -354,19 +354,6 @@ input[type="checkbox"] {
     transform: translateY(0) scale(0.98);
 }
 
-/* Hero Button - Large, prominent */
-.btn-hero {
-    height: 40px;
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    letter-spacing: 0.2px;
-    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-}
-
-.btn-hero:hover:not(:disabled) {
-    box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.08);
-}
-
 /* Sections */
 section {
     margin-bottom: var(--spacing-lg);
@@ -519,6 +506,21 @@ section {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-md);
+}
+
+/* Panel-scoped action buttons (Phase 05.1: per-panel button refactor) */
+.panel-action-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.panel-action-btn {
+    /* Inherits .btn .btn-primary .full-width — no extra rules needed unless
+       the existing styles produce visual issues inside the panel.
+       Reserve this selector for panel-only overrides if/when discovered
+       during UAT. */
 }
 
 /* Scrollbar Styling */
@@ -838,18 +840,17 @@ section {
     color: var(--primary-text);
 }
 
-/* Process Document Button */
-.process-doc-btn {
-    margin-top: 6px;
-}
-
-.process-doc-btn.cancel-mode {
+/* Cancel-mode morph: any panel button can become a Cancel button while a
+   document-scope LLM operation is in flight. Plan 04b toggles `.cancel-mode`
+   on the inflight button. Renamed in Phase 05.1 from a button-id-specific
+   selector to a generic `.btn` selector so that any panel button can morph. */
+.btn.cancel-mode {
     background-color: #d13438;
     border-color: #a4262c;
     color: #ffffff;
 }
 
-.process-doc-btn.cancel-mode:hover {
+.btn.cancel-mode:hover {
     background-color: #a4262c;
 }
 
