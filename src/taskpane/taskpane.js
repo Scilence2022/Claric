@@ -7,7 +7,8 @@ import { sendPrompt, testConnection as llmTestConnection, stripMarkdown } from '
 import { PromptManager, CATEGORIES } from '../lib/prompt-manager.js';
 import { CommentQueue } from '../lib/comment-queue.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
-import { extractAllComments, extractDocumentText, extractDocumentStructured, estimateTokenCount, extractTrackedChanges } from '../lib/comment-extractor.js';
+import { extractAllComments, extractDocumentText, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
+import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
 import { parseDelimitedResponse, buildFallbackClassificationPrompt } from '../lib/response-parser.js';
 import { parseDocument } from '../lib/document-parser.js';
@@ -1322,17 +1323,62 @@ async function handleReviewSelection({ category, withComment } = {}) {
             updatePanelButtons(CATEGORY.AMENDMENT);
         }
 
-        // 1. Get Selection
+        // 1. Get Selection (Phase 05.2: gated comment enrichment via includeCommentsInSelection toggle)
+        const includeComments = !!config.includeCommentsInSelection;
         let selectionText = "";
+        let plainSelectionText = "";
+        let enrichmentError = null;
+
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
             selection.load("text");
+            // OOXML fetch only when enrichment is requested (toggle ON) — saves a sync round-trip on the default path.
+            const ooxmlResult = includeComments ? selection.getOoxml() : null;
             await context.sync();
             if (!selection.text || !selection.text.trim()) {
                 throw new Error("Please select some text first.");
             }
-            selectionText = selection.text;
+            plainSelectionText = selection.text;
+
+            if (!includeComments) {
+                // Toggle OFF — today's behavior preserved verbatim. No extractor, no splicer.
+                selectionText = plainSelectionText;
+                return;
+            }
+
+            // Toggle ON: extract comments + replies whose anchors intersect the selection.
+            // SAME Word.run owns selectionRange — research correction #4 / Open Q2: caller
+            // controls the lifecycle, no nested Word.run, no cross-context tracking issues.
+            let comments = [];
+            try {
+                comments = await extractCommentsOnRange(context, selection);
+            } catch (err) {
+                // STYLE.md No Silent Failures: log with context, fall back to plain text below.
+                console.error('[handleReviewSelection] extractCommentsOnRange failed', { err });
+                enrichmentError = err;
+            }
+
+            // Splice annotations using the OOXML walker. Pure function — runs after sync.
+            if (!enrichmentError) {
+                try {
+                    selectionText = formatSelectionWithComments(ooxmlResult.value, comments);
+                } catch (err) {
+                    console.error('[handleReviewSelection] formatSelectionWithComments failed', {
+                        err, ooxmlPrefix: String(ooxmlResult.value || '').slice(0, 200),
+                    });
+                    enrichmentError = err;
+                }
+            }
         });
+
+        // STYLE.md No Silent Failures: surface degradation in the user-facing log.
+        if (includeComments && enrichmentError) {
+            addLog(`Comment enrichment failed (${enrichmentError.message}); falling back to plain selection.`, 'warning');
+            selectionText = plainSelectionText;
+        } else if (includeComments && selectionText.length > plainSelectionText.length) {
+            const delta = selectionText.length - plainSelectionText.length;
+            addLog(`Selection enriched with comment threads (+${delta} chars)`, 'info');
+        }
 
         const activeBackend = getActiveBackendConfig();
         addLog(`Processing selection (${selectionText.length} chars) via ${activeBackend.model}...`, "info");
