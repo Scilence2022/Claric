@@ -28,6 +28,7 @@ let config = {
     },
     trackedChangesExtraction: false,
     commentGranularity: 0,
+    includeCommentsInSelection: false,
     backends: {
         ollama: {
             url: process.env.DEFAULT_OLLAMA_URL || '/ollama',
@@ -292,6 +293,7 @@ function initialize() {
     document.getElementById("docRichnessSelect").addEventListener('change', saveSettings);
     document.getElementById("trackedChangesExtraction").addEventListener('change', saveSettings);
     document.getElementById("commentGranularity").addEventListener('change', saveSettings);
+    document.getElementById("includeCommentsInSelectionCheckbox").addEventListener('change', saveSettings);
 
     // Tab bar -- click and keyboard navigation
     for (const category of CATEGORIES) {
@@ -462,6 +464,11 @@ function loadSettings() {
             if (config.commentGranularity === undefined) {
                 config.commentGranularity = 0;
             }
+
+            // Ensure includeCommentsInSelection default (Phase 05.2 — for configs saved before this feature)
+            if (config.includeCommentsInSelection === undefined) {
+                config.includeCommentsInSelection = false;
+            }
         }
     } catch (e) {
         console.error("Failed to load settings:", e);
@@ -490,6 +497,7 @@ function saveSettings() {
     };
     config.trackedChangesExtraction = document.getElementById('trackedChangesExtraction').checked;
     config.commentGranularity = parseInt(document.getElementById('commentGranularity').value || '0', 10);
+    config.includeCommentsInSelection = document.getElementById('includeCommentsInSelectionCheckbox').checked;
 
     try {
         localStorage.setItem('wordAI.config', JSON.stringify(config));
@@ -540,6 +548,11 @@ function updateUIFromConfig() {
     const granularitySelect = document.getElementById('commentGranularity');
     if (granularitySelect) {
         granularitySelect.value = String(config.commentGranularity || 0);
+    }
+
+    const includeCommentsCheckbox = document.getElementById('includeCommentsInSelectionCheckbox');
+    if (includeCommentsCheckbox) {
+        includeCommentsCheckbox.checked = !!config.includeCommentsInSelection;
     }
 }
 
