@@ -83,6 +83,28 @@
                     <button id="deletePromptBtn-amendment" class="btn btn-compact">Delete</button>
                     <button id="resetPromptBtn-amendment" class="btn btn-compact">Clear</button>
                 </div>
+                <div class="panel-action-buttons">
+                    <button data-panel="amendment" data-action="amend-selection"
+                            class="btn btn-primary panel-action-btn full-width" disabled
+                            title="Activate an Amendment prompt to enable">
+                        Amend Selection →
+                    </button>
+                    <button data-panel="amendment" data-action="amend-comment-selection"
+                            class="btn btn-primary panel-action-btn full-width" disabled
+                            title="Activate an Amendment prompt and add comment instructions to enable">
+                        Amend &amp; Comment Selection →
+                    </button>
+                    <button data-panel="amendment" data-action="amend-document"
+                            class="btn btn-primary panel-action-btn full-width" disabled
+                            title="Activate an Amendment prompt to enable">
+                        Amend Document →
+                    </button>
+                    <button data-panel="amendment" data-action="amend-comment-document"
+                            class="btn btn-primary panel-action-btn full-width" disabled
+                            title="Activate an Amendment prompt and add comment instructions to enable">
+                        Amend &amp; Comment Document →
+                    </button>
+                </div>
             </div>
 
             <!-- Comment Panel -->
@@ -104,6 +126,18 @@
                     <button id="deletePromptBtn-comment" class="btn btn-compact">Delete</button>
                     <button id="resetPromptBtn-comment" class="btn btn-compact">Clear</button>
                 </div>
+                <div class="panel-action-buttons">
+                    <button data-panel="comment" data-action="comment-selection"
+                            class="btn btn-primary panel-action-btn full-width" disabled
+                            title="Activate a Comment prompt to enable">
+                        Comment on Selection →
+                    </button>
+                    <button data-panel="comment" data-action="comment-document"
+                            class="btn btn-primary panel-action-btn full-width" disabled
+                            title="Activate a Comment prompt to enable">
+                        Comment on Document →
+                    </button>
+                </div>
             </div>
 
             <!-- Summary Panel -->
@@ -122,6 +156,13 @@
                     <button id="deletePromptBtn-summary" class="btn btn-compact">Delete</button>
                     <button id="resetPromptBtn-summary" class="btn btn-compact">Clear</button>
                 </div>
+                <div class="panel-action-buttons">
+                    <button data-panel="summary" data-action="summary-document"
+                            class="btn btn-primary panel-action-btn full-width" disabled
+                            title="Activate a Summary prompt to enable">
+                        Generate Summary
+                    </button>
+                </div>
             </div>
         </section>
 
@@ -138,14 +179,6 @@
                 <span id="tokenEstimateValue" class="token-estimate-value">0</span>
                 <span id="tokenEstimateBreakdown" class="token-estimate-breakdown"></span>
             </div>
-            <button id="reviewBtn" class="btn btn-primary btn-hero full-width" disabled
-                title="Select an Amendment or Comment prompt to enable">
-                Review Selection
-            </button>
-            <button id="processDocBtn" class="btn btn-primary full-width process-doc-btn" disabled
-                title="Process entire document with active prompts">
-                Process Document
-            </button>
             <!-- Process Document Progress Bar -->
             <div id="processProgressBar" class="process-progress-bar" style="display: none;">
                 <div class="progress-track">
