@@ -55,6 +55,7 @@ const unsavedText = { context: '', amendment: '', comment: '', summary: '' };
 let isProcessing = false;
 let isProcessingDoc = false;
 let processDocController = null; // AbortController for cancellation
+let _inflightBtn = null; // Phase 05.1-04b: DOM ref of the panel button currently driving a doc-scope op (cancel-morph target)
 let supportsComments = false;  // Set during initialize() via WordApi 1.4 check
 const commentQueue = new CommentQueue(addLog);
 
@@ -114,6 +115,52 @@ export function updatePanelButtons(category, deps = {}) {
             btn.disabled = !enabled;
         }
     });
+}
+
+/**
+ * Morphs the initiating panel button to 'Cancel' and disables peer buttons during a doc-scope op.
+ * Stores the inflight (category, withComment) on btn.dataset so the addEventListener
+ * cancel-mode branch can re-derive the args needed to fire the abort path. Also stashes
+ * btn.dataset.originalLabel for restore in clearInflightButton().
+ *
+ * @param {HTMLButtonElement|null} btn — the initiating panel button (may be null in test/edge paths)
+ * @param {{category: string, withComment: boolean}} [opts]
+ */
+function setInflightButton(btn, { category, withComment } = {}) {
+    if (!btn) return;
+    _inflightBtn = btn;
+    btn.dataset.originalLabel = btn.textContent;
+    btn.dataset.inflightCategory = category || '';
+    btn.dataset.inflightWithComment = withComment ? 'true' : 'false';
+    btn.textContent = 'Cancel';
+    btn.classList.add('cancel-mode'); // matches .btn.cancel-mode (Plan 02)
+    // Disable all OTHER panel buttons; the inflight button itself stays enabled (it IS the cancel button).
+    if (typeof document !== 'undefined') {
+        document.querySelectorAll('[data-panel][data-action]').forEach((other) => {
+            if (other !== btn) other.disabled = true;
+        });
+    }
+    btn.disabled = false;
+}
+
+/**
+ * Restores the inflight button's label/state after the doc-scope op finishes or aborts.
+ * Restores originalLabel, removes .cancel-mode, clears the inflight dataset entries,
+ * and clears the module-scope _inflightBtn ref. Does NOT re-enable peer buttons —
+ * the caller's updatePanelButtons() triplet in the finally block handles that, so the
+ * re-enable state reflects current prompt activation rather than the inflight lockout.
+ */
+function clearInflightButton() {
+    if (_inflightBtn) {
+        if (_inflightBtn.dataset.originalLabel) {
+            _inflightBtn.textContent = _inflightBtn.dataset.originalLabel;
+            delete _inflightBtn.dataset.originalLabel;
+        }
+        delete _inflightBtn.dataset.inflightCategory;
+        delete _inflightBtn.dataset.inflightWithComment;
+        _inflightBtn.classList.remove('cancel-mode');
+    }
+    _inflightBtn = null;
 }
 
 /**
@@ -212,7 +259,21 @@ function initialize() {
         const action = btn.getAttribute('data-action');
         const scope = action.endsWith('-document') ? SCOPE.DOCUMENT : SCOPE.SELECTION;
         const withComment = action.includes('amend-comment');
-        btn.addEventListener('click', () => runAction({ category, scope, withComment }));
+        btn.addEventListener('click', () => {
+            // LOCKED cancel-morph branch (Plan 04b, revision Issue 2):
+            // If this button is currently morphed to Cancel, bypass the dispatcher
+            // pre-flight (which would reject because isProcessingDoc === true) and
+            // call handleProcessDocument directly with the original inflight args.
+            // The handler's existing cancel branch
+            //   `if (isProcessingDoc && processDocController) { processDocController.abort(); return; }`
+            // fires. Single source of cancel-routing logic.
+            if (btn.classList.contains('cancel-mode')) {
+                const inflightCategory = btn.dataset.inflightCategory || category;
+                const inflightWithComment = btn.dataset.inflightWithComment === 'true';
+                return handleProcessDocument({ category: inflightCategory, withComment: inflightWithComment });
+            }
+            return runAction({ category, scope, withComment });
+        });
     });
 
     document.getElementById("clearLogsBtn").onclick = clearLogs;
@@ -1508,15 +1569,25 @@ async function handleProcessDocument({ category, withComment } = {}) {
         return;
     }
 
-    // Block all panel buttons via state refresh
+    // Determine which panel button initiated this run (used for cancel-morph).
+    // data-action mapping: amendment -> amend-document or amend-comment-document;
+    // comment -> comment-document; summary -> summary-document.
+    let initiatingAction;
+    if (category === CATEGORY.AMENDMENT) {
+        initiatingAction = withComment ? 'amend-comment-document' : 'amend-document';
+    } else if (category === CATEGORY.COMMENT) {
+        initiatingAction = 'comment-document';
+    } else {
+        initiatingAction = 'summary-document';
+    }
+    const initiatingBtn = document.querySelector(
+        `[data-panel="${category}"][data-action="${initiatingAction}"]`
+    );
+
+    // Block all panel buttons; morph the initiating button to "Cancel".
     isProcessingDoc = true;
     processDocController = new AbortController();
-    // Plan 04b will morph the initiating button to "Cancel" via the
-    // inflight-button helper; for now just refresh enable states so the
-    // dispatcher's isProcessingDocRef pre-flight blocks subsequent clicks.
-    updatePanelButtons(CATEGORY.AMENDMENT);
-    updatePanelButtons(CATEGORY.COMMENT);
-    updatePanelButtons(CATEGORY.SUMMARY);
+    setInflightButton(initiatingBtn, { category, withComment });
 
     // Show progress bar, hide comment status bar
     const progressBar = document.getElementById('processProgressBar');
@@ -1603,6 +1674,7 @@ async function handleProcessDocument({ category, withComment } = {}) {
     } finally {
         isProcessingDoc = false;
         processDocController = null;
+        clearInflightButton(); // restore label, drop .cancel-mode + dataset before re-enabling peers
         progressBar.style.display = 'none';
         commentBar.style.display = commentQueue.count > 0 ? 'flex' : 'none';
         updatePanelButtons(CATEGORY.AMENDMENT);
@@ -1626,9 +1698,12 @@ async function retryFailedChunks(failedResults, bookmarkMap, backendConfig) {
     processDocController = new AbortController();
     const progressBar = document.getElementById('processProgressBar');
 
-    // Plan 04b will reintroduce the inflight-button cancel-morph here
-    // via the tracked _inflightBtn ref. For this intermediate state,
-    // updatePanelButtons reflects the disabled/blocked state.
+    // Retry runs without a panel-button morph: it's triggered from the
+    // activity-log retry link, not from a panel button click, so there's
+    // no initiating button to morph. _inflightBtn stays null; cancel during
+    // retry is currently not exposed in the UI (out of scope for Plan 04b).
+    // updatePanelButtons reflects the disabled/blocked state via the
+    // dispatcher's isProcessingDocRef pre-flight.
     updatePanelButtons(CATEGORY.AMENDMENT);
     updatePanelButtons(CATEGORY.COMMENT);
     updatePanelButtons(CATEGORY.SUMMARY);
@@ -1682,6 +1757,7 @@ async function retryFailedChunks(failedResults, bookmarkMap, backendConfig) {
     } finally {
         isProcessingDoc = false;
         processDocController = null;
+        clearInflightButton(); // safety: no-op if _inflightBtn === null (typical retry path)
         progressBar.style.display = 'none';
         updatePanelButtons(CATEGORY.AMENDMENT);
         updatePanelButtons(CATEGORY.COMMENT);
