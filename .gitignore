@@ -50,3 +50,6 @@ test_docs/
 
 # Reference repos (cloned for research, not part of project)
 reference/
+
+# Project-local dev standards (canonical copy lives in ~/alice/STYLE.md)
+STYLE.md
