@@ -1,17 +1,16 @@
 /**
  * Selection-with-Comments Module
  *
- * Pure-function splicer that takes pkg:package-wrapped OOXML from selection.getOoxml()
- * plus a pre-filtered/sorted CommentThread array (from extractCommentsOnRange) and
- * returns the selection text with inline [COMMENT...] annotations interleaved at the
- * w:commentRangeStart / w:commentRangeEnd marker positions.
- *
- * No Office.js. No network. Hermetic-testable.
+ * Pure-function splicer: takes pkg:package-wrapped OOXML from
+ * selection.getOoxml() plus a pre-filtered/sorted CommentThread array (from
+ * extractCommentsOnRange) and returns selection text with inline [COMMENT...]
+ * annotations interleaved at w:commentRangeStart / w:commentRangeEnd marker
+ * positions. No Office.js. No network. Hermetic-testable.
  *
  * @module selection-with-comments
  */
 
-import { W_NS, queryElements, extractDocumentBody, readRunText } from './comment-extractor.js';
+import { W_NS, extractDocumentBody, readRunText } from './comment-extractor.js';
 
 /**
  * Marker-case enum covering the 4 ways a comment range can intersect a selection.
@@ -55,9 +54,7 @@ const RELATION_TO_CASE = Object.freeze({
 });
 
 /**
- * Format a date as ISO-8601 (YYYY-MM-DD). Returns 'unknown' for falsy and the
- * original string when not parseable.
- *
+ * ISO-8601 (YYYY-MM-DD). 'unknown' on falsy; original string when unparseable.
  * @param {Date|string|null|undefined} d
  * @returns {string}
  */
@@ -69,12 +66,9 @@ function formatDate(d) {
 }
 
 /**
- * Build the opening annotation token for a thread.
- *
- * Format: `[COMMENT[ (resolved)] — Author (YYYY-MM-DD)[ ‹trunc-mark›]: comment body]`
- *
+ * Build opening token: `[COMMENT[ (resolved)] — Author (YYYY-MM-DD)[ ‹trunc›]: body]`.
  * @param {{authorName:string,creationDate:(Date|string),resolved:boolean,content:string}} thread
- * @param {string|null} truncMark - optional truncation phrase; null/undefined for FULLY_INSIDE
+ * @param {string|null} truncMark - truncation phrase; null for FULLY_INSIDE
  * @returns {string}
  */
 function buildOpenToken(thread, truncMark) {
@@ -85,10 +79,9 @@ function buildOpenToken(thread, truncMark) {
 }
 
 /**
- * Render replies as newline-prefixed reply lines. Extractor pre-sorts by creationDate.
- *
+ * Render replies as newline-prefixed lines. Extractor pre-sorts by creationDate.
  * @param {Array<{authorName:string,creationDate:(Date|string),content:string}>|undefined} replies
- * @returns {string} Empty string when no replies; otherwise leading-newline-then-lines.
+ * @returns {string} Empty string when no replies; else leading-newline + joined lines.
  */
 function renderReplies(replies) {
     if (!replies || replies.length === 0) return '';
@@ -99,8 +92,7 @@ function renderReplies(replies) {
 }
 
 /**
- * Read the w:id attribute off a commentRange marker element with namespace-aware fallback.
- *
+ * Read the w:id attribute off a commentRange marker element (namespace-aware fallback).
  * @param {Element} el
  * @returns {string|null}
  */
@@ -111,12 +103,11 @@ function readMarkerWId(el) {
 }
 
 /**
- * Walk the OOXML body in document order, building a flat segment array of
- * {kind:'start'|'end'|'text', value?, wId?} entries. Recurses into containers
- * (e.g. w:ins, w:del) so commentRange markers nested under tracked-change
- * envelopes still get emitted (research Pitfall 5).
- *
- * @param {Element} bodyEl - the w:body element returned by extractDocumentBody
+ * Walk OOXML body in document order; emit flat segment array of
+ * {kind:'start'|'end'|'text', value?, wId?}. Recurses into containers (w:ins,
+ * w:del) so commentRange markers under tracked-change envelopes still emit
+ * (research Pitfall 5).
+ * @param {Element} bodyEl - w:body element from extractDocumentBody
  * @returns {Array<{kind:string,value?:string,wId?:string}>}
  */
 function walkOoxmlSegments(bodyEl) {
@@ -130,8 +121,7 @@ function walkOoxmlSegments(bodyEl) {
             } else if (name === 'commentRangeEnd') {
                 segments.push({ kind: 'end', wId: readMarkerWId(child) });
             } else if (name === 'r') {
-                // Visible text from w:t plus tracked-deletion text from w:delText
-                // (research Pitfall 5: both are visible-in-document text from the splicer's POV).
+                // w:t (visible) + w:delText (tracked deletion) — both visible from splicer POV.
                 const visible = readRunText(child, /*useDelText=*/false);
                 if (visible) segments.push({ kind: 'text', value: visible });
                 const deleted = readRunText(child, /*useDelText=*/true);
@@ -146,9 +136,8 @@ function walkOoxmlSegments(bodyEl) {
 }
 
 /**
- * Render-dispatch table keyed by MARKER_CASE. Each entry produces an
- * {open, close} token pair for a thread. STYLE.md "Dispatch Over If/Else" —
- * marker-case routing is a frozen lookup, not a chain of conditionals.
+ * Render-dispatch table keyed by MARKER_CASE → {open, close} token pair.
+ * STYLE.md "Dispatch Over If/Else" — frozen lookup, not a conditional chain.
  */
 const RENDER_DISPATCH = Object.freeze({
     [MARKER_CASE.FULLY_INSIDE]: (thread) => ({
@@ -172,16 +161,13 @@ const RENDER_DISPATCH = Object.freeze({
 /**
  * Splice inline [COMMENT...] annotations into selection OOXML.
  *
- * Walks the body of `ooxml` for w:commentRangeStart / w:commentRangeEnd markers,
- * pairs each w:id (in first-appearance order) with a positional CommentThread
- * (FULLY_INSIDE / HEAD_OUTSIDE / TAIL_OUTSIDE), and emits an open/close token
- * pair at the marker positions. BOTH_OUTSIDE threads carry no markers in the
- * OOXML (the comment range starts before and ends after the selection) so the
- * splicer wraps the entire assembled selection in a single envelope. Replies
- * render after the closing token (one line each, prefixed with "reply ").
- *
- * Pure: no Word.run, no I/O. Output is built via segment-array + .join (O(n)),
- * never substring concatenation in a loop.
+ * Walks the body for w:commentRangeStart / w:commentRangeEnd markers, pairs
+ * each w:id (first-appearance order) with a positional CommentThread
+ * (FULLY_INSIDE / HEAD_OUTSIDE / TAIL_OUTSIDE), and emits open/close tokens at
+ * marker positions. BOTH_OUTSIDE threads carry no markers in OOXML (range
+ * starts before AND ends after selection), so the splicer wraps the entire
+ * assembled selection. Replies render after the closing token (one per line,
+ * prefixed "reply "). Pure: no Word.run, no I/O. O(n) via segment array + join.
  *
  * @param {string} ooxml - pkg:package-wrapped OOXML from selection.getOoxml()
  * @param {Array<{id:string,content:string,authorName:string,creationDate:(Date|string),resolved:boolean,locationRelation:string,replies?:Array<object>}>} commentsInDocOrder
@@ -205,11 +191,8 @@ export function formatSelectionWithComments(ooxml, commentsInDocOrder) {
         .map((s) => s.value)
         .join('');
 
-    // Partition threads by marker case.
-    //   - BOTH_OUTSIDE → no markers in OOXML; wrap entire assembled selection
-    //     once, after the positional emission pass completes.
-    //   - FULLY_INSIDE / HEAD_OUTSIDE / TAIL_OUTSIDE → positional, paired by
-    //     w:id-first-appearance order.
+    // Partition: BOTH_OUTSIDE wraps entire assembled output (no markers);
+    // others pair positionally by w:id-first-appearance order.
     const bothOutsideThreads = [];
     const positionalThreads = [];
     for (const t of (commentsInDocOrder || [])) {
@@ -263,8 +246,7 @@ export function formatSelectionWithComments(ooxml, commentsInDocOrder) {
     const openEmitted = new Set();
     const closeEmitted = new Set();
 
-    // HEAD_OUTSIDE pre-pass: open token belongs at offset 0 because the OOXML
-    // has no commentRangeStart inside the selection (range begins before).
+    // HEAD_OUTSIDE pre-pass: open at offset 0 (no commentRangeStart in selection).
     for (let i = 0; i < pairCount; i++) {
         const wId = wIdOrder[i];
         const { markerCase } = positionalThreads[i];
@@ -292,8 +274,7 @@ export function formatSelectionWithComments(ooxml, commentsInDocOrder) {
         }
     }
 
-    // TAIL_OUTSIDE post-pass: close token belongs at end because the OOXML has
-    // no commentRangeEnd inside the selection (range continues past).
+    // TAIL_OUTSIDE post-pass: close at end (no commentRangeEnd in selection).
     for (let i = 0; i < pairCount; i++) {
         const wId = wIdOrder[i];
         const { markerCase } = positionalThreads[i];
@@ -307,8 +288,7 @@ export function formatSelectionWithComments(ooxml, commentsInDocOrder) {
 
     let assembled = out.join('');
 
-    // BOTH_OUTSIDE wrap: each thread wraps the entire assembled selection
-    // (nested in input order if there are multiple).
+    // BOTH_OUTSIDE: each thread wraps the assembled selection (nested in input order).
     for (const t of bothOutsideThreads) {
         const tokens = RENDER_DISPATCH[MARKER_CASE.BOTH_OUTSIDE](t);
         const replies = renderReplies(t.replies);
