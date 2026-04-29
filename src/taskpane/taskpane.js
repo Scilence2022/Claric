@@ -64,7 +64,7 @@ let _tokenEstimateDirty = true;  // Set true to trigger Word API re-read
 let _tokenEstimateTimer = null;  // Debounce timer
 
 // ============================================================================
-// PANEL-BUTTON DISPATCHER (Phase 05.1 — decoupled from getActiveMode)
+// PANEL-BUTTON DISPATCHER (Phase 05.1 — decoupled from active-mode reads)
 // ============================================================================
 // These exports are defined at module scope (above any Office.js
 // side-effects) so `require('../src/taskpane/taskpane.js')` succeeds in
@@ -150,7 +150,7 @@ export const ROUTES = Object.freeze({
 export function createDispatcher(deps) {
     /**
      * Routes a panel-button click to the correct handler by explicit
-     * args. Never reads getActiveMode. Looks up the route in the frozen
+     * args — never reads any active-mode global. Looks up the route in the frozen
      * ROUTES table.
      *
      * @param {{category: string, scope: string, withComment: boolean}} args
@@ -197,7 +197,7 @@ function initialize() {
 
     // Setup event listeners -- general
     // Panel-scoped action buttons (Phase 05.1) -- dispatcher routes via
-    // explicit (category, scope, withComment) args, never getActiveMode().
+    // explicit (category, scope, withComment) args — never via active-mode.
     const runAction = createDispatcher({
         promptManager,
         handleReviewSelection,
@@ -282,11 +282,9 @@ function initialize() {
     document.getElementById("savePromptConfirmBtn").onclick = handleSavePromptConfirm;
     document.getElementById("savePromptCancelBtn").onclick = hideSavePromptModal;
 
-    // Comment instructions field (amendment tab) -- update button label as user types
-    // Phase 05.1: also wire updatePanelButtons('amendment') so the new panel
-    // buttons enable/disable in lockstep with textarea content (AC-06/07).
+    // Comment instructions field (amendment tab) -- enable/disable amendment
+    // panel buttons in lockstep with textarea content (AC-06/07).
     document.getElementById('commentInstructions').addEventListener('input', () => {
-        updateReviewButton();
         updatePanelButtons(CATEGORY.AMENDMENT);
     });
 
@@ -296,8 +294,6 @@ function initialize() {
     // Render prompt UI from PromptManager state
     renderAllDropdowns();
     updateDotIndicators();
-    updateReviewButton();
-    updateProcessDocButton();
     // Phase 05.1: update all panel buttons after initial render
     updatePanelButtons(CATEGORY.AMENDMENT);
     updatePanelButtons(CATEGORY.COMMENT);
@@ -570,7 +566,6 @@ function handleCategoryPromptSelect(category, promptId) {
         }
         addLog(`${capitalize(category)}: ready for new prompt`, "info");
         updateDotIndicators();
-        updateReviewButton();
         updatePanelButtons(category);
         updateTokenEstimate();
         return;
@@ -605,7 +600,6 @@ function handleCategoryPromptSelect(category, promptId) {
     }
 
     updateDotIndicators();
-    updateReviewButton();
     updatePanelButtons(category);
     updateTokenEstimate();
 }
@@ -699,51 +693,6 @@ function updateDotIndicators() {
 }
 
 /**
- * Updates the Review button label and enabled/disabled state
- * based on the active mode from PromptManager.
- *
- * Labels: "Amend Selection \u2192" | "Comment on Selection \u2192" | "Amend & Comment \u2192" | "Review Selection" (disabled)
- */
-function updateReviewButton() {
-    const btn = document.getElementById('reviewBtn');
-    const mode = promptManager.getActiveMode();
-
-    switch (mode) {
-        case 'summary':
-            btn.textContent = 'Generate Summary';
-            btn.disabled = false;
-            btn.title = 'Extract all comments and generate summary document';
-            break;
-        case 'amendment': {
-            const commentField = document.getElementById('commentInstructions');
-            const hasCommentInstructions = commentField && commentField.value.trim();
-            if (hasCommentInstructions) {
-                btn.textContent = 'Amend & Comment \u2192';
-                btn.title = 'Amendment + comment in single LLM call';
-            } else {
-                btn.textContent = 'Amend Selection \u2192';
-                btn.title = '';
-            }
-            btn.disabled = false;
-            break;
-        }
-        case 'comment':
-            btn.textContent = 'Comment on Selection \u2192';
-            btn.disabled = false;
-            btn.title = '';
-            break;
-        case 'none':
-        default:
-            btn.textContent = 'Review Selection';
-            btn.disabled = true;
-            btn.title = 'Select an Amendment or Comment prompt to enable';
-            break;
-    }
-    updateProcessDocButton();
-    updateTokenEstimate();
-}
-
-/**
  * Invalidates the token estimate cache, causing the next
  * updateTokenEstimate() call to re-read from the Word API.
  */
@@ -831,8 +780,12 @@ async function updateTokenEstimate() {
     const breakdownEl = document.getElementById('tokenEstimateBreakdown');
     if (!container || !valueEl) return;
 
-    const mode = promptManager.getActiveMode();
-    if (mode === 'none') {
+    // Phase 05.1 Plan 04a: gate on currentTab (visible panel) rather than
+    // the prompt-manager's active-mode global, so the estimate matches what
+    // the user is actually looking at. If no category has any active prompt
+    // at all, hide the estimate entirely.
+    const anyActive = CATEGORIES.some((c) => !!promptManager.getActivePrompt(c));
+    if (!anyActive) {
         container.style.display = 'none';
         return;
     }
@@ -851,8 +804,8 @@ async function updateTokenEstimate() {
         parts.push(`ctx:~${ctxTokens.toLocaleString()}`);
     }
 
-    if (mode === 'summary') {
-        // Summary mode: summary prompt + actual document data estimates
+    if (currentTab === CATEGORY.SUMMARY) {
+        // Summary panel visible: summary prompt + actual document data estimates
         const summaryPrompt = promptManager.getActivePrompt('summary');
         if (summaryPrompt && summaryPrompt.template) {
             const summTokens = estimateTokenCount(summaryPrompt.template);
@@ -1006,7 +959,6 @@ function handleDeletePromptConfirm(category) {
     unsavedText[category] = '';
 
     updateDotIndicators();
-    updateReviewButton();
     updatePanelButtons(category);
     updateTokenEstimate();
 }
@@ -1154,11 +1106,10 @@ function populateModels(models) {
  * Fire-and-forget: user can switch modes immediately after triggering.
  */
 async function handleSummaryGeneration() {
-    const btn = document.getElementById('reviewBtn');
-
+    // Phase 05.1 Plan 04a: legacy shared-action button IDs no longer exist
+    // in HTML. Plan 04b will reintroduce inflight-button morph via a tracked
+    // ref; for this intermediate state the loading visual is intentionally absent.
     try {
-        btn.classList.add('loading');
-        btn.disabled = true;
         addLog('Extracting document comments...', 'info');
 
         // 1. Extract all comments
@@ -1271,18 +1222,25 @@ async function handleSummaryGeneration() {
         addLog(`Summary generation failed: ${error.message}`, 'error');
         console.error('Summary generation error:', error);
     } finally {
-        btn.classList.remove('loading');
-        updateReviewButton();
+        // Plan 04b will restore inflight-button morph; for now just refresh
+        // panel-button enable states.
         updatePanelButtons(CATEGORY.AMENDMENT);
         updatePanelButtons(CATEGORY.COMMENT);
         updatePanelButtons(CATEGORY.SUMMARY);
     }
 }
 
-async function handleReviewSelection() {
-    // Summary mode uses a separate workflow
-    if (promptManager.getActiveMode() === 'summary') {
-        handleSummaryGeneration();
+async function handleReviewSelection({ category, withComment } = {}) {
+    // Phase 05.1 Plan 04a: routes by explicit args — never reads any
+    // active-mode global. STYLE.md "No Silent Failures": defensive guards
+    // log with context and return.
+    if (!category) {
+        console.error('handleReviewSelection: missing category arg');
+        addLog('Internal error: missing category', 'error');
+        return;
+    }
+    if (!promptManager.getActivePrompt(category)) {
+        addLog(`No active ${category} prompt`, 'warning');
         return;
     }
 
@@ -1291,23 +1249,16 @@ async function handleReviewSelection() {
         return;
     }
 
-    if (!promptManager.canSubmit()) {
-        addLog("Please select an Amendment or Comment prompt", "warning");
-        return;
-    }
-
-    const btn = document.getElementById("reviewBtn");
-    const activeMode = promptManager.getActiveMode();
-
-    // Only block UI for amendment (synchronous) operations
-    // Comment-only mode is non-blocking (fire-and-forget)
-    const needsBlocking = (activeMode === 'amendment');
+    // Only block UI for amendment (synchronous) operations.
+    // Comment selection is non-blocking (fire-and-forget via comment queue).
+    const needsBlocking = (category === CATEGORY.AMENDMENT);
 
     try {
         if (needsBlocking) {
             isProcessing = true;
-            btn.classList.add("loading");
-            btn.disabled = true;
+            // Plan 04b will morph the initiating button to a loading state
+            // via the inflight-button helper; for now just refresh enable states.
+            updatePanelButtons(CATEGORY.AMENDMENT);
         }
 
         // 1. Get Selection
@@ -1325,27 +1276,20 @@ async function handleReviewSelection() {
         const activeBackend = getActiveBackendConfig();
         addLog(`Processing selection (${selectionText.length} chars) via ${activeBackend.model}...`, "info");
 
-        // 2. Amendment execution
-        if (activeMode === 'amendment') {
-            const commentInstructions = document.getElementById('commentInstructions').value.trim();
-
-            if (commentInstructions) {
-                // Merged amendment + comment in single LLM call
+        // 2. Route by explicit args (never by active-mode read)
+        if (category === CATEGORY.AMENDMENT) {
+            if (withComment) {
+                const commentInstructions = document.getElementById('commentInstructions').value.trim();
                 await handleMergedAmendmentComment(selectionText, commentInstructions, activeBackend);
             } else {
-                // Amendment-only (existing synchronous workflow)
                 await handleAmendmentOnly(selectionText, activeBackend);
             }
-        }
-
-        // 3. Comment-only execution -- fire-and-forget via comment queue
-        if (activeMode === 'comment') {
+        } else if (category === CATEGORY.COMMENT) {
             if (!supportsComments) {
                 addLog("Comment features require Word API 1.4", "warning");
             } else {
-                const backendConfig = getActiveBackendConfig();
                 fireCommentRequest(selectionText, {
-                    config: backendConfig,
+                    config: activeBackend,
                     sendPromptFn: sendPrompt,
                     promptManager: promptManager,
                     commentQueue: commentQueue,
@@ -1354,6 +1298,10 @@ async function handleReviewSelection() {
                     updateStatusBarFn: updateCommentStatusBar
                 });
             }
+        } else {
+            // Summary is never dispatched through here (the dispatcher routes
+            // summary:document:plain directly to handleSummaryGeneration).
+            console.warn('handleReviewSelection: unsupported category', category);
         }
 
     } catch (error) {
@@ -1361,8 +1309,6 @@ async function handleReviewSelection() {
     } finally {
         if (needsBlocking) {
             isProcessing = false;
-            btn.classList.remove("loading");
-            updateReviewButton();
             updatePanelButtons(CATEGORY.AMENDMENT);
             updatePanelButtons(CATEGORY.COMMENT);
             updatePanelButtons(CATEGORY.SUMMARY);
@@ -1515,60 +1461,6 @@ async function handleMergedAmendmentComment(selectionText, commentInstructions, 
 // ============================================================================
 
 /**
- * Updates the Process Document button label and state based on active mode.
- * Labels: "Amend Document -->" | "Comment on Document -->" | "Amend & Comment Document -->" | hidden (summary)
- * When processing: shows "Cancel" with cancel-mode class.
- */
-function updateProcessDocButton() {
-    const btn = document.getElementById('processDocBtn');
-    if (!btn) return;
-
-    // During processing, button shows "Cancel" and stays enabled
-    if (isProcessingDoc) {
-        btn.textContent = 'Cancel';
-        btn.classList.add('cancel-mode');
-        btn.disabled = false;
-        btn.style.display = '';
-        return;
-    }
-
-    btn.classList.remove('cancel-mode');
-    const mode = promptManager.getActiveMode();
-
-    switch (mode) {
-        case 'summary':
-            btn.style.display = 'none';
-            break;
-        case 'amendment': {
-            btn.style.display = '';
-            const commentField = document.getElementById('commentInstructions');
-            const hasCommentInstructions = commentField && commentField.value.trim();
-            if (hasCommentInstructions) {
-                btn.textContent = 'Amend & Comment Document \u2192';
-            } else {
-                btn.textContent = 'Amend Document \u2192';
-            }
-            btn.disabled = !promptManager.canSubmit();
-            btn.title = 'Process entire document with active prompts';
-            break;
-        }
-        case 'comment':
-            btn.style.display = '';
-            btn.textContent = 'Comment on Document \u2192';
-            btn.disabled = !promptManager.canSubmit();
-            btn.title = 'Process entire document with active prompts';
-            break;
-        case 'none':
-        default:
-            btn.style.display = '';
-            btn.textContent = 'Process Document';
-            btn.disabled = true;
-            btn.title = 'Select an Amendment or Comment prompt to enable';
-            break;
-    }
-}
-
-/**
  * Updates the process progress bar with current chunk progress.
  * @param {object} progress - Progress object from orchestrator
  * @param {number} progress.completed - Completed chunks
@@ -1595,30 +1487,36 @@ function updateProcessProgress(progress) {
  * applies results as tracked changes/comments, and shows summary.
  * Double-click acts as cancel.
  */
-async function handleProcessDocument() {
-    // If already processing, this is a cancel action
+async function handleProcessDocument({ category, withComment } = {}) {
+    // Cancel path — preserved unchanged. Plan 04b will refine the cancel-morph
+    // wiring, but the AbortController contract stays the same.
     if (isProcessingDoc && processDocController) {
         processDocController.abort();
         addLog('Cancelling document processing...', 'warning');
         return;
     }
 
-    if (!promptManager.canSubmit()) {
-        addLog('Please select an Amendment or Comment prompt', 'warning');
+    // Phase 05.1 Plan 04a: routes by explicit args — never reads any
+    // active-mode global.
+    if (!category) {
+        console.error('handleProcessDocument: missing category arg');
+        addLog('Internal error: missing category', 'error');
+        return;
+    }
+    if (!promptManager.getActivePrompt(category)) {
+        addLog(`No active ${category} prompt`, 'warning');
         return;
     }
 
-    const activeMode = promptManager.getActiveMode();
-    if (activeMode === 'summary') return; // Should not happen (button hidden)
-
-    // Block all buttons
+    // Block all panel buttons via state refresh
     isProcessingDoc = true;
     processDocController = new AbortController();
-    const processBtn = document.getElementById('processDocBtn');
-    const reviewBtn = document.getElementById('reviewBtn');
-    processBtn.textContent = 'Cancel';
-    processBtn.classList.add('cancel-mode');
-    reviewBtn.disabled = true;
+    // Plan 04b will morph the initiating button to "Cancel" via the
+    // inflight-button helper; for now just refresh enable states so the
+    // dispatcher's isProcessingDocRef pre-flight blocks subsequent clicks.
+    updatePanelButtons(CATEGORY.AMENDMENT);
+    updatePanelButtons(CATEGORY.COMMENT);
+    updatePanelButtons(CATEGORY.SUMMARY);
 
     // Show progress bar, hide comment status bar
     const progressBar = document.getElementById('processProgressBar');
@@ -1707,8 +1605,6 @@ async function handleProcessDocument() {
         processDocController = null;
         progressBar.style.display = 'none';
         commentBar.style.display = commentQueue.count > 0 ? 'flex' : 'none';
-        updateReviewButton();
-        updateProcessDocButton();
         updatePanelButtons(CATEGORY.AMENDMENT);
         updatePanelButtons(CATEGORY.COMMENT);
         updatePanelButtons(CATEGORY.SUMMARY);
@@ -1728,11 +1624,14 @@ async function retryFailedChunks(failedResults, bookmarkMap, backendConfig) {
 
     isProcessingDoc = true;
     processDocController = new AbortController();
-    const processBtn = document.getElementById('processDocBtn');
     const progressBar = document.getElementById('processProgressBar');
 
-    processBtn.textContent = 'Cancel';
-    processBtn.classList.add('cancel-mode');
+    // Plan 04b will reintroduce the inflight-button cancel-morph here
+    // via the tracked _inflightBtn ref. For this intermediate state,
+    // updatePanelButtons reflects the disabled/blocked state.
+    updatePanelButtons(CATEGORY.AMENDMENT);
+    updatePanelButtons(CATEGORY.COMMENT);
+    updatePanelButtons(CATEGORY.SUMMARY);
     progressBar.style.display = 'flex';
 
     try {
@@ -1784,8 +1683,6 @@ async function retryFailedChunks(failedResults, bookmarkMap, backendConfig) {
         isProcessingDoc = false;
         processDocController = null;
         progressBar.style.display = 'none';
-        updateReviewButton();
-        updateProcessDocButton();
         updatePanelButtons(CATEGORY.AMENDMENT);
         updatePanelButtons(CATEGORY.COMMENT);
         updatePanelButtons(CATEGORY.SUMMARY);
