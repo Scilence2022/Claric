@@ -15,6 +15,7 @@ import { chunkDocument } from '../lib/document-chunker.js';
 import { extractContext } from '../lib/context-extractor.js';
 import { processChunksParallel } from '../lib/orchestrator.js';
 import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks } from '../lib/reassembler.js';
+import { CATEGORY, SCOPE } from '../lib/panel-actions.js';
 
 // Global configuration (defaults from env, overridable via UI/localStorage)
 let config = {
@@ -62,11 +63,130 @@ let _tokenEstimateCache = { docCharCount: null, commentCount: null };
 let _tokenEstimateDirty = true;  // Set true to trigger Word API re-read
 let _tokenEstimateTimer = null;  // Debounce timer
 
-Office.onReady((info) => {
-    if (info.host === Office.HostType.Word) {
-        initialize();
-    }
+// ============================================================================
+// PANEL-BUTTON DISPATCHER (Phase 05.1 — decoupled from getActiveMode)
+// ============================================================================
+// These exports are defined at module scope (above any Office.js
+// side-effects) so `require('../src/taskpane/taskpane.js')` succeeds in
+// Jest node + jsdom test environments. STYLE.md: "Dispatch Over If/Else
+// Chains" + "Enums for Fixed Values" + "JSDoc on Public Methods".
+
+/**
+ * Returns the panel-button enable state for a category.
+ * Single source of truth for the AC-05/06/07 enable rules. Read by
+ * updatePanelButtons; not used by the dispatcher itself.
+ *
+ * @param {string} category — one of CATEGORY.AMENDMENT/COMMENT/SUMMARY
+ * @param {object} [deps]   — optional override hooks for tests
+ * @returns {{enabled: boolean, withCommentEnabled: boolean}}
+ */
+export function getPanelButtonState(category, deps = {}) {
+    const pm = deps.promptManager || promptManager;
+    const doc = deps.document || (typeof document !== 'undefined' ? document : null);
+    const hasActive = !!pm.getActivePrompt(category);
+    const ci = doc ? doc.getElementById('commentInstructions') : null;
+    const hasCommentText = !!(ci && ci.value && ci.value.trim().length > 0);
+    return {
+        enabled: hasActive,
+        withCommentEnabled: hasActive && hasCommentText,
+    };
+}
+
+/**
+ * Toggles `disabled` on this category's panel buttons based on prompt
+ * activation + commentInstructions text. No-op if the document is
+ * unavailable (allows pure-function calls under node-env tests).
+ *
+ * @param {string} category — one of CATEGORY.AMENDMENT/COMMENT/SUMMARY
+ * @param {object} [deps]   — optional override hooks for tests
+ */
+export function updatePanelButtons(category, deps = {}) {
+    const doc = deps.document || (typeof document !== 'undefined' ? document : null);
+    if (!doc) return;
+    const { enabled, withCommentEnabled } = getPanelButtonState(category, deps);
+    const btns = doc.querySelectorAll(`[data-panel="${category}"][data-action]`);
+    btns.forEach((btn) => {
+        const action = btn.getAttribute('data-action');
+        const isCommentVariant = action.includes('amend-comment');
+        if (category === CATEGORY.AMENDMENT && isCommentVariant) {
+            btn.disabled = !withCommentEnabled;
+        } else {
+            btn.disabled = !enabled;
+        }
+    });
+}
+
+/**
+ * Frozen dispatch table — keys are tuple strings shaped as
+ *   `${category}:${scope}:${withComment ? 'withComment' : 'plain'}`.
+ * Exactly 7 entries (one per RESEARCH.md Pattern 3 row). Adding an 8th
+ * tuple silently is caught by tests/dispatcher.spec.js
+ * dispatch-table-completeness. STYLE.md: "Dispatch Over If/Else Chains"
+ * + "Enums for Fixed Values".
+ *
+ * Each value is a `(deps) => Promise<void>` thunk that calls the right
+ * handler with the args from the original tuple. The dispatcher
+ * (createDispatcher below) looks up the route via key and invokes it.
+ */
+export const ROUTES = Object.freeze({
+    'amendment:selection:plain':       (deps) => deps.handleReviewSelection({ category: CATEGORY.AMENDMENT, withComment: false }),
+    'amendment:selection:withComment': (deps) => deps.handleReviewSelection({ category: CATEGORY.AMENDMENT, withComment: true }),
+    'amendment:document:plain':        (deps) => deps.handleProcessDocument({ category: CATEGORY.AMENDMENT, withComment: false }),
+    'amendment:document:withComment':  (deps) => deps.handleProcessDocument({ category: CATEGORY.AMENDMENT, withComment: true }),
+    'comment:selection:plain':         (deps) => deps.handleReviewSelection({ category: CATEGORY.COMMENT,   withComment: false }),
+    'comment:document:plain':          (deps) => deps.handleProcessDocument({ category: CATEGORY.COMMENT,   withComment: false }),
+    'summary:document:plain':          (deps) => deps.handleSummaryGeneration(),
 });
+
+/**
+ * Builds the runAction dispatcher with injected handler deps. Returns
+ * the runAction function. Factory shape exists so
+ * tests/dispatcher.spec.js can inject spies without going through
+ * Office.js side-effects.
+ *
+ * @param {object} deps — handler refs + isProcessingDocRef + addLog
+ * @returns {function({category: string, scope: string, withComment: boolean}): Promise<void>}
+ */
+export function createDispatcher(deps) {
+    /**
+     * Routes a panel-button click to the correct handler by explicit
+     * args. Never reads getActiveMode. Looks up the route in the frozen
+     * ROUTES table.
+     *
+     * @param {{category: string, scope: string, withComment: boolean}} args
+     */
+    return async function runAction({ category, scope, withComment }) {
+        if (deps.isProcessingDocRef && deps.isProcessingDocRef()) {
+            if (deps.addLog) {
+                deps.addLog('Already processing the document. Cancel first.', 'warning');
+            }
+            return;
+        }
+        const key = `${category}:${scope}:${withComment ? 'withComment' : 'plain'}`;
+        const route = ROUTES[key];
+        if (!route) {
+            // Defensive: log and return. Should be impossible if HTML
+            // data-action strings stay in sync with the ACTION enum
+            // (Plan 02 grep gate).
+            // eslint-disable-next-line no-console
+            console.warn('runAction: no route for', key);
+            return;
+        }
+        return route(deps);
+    };
+}
+
+// ============================================================================
+// END PANEL-BUTTON DISPATCHER
+// ============================================================================
+
+if (typeof Office !== 'undefined') {
+    Office.onReady((info) => {
+        if (info.host === Office.HostType.Word) {
+            initialize();
+        }
+    });
+}
 
 function initialize() {
     // Load saved settings
@@ -76,8 +196,25 @@ function initialize() {
     promptManager.loadState();
 
     // Setup event listeners -- general
-    document.getElementById("reviewBtn").onclick = handleReviewSelection;
-    document.getElementById("processDocBtn").onclick = handleProcessDocument;
+    // Panel-scoped action buttons (Phase 05.1) -- dispatcher routes via
+    // explicit (category, scope, withComment) args, never getActiveMode().
+    const runAction = createDispatcher({
+        promptManager,
+        handleReviewSelection,
+        handleProcessDocument,
+        handleSummaryGeneration,
+        fireCommentRequest,
+        isProcessingDocRef: () => isProcessingDoc,
+        addLog,
+    });
+    document.querySelectorAll('[data-panel][data-action]').forEach((btn) => {
+        const category = btn.getAttribute('data-panel'); // 'amendment' | 'comment' | 'summary'
+        const action = btn.getAttribute('data-action');
+        const scope = action.endsWith('-document') ? SCOPE.DOCUMENT : SCOPE.SELECTION;
+        const withComment = action.includes('amend-comment');
+        btn.addEventListener('click', () => runAction({ category, scope, withComment }));
+    });
+
     document.getElementById("clearLogsBtn").onclick = clearLogs;
     document.getElementById("settingsToggle").onclick = toggleSettings;
     document.getElementById("runVerificationBtn").onclick = runVerification;
@@ -146,7 +283,12 @@ function initialize() {
     document.getElementById("savePromptCancelBtn").onclick = hideSavePromptModal;
 
     // Comment instructions field (amendment tab) -- update button label as user types
-    document.getElementById('commentInstructions').addEventListener('input', updateReviewButton);
+    // Phase 05.1: also wire updatePanelButtons('amendment') so the new panel
+    // buttons enable/disable in lockstep with textarea content (AC-06/07).
+    document.getElementById('commentInstructions').addEventListener('input', () => {
+        updateReviewButton();
+        updatePanelButtons(CATEGORY.AMENDMENT);
+    });
 
     // Initial UI state
     updateUIFromConfig();
@@ -156,6 +298,10 @@ function initialize() {
     updateDotIndicators();
     updateReviewButton();
     updateProcessDocButton();
+    // Phase 05.1: update all panel buttons after initial render
+    updatePanelButtons(CATEGORY.AMENDMENT);
+    updatePanelButtons(CATEGORY.COMMENT);
+    updatePanelButtons(CATEGORY.SUMMARY);
     updateTokenEstimate();
 
     // Detect and log supported Word API version (diagnostics only)
@@ -425,6 +571,7 @@ function handleCategoryPromptSelect(category, promptId) {
         addLog(`${capitalize(category)}: ready for new prompt`, "info");
         updateDotIndicators();
         updateReviewButton();
+        updatePanelButtons(category);
         updateTokenEstimate();
         return;
     }
@@ -459,6 +606,7 @@ function handleCategoryPromptSelect(category, promptId) {
 
     updateDotIndicators();
     updateReviewButton();
+    updatePanelButtons(category);
     updateTokenEstimate();
 }
 
@@ -496,6 +644,10 @@ function switchTab(category) {
     // Restore textarea content for new tab
     const newTextarea = document.getElementById(`promptTextarea-${category}`);
     newTextarea.value = unsavedText[category];
+
+    // Phase 05.1: defensive update — buttons in non-visible panels are
+    // hidden but cheap to update.
+    updatePanelButtons(category);
 
     // Invalidate token estimate cache on tab switch -- document may have changed
     invalidateTokenEstimateCache();
@@ -855,6 +1007,7 @@ function handleDeletePromptConfirm(category) {
 
     updateDotIndicators();
     updateReviewButton();
+    updatePanelButtons(category);
     updateTokenEstimate();
 }
 
@@ -1120,6 +1273,9 @@ async function handleSummaryGeneration() {
     } finally {
         btn.classList.remove('loading');
         updateReviewButton();
+        updatePanelButtons(CATEGORY.AMENDMENT);
+        updatePanelButtons(CATEGORY.COMMENT);
+        updatePanelButtons(CATEGORY.SUMMARY);
     }
 }
 
@@ -1207,6 +1363,9 @@ async function handleReviewSelection() {
             isProcessing = false;
             btn.classList.remove("loading");
             updateReviewButton();
+            updatePanelButtons(CATEGORY.AMENDMENT);
+            updatePanelButtons(CATEGORY.COMMENT);
+            updatePanelButtons(CATEGORY.SUMMARY);
         }
     }
 }
@@ -1550,6 +1709,9 @@ async function handleProcessDocument() {
         commentBar.style.display = commentQueue.count > 0 ? 'flex' : 'none';
         updateReviewButton();
         updateProcessDocButton();
+        updatePanelButtons(CATEGORY.AMENDMENT);
+        updatePanelButtons(CATEGORY.COMMENT);
+        updatePanelButtons(CATEGORY.SUMMARY);
     }
 }
 
@@ -1624,6 +1786,9 @@ async function retryFailedChunks(failedResults, bookmarkMap, backendConfig) {
         progressBar.style.display = 'none';
         updateReviewButton();
         updateProcessDocButton();
+        updatePanelButtons(CATEGORY.AMENDMENT);
+        updatePanelButtons(CATEGORY.COMMENT);
+        updatePanelButtons(CATEGORY.SUMMARY);
     }
 }
 
