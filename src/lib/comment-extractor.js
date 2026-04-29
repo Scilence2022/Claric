@@ -17,6 +17,20 @@ const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const PKG_NS = 'http://schemas.microsoft.com/office/2006/xmlPackage';
 
 /**
+ * LocationRelation values that indicate a comment range intersects the selection.
+ * Verified against learn.microsoft.com/word.locationrelation (2026-04-24).
+ * Excludes Before/After/AdjacentBefore/AdjacentAfter/Unrelated (no character intersection).
+ * STYLE.md "Enums for Fixed Values" — frozen Set, never raw string literals at call sites.
+ */
+const INTERSECTING_RELATIONS = Object.freeze(new Set([
+    'Equal', 'Inside', 'InsideStart', 'InsideEnd',
+    'Contains', 'ContainsStart', 'ContainsEnd',
+    'OverlapsBefore', 'OverlapsAfter',
+]));
+
+export { INTERSECTING_RELATIONS };
+
+/**
  * Query OOXML elements with namespace-aware fallback.
  * Tries getElementsByTagNameNS first, falls back to prefix-based getElementsByTagName.
  * Pattern from docx-redline-js: browser DOMParser namespace resolution is inconsistent.
@@ -294,6 +308,113 @@ export async function extractAllComments() {
 }
 
 /**
+ * Returns comments + threaded replies whose anchor intersects the given selection range.
+ * Caller must pass the active Word.run context proxy and the selection range obtained
+ * within that same context (research § Open Q2 — single Word.run avoids cross-context
+ * tracking issues). Replies sorted by creationDate ascending; threads returned in
+ * document order as emitted by body.getComments() (i-th thread ↔ i-th w:commentRangeStart
+ * in OOXML — empirical Office.js behavior; Plan 03 splicer carries the invariant check).
+ *
+ * @param {Word.RequestContext} context - Active Word.run context
+ * @param {Word.Range} selectionRange - The user's selection range (loaded inside the same context)
+ * @returns {Promise<Array<{id:string,content:string,authorName:string,creationDate:(Date|string),resolved:boolean,locationRelation:string,replies:Array<{id:string,content:string,authorName:string,creationDate:(Date|string)}>}>>} Threads with locationRelation hint for splicer
+ */
+export async function extractCommentsOnRange(context, selectionRange) {
+    // 5 syncs (research correction #5):
+    //   1) load body comments collection items
+    //   2) load per-comment props + queue compareLocationWith
+    //   3) load per-comment replies.items
+    //   4) load per-reply props
+    //   5) (implicit final read) — JS reads property bag values from already-synced proxies
+    // Optimization to 4 syncs via expand-syntax deferred — clarity over micro-perf.
+
+    const body = context.document.body;
+    const comments = body.getComments();
+    comments.load('items');
+    await context.sync();  // SYNC 1
+
+    // Sync 2: comment properties + compareLocationWith
+    // NOTE: per research correction #2, parent Comment DOES have 'resolved' (only CommentReply does not).
+    const compareResults = [];
+    for (const c of comments.items) {
+        c.load('content,authorName,creationDate,resolved,id');
+        compareResults.push(c.getRange().compareLocationWith(selectionRange));
+    }
+    await context.sync();  // SYNC 2
+
+    // STYLE.md "No Silent Failures": if compareResults length drifts from comments.items length,
+    // we've corrupted the positional pairing — log + throw before any downstream consumer reads it.
+    if (compareResults.length !== comments.items.length) {
+        const err = new Error('extractCommentsOnRange: comments/compareResults length mismatch');
+        console.error('[comment-extractor]', err.message, {
+            commentsCount: comments.items.length,
+            compareResultsCount: compareResults.length,
+        });
+        throw err;
+    }
+
+    // Filter to intersecting comments using INTERSECTING_RELATIONS frozen Set
+    // (STYLE.md "No Magic Strings" — never inline LocationRelation literals at call sites).
+    // research Pitfall 1: read .value AFTER sync, never the ClientResult itself.
+    const survivors = [];
+    for (let i = 0; i < comments.items.length; i++) {
+        const relation = compareResults[i].value;
+        if (INTERSECTING_RELATIONS.has(relation)) {
+            survivors.push({ comment: comments.items[i], locationRelation: relation });
+        }
+    }
+
+    // Sync 3: load replies collection items for each survivor.
+    //
+    // NOTE on doc-order: research § Open Q1 — Office.js does not formally document that
+    // body.getComments() returns comments in document order, but it does so empirically
+    // (verified via the existing extractAllComments pattern). The splicer in Plan 03 has
+    // a runtime invariant check (wIdOrder count vs positional-thread count) that logs
+    // and gracefully degrades on mismatch. We rely on the empirical ordering here rather
+    // than running an extra pairwise-sync sort that doubles latency.
+    for (const s of survivors) {
+        s.comment.replies.load('items');
+    }
+    await context.sync();  // SYNC 3
+
+    // Sync 4: load per-reply props.
+    // CommentReply has NO 'resolved' property (research correction #2) — do not include it.
+    for (const s of survivors) {
+        for (const r of s.comment.replies.items) {
+            r.load('content,authorName,creationDate,id');
+        }
+    }
+    await context.sync();  // SYNC 4
+
+    // Sync 5 (implicit): property-bag reads from already-synced proxies happen below.
+    // Build result objects.
+    const threads = survivors.map((s) => {
+        const replies = s.comment.replies.items
+            .map((r) => ({
+                id: r.id,
+                content: r.content,
+                authorName: r.authorName,
+                creationDate: r.creationDate,
+            }))
+            // Defensive sort — research Anti-Pattern: don't trust replies.items order.
+            // Microsoft does not guarantee chronological emission; sort ascending here.
+            .sort((a, b) => new Date(a.creationDate) - new Date(b.creationDate));
+
+        return {
+            id: s.comment.id,
+            content: s.comment.content,
+            authorName: s.comment.authorName,
+            creationDate: s.comment.creationDate,
+            resolved: s.comment.resolved,
+            locationRelation: s.locationRelation,
+            replies,
+        };
+    });
+
+    return threads;
+}
+
+/**
  * Extracts the full document body as plain text.
  * Returns the complete text content of the active document's body.
  *
@@ -457,3 +578,8 @@ export async function extractTrackedChanges() {
         return { changes: [] };
     }
 }
+
+// Re-exports for sibling modules (selection-with-comments.js — Plan 05.2-03).
+// Internal helpers stay defined as before; this exposes them as named exports so
+// the splicer can import them without redefining or duplicating helper logic.
+export { W_NS, PKG_NS, queryElements, extractDocumentBody, readRunText };
