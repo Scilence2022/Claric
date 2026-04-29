@@ -156,7 +156,6 @@ function initialize() {
     updateDotIndicators();
     updateReviewButton();
     updateProcessDocButton();
-    updateTabDisabledState();
     updateTokenEstimate();
 
     // Detect and log supported Word API version (diagnostics only)
@@ -426,7 +425,6 @@ function handleCategoryPromptSelect(category, promptId) {
         addLog(`${capitalize(category)}: ready for new prompt`, "info");
         updateDotIndicators();
         updateReviewButton();
-        updateTabDisabledState();
         updateTokenEstimate();
         return;
     }
@@ -461,7 +459,6 @@ function handleCategoryPromptSelect(category, promptId) {
 
     updateDotIndicators();
     updateReviewButton();
-    updateTabDisabledState();
     updateTokenEstimate();
 }
 
@@ -472,10 +469,6 @@ function handleCategoryPromptSelect(category, promptId) {
  */
 function switchTab(category) {
     if (category === currentTab) return;
-
-    // Block switching to disabled tabs
-    const targetTab = document.getElementById(`tab-${category}`);
-    if (targetTab && targetTab.classList.contains('disabled')) return;
 
     // Save current textarea content before switching
     const currentTextarea = document.getElementById(`promptTextarea-${currentTab}`);
@@ -503,8 +496,6 @@ function switchTab(category) {
     // Restore textarea content for new tab
     const newTextarea = document.getElementById(`promptTextarea-${category}`);
     newTextarea.value = unsavedText[category];
-
-    updateTabDisabledState();
 
     // Invalidate token estimate cache on tab switch -- document may have changed
     invalidateTokenEstimateCache();
@@ -541,32 +532,6 @@ function handleTabKeydown(e) {
     const newCategory = CATEGORIES[newIndex];
     document.getElementById(`tab-${newCategory}`).focus();
     switchTab(newCategory);
-}
-
-/**
- * Enables or disables tabs based on the active mode.
- * In summary mode: amendment and comment tabs are disabled.
- * In non-summary mode: all tabs are enabled.
- * Context tab is always enabled.
- */
-function updateTabDisabledState() {
-    const mode = promptManager.getActiveMode();
-    const isSummaryMode = (mode === 'summary');
-
-    const amendmentTab = document.getElementById('tab-amendment');
-    const commentTab = document.getElementById('tab-comment');
-
-    if (amendmentTab) {
-        amendmentTab.classList.toggle('disabled', isSummaryMode);
-        if (isSummaryMode) amendmentTab.setAttribute('aria-disabled', 'true');
-        else amendmentTab.removeAttribute('aria-disabled');
-    }
-
-    if (commentTab) {
-        commentTab.classList.toggle('disabled', isSummaryMode);
-        if (isSummaryMode) commentTab.setAttribute('aria-disabled', 'true');
-        else commentTab.removeAttribute('aria-disabled');
-    }
 }
 
 /**
@@ -890,7 +855,6 @@ function handleDeletePromptConfirm(category) {
 
     updateDotIndicators();
     updateReviewButton();
-    updateTabDisabledState();
     updateTokenEstimate();
 }
 
