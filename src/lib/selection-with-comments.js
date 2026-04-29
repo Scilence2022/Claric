@@ -205,26 +205,29 @@ export function formatSelectionWithComments(ooxml, commentsInDocOrder) {
         .map((s) => s.value)
         .join('');
 
-    // Partition threads by marker case. Task 1a only handles FULLY_INSIDE
-    // positional pairing; HEAD/TAIL/BOTH_OUTSIDE detected and skipped with a
-    // diagnostic log (Task 1b lights them up).
+    // Partition threads by marker case.
+    //   - BOTH_OUTSIDE → no markers in OOXML; wrap entire assembled selection
+    //     once, after the positional emission pass completes.
+    //   - FULLY_INSIDE / HEAD_OUTSIDE / TAIL_OUTSIDE → positional, paired by
+    //     w:id-first-appearance order.
+    const bothOutsideThreads = [];
     const positionalThreads = [];
     for (const t of (commentsInDocOrder || [])) {
         const markerCase = RELATION_TO_CASE[t.locationRelation];
-        if (markerCase === MARKER_CASE.FULLY_INSIDE) {
-            positionalThreads.push({ thread: t, markerCase });
-        } else if (markerCase) {
-            console.warn('[selection-with-comments] Task 1b case not yet implemented; skipping', {
-                id: t.id, locationRelation: t.locationRelation, markerCase,
-            });
-        } else {
+        if (!markerCase) {
             console.warn('[selection-with-comments] unknown locationRelation, skipping thread', {
                 id: t.id, locationRelation: t.locationRelation,
             });
+            continue;
+        }
+        if (markerCase === MARKER_CASE.BOTH_OUTSIDE) {
+            bothOutsideThreads.push(t);
+        } else {
+            positionalThreads.push({ thread: t, markerCase });
         }
     }
 
-    if (positionalThreads.length === 0) {
+    if (positionalThreads.length === 0 && bothOutsideThreads.length === 0) {
         return plainText;
     }
 
@@ -259,6 +262,18 @@ export function formatSelectionWithComments(ooxml, commentsInDocOrder) {
     const out = [];
     const openEmitted = new Set();
     const closeEmitted = new Set();
+
+    // HEAD_OUTSIDE pre-pass: open token belongs at offset 0 because the OOXML
+    // has no commentRangeStart inside the selection (range begins before).
+    for (let i = 0; i < pairCount; i++) {
+        const wId = wIdOrder[i];
+        const { markerCase } = positionalThreads[i];
+        if (markerCase === MARKER_CASE.HEAD_OUTSIDE && !openEmitted.has(wId)) {
+            out.push(openTokenForId.get(wId));
+            openEmitted.add(wId);
+        }
+    }
+
     for (const seg of segments) {
         if (seg.kind === 'text') {
             out.push(seg.value);
@@ -276,5 +291,29 @@ export function formatSelectionWithComments(ooxml, commentsInDocOrder) {
             }
         }
     }
-    return out.join('');
+
+    // TAIL_OUTSIDE post-pass: close token belongs at end because the OOXML has
+    // no commentRangeEnd inside the selection (range continues past).
+    for (let i = 0; i < pairCount; i++) {
+        const wId = wIdOrder[i];
+        const { markerCase } = positionalThreads[i];
+        if (markerCase === MARKER_CASE.TAIL_OUTSIDE && !closeEmitted.has(wId)) {
+            out.push(closeTokenForId.get(wId));
+            const r = repliesForId.get(wId);
+            if (r) out.push(r);
+            closeEmitted.add(wId);
+        }
+    }
+
+    let assembled = out.join('');
+
+    // BOTH_OUTSIDE wrap: each thread wraps the entire assembled selection
+    // (nested in input order if there are multiple).
+    for (const t of bothOutsideThreads) {
+        const tokens = RENDER_DISPATCH[MARKER_CASE.BOTH_OUTSIDE](t);
+        const replies = renderReplies(t.replies);
+        assembled = `${tokens.open}${assembled}${tokens.close}${replies}`;
+    }
+
+    return assembled;
 }

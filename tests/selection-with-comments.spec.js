@@ -243,10 +243,15 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
 
     it('both outside: selection inside comment range — wraps entire selection in annotation envelope', () => {
         expect(loadError).toBeNull();
+        // commentRange.compareLocationWith(selectionRange) returns 'Contains'
+        // when the comment range fully contains the selection (research §
+        // RELATION_TO_CASE table; verified against learn.microsoft.com/word.locationrelation).
+        // The comparator direction is comment-vs-selection, NOT selection-vs-comment,
+        // so "selection inside comment range" means commentRange Contains selection.
         const thread = makeThread({
             id: 'c0',
             content: 'comment fully contains selection',
-            locationRelation: 'Inside', // selection is Inside the comment range
+            locationRelation: 'Contains',
         });
 
         const result = formatSelectionWithComments(FIXTURE_4_BOTH_OUTSIDE, [thread]);
@@ -295,9 +300,14 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
         expect(result).toContain('end');
     });
 
-    it('mixed status: resolved + open threads — renders status marker only on resolved', () => {
+    it('mixed status: resolved thread carries (resolved) marker; open thread does not', () => {
         expect(loadError).toBeNull();
-        // FIXTURE_1 with two co-anchored threads (one resolved, one open).
+        // Plan 01 SUMMARY § Next Phase Readiness recommended tightening this
+        // assertion away from a positional-distance heuristic (which couldn't
+        // distinguish two co-anchored threads on a single w:id pair) toward
+        // exact occurrence counting + structural co-location. We split into two
+        // independent passes — one fixture, one thread per pass — which
+        // mirrors real Word OOXML semantics (one Comment per w:id).
         const openThread = makeThread({
             id: 'c0',
             content: 'open thread',
@@ -307,7 +317,7 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
             locationRelation: 'Inside',
         });
         const resolvedThread = makeThread({
-            id: 'c1',
+            id: 'c0',
             content: 'resolved thread',
             author: 'Bob',
             date: '2026-01-02T00:00:00Z',
@@ -315,22 +325,26 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
             locationRelation: 'Inside',
         });
 
-        const result = formatSelectionWithComments(FIXTURE_1_FULLY_INSIDE, [openThread, resolvedThread]);
+        const openOnly = formatSelectionWithComments(FIXTURE_1_FULLY_INSIDE, [openThread]);
+        const resolvedOnly = formatSelectionWithComments(FIXTURE_1_FULLY_INSIDE, [resolvedThread]);
 
-        // Resolved marker present once (only the resolved thread carries it).
-        expect(result).toContain(ANNOTATION_TOKENS.RESOLVED_MARK);
-        // The open thread's content present without an attached resolved marker
-        // immediately following (cheap proxy: "open thread" + RESOLVED_MARK on
-        // the same annotation block would be wrong).
-        const openIdx = result.indexOf('open thread');
-        const resolvedMarkIdx = result.indexOf(ANNOTATION_TOKENS.RESOLVED_MARK);
-        const resolvedContentIdx = result.indexOf('resolved thread');
+        // Open thread output: zero RESOLVED_MARK occurrences.
+        expect(openOnly).toContain('open thread');
+        expect(openOnly).not.toContain(ANNOTATION_TOKENS.RESOLVED_MARK);
+
+        // Resolved thread output: exactly one RESOLVED_MARK occurrence,
+        // structurally co-located with the resolved thread's content (same
+        // annotation envelope — appears between the opening '[COMMENT' and
+        // the colon that ends the open token, before the body content).
+        expect(resolvedOnly).toContain('resolved thread');
+        const resolvedMarkCount = resolvedOnly.split(ANNOTATION_TOKENS.RESOLVED_MARK).length - 1;
+        expect(resolvedMarkCount).toBe(1);
+        const markIdx = resolvedOnly.indexOf(ANNOTATION_TOKENS.RESOLVED_MARK);
+        const openIdx = resolvedOnly.indexOf(ANNOTATION_TOKENS.OPEN_BRACKET);
+        const contentIdx = resolvedOnly.indexOf('resolved thread');
         expect(openIdx).toBeGreaterThanOrEqual(0);
-        expect(resolvedMarkIdx).toBeGreaterThanOrEqual(0);
-        expect(resolvedContentIdx).toBeGreaterThanOrEqual(0);
-        // Resolved marker should be closer to the resolved thread than to the open one.
-        expect(Math.abs(resolvedMarkIdx - resolvedContentIdx))
-            .toBeLessThan(Math.abs(resolvedMarkIdx - openIdx));
+        expect(markIdx).toBeGreaterThan(openIdx);
+        expect(markIdx).toBeLessThan(contentIdx);
     });
 
     it('tracked changes: comment markers inside <w:ins> still anchor correctly', () => {
