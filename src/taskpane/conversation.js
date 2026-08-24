@@ -168,7 +168,11 @@ export function createConversation(deps) {
      * them (word-actions cleans up the chunk bookmarks either way).
      */
     async function stageDocumentProposal(outcome, msg) {
-        const amendedChunks = outcome.results.filter((r) => r.status === 'fulfilled' && r.amendment);
+        // Only offer chunks whose amendment actually differs from the
+        // original text — an LLM echo of the input is not a proposal.
+        const amendedChunks = outcome.results.filter((r) => r.status === 'fulfilled'
+            && r.amendment
+            && _normalizeText(r.amendment) !== _normalizeText(chunkOriginalText(r)));
 
         if (amendedChunks.length === 0) {
             await outcome.discard();
@@ -178,7 +182,7 @@ export function createConversation(deps) {
             return;
         }
 
-        const beforeChars = amendedChunks.reduce((s, r) => s + (((r.chunk && r.chunk.text) || '').length), 0);
+        const beforeChars = amendedChunks.reduce((s, r) => s + chunkOriginalText(r).length, 0);
         const afterChars = amendedChunks.reduce((s, r) => s + (r.amendment || '').length, 0);
         msg.setStatus('');
 
@@ -473,14 +477,40 @@ function getCommentInstructions() {
 }
 
 /**
+ * Returns the original text of a chunk result. DocumentChunks carry
+ * `paragraphs` (no flat `text` field), so join the paragraph texts; the
+ * `.text` fallback covers ad-hoc chunk shapes (e.g. retry payloads).
+ *
+ * @param {object} result - ChunkResult ({ chunk })
+ * @returns {string}
+ */
+export function chunkOriginalText(result) {
+    const c = (result && result.chunk) || {};
+    if (Array.isArray(c.paragraphs)) {
+        return c.paragraphs.map((p) => ((p && p.text) || '')).join('\n');
+    }
+    return c.text || '';
+}
+
+/**
+ * Normalizes text for change detection: CRLF → LF, then trim. Used to decide
+ * whether an LLM amendment actually differs from the original chunk text.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function _normalizeText(s) {
+    return (s || '').replace(/\r\n/g, '\n').trim();
+}
+
+/**
  * Builds citation-pill data for a processed chunk: label and search text are
  * the chunk's first non-empty paragraph (heading or first ~6 words).
  *
  * @param {object} chunk - DocumentChunk ({ id, paragraphs })
  * @returns {{ label: string, searchText: string }}
  */
-export function chunkCitation(chunk) {
-    const firstPara = (chunk.paragraphs || []).map((p) => p.text || '').find((t) => t.trim()) || '';
+export function chunkCitation(chunk) {    const firstPara = (chunk.paragraphs || []).map((p) => p.text || '').find((t) => t.trim()) || '';
     const words = firstPara.trim().split(/\s+/).filter(Boolean);
     const label = words.slice(0, 6).join(' ') || chunk.id || 'Section';
     return { label, searchText: firstPara.trim() };

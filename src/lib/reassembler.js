@@ -254,7 +254,8 @@ function _alignParagraphs(origParas, newParas) {
  * @param {boolean} trackChangesEnabled - Whether to enable tracked changes
  * @param {boolean} lineDiffEnabled - Whether to use sentence-diff vs token-map for fallback
  * @param {function} log - Logging callback
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} True when changes were written; false when the
+ *   amended text matched the original (nothing to do)
  * @private
  */
 async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log) {
@@ -302,7 +303,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   if (origTexts.length === amendedLines.length &&
       origTexts.every((t, i) => t.trim() === amendedLines[i].trim())) {
     log('Paragraph-level: no changes detected, skipping');
-    return;
+    return false;
   }
 
   // Align paragraphs
@@ -386,6 +387,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   }
 
   log('Paragraph-level amendment applied successfully');
+  return true;
 }
 
 /**
@@ -438,7 +440,7 @@ export async function bookmarkChunkRanges(chunks) {
  * @param {boolean} options.trackChangesEnabled
  * @param {boolean} options.lineDiffEnabled - use sentence-diff vs token-map for fallback
  * @param {function} options.log
- * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, errors: string[]}>}
+ * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, noChangeCount: number, errors: string[]}>}
  */
 export async function applyChunkResults(results, bookmarkMap, options) {
   const {
@@ -449,6 +451,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
 
   let amendmentsApplied = 0;
   let commentsInserted = 0;
+  let noChangeCount = 0;
   const errors = [];
 
   // Collect rejected/cancelled errors for reporting
@@ -473,6 +476,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     }
 
     try {
+      let chunkApplied = false;
       await Word.run(async (context) => {
         const range = context.document.getBookmarkRangeOrNullObject(bookmarkName);
         range.load('isNullObject,text');
@@ -484,11 +488,12 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         }
 
         // Try paragraph-level strategy first (preserves formatting)
+        let applied;
         try {
-          await _applyParagraphLevelAmendment(
+          applied = await _applyParagraphLevelAmendment(
             context, range, result.amendment,
             trackChangesEnabled, lineDiffEnabled, log
-          );
+          ) !== false;
         } catch (paraErr) {
           log(`Chunk ${result.chunkId}: paragraph-level strategy failed (${paraErr.message}), falling back to range-level`, 'warning');
 
@@ -513,11 +518,22 @@ export async function applyChunkResults(results, bookmarkMap, options) {
             context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
             await context.sync();
           }
+          applied = true;
+        }
+
+        if (!applied) {
+          noChangeCount++;
+        } else {
+          chunkApplied = true;
         }
       });
 
-      amendmentsApplied++;
-      log(`Chunk ${result.chunkId}: amendment applied`, 'info');
+      if (chunkApplied) {
+        amendmentsApplied++;
+        log(`Chunk ${result.chunkId}: amendment applied`, 'info');
+      } else {
+        log(`Chunk ${result.chunkId}: no changes needed`, 'info');
+      }
     } catch (err) {
       errors.push(`Chunk ${result.chunkId}: ${err.message || String(err)}`);
       log(`Chunk ${result.chunkId}: amendment failed -- ${err.message}`, 'error');
@@ -578,7 +594,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     await _yieldToEventLoop();
   }
 
-  return { amendmentsApplied, commentsInserted, errors };
+  return { amendmentsApplied, commentsInserted, noChangeCount, errors };
 }
 
 /**

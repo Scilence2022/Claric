@@ -235,6 +235,38 @@ describe('createConversation.submit', () => {
     expect(view._msg.setStatus).toHaveBeenCalledWith('The model proposed no changes.');
   });
 
+  test('amendment identical to the original chunk text is discarded (LLM echo)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{
+        status: 'fulfilled',
+        amendment: 'Para one\nPara two',
+        chunk: { id: 'c0', paragraphs: [{ text: 'Para one' }, { text: 'Para two' }] },
+      }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'Para one' }, { text: 'Para two' }] }],
+      apply: jest.fn(),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({
+      runDocumentSkill: jest.fn(async () => staged),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionState: async () => false,
+    });
+
+    await conv.submit('please polish the whole document');
+
+    expect(staged.discard).toHaveBeenCalledTimes(1);
+    expect(staged.apply).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith('The model proposed no changes.');
+  });
+
   test('summary skill routes to the summary pipeline', async () => {
     const appState = makeAppState();
     const actions = makeActions();
