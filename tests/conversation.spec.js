@@ -97,6 +97,33 @@ describe('routeTurn', () => {
     expect(turn.question).toBe('what does clause 5 say?');
   });
 
+  test('edit intent without selection routes to document edit (EN)', () => {
+    const turn = routeTurn('please proofread and fix this document', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_EDIT);
+    expect(turn.instruction).toBe('please proofread and fix this document');
+  });
+
+  test('edit intent without selection routes to document edit (ZH)', () => {
+    const turn = routeTurn('全文润色检查,请直接在word中修订', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_EDIT);
+    expect(turn.instruction).toBe('全文润色检查,请直接在word中修订');
+  });
+
+  test('question lead beats edit verbs ("how should I improve...")', () => {
+    const turn = routeTurn('how should I improve this section?', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('question lead beats edit verbs (ZH "如何修改")', () => {
+    const turn = routeTurn('如何修改第三章更好?', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('edit intent with a selection still routes to selection edit', () => {
+    const turn = routeTurn('polish this', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
+  });
+
   test('empty input returns null', () => {
     expect(routeTurn('   ', { hasSelection: false, skills: BUILTIN_SKILLS })).toBeNull();
     expect(routeTurn('', { hasSelection: true, skills: BUILTIN_SKILLS })).toBeNull();
@@ -139,6 +166,23 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
     expect(actions.answerQuestion.mock.calls[0][1].question).toBe('what is this document about?');
     expect(view._msg.setText).toHaveBeenCalledWith('the answer');
+  });
+
+  test('edit intent without selection runs the document amendment pipeline', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionState: async () => false,
+    });
+
+    await conv.submit('please polish the whole document');
+
+    expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
+    expect(actions.runDocumentSkill.mock.calls[0][1].category).toBe('amendment');
+    expect(actions.runDocumentSkill.mock.calls[0][1].promptTemplate).toBe('please polish the whole document');
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
   });
 
   test('summary skill routes to the summary pipeline', async () => {
