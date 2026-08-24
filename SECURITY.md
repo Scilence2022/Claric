@@ -25,7 +25,11 @@ What this project does and does not promise:
   prompt-injection turning into live markup in generated summaries.
 - **Static server** — the production server (`scripts/docker-server.cjs`)
   rejects path traversal, malformed percent-encoded URLs, and non-GET/HEAD
-  methods; it serves only files under `dist/` plus the generated manifest.
+  methods (except on the LLM proxy paths); it serves files under `dist/`
+  plus the generated manifest.
+- **LLM proxy** — `/ollama` and `/vllm` are proxied to the upstreams set
+  via `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET`, forwarding request bodies
+  and the `Authorization` header. Configure only upstreams you trust.
 - **TLS required** — Word requires HTTPS for add-in hosting. Certificate
   files are mounted read-only into the container.
 - **API keys** — stored client-side in `localStorage` scoped to the add-in

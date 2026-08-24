@@ -189,10 +189,12 @@ docker compose up -d
 
 8. **Point the add-in at your LLM backend**
 
-   The production container does not proxy LLM traffic (that is a webpack
-   dev-server feature). In the add-in's Settings, set the Endpoint URL to an
-   absolute URL reachable from the machine running Word, e.g.
-   `https://llm-host:11434` (Ollama) or `https://llm-host:8026` (vLLM).
+   The container proxies the `/ollama` and `/vllm` paths to the upstreams in
+   your `.env` (defaults: `host.docker.internal:11434` / `:8026`), so the
+   add-in's default Settings work with no extra configuration -- the LLM
+   traffic stays same-origin, avoiding mixed-content and CORS issues. For a
+   remote backend, set the `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET` values
+   (or enter an absolute URL in the add-in Settings).
 
 ---
 
@@ -368,7 +370,7 @@ For full details, see the [Microsoft sideloading guide](https://learn.microsoft.
 | Word cannot load the add-in | Verify `HOST` in `.env` is reachable from Word |
 | Manifest not generated | Ensure `.env` exists before running `npm start`; with Docker, fetch it from `https://<HOST>:<HOST_PORT>/manifest.xml` |
 | Firewall issues | Allow inbound TCP 3000 (or your `HOST_PORT`) on the server |
-| LLM connection fails in production | The production server has no LLM proxy -- set an absolute Endpoint URL in the add-in Settings |
+| LLM connection fails in production | Check `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET` in `.env` and that the upstream is running; the container reaches the host via `host.docker.internal` |
 | Container restarts repeatedly | Check `docker logs` -- missing SSL cert files or a broken build exit with a clear message |
 
 ---
@@ -385,6 +387,11 @@ For full details, see the [Microsoft sideloading guide](https://learn.microsoft.
 | `SSL_CERT_FILE` | `server.pem` | Path to SSL certificate |
 | `SSL_KEY_FILE` | `server-key.pem` | Path to SSL private key |
 | `ADDIN_GUID` | *(generated)* | Stable add-in identity; auto-generated and persisted to `.manifest-guid` on first manifest generation. Pin it in Docker so container recreation keeps the identity. |
+| `OLLAMA_PROXY_PATH` | `/ollama` | Proxy path for the Ollama backend (empty disables) |
+| `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama base URL (`http://host.docker.internal:11434` in Docker) |
+| `VLLM_PROXY_PATH` | `/vllm` | Proxy path for the vLLM backend (empty disables) |
+| `VLLM_PROXY_TARGET` | `http://localhost:8026` | Upstream vLLM base URL (`http://host.docker.internal:8026` in Docker) |
+| `LLM_PROXY_TIMEOUT_MS` | `300000` | Proxy upstream timeout in ms |
 
 ### Dev server only (webpack)
 

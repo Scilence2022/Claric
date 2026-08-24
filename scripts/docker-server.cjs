@@ -2,18 +2,26 @@
  * Production static file server for the Word AI Redliner add-in.
  *
  * Serves the webpack build output (dist/) plus the generated manifest.xml
- * over HTTPS (default) or HTTP (PROTOCOL=http) for local testing.
+ * over HTTPS (default) or HTTP (PROTOCOL=http) for local testing, and
+ * optionally proxies LLM API traffic on the same origin (/ollama, /vllm).
  *
  * Environment variables:
- *   PORT            - listen port (default 3000)
- *   PROTOCOL        - 'https' (default) or 'http'
- *   SSL_CERT_FILE   - cert path, relative to project root or absolute
- *   SSL_KEY_FILE    - key path, relative to project root or absolute
+ *   PORT                  - listen port (default 3000)
+ *   PROTOCOL              - 'https' (default) or 'http'
+ *   SSL_CERT_FILE         - cert path, relative to project root or absolute
+ *   SSL_KEY_FILE          - key path, relative to project root or absolute
+ *   OLLAMA_PROXY_PATH     - proxy path for Ollama (default /ollama; empty disables)
+ *   OLLAMA_PROXY_TARGET   - upstream Ollama base URL (default http://localhost:11434)
+ *   VLLM_PROXY_PATH       - proxy path for vLLM (default /vllm; empty disables)
+ *   VLLM_PROXY_TARGET     - upstream vLLM base URL (default http://localhost:8026)
+ *   LLM_PROXY_TIMEOUT_MS  - upstream request timeout (default 300000 = 5 min)
  *
- * Note: this server intentionally does NOT proxy LLM traffic (unlike the
- * webpack dev server). In production the add-in talks to the LLM backend
- * directly, so its endpoint URL must be absolute and reachable from the
- * client machine.
+ * Why proxy LLM traffic at all: the add-in's UI defaults its backend URLs
+ * to '/ollama' and '/vllm'. Serving those paths from the same HTTPS origin
+ * avoids mixed-content blocking (https page fetching http://localhost) and
+ * CORS configuration on the backend. This matters most when Word runs on
+ * the same machine as the LLM (the common local-AI setup). Reach the host
+ * from inside a Docker container via `host.docker.internal`.
  */
 
 const fs = require('fs');
@@ -30,15 +38,30 @@ const manifestPath = path.join(rootDir, 'manifest.xml');
 // a bounded window instead of the 2-minute node default.
 const REQUEST_TIMEOUT_MS = 60000;
 const SHUTDOWN_TIMEOUT_MS = 10000;
+const DEFAULT_LLM_PROXY_TIMEOUT_MS = 300000;
+
+// LLM proxy routes, built once in startServer from environment variables.
+let PROXY_ROUTES = [];
 
 function getEnv() {
   return {
     PORT: process.env.PORT || '3000',
     PROTOCOL: process.env.PROTOCOL || 'https',
     SSL_CERT_FILE: process.env.SSL_CERT_FILE || 'server.pem',
-    SSL_KEY_FILE: process.env.SSL_KEY_FILE || 'server-key.pem'
+    SSL_KEY_FILE: process.env.SSL_KEY_FILE || 'server-key.pem',
+    OLLAMA_PROXY_PATH: process.env.OLLAMA_PROXY_PATH || '/ollama',
+    OLLAMA_PROXY_TARGET: process.env.OLLAMA_PROXY_TARGET || 'http://localhost:11434',
+    VLLM_PROXY_PATH: process.env.VLLM_PROXY_PATH || '/vllm',
+    VLLM_PROXY_TARGET: process.env.VLLM_PROXY_TARGET || 'http://localhost:8026',
+    LLM_PROXY_TIMEOUT_MS: parseInt(process.env.LLM_PROXY_TIMEOUT_MS || String(DEFAULT_LLM_PROXY_TIMEOUT_MS), 10)
   };
 }
+
+// Headers that must not be forwarded to an upstream (RFC 7230 hop-by-hop).
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'
+]);
 
 function getContentType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -119,6 +142,127 @@ function serveFile(res, filePath) {
   });
 }
 
+/**
+ * Builds LLM proxy routes from environment variables.
+ *
+ * A route is created only when both a path and a reachable http(s) target
+ * are configured; an empty path disables that backend entirely.
+ *
+ * @param {object} env - Result of getEnv()
+ * @returns {Array<{proxyPath: string, targetUrl: URL, timeoutMs: number, agent: object|null}>}
+ */
+function buildProxyRoutes(env) {
+  const routes = [];
+  const backends = [
+    ['OLLAMA_PROXY_PATH', 'OLLAMA_PROXY_TARGET'],
+    ['VLLM_PROXY_PATH', 'VLLM_PROXY_TARGET'],
+  ];
+
+  for (const [pathKey, targetKey] of backends) {
+    const proxyPath = env[pathKey];
+    const target = env[targetKey];
+    if (!proxyPath || !target) continue;
+
+    let targetUrl;
+    try {
+      targetUrl = new URL(target);
+    } catch {
+      console.error(`Ignoring ${targetKey} (invalid URL): ${target}`);
+      continue;
+    }
+    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+      console.error(`Ignoring ${targetKey} (must be http or https): ${target}`);
+      continue;
+    }
+
+    routes.push({
+      proxyPath: proxyPath.replace(/\/+$/, ''),
+      targetUrl,
+      timeoutMs: env.LLM_PROXY_TIMEOUT_MS,
+      agent: null,
+    });
+  }
+  return routes;
+}
+
+/**
+ * Proxies an API request to the configured upstream LLM backend.
+ *
+ * The path suffix after the proxy prefix (including the query string) is
+ * forwarded verbatim. Response status/headers stream back as-is; failures
+ * before the response starts yield 502, timeouts yield 504.
+ *
+ * @param {object} route - Entry from buildProxyRoutes()
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} urlPath - Decoded request path (no query string)
+ */
+function handleProxyRequest(route, req, res, urlPath) {
+  // Same-origin from the add-in's perspective, but the WebView may still
+  // issue a preflight; answer it like the dev-server proxy does.
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return;
+  }
+
+  const query = req.url.split('?')[1];
+  const upstreamPath = urlPath.slice(route.proxyPath.length) + (query ? `?${query}` : '');
+  const upstream = new URL(upstreamPath, route.targetUrl);
+
+  const headers = {};
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (HOP_BY_HOP_HEADERS.has(name)) continue;
+    headers[name] = value;
+  }
+  headers.host = route.targetUrl.host;
+
+  if (!route.agent) {
+    const AgentCtor = route.targetUrl.protocol === 'https:' ? https.Agent : http.Agent;
+    route.agent = new AgentCtor({ keepAlive: true, maxSockets: 50, maxFreeSockets: 10 });
+  }
+
+  const client = route.targetUrl.protocol === 'https:' ? https : http;
+  let timedOut = false;
+
+  const proxyReq = client.request(
+    {
+      method: req.method,
+      hostname: upstream.hostname,
+      port: upstream.port || (upstream.protocol === 'https:' ? 443 : 80),
+      path: upstream.pathname + upstream.search,
+      headers,
+      agent: route.agent,
+    },
+    (proxyRes) => {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+    }
+  );
+
+  proxyReq.setTimeout(route.timeoutMs, () => {
+    timedOut = true;
+    proxyReq.destroy();
+  });
+
+  proxyReq.on('error', (err) => {
+    const reason = err.message || err.code || 'unknown upstream error';
+    console.error(`[${route.proxyPath} Proxy Error]`, reason);
+    if (!res.headersSent) {
+      sendError(res, timedOut ? 504 : 502, timedOut ? 'LLM upstream timed out' : `LLM proxy error: ${reason}`);
+    } else {
+      res.end();
+    }
+  });
+
+  req.pipe(proxyReq);
+}
+
 function requestHandler(req, res) {
   let urlPath;
   try {
@@ -126,12 +270,6 @@ function requestHandler(req, res) {
   } catch {
     // Malformed percent-encoding (e.g. GET /%) -- reject, never crash.
     sendError(res, 400, 'Bad request');
-    return;
-  }
-
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    res.setHeader('Allow', 'GET, HEAD');
-    sendError(res, 405, 'Method not allowed');
     return;
   }
 
@@ -145,6 +283,23 @@ function requestHandler(req, res) {
       'Cache-Control': 'no-store'
     });
     res.end(JSON.stringify({ status: 'ok' }));
+    return;
+  }
+
+  // LLM proxy routes are matched before the GET/HEAD static restriction:
+  // chat completions are POST, and the add-in talks to '/ollama'/'/vllm'
+  // on this same origin.
+  const proxyRoute = PROXY_ROUTES.find(
+    (route) => urlPath === route.proxyPath || urlPath.startsWith(route.proxyPath + '/')
+  );
+  if (proxyRoute) {
+    handleProxyRequest(proxyRoute, req, res, urlPath);
+    return;
+  }
+
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.setHeader('Allow', 'GET, HEAD');
+    sendError(res, 405, 'Method not allowed');
     return;
   }
 
@@ -223,6 +378,13 @@ function startServer() {
   }
 
   const env = getEnv();
+  PROXY_ROUTES = buildProxyRoutes(env);
+  if (PROXY_ROUTES.length > 0) {
+    console.log(
+      'LLM proxy: ' +
+      PROXY_ROUTES.map((r) => `${r.proxyPath} -> ${r.targetUrl.href} (${r.timeoutMs}ms timeout)`).join(', ')
+    );
+  }
   const port = Number(env.PORT);
 
   if (env.PROTOCOL === 'http') {
