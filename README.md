@@ -15,7 +15,7 @@ extraction and tracked changes analysis.
 ## Features
 
 ### Core: AI Redlining (v0.1.0)
-- Word-level diffs with tracked changes via [office-word-diff](https://github.com/niclasgrunworked/office-word-diff)
+- Word-level diffs with tracked changes via [office-word-diff](https://github.com/yuch85/office-word-diff)
 - Token map strategy with sentence fallback, block replace as last resort
 - Configurable LLM backends: Ollama and vLLM (OpenAI-compatible)
 
