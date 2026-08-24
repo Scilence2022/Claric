@@ -355,10 +355,18 @@ For full details, see the [Microsoft sideloading guide](https://learn.microsoft.
 
 ### Word on Mac
 
-1. Start the server (`docker compose up -d` or `npm start`).
-2. Open Word → **Insert** → **Add-ins** → **My Add-ins**.
-3. Click **Add a custom add-in** → **Add from file...** → select `manifest.xml`.
-4. Trust the certificate in Keychain if prompted.
+Mac's Word has no "Add from file" dialog -- sideloading uses the `wef`
+container folder (see [Microsoft's Mac sideloading guide](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/sideload-an-office-add-in-on-mac)):
+
+1. Make sure the server is running (`docker compose up -d`).
+2. Open Finder and press ⌘+Shift+G, then enter:
+   `~/Library/Containers/com.microsoft.Word/Data/Documents/wef`
+   (create the `wef` folder if it does not exist).
+3. Copy the `manifest.xml` into that folder. The file lives on the server:
+   `https://<HOST>:<HOST_PORT>/manifest.xml` (save it from a browser).
+4. Fully quit Word (⌘Q) and reopen it -- loaded only at launch.
+5. Go to the **Home** tab → **Add-ins** → select **Word AI Redliner**.
+6. Trust the certificate in Keychain if prompted.
 
 ---
 
