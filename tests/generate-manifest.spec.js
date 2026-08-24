@@ -85,6 +85,19 @@ describe('generate-manifest.cjs', () => {
   });
 
   describe('generateManifest', () => {
+    test('HOST_PORT takes precedence over PORT for manifest URLs', () => {
+        const oldEnv = { ...process.env };
+        process.env.HOST_PORT = '4123';
+        process.env.PORT = '3000';
+        try {
+            const outPath = generateManifest({ rootDir: projectDir });
+            const xml = fs.readFileSync(outPath, 'utf8');
+            expect(xml).toContain('localhost:4123/');
+        } finally {
+            process.env = oldEnv;
+        }
+    });
+
     test('writes a manifest with a real GUID, 4-part version, and URLs', () => {
       const outPath = generateManifest({ rootDir: projectDir });
       expect(outPath).toBe(path.join(projectDir, 'manifest.xml'));

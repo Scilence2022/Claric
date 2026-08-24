@@ -415,7 +415,7 @@ those overrides persist in localStorage.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HOST_PORT` | `3000` | Host-side port published by compose (container always listens on 3000) |
+| `HOST_PORT` | `3000` | Host-side port published by compose; also used for manifest URLs (the container listens internally on `PORT`) |
 
 ---
 

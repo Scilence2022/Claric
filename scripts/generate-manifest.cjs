@@ -8,6 +8,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * Loads manifest-related environment variables (with .env support).
  *
+ * HOST_PORT takes precedence over PORT: manifest URLs must reference the
+ * host-visible port, while a container may listen on a different internal
+ * port (docker-compose publishes HOST_PORT -> 3000).
+ *
  * @param {string} rootDir - Project root (used to locate .env)
  * @returns {{ HOST: string, PORT: string, PROTOCOL: string, ADDIN_GUID: string|null }}
  */
@@ -15,7 +19,7 @@ function getEnv(rootDir) {
   dotenv.config({ path: path.join(rootDir, '.env') });
   return {
     HOST: process.env.HOST || 'localhost',
-    PORT: process.env.PORT || '3000',
+    PORT: process.env.HOST_PORT || process.env.PORT || '3000',
     PROTOCOL: process.env.PROTOCOL || 'https',
     ADDIN_GUID: process.env.ADDIN_GUID || null,
   };
