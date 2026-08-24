@@ -1,23 +1,116 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const dotenv = require('dotenv');
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Loads manifest-related environment variables (with .env support).
+ *
+ * @param {string} rootDir - Project root (used to locate .env)
+ * @returns {{ HOST: string, PORT: string, PROTOCOL: string, ADDIN_GUID: string|null }}
+ */
 function getEnv(rootDir) {
   dotenv.config({ path: path.join(rootDir, '.env') });
   return {
     HOST: process.env.HOST || 'localhost',
     PORT: process.env.PORT || '3000',
-    PROTOCOL: process.env.PROTOCOL || 'https'
+    PROTOCOL: process.env.PROTOCOL || 'https',
+    ADDIN_GUID: process.env.ADDIN_GUID || null,
   };
 }
 
-function renderTemplate(template, env) {
-  return template
-    .replace(/\$\{HOST\}/g, env.HOST)
-    .replace(/\$\{PORT\}/g, env.PORT)
-    .replace(/\$\{PROTOCOL\}/g, env.PROTOCOL);
+/**
+ * Escapes XML special characters so env values cannot break the manifest.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
+/**
+ * Substitutes ${NAME} placeholders in the manifest template.
+ * Unknown placeholders are left untouched so they are easy to spot
+ * in validation errors rather than silently producing empty values.
+ *
+ * @param {string} template
+ * @param {Record<string, string>} values
+ * @returns {string}
+ */
+function renderTemplate(template, values) {
+  return template.replace(/\$\{(\w+)\}/g, (match, name) =>
+    Object.prototype.hasOwnProperty.call(values, name)
+      ? escapeXml(values[name])
+      : match
+  );
+}
+
+/**
+ * Resolves the add-in GUID.
+ *
+ * Word identifies an add-in by its manifest GUID. A stable GUID is required:
+ * a new GUID on every restart makes Word treat the add-in as newly installed
+ * (trust prompts and per-add-in state reset each time). Resolution order:
+ *
+ *   1. ADDIN_GUID environment variable (explicit deployment pinning)
+ *   2. Previously generated GUID persisted in <rootDir>/.manifest-guid
+ *   3. A freshly generated random UUID (persisted for future runs)
+ *
+ * @param {string} rootDir
+ * @param {string|null} envGuid
+ * @returns {string}
+ */
+function resolveGuid(rootDir, envGuid) {
+  if (envGuid && UUID_RE.test(envGuid)) {
+    return envGuid.toLowerCase();
+  }
+
+  const guidPath = path.join(rootDir, '.manifest-guid');
+  if (fs.existsSync(guidPath)) {
+    const persisted = fs.readFileSync(guidPath, 'utf8').trim();
+    if (UUID_RE.test(persisted)) {
+      return persisted.toLowerCase();
+    }
+  }
+
+  const generated = crypto.randomUUID();
+  fs.writeFileSync(guidPath, generated, 'utf8');
+  return generated;
+}
+
+/**
+ * Reads the add-in version from package.json and converts it to the
+ * four-part form required by the Office manifest schema (1.2.3 -> 1.2.3.0).
+ *
+ * @param {string} rootDir
+ * @returns {string}
+ */
+function getVersion(rootDir) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  const parts = String(pkg.version || '0.0.0').split('.');
+  while (parts.length < 4) parts.push('0');
+  return parts.slice(0, 4).join('.');
+}
+
+/**
+ * Generates manifest.xml from manifest.template.xml.
+ *
+ * Placeholders: ${HOST}, ${PORT}, ${PROTOCOL}, ${VERSION}, ${GUID},
+ * ${DISPLAY_NAME}. All substituted values are XML-escaped.
+ *
+ * @param {object} [options]
+ * @param {string} [options.rootDir] - Project root override (defaults to repo root)
+ * @param {string} [options.displayName] - Display name override
+ * @returns {string} Path of the generated manifest
+ */
 function generateManifest(options = {}) {
   const rootDir = options.rootDir || path.resolve(__dirname, '..');
   const templatePath = path.join(rootDir, 'manifest.template.xml');
@@ -29,16 +122,36 @@ function generateManifest(options = {}) {
 
   const env = getEnv(rootDir);
   const template = fs.readFileSync(templatePath, 'utf8');
-  const output = renderTemplate(template, env);
 
+  // Preserve a real UUID already baked into a customized template so teams
+  // that pin their GUID there keep it; otherwise resolve/persist one.
+  const templateGuidMatch = template.match(/<Id>([^<]+)<\/Id>/);
+  const templateGuid = templateGuidMatch && UUID_RE.test(templateGuidMatch[1].trim())
+    ? templateGuidMatch[1].trim()
+    : null;
+
+  const values = {
+    HOST: env.HOST,
+    PORT: env.PORT,
+    PROTOCOL: env.PROTOCOL,
+    VERSION: getVersion(rootDir),
+    GUID: templateGuid || resolveGuid(rootDir, env.ADDIN_GUID),
+    DISPLAY_NAME: options.displayName || 'Word AI Redliner',
+  };
+
+  const output = renderTemplate(template, values);
   fs.writeFileSync(outputPath, output, 'utf8');
   return outputPath;
 }
 
 if (require.main === module) {
-  generateManifest();
+  const out = generateManifest();
+  console.log(`Manifest written to ${out}`);
 }
 
 module.exports = {
-  generateManifest
+  generateManifest,
+  renderTemplate,
+  escapeXml,
+  resolveGuid,
 };
