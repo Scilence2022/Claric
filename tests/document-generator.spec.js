@@ -1,6 +1,10 @@
 /**
+ * @jest-environment jsdom
+ *
  * Unit tests for src/lib/document-generator.js
- * Tests buildSummaryHtml (pure function) and createSummaryDocument (Word API).
+ * Tests buildSummaryHtml (markdown -> sanitized HTML) and
+ * createSummaryDocument (Word API). jsdom is required because DOMPurify
+ * needs a DOM implementation to sanitize against.
  */
 const { buildSummaryHtml, createSummaryDocument } = require('../src/lib/document-generator.js');
 
@@ -264,5 +268,54 @@ describe('createSummaryDocument', () => {
         const mockLog = jest.fn();
         await createSummaryDocument('<p>Content</p>', undefined, mockLog);
         expect(mockLog).toHaveBeenCalledWith('Summary document created', 'success');
+    });
+});
+
+describe('buildSummaryHtml sanitization (XSS)', () => {
+    test('strips script tags injected via LLM output', () => {
+        const html = buildSummaryHtml('<script>alert(1)</script>Summary', []);
+        expect(html).not.toContain('<script');
+        expect(html).toContain('Summary');
+    });
+
+    test('strips event handlers from inline HTML', () => {
+        const html = buildSummaryHtml('<img src=x onerror=alert(1)>text', []);
+        expect(html).not.toContain('onerror');
+    });
+
+    test('strips javascript: URLs from links', () => {
+        const html = buildSummaryHtml('[click](javascript:alert(1))', []);
+        expect(html).not.toContain('javascript:');
+    });
+
+    test('keeps legitimate markdown tables and adds trusted border styles', () => {
+        const html = buildSummaryHtml('| A | B |\n|---|---|\n| 1 | 2 |', []);
+        expect(html).toContain('<table');
+        expect(html).toContain('border-collapse');
+        expect(html).toContain('<th');
+    });
+
+    test('keeps standard formatting tags from LLM markdown', () => {
+        const html = buildSummaryHtml('**bold** and *italic* and `code`', []);
+        expect(html).toContain('<strong>bold</strong>');
+        expect(html).toContain('<em>italic</em>');
+        expect(html).toContain('<code>code</code>');
+    });
+
+    test('escapes annex comment fields (regression guard)', () => {
+        const comments = [{
+            index: 1,
+            author: '<script>a</script>',
+            associatedText: '<img src=x onerror=b>',
+            commentText: '"quoted"'
+        }];
+        const html = buildSummaryHtml('ok', comments);
+        // Raw angle brackets must be escaped to entities, so the payloads
+        // render as text instead of live markup.
+        expect(html).not.toContain('<script>');
+        expect(html).not.toContain('<img');
+        expect(html).toContain('&lt;script&gt;a&lt;/script&gt;');
+        expect(html).toContain('&lt;img src=x onerror=b&gt;');
+        expect(html).toContain('&quot;quoted&quot;');
     });
 });
