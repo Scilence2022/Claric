@@ -1,4 +1,3 @@
-/* global Word */
 
 import { marked } from 'marked';
 

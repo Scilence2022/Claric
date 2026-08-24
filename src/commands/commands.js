@@ -1,4 +1,3 @@
-/* global Office */
 
 Office.onReady(() => {
     // If needed, setup command handlers here

@@ -1,4 +1,3 @@
-/* global Word */
 
 /**
  * Comment Queue Module

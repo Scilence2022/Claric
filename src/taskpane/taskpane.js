@@ -1,4 +1,3 @@
-/* global Word, Office */
 
 // Import CSS for webpack to bundle
 import './taskpane.css';
@@ -7,7 +6,7 @@ import { sendPrompt, testConnection as llmTestConnection, stripMarkdown } from '
 import { PromptManager, CATEGORIES } from '../lib/prompt-manager.js';
 import { CommentQueue } from '../lib/comment-queue.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
-import { extractAllComments, extractDocumentText, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
+import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
 import { parseDelimitedResponse, buildFallbackClassificationPrompt } from '../lib/response-parser.js';
@@ -217,7 +216,6 @@ export function createDispatcher(deps) {
             // Defensive: log and return. Should be impossible if HTML
             // data-action strings stay in sync with the ACTION enum
             // (Plan 02 grep gate).
-            // eslint-disable-next-line no-console
             console.warn('runAction: no route for', key);
             return;
         }
@@ -376,7 +374,7 @@ function initialize() {
                 }
             }
         }
-    } catch (e) { /* detection failed */ }
+    } catch { /* detection failed */ }
     addLog(`Word API version: ${detectedVersion}`, 'info');
 
     // Detect WordApi 1.4 support for comment features
@@ -1284,7 +1282,7 @@ async function handleSummaryGeneration() {
                     docTitle = `Comment Summary - ${props.title}`;
                 }
             });
-        } catch (e) {
+        } catch {
             // Title lookup failed -- use default
         }
 
@@ -1400,9 +1398,9 @@ async function handleReviewSelection({ category, withComment } = {}) {
         if (category === CATEGORY.AMENDMENT) {
             if (withComment) {
                 const commentInstructions = document.getElementById('commentInstructions').value.trim();
-                await handleMergedAmendmentComment(selectionText, commentInstructions, activeBackend);
+                await handleMergedAmendmentComment(selectionText, commentInstructions);
             } else {
-                await handleAmendmentOnly(selectionText, activeBackend);
+                await handleAmendmentOnly(selectionText);
             }
         } else if (category === CATEGORY.COMMENT) {
             if (!supportsComments) {
@@ -1440,7 +1438,7 @@ async function handleReviewSelection({ category, withComment } = {}) {
  * Handles amendment-only submission (no comment instructions).
  * Sends amendment prompt to LLM and applies diff as tracked changes.
  */
-async function handleAmendmentOnly(selectionText, activeBackend) {
+async function handleAmendmentOnly(selectionText) {
     const messages = promptManager.composeMessages(selectionText, 'amendment');
 
     let fullPrompt;
@@ -1484,7 +1482,7 @@ async function handleAmendmentOnly(selectionText, activeBackend) {
  * applies amendment as tracked changes and inserts comment on selection.
  * Falls back to a second LLM call if delimiters are missing.
  */
-async function handleMergedAmendmentComment(selectionText, commentInstructions, activeBackend) {
+async function handleMergedAmendmentComment(selectionText, commentInstructions) {
     const messages = promptManager.composeMergedMessages(selectionText, commentInstructions);
 
     let fullPrompt;

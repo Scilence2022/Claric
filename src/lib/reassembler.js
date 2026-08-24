@@ -1,4 +1,3 @@
-/* global Word */
 
 /**
  * Reassembler Module
@@ -439,7 +438,6 @@ export async function bookmarkChunkRanges(chunks) {
  * @param {boolean} options.trackChangesEnabled
  * @param {boolean} options.lineDiffEnabled - use sentence-diff vs token-map for fallback
  * @param {function} options.log
- * @param {number} [options.commentGranularity=0] - 0=per chunk
  * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, errors: string[]}>}
  */
 export async function applyChunkResults(results, bookmarkMap, options) {
@@ -447,7 +445,6 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     trackChangesEnabled = true,
     lineDiffEnabled = false,
     log = () => {},
-    commentGranularity = 0,
   } = options;
 
   let amendmentsApplied = 0;

@@ -1,4 +1,3 @@
-/* global Word */
 import { applySentenceDiffStrategy, computeDiff } from 'office-word-diff';
 
 export async function runAllVerifications(logCallback) {
@@ -410,6 +409,7 @@ async function verifyTokenMapStrategy(log) {
     });
 }
 
+// eslint-disable-next-line no-unused-vars -- kept for re-enabling; disabled per user request
 async function verifyChunkSearch(log) {
     if (!Office.context.requirements.isSetSupported('WordApi', '1.4')) {
         log('⚠️ WordApi 1.4 not available - skipping complex chunk search test');
@@ -605,7 +605,7 @@ async function verifyOoxmlInsertion(log) {
 
         // Insert at start
         body.insertOoxml(tableOoxml, Word.InsertLocation.start);
-        const paragraph = body.insertParagraph("Test 7 - OOXML Insertion", Word.InsertLocation.start);
+        body.insertParagraph("Test 7 - OOXML Insertion", Word.InsertLocation.start);
         await context.sync();
 
         log("✅ ACTION: Inserted OOXML Table. Please visually verify.");

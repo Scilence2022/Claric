@@ -32,8 +32,7 @@ if (typeof globalThis.DOMParser === 'undefined') {
 let formatSelectionWithComments;
 let loadError = null;
 try {
-    // eslint-disable-next-line global-require
-    ({ formatSelectionWithComments } = require('../src/lib/selection-with-comments.js'));
+      ({ formatSelectionWithComments } = require('../src/lib/selection-with-comments.js'));
 } catch (err) {
     loadError = err;
     // STYLE.md No Silent Failures: log once with context so RED-state output is

@@ -40,7 +40,6 @@ function createMockWordRun(paragraphItems, bookmarkRanges = {}) {
 
   // Build paragraph mock items
   const items = paragraphItems.map((p, i) => {
-    const paraRange = makeRange(p.text, `para-${i}`);
     return {
       text: p.text,
       getRange: jest.fn().mockImplementation((position) => {
@@ -54,9 +53,6 @@ function createMockWordRun(paragraphItems, bookmarkRanges = {}) {
       }),
     };
   });
-
-  // Track expanded ranges for bookmark insertion
-  const expandedRanges = {};
 
   const mockContext = {
     document: {
@@ -141,22 +137,6 @@ function mockChunk(id, index, text, startIndex, endIndex) {
   };
 }
 
-function mockChunkMultiPara(id, index, paragraphs, startIndex, endIndex) {
-  return {
-    id,
-    paragraphs: paragraphs.map((text, i) => ({
-      index: startIndex + i,
-      text,
-      headingLevel: 0,
-    })),
-    startIndex,
-    endIndex,
-    tokenCount: paragraphs.reduce((sum, t) => sum + Math.ceil(t.length / 4), 0),
-    sectionTitle: '',
-    overlapBefore: '',
-  };
-}
-
 function makeChunkResult(chunkId, chunkIndex, status, opts = {}) {
   return {
     chunkId,
@@ -196,7 +176,7 @@ describe('bookmarkChunkRanges', () => {
     expect(bookmarkMap.size).toBe(3);
 
     // All bookmark names should start with _wdp
-    for (const [chunkId, bookmarkName] of bookmarkMap) {
+    for (const [, bookmarkName] of bookmarkMap) {
       expect(bookmarkName).toMatch(/^_wdp/);
     }
 
@@ -427,7 +407,6 @@ describe('applyChunkResults', () => {
 
   test('inserts comments on bookmarked ranges after all amendments', async () => {
     const amendmentCallOrder = [];
-    const commentCallOrder = [];
 
     applyTokenMapStrategy.mockImplementation(async () => {
       amendmentCallOrder.push(Date.now());

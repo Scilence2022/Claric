@@ -657,7 +657,7 @@ module.exports = (env, argv) => {
             timeout: 300000
           }),
           // Handle OPTIONS requests (CORS preflight) directly
-          bypass: function (req, res, proxyOptions) {
+          bypass: function (req, res) {
             if (req.method === 'OPTIONS') {
               console.log('[Proxy] Handling OPTIONS preflight:', req.url);
               res.setHeader('Access-Control-Allow-Origin', '*');
@@ -669,7 +669,7 @@ module.exports = (env, argv) => {
               return true; // Don't proxy, we handled it
             }
           },
-          onProxyReq: function (proxyReq, req, res) {
+          onProxyReq: function (proxyReq, req) {
             // Log the proxy request
             console.log('[Proxy Request]', req.method, req.url, '→', proxyReq.path);
             try {
@@ -698,7 +698,7 @@ module.exports = (env, argv) => {
               console.log('[Proxy Request Headers] failed to log:', e.message);
             }
           },
-          onProxyRes: function (proxyRes, req, res) {
+          onProxyRes: function (proxyRes, req) {
             // Log the response
             console.log('[Proxy Response]', req.url, '←', proxyRes.statusCode);
             // Add CORS headers to the response
@@ -758,7 +758,7 @@ module.exports = (env, argv) => {
             timeout: 300000
           }),
           // Handle OPTIONS requests (CORS preflight) directly
-          bypass: function (req, res, proxyOptions) {
+          bypass: function (req, res) {
             if (req.method === 'OPTIONS') {
               console.log('[vLLM Proxy] Handling OPTIONS preflight:', req.url);
               res.setHeader('Access-Control-Allow-Origin', '*');
@@ -770,7 +770,7 @@ module.exports = (env, argv) => {
               return true; // Don't proxy, we handled it
             }
           },
-          onProxyReq: function (proxyReq, req, res) {
+          onProxyReq: function (proxyReq, req) {
             // Log the proxy request
             console.log('[vLLM Proxy Request]', req.method, req.url, '→', proxyReq.path);
             try {
@@ -799,7 +799,7 @@ module.exports = (env, argv) => {
               console.log('[vLLM Proxy Request Headers] failed to log:', e.message);
             }
           },
-          onProxyRes: function (proxyRes, req, res) {
+          onProxyRes: function (proxyRes, req) {
             // Log the response
             console.log('[vLLM Proxy Response]', req.url, '←', proxyRes.statusCode);
             // Add CORS headers to the response
