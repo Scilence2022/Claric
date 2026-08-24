@@ -5,8 +5,11 @@ AI-powered Microsoft Word add-in for tracked changes, document summarization, an
 ## Development Rules
 
 - **Python packages**: Always use a virtual environment (`python3 -m venv .venv && source .venv/bin/activate`) before installing packages with pip. Never install directly into the system Python environment.
-- **Build**: `npx webpack --mode production` or `npm start` for dev server
+- **Build**: `npm run build` or `npm start` for dev server
 - **Test**: `npm test` (Jest)
+- **Lint**: `npm run lint` (ESLint 9 flat config)
+- **Verify all (same as CI)**: `npm run verify`
+- **Node**: >=22 (see .nvmrc / package.json engines)
 
 ## Architecture
 

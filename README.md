@@ -111,7 +111,7 @@ extraction and tracked changes analysis.
 - `stripThinkTags()` removes `<think>` reasoning blocks from LLM output
 
 **Testing**
-- 388 unit tests across 13 test suites (Jest)
+- 469 unit tests across 20 test suites (Jest)
 - TDD workflow: failing tests written before implementation
 - Covers: prompt state/persistence/composition, comment extraction, document generation, tracked changes OOXML parsing, orchestrator dispatch/concurrency, reassembler paragraph alignment, document chunking, context extraction
 
@@ -122,7 +122,7 @@ There are **two ways** to run this add-in:
 | Method | Best for | Requirements |
 |--------|----------|--------------|
 | **Docker** | Quick setup, no Node.js needed | Docker, Docker Compose |
-| **npm** | Development, customization | Node.js 18+ |
+| **npm** | Development, customization | Node.js 22+ |
 
 Both methods require HTTPS certificates trusted by the machine running Word.
 
@@ -140,7 +140,7 @@ Both methods require HTTPS certificates trusted by the machine running Word.
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/yuch85/word-ai-redliner.git
+git clone https://github.com/Scilence2022/word-ai-redliner.git
 cd word-ai-redliner
 ```
 
@@ -172,14 +172,27 @@ Copy-Item .env.docker.example .env
 docker compose up -d
 ```
 
-   The container automatically generates `manifest.xml` on first startup using
-   your `.env` values. The manifest is written to the project root.
+   The container runs as a non-root user, serves `dist/` over HTTPS, and
+   regenerates `manifest.xml` from your `.env` values on every startup. A
+   stable add-in GUID is generated on first start and persisted inside the
+   container (pin it with `ADDIN_GUID` in `.env` to survive container
+   recreation).
 
-5. **Trust the certificate on Windows** (see [Trust the Certificate on Windows](#trust-the-certificate-on-windows))
+5. **Get the manifest**
 
-6. **Sideload the add-in** (see [Sideload the Add-in](#sideload-the-add-in))
+   Download it from the running server: `https://<HOST>:<HOST_PORT>/manifest.xml`
+   (e.g. open that URL in a browser and save the file).
 
-   Use the `manifest.xml` file in the project root.
+6. **Trust the certificate on Windows** (see [Trust the Certificate on Windows](#trust-the-certificate-on-windows))
+
+7. **Sideload the add-in** (see [Sideload the Add-in](#sideload-the-add-in))
+
+8. **Point the add-in at your LLM backend**
+
+   The production container does not proxy LLM traffic (that is a webpack
+   dev-server feature). In the add-in's Settings, set the Endpoint URL to an
+   absolute URL reachable from the machine running Word, e.g.
+   `https://llm-host:11434` (Ollama) or `https://llm-host:8026` (vLLM).
 
 ---
 
@@ -187,7 +200,7 @@ docker compose up -d
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22+ (see `.nvmrc`; `engines` field enforces this)
 - HTTPS certificate files (see [Create HTTPS Certificates](#create-https-certificates))
 
 ### Step-by-Step
@@ -195,7 +208,7 @@ docker compose up -d
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/yuch85/word-ai-redliner.git
+git clone https://github.com/Scilence2022/word-ai-redliner.git
 cd word-ai-redliner
 ```
 
@@ -353,29 +366,49 @@ For full details, see the [Microsoft sideloading guide](https://learn.microsoft.
 |---------|----------|
 | Word shows "blocked because it isn't signed" | Trust the HTTPS certificate on the Windows client |
 | Word cannot load the add-in | Verify `HOST` in `.env` is reachable from Word |
-| Manifest not generated | Ensure `.env` exists before running `npm start` or `docker compose up` |
-| Firewall issues | Allow inbound TCP 3000 on the server |
+| Manifest not generated | Ensure `.env` exists before running `npm start`; with Docker, fetch it from `https://<HOST>:<HOST_PORT>/manifest.xml` |
+| Firewall issues | Allow inbound TCP 3000 (or your `HOST_PORT`) on the server |
+| LLM connection fails in production | The production server has no LLM proxy -- set an absolute Endpoint URL in the add-in Settings |
+| Container restarts repeatedly | Check `docker logs` -- missing SSL cert files or a broken build exit with a clear message |
 
 ---
 
 ## Environment Variables
 
+### All deployments
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HOST` | `localhost` | Hostname for manifest URLs (must be reachable from Word) |
-| `PORT` | `3000` | Port for manifest URLs |
-| `PROTOCOL` | `https` | Protocol for manifest URLs |
-| `DEV_SERVER_HOST` | `0.0.0.0` | Host to bind webpack dev server |
-| `DEV_SERVER_PORT` | `3000` | Port for webpack dev server |
+| `PORT` | `3000` | Port for manifest URLs / server listen port |
+| `PROTOCOL` | `https` | Protocol for manifest URLs and the server |
 | `SSL_CERT_FILE` | `server.pem` | Path to SSL certificate |
 | `SSL_KEY_FILE` | `server-key.pem` | Path to SSL private key |
+| `ADDIN_GUID` | *(generated)* | Stable add-in identity; auto-generated and persisted to `.manifest-guid` on first manifest generation. Pin it in Docker so container recreation keeps the identity. |
+
+### Dev server only (webpack)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEV_SERVER_HOST` | `0.0.0.0` | Host to bind webpack dev server |
+| `DEV_SERVER_PORT` | `3000` | Port for webpack dev server |
 | `OLLAMA_PROXY_PATH` | `/ollama` | Local proxy path for LLM requests |
 | `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama server URL |
+| `VLLM_PROXY_PATH` | `/vllm` | Local proxy path for vLLM requests |
+| `VLLM_PROXY_TARGET` | `http://localhost:8026` | Upstream vLLM server URL |
 | `DEFAULT_OLLAMA_URL` | `/ollama` | Default Ollama URL shown in UI |
-| `DEFAULT_MODEL` | `gpt-oss:20b` | Default model shown in UI |
+| `DEFAULT_VLLM_URL` | `/vllm` | Default vLLM URL shown in UI |
+| `DEFAULT_MODEL` | `gpt-oss:20b` | Default Ollama model shown in UI |
+| `VLLM_MODEL` | `qwen3.5-35b-a3b` | Default vLLM model shown in UI |
 
-Users can override `DEFAULT_OLLAMA_URL` and `DEFAULT_MODEL` via the add-in
-settings UI; those overrides persist in localStorage.
+Users can override the default URLs and models via the add-in settings UI;
+those overrides persist in localStorage.
+
+### Docker only (docker-compose)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST_PORT` | `3000` | Host-side port published by compose (container always listens on 3000) |
 
 ---
 
@@ -384,9 +417,13 @@ settings UI; those overrides persist in localStorage.
 Pre-built images are available on GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/yuch85/word-ai-redliner:0.2.0
+docker pull ghcr.io/yuch85/word-ai-redliner:0.3.0
 docker pull ghcr.io/yuch85/word-ai-redliner:latest
 ```
+
+The image is a three-stage build on `node:22-alpine`: runtime layers contain
+production dependencies only, run as the non-root `node` user, and expose a
+`/healthz` endpoint used by the Docker `HEALTHCHECK`.
 
 ---
 
@@ -397,8 +434,10 @@ See `ARCHITECTURE.md` for details.
 ## Testing
 
 ```bash
-npx jest --no-coverage    # 388 tests across 13 suites
-npx webpack --mode development   # verify build
+npm test          # 469 tests across 20 suites
+npm run lint      # ESLint (flat config)
+npm run build     # webpack production build
+npm run verify    # lint + test + build (same as CI)
 ```
 
 Test suites cover:
@@ -440,6 +479,22 @@ their authors for sharing their work:
 - **[@xmldom/xmldom](https://github.com/xmldom/xmldom)** --
   A W3C-compliant XML DOM implementation whose namespace-aware manipulation
   patterns and whitespace preservation mechanisms underpin correct OOXML handling.
+
+## Security Notes
+
+- **API key storage**: the optional API key is stored in the add-in's
+  `localStorage` (plaintext, scoped to the add-in's HTTPS origin). Treat it
+  like a browser-saved password: use a key restricted to your LLM endpoint,
+  and prefer keyless local backends (Ollama) where possible.
+- **LLM output sanitization**: markdown from the LLM is sanitized with
+  DOMPurify before being inserted into Word documents, so prompt-injected
+  HTML cannot become live markup in a generated summary.
+- **HTTPS is mandatory** for Word add-in hosting. The production container
+  warns and refuses nothing, but Word itself will block plain HTTP.
+- **Static server hardening**: path traversal and malformed-URL crashes are
+  handled (400 responses), non-GET/HEAD methods are rejected with 405, and
+  the server shuts down gracefully on SIGTERM.
+- See `SECURITY.md` for how to report vulnerabilities.
 
 ## Licensing
 

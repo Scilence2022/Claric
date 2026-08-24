@@ -32,7 +32,7 @@ src/
     taskpane.js                # Orchestration: workflows, event handlers, state
     taskpane.css               # Styles including disabled tabs, token display
 
-tests/                         # Jest unit tests (230 tests, 7 suites)
+tests/                         # Jest unit tests (469 tests, 20 suites)
   prompt-state.spec.js         # PromptManager CRUD, activation, summary category
   prompt-persistence.spec.js   # localStorage round-trip, migration, edge cases
   prompt-composition.spec.js   # composeMessages, composeSummaryMessages, placeholders
@@ -43,7 +43,11 @@ tests/                         # Jest unit tests (230 tests, 7 suites)
 
 scripts/
   generate-manifest.cjs        # Builds manifest.xml from template + .env
-  docker-server.cjs            # Production static file server for Docker
+                               #   (stable GUID persistence, version sync,
+                               #   XML escaping)
+  docker-server.cjs            # Hardened production static file server:
+                               #   /healthz, traversal + crash protection,
+                               #   graceful shutdown, access logging
 
 assets/                        # Add-in icons (16/32/80px)
 ```
@@ -128,13 +132,22 @@ Central orchestrator. Key responsibilities:
 
 ### Build-Time (.env → manifest.xml)
 
-`scripts/generate-manifest.cjs` reads `.env` and generates `manifest.xml` from `manifest.template.xml`. Runs automatically from webpack config.
+`scripts/generate-manifest.cjs` reads `.env` and generates `manifest.xml` from `manifest.template.xml`. Runs automatically from webpack config and at container startup.
 
 ```
 HOST=localhost       # Hostname reachable from Word
 PORT=3000           # Port for HTTPS server
 PROTOCOL=https      # Must be https for Office add-ins
+ADDIN_GUID=...      # Optional: pin a stable add-in identity
 ```
+
+The manifest `<Version>` is synced from `package.json`; the `<Id>` GUID is
+generated on first run and persisted to `.manifest-guid` so the add-in
+identity survives restarts. All substituted values are XML-escaped.
+
+Persisted settings are validated field-by-field by `normalizeConfig`
+(taskpane.js) -- corrupt localStorage data falls back to defaults instead
+of crashing the add-in.
 
 ### Runtime (localStorage)
 
@@ -150,20 +163,33 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npx jest --no-coverage    # 230 tests, 7 suites, ~1s
-npx webpack --mode development   # verify build
+npm test          # 469 tests, 20 suites, ~2s
+npm run lint      # ESLint 9 flat config (eslint.config.cjs)
+npm run build     # webpack production build
+npm run verify    # lint + test + build (what CI runs)
 ```
 
-All tests run in jsdom with mocked Word API globals. TDD workflow: failing tests written before implementation for each feature.
+Tests run in node or jsdom environments (per-spec `@jest-environment`
+docblock) with mocked Word API globals. TDD workflow: failing tests written
+before implementation for each feature.
 
 ## Docker
 
-Multi-stage build: Node 18 Alpine builder compiles webpack, production stage serves static files via `scripts/docker-server.cjs`.
+Three-stage build on Node 22 Alpine: (1) builder compiles webpack, (2) a
+deps stage installs production dependencies only, (3) the runtime stage
+runs as the non-root `node` user and serves static files via
+`scripts/docker-server.cjs` (hardened: traversal/malformed-URL rejection,
+405 for non-GET, `/healthz` endpoint, graceful SIGTERM shutdown).
 
 ```bash
-docker build -t word-ai-redliner:0.2.0 .
+docker build -t word-ai-redliner:0.3.0 .
 docker compose up -d
 ```
+
+The manifest is regenerated inside the container at startup from
+`HOST`/`PORT`/`PROTOCOL`; a stable add-in GUID is persisted (pin with
+`ADDIN_GUID`). The production server does not proxy LLM traffic -- set an
+absolute endpoint URL in the add-in Settings.
 
 ## Licensing
 
