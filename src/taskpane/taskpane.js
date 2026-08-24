@@ -55,6 +55,7 @@ let currentTab = 'context';
 const unsavedText = { context: '', amendment: '', comment: '', summary: '' };
 let isProcessing = false;
 let isProcessingDoc = false;
+let isProcessingSummary = false;
 let processDocController = null; // AbortController for cancellation
 let _inflightBtn = null; // Phase 05.1-04b: DOM ref of the panel button currently driving a doc-scope op (cancel-morph target)
 let supportsComments = false;  // Set during initialize() via WordApi 1.4 check
@@ -64,6 +65,23 @@ const commentQueue = new CommentQueue(addLog);
 let _tokenEstimateCache = { docCharCount: null, commentCount: null };
 let _tokenEstimateDirty = true;  // Set true to trigger Word API re-read
 let _tokenEstimateTimer = null;  // Debounce timer
+let _tokenEstimateSeq = 0;       // Invocation counter: stale runs abandon their DOM writes
+
+/**
+ * Returns a debounced wrapper around fn. Repeated calls within waitMs
+ * collapse into a single trailing invocation.
+ *
+ * @param {Function} fn
+ * @param {number} waitMs
+ * @returns {Function}
+ */
+function debounce(fn, waitMs) {
+    let timer = null;
+    return function debounced(...args) {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn.apply(this, args), waitMs);
+    };
+}
 
 // ============================================================================
 // PANEL-BUTTON DISPATCHER (Phase 05.1 — decoupled from active-mode reads)
@@ -281,11 +299,14 @@ function initialize() {
     document.getElementById("runVerificationBtn").onclick = runVerification;
     document.getElementById("backendSelect").onchange = handleBackendSwitch;
 
-    // Auto-save settings on every change (no Save button needed)
+    // Auto-save settings on every change (no Save button needed).
+    // Free-text inputs (URL, API key) are debounced so a burst of keystrokes
+    // does not fire a save + connection probe per character.
+    const debouncedSaveSettings = debounce(saveSettings, 400);
     document.getElementById("backendSelect").addEventListener('change', saveSettings);
     document.getElementById("modelSelect").addEventListener('change', saveSettings);
-    document.getElementById("endpointUrl").addEventListener('input', saveSettings);
-    document.getElementById("apiKey").addEventListener('input', saveSettings);
+    document.getElementById("endpointUrl").addEventListener('input', debouncedSaveSettings);
+    document.getElementById("apiKey").addEventListener('input', debouncedSaveSettings);
     document.getElementById("trackChangesCheckbox").addEventListener('change', saveSettings);
     document.getElementById("lineDiffCheckbox").addEventListener('change', saveSettings);
     document.getElementById("docRichnessSelect").addEventListener('change', saveSettings);
@@ -419,57 +440,101 @@ function initialize() {
 // SETTINGS & UI
 // ============================================================================
 
+const KNOWN_BACKENDS = ['ollama', 'vllm'];
+const KNOWN_RICHNESS = ['plain', 'headings', 'structured'];
+
+/**
+ * Merges a persisted config object onto the defaults, field by field.
+ *
+ * A shallow spread ({ ...config, ...parsed }) lets a corrupt or hand-edited
+ * localStorage entry drop whole sections (e.g. replace `backends` with a
+ * partial object), which later crashes on config.backends[backend].url.
+ * Every field is validated here so loadSettings can never produce a config
+ * that getActiveBackendConfig() cannot serve.
+ *
+ * @param {object} defaults - The built-in defaults
+ * @param {object} parsed - Whatever JSON.parse returned from localStorage
+ * @returns {object} A fully-populated config
+ */
+export function normalizeConfig(defaults, parsed) {
+    const out = { ...defaults };
+
+    if (typeof parsed.backend === 'string' && KNOWN_BACKENDS.includes(parsed.backend)) {
+        out.backend = parsed.backend;
+    }
+
+    if (parsed.backends && typeof parsed.backends === 'object') {
+        for (const name of KNOWN_BACKENDS) {
+            const savedBackend = parsed.backends[name];
+            if (savedBackend && typeof savedBackend === 'object') {
+                out.backends[name] = {
+                    url: typeof savedBackend.url === 'string' && savedBackend.url ? savedBackend.url : defaults.backends[name].url,
+                    apiKey: typeof savedBackend.apiKey === 'string' ? savedBackend.apiKey : '',
+                    model: typeof savedBackend.model === 'string' && savedBackend.model ? savedBackend.model : defaults.backends[name].model,
+                };
+            }
+        }
+    }
+
+    if (typeof parsed.trackChangesEnabled === 'boolean') {
+        out.trackChangesEnabled = parsed.trackChangesEnabled;
+    }
+    if (typeof parsed.lineDiffEnabled === 'boolean') {
+        out.lineDiffEnabled = parsed.lineDiffEnabled;
+    }
+
+    if (parsed.docExtraction && typeof parsed.docExtraction === 'object') {
+        const richness = parsed.docExtraction.richness;
+        out.docExtraction = {
+            richness: typeof richness === 'string' && KNOWN_RICHNESS.includes(richness) ? richness : 'structured',
+        };
+    }
+
+    if (typeof parsed.trackedChangesExtraction === 'boolean') {
+        out.trackedChangesExtraction = parsed.trackedChangesExtraction;
+    }
+    if (Number.isFinite(parsed.commentGranularity)) {
+        out.commentGranularity = parsed.commentGranularity;
+    }
+    if (typeof parsed.includeCommentsInSelection === 'boolean') {
+        out.includeCommentsInSelection = parsed.includeCommentsInSelection;
+    }
+
+    return out;
+}
+
 function loadSettings() {
     try {
         const saved = localStorage.getItem('wordAI.config');
-        if (saved) {
-            const parsed = JSON.parse(saved);
+        if (!saved) return;
 
-            if (parsed.ollamaUrl && !parsed.backends) {
-                // Old flat format detected -- migrate to nested backends structure
-                config.backend = 'ollama';
-                config.backends.ollama.url = parsed.ollamaUrl;
-                config.backends.ollama.apiKey = parsed.apiKey || '';
-                config.backends.ollama.model = parsed.selectedModel || config.backends.ollama.model;
-                if (typeof parsed.trackChangesEnabled === 'boolean') {
-                    config.trackChangesEnabled = parsed.trackChangesEnabled;
-                }
-                if (typeof parsed.lineDiffEnabled === 'boolean') {
-                    config.lineDiffEnabled = parsed.lineDiffEnabled;
-                }
-                // Save migrated config immediately so migration only runs once
-                localStorage.setItem('wordAI.config', JSON.stringify(config));
-            } else {
-                // New nested format -- merge normally
-                config = { ...config, ...parsed };
-            }
+        const parsed = JSON.parse(saved);
 
-            // Ensure docExtraction defaults exist (for configs saved before this feature)
-            if (!config.docExtraction) {
-                config.docExtraction = { richness: 'structured' };
-            }
-            // Clean up legacy maxLength from older configs
-            if (config.docExtraction.maxLength !== undefined) {
-                delete config.docExtraction.maxLength;
-            }
-
-            // Ensure trackedChangesExtraction default (for configs saved before this feature)
-            if (config.trackedChangesExtraction === undefined) {
-                config.trackedChangesExtraction = false;
-            }
-
-            // Ensure commentGranularity default (for configs saved before this feature)
-            if (config.commentGranularity === undefined) {
-                config.commentGranularity = 0;
-            }
-
-            // Ensure includeCommentsInSelection default (Phase 05.2 — for configs saved before this feature)
-            if (config.includeCommentsInSelection === undefined) {
-                config.includeCommentsInSelection = false;
-            }
+        if (parsed.ollamaUrl && !parsed.backends) {
+            // Old flat format detected -- migrate to nested backends structure
+            config = normalizeConfig(config, {
+                backend: 'ollama',
+                backends: {
+                    ollama: {
+                        url: parsed.ollamaUrl,
+                        apiKey: parsed.apiKey || '',
+                        model: parsed.selectedModel,
+                    },
+                },
+                trackChangesEnabled: parsed.trackChangesEnabled,
+                lineDiffEnabled: parsed.lineDiffEnabled,
+            });
+            // Save migrated config immediately so migration only runs once
+            localStorage.setItem('wordAI.config', JSON.stringify(config));
+        } else {
+            // Nested format -- validate field by field against defaults
+            config = normalizeConfig(config, parsed);
         }
     } catch (e) {
+        // Corrupt JSON in localStorage -- keep defaults and tell the user
+        // instead of silently discarding their saved settings.
         console.error("Failed to load settings:", e);
+        addLog("Saved settings could not be read (corrupt data). Defaults restored.", "warning");
     }
 }
 
@@ -838,7 +903,11 @@ async function getDocumentMetrics({ needDocText, needComments }) {
  * Async: callers fire-and-forget. DOM is updated when data is ready.
  */
 async function updateTokenEstimate() {
-    // Debounce: cancel pending call, schedule new one after 300ms
+    // Debounce: cancel pending call, schedule new one after 300ms.
+    // Callers fire-and-forget this function, so it must never reject:
+    // failures are contained below and logged to the console only.
+    const seq = ++_tokenEstimateSeq;
+
     if (_tokenEstimateTimer) {
         clearTimeout(_tokenEstimateTimer);
     }
@@ -848,10 +917,16 @@ async function updateTokenEstimate() {
     });
     _tokenEstimateTimer = null;
 
+    if (seq !== _tokenEstimateSeq) {
+        // A newer invocation superseded this one -- do not write stale DOM.
+        return;
+    }
+
+    try {
     const container = document.getElementById('tokenEstimate');
     const valueEl = document.getElementById('tokenEstimateValue');
     const breakdownEl = document.getElementById('tokenEstimateBreakdown');
-    if (!container || !valueEl) return;
+    if (!container || !valueEl || !breakdownEl) return;
 
     // Phase 05.1 Plan 04a: gate on currentTab (visible panel) rather than
     // the prompt-manager's active-mode global, so the estimate matches what
@@ -948,6 +1023,11 @@ async function updateTokenEstimate() {
         valueEl.classList.add('danger');
     } else if (totalTokens > 50000) {
         valueEl.classList.add('warning');
+    }
+    } catch (e) {
+        // Informational display only -- never surface estimate failures
+        // as errors, and never reject (callers fire-and-forget).
+        console.warn('Token estimate update failed:', e);
     }
 }
 
@@ -1179,6 +1259,15 @@ function populateModels(models) {
  * Fire-and-forget: user can switch modes immediately after triggering.
  */
 async function handleSummaryGeneration() {
+    // In-flight guard: a double click would run two concurrent LLM calls
+    // and open two summary documents. Unlike doc-scope ops this flow is not
+    // routed through the dispatcher's isProcessingDoc pre-flight.
+    if (isProcessingSummary) {
+        addLog('Summary generation is already in progress. Please wait.', 'warning');
+        return;
+    }
+    isProcessingSummary = true;
+
     // Phase 05.1 Plan 04a: legacy shared-action button IDs no longer exist
     // in HTML. Plan 04b will reintroduce inflight-button morph via a tracked
     // ref; for this intermediate state the loading visual is intentionally absent.
@@ -1295,6 +1384,7 @@ async function handleSummaryGeneration() {
         addLog(`Summary generation failed: ${error.message}`, 'error');
         console.error('Summary generation error:', error);
     } finally {
+        isProcessingSummary = false;
         // Plan 04b will restore inflight-button morph; for now just refresh
         // panel-button enable states.
         updatePanelButtons(CATEGORY.AMENDMENT);
@@ -1749,6 +1839,14 @@ async function handleProcessDocument({ category, withComment } = {}) {
  * @param {object} backendConfig - Backend configuration
  */
 async function retryFailedChunks(failedResults, bookmarkMap, backendConfig) {
+    // Race guard: clicking the activity-log Retry link while a doc-scope op
+    // (or another retry) is running would overwrite processDocController and
+    // un-cancel the running op.
+    if (isProcessingDoc) {
+        addLog('Document processing is already running. Wait for it to finish before retrying.', 'warning');
+        return;
+    }
+
     addLog(`Retrying ${failedResults.length} failed chunk(s)...`, 'info');
 
     isProcessingDoc = true;
