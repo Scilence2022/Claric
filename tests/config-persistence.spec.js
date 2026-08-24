@@ -3,11 +3,13 @@
  *
  * A corrupt or hand-edited `wordAI.config` in localStorage previously went
  * through a shallow spread merge, letting partial objects drop whole config
- * sections and crash later reads (config.backends[backend].url). These tests
- * pin the field-by-field validation behavior.
+ * sections and crash later reads (config.providers[backend].url). These
+ * tests pin the field-by-field validation behavior, including migration
+ * from the pre-0.4.0 `backends` shape.
  */
 
 const { normalizeConfig } = require('../src/taskpane/taskpane.js');
+const { PROVIDER_PRESETS, KNOWN_PROVIDERS, defaultProviderConfig } = require('../src/lib/providers.js');
 
 /** Baseline defaults matching the module-level config literal. */
 function makeDefaults() {
@@ -19,10 +21,7 @@ function makeDefaults() {
         trackedChangesExtraction: false,
         commentGranularity: 0,
         includeCommentsInSelection: false,
-        backends: {
-            ollama: { url: '/ollama', apiKey: '', model: 'gpt-oss:20b' },
-            vllm: { url: '/vllm', apiKey: '', model: 'qwen3.5-35b-a3b' },
-        },
+        providers: defaultProviderConfig(),
     };
 }
 
@@ -48,41 +47,79 @@ describe('normalizeConfig', () => {
         };
         const out = normalizeConfig(makeDefaults(), parsed);
         expect(out.backend).toBe('vllm');
-        expect(out.backends.ollama.url).toBe('http://gpu-box:11434');
-        expect(out.backends.vllm.model).toBe('qwen3.5');
+        expect(out.providers.ollama.url).toBe('http://gpu-box:11434');
+        expect(out.providers.vllm.model).toBe('qwen3.5');
         expect(out.docExtraction.richness).toBe('plain');
         expect(out.commentGranularity).toBe(2);
     });
 
-    test('a partial backends object keeps the other backend intact', () => {
+    test('a partial providers object keeps the other providers intact', () => {
         const out = normalizeConfig(makeDefaults(), {
-            backends: { vllm: { url: 'http://x:8026' } },
+            providers: { vllm: { url: 'http://x:8026' } },
         });
-        // vllm url applied, missing model falls back to default
-        expect(out.backends.vllm.url).toBe('http://x:8026');
-        expect(out.backends.vllm.model).toBe('qwen3.5-35b-a3b');
+        // vllm url applied, missing model/apiPath fall back to defaults
+        expect(out.providers.vllm.url).toBe('http://x:8026');
+        expect(out.providers.vllm.model).toBe(PROVIDER_PRESETS.vllm.model);
+        expect(out.providers.vllm.apiPath).toBe('/v1');
         // ollama untouched
-        expect(out.backends.ollama).toEqual(makeDefaults().backends.ollama);
+        expect(out.providers.ollama).toEqual(makeDefaults().providers.ollama);
+    });
+
+    test('legacy backends shape migrates into providers', () => {
+        const out = normalizeConfig(makeDefaults(), {
+            backend: 'vllm',
+            backends: {
+                ollama: { url: 'http://gpu-box:11434', apiKey: 'k', model: 'llama3' },
+            },
+        });
+        expect(out.backend).toBe('vllm');
+        expect(out.providers.ollama.url).toBe('http://gpu-box:11434');
+        expect(out.providers.ollama.apiKey).toBe('k');
+        expect(out.providers.ollama.model).toBe('llama3');
+        // migrated entry gets the preset apiPath
+        expect(out.providers.ollama.apiPath).toBe('/v1');
+        // cloud providers keep preset defaults
+        expect(out.providers.deepseek.url).toBe('/deepseek');
+        expect(out.providers.glm.apiPath).toBe('/api/paas/v4');
+    });
+
+    test('cloud provider entries persist and validate', () => {
+        const out = normalizeConfig(makeDefaults(), {
+            backend: 'glm',
+            providers: {
+                deepseek: { apiKey: 'sk-1', model: 'deepseek-reasoner' },
+                glm: { apiKey: 'g', model: 'glm-4.6' },
+                kimi: { apiKey: 'm' },
+            },
+        });
+        expect(out.backend).toBe('glm');
+        expect(out.providers.deepseek.apiKey).toBe('sk-1');
+        expect(out.providers.deepseek.model).toBe('deepseek-reasoner');
+        expect(out.providers.deepseek.url).toBe('/deepseek');
+        expect(out.providers.glm.model).toBe('glm-4.6');
+        expect(out.providers.glm.apiPath).toBe('/api/paas/v4');
+        expect(out.providers.kimi.model).toBe(PROVIDER_PRESETS.kimi.model);
     });
 
     test('an unknown backend name falls back to the default backend', () => {
-        const out = normalizeConfig(makeDefaults(), { backend: 'openai' });
+        const out = normalizeConfig(makeDefaults(), { backend: 'gpt4all' });
         expect(out.backend).toBe('ollama');
-        expect(Object.keys(out.backends).sort()).toEqual(['ollama', 'vllm']);
+        expect(Object.keys(out.providers).sort()).toEqual([...KNOWN_PROVIDERS].sort());
     });
 
-    test('non-string url/apiKey/model are replaced with safe values', () => {
+    test('non-string url/apiKey/model/apiPath are replaced with safe values', () => {
         const out = normalizeConfig(makeDefaults(), {
-            backends: { ollama: { url: 42, apiKey: null, model: { nested: true } } },
+            providers: { ollama: { url: 42, apiKey: null, model: { nested: true }, apiPath: 7 } },
         });
-        expect(out.backends.ollama.url).toBe('/ollama');
-        expect(out.backends.ollama.apiKey).toBe('');
-        expect(out.backends.ollama.model).toBe('gpt-oss:20b');
+        expect(out.providers.ollama.url).toBe('/ollama');
+        expect(out.providers.ollama.apiKey).toBe('');
+        expect(out.providers.ollama.model).toBe(PROVIDER_PRESETS.ollama.model);
+        expect(out.providers.ollama.apiPath).toBe('/v1');
     });
 
-    test('backends of the wrong type is ignored entirely', () => {
-        const out = normalizeConfig(makeDefaults(), { backends: 'https://evil' });
-        expect(out.backends).toEqual(makeDefaults().backends);
+    test('providers of the wrong type is ignored entirely', () => {
+        const out = normalizeConfig(makeDefaults(), { providers: 'https://evil' });
+        expect(out.providers).toEqual(makeDefaults().providers);
     });
 
     test('unknown docExtraction.richness falls back to structured', () => {
@@ -117,5 +154,6 @@ describe('normalizeConfig', () => {
         normalizeConfig(defaults, { backend: 'vllm', docExtraction: { richness: 'plain' } });
         expect(defaults.backend).toBe('ollama');
         expect(defaults.docExtraction.richness).toBe('structured');
+        expect(defaults.providers.ollama.url).toBe('/ollama');
     });
 });

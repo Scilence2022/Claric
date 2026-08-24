@@ -199,23 +199,34 @@
                     <label for="backendSelect">LLM Backend:</label>
                     <select id="backendSelect" class="form-control">
                         <option value="ollama">Ollama</option>
-                        <option value="vllm">vLLM</option>
+                        <option value="vllm">vLLM (OpenAI-compatible)</option>
+                        <optgroup label="Cloud providers">
+                            <option value="deepseek">DeepSeek</option>
+                            <option value="glm">Zhipu GLM</option>
+                            <option value="kimi">Moonshot Kimi</option>
+                        </optgroup>
+                        <option value="custom">Custom (OpenAI-compatible)</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label for="modelSelect">Model:</label>
-                    <select id="modelSelect" class="form-control">
-                        <option value="">Loading models...</option>
-                    </select>
+                    <div class="model-input-row">
+                        <input type="text" id="modelSelect" class="form-control" list="modelList"
+                               placeholder="Type a model name or refresh the list" autocomplete="off">
+                        <datalist id="modelList"></datalist>
+                        <button type="button" id="refreshModelsBtn" class="btn btn-compact"
+                                title="Refresh the model list from the provider">Refresh</button>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label for="endpointUrl">Endpoint URL:</label>
                     <input type="text" id="endpointUrl" class="form-control" placeholder="e.g., /ollama or /vllm">
-                    <small class="help-text">Proxy path for the selected backend</small>
+                    <small class="help-text" id="endpointHint">Base URL for the selected provider</small>
                 </div>
                 <div class="form-group">
                     <label for="apiKey">API Key (Optional):</label>
-                    <input type="password" id="apiKey" class="form-control" placeholder="Leave blank for local Ollama">
+                    <input type="password" id="apiKey" class="form-control" placeholder="Optional API key">
+                    <small class="help-text" id="apiKeyHint">Required for cloud providers; leave blank for local backends</small>
                 </div>
                 <div class="form-group checkbox-group">
                     <label>

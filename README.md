@@ -62,9 +62,11 @@ extraction and tracked changes analysis.
 - Review button relabels to "Generate Summary" in Summary mode
 
 **Backend Selector**
-- Ollama and vLLM backends with unified OpenAI-compatible API
-- Model dropdown auto-populated from backend `/v1/models` endpoint
-- Configurable endpoint URL and optional API key
+- Providers: Ollama, vLLM, DeepSeek, Zhipu GLM, Moonshot Kimi, and Custom (any OpenAI-compatible endpoint)
+- Unified OpenAI-compatible chat API; per-provider API prefix handled automatically (GLM uses `/api/paas/v4`)
+- Cloud providers proxied same-origin (`/deepseek`, `/glm`, `/kimi`) by the dev and production servers -- no CORS setup, API key entered in Settings
+- Model field is typeable with a refreshable suggestion list (Refresh button re-queries the provider's models endpoint)
+- Configurable endpoint URL and optional API key per provider
 - Track Changes and Line Diff toggles
 
 ### v0.3.0: Whole-Document Processing
@@ -399,6 +401,12 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama base URL (`http://host.docker.internal:11434` in Docker) |
 | `VLLM_PROXY_PATH` | `/vllm` | Proxy path for the vLLM backend (empty disables) |
 | `VLLM_PROXY_TARGET` | `http://localhost:8026` | Upstream vLLM base URL (`http://host.docker.internal:8026` in Docker) |
+| `DEEPSEEK_PROXY_PATH` | `/deepseek` | Proxy path for DeepSeek (empty disables) |
+| `DEEPSEEK_PROXY_TARGET` | `https://api.deepseek.com` | Upstream DeepSeek API origin |
+| `GLM_PROXY_PATH` | `/glm` | Proxy path for Zhipu GLM (empty disables) |
+| `GLM_PROXY_TARGET` | `https://open.bigmodel.cn` | Upstream Zhipu GLM API origin |
+| `KIMI_PROXY_PATH` | `/kimi` | Proxy path for Moonshot Kimi (empty disables) |
+| `KIMI_PROXY_TARGET` | `https://api.moonshot.cn` | Upstream Moonshot Kimi API origin |
 | `LLM_PROXY_TIMEOUT_MS` | `300000` | Proxy upstream timeout in ms |
 
 ### Dev server only (webpack)

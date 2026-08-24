@@ -884,3 +884,14 @@ section {
     min-width: 140px;
     text-align: right;
 }
+/* Model input row: text field + Refresh button side by side */
+.model-input-row {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+}
+
+.model-input-row .form-control {
+    flex: 1;
+    min-width: 0;
+}

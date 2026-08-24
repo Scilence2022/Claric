@@ -1,6 +1,6 @@
 {
   "name": "word-ai-redliner",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "AI-powered Microsoft Word add-in for tracked changes, document summarization, and comment analysis",
   "private": true,
   "scripts": {

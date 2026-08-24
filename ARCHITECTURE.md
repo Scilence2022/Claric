@@ -17,7 +17,10 @@ src/
     commands.js
     commands.html
   lib/                         # Core modules
-    llm-client.js              # LLM API client (Ollama/vLLM, OpenAI-compatible)
+    llm-client.js              # LLM API client (OpenAI-compatible; honors
+                               #   per-provider apiPath prefixes)
+    providers.js               # Provider catalog: presets for Ollama, vLLM,
+                               #   DeepSeek, Zhipu GLM, Moonshot Kimi, Custom
     prompt-manager.js          # 4-category prompt CRUD, activation, composition
     comment-extractor.js       # Comment extraction, document text extraction,
                                #   tracked changes OOXML parsing, token estimation
@@ -152,9 +155,13 @@ of crashing the add-in.
 ### Runtime (localStorage)
 
 All user settings persist in `localStorage` under the `wordAI.config` key:
-- `backend` — `'ollama'` or `'vllm'`
-- `backends.{name}.url` — endpoint URL
-- `backends.{name}.model` — selected model
+- `backend` — provider id (`'ollama'`, `'vllm'`, `'deepseek'`, `'glm'`, `'kimi'`, `'custom'`)
+- `providers.{id}.url` — endpoint URL (same-origin proxy path by default)
+- `providers.{id}.apiKey` — optional API key
+- `providers.{id}.model` — model id (free-text with refreshable suggestions)
+- `providers.{id}.apiPath` — OpenAI API prefix (`/v1`, or `/api/paas/v4` for GLM)
+
+Older `backends.{...}` entries (v0.3.x) migrate into `providers` on load.
 - `docExtraction.richness` — `'plain'` | `'headings'` | `'structured'`
 - `trackedChangesExtraction` — boolean
 

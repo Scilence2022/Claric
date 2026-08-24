@@ -168,11 +168,16 @@ export function stripChunkDelimiters(text, log) {
 /**
  * Private helper to build the request URL and headers for chat completions.
  *
+ * The API prefix comes from config.apiPath (default '/v1'). Most providers
+ * serve OpenAI-compatible endpoints under /v1, but some use a different
+ * prefix (e.g. Zhipu GLM: /api/paas/v4) -- configured per provider preset.
+ *
  * @param {object} config - Backend configuration
  * @returns {{ url: string, headers: object }}
  */
 function buildRequestConfig(config) {
-  const url = config.url.replace(/\/+$/, '') + '/v1/chat/completions';
+  const apiPath = config.apiPath || '/v1';
+  const url = config.url.replace(/\/+$/, '') + apiPath + '/chat/completions';
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
@@ -304,16 +309,19 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
 
 /**
  * Tests connection to the configured LLM backend and retrieves model list.
- * Uses OpenAI-compatible /v1/models endpoint for both Ollama and vLLM.
+ * Uses the OpenAI-compatible models endpoint (prefix from config.apiPath,
+ * default /v1) for all providers.
  *
  * @param {object} config - Backend configuration
- * @param {string} config.url - Base proxy path (e.g., '/ollama' or '/vllm')
+ * @param {string} config.url - Base URL (proxy path or provider origin)
+ * @param {string} [config.apiPath='/v1'] - API prefix (e.g. '/api/paas/v4')
  * @param {string} config.apiKey - API key (empty string if not required)
  * @returns {Promise<{connected: boolean, models: Array<{id: string}>}>}
  * @throws {Error} On non-ok HTTP response or network failure
  */
 export async function testConnection(config) {
-  const url = config.url.replace(/\/+$/, '') + '/v1/models';
+  const apiPath = config.apiPath || '/v1';
+  const url = config.url.replace(/\/+$/, '') + apiPath + '/models';
 
   const headers = { Accept: 'application/json' };
   if (config.apiKey) {
