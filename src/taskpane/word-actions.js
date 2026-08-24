@@ -305,9 +305,13 @@ export async function fireSelectionComment(deps, { promptTemplate } = {}) {
  * @param {string} args.promptTemplate - Explicit template for the pipeline
  * @param {string} [args.commentInstructions] - Merged-mode comment instructions
  * @param {function} [args.onProgress] - Progress callback from the orchestrator
- * @returns {Promise<{ results: Array, applicationResult: object, chunks: Array, cancelled: boolean }>}
+ * @param {boolean} [args.gateApply=false] - When true, stop after the LLM
+ *   processing phase and return an apply/discard continuation instead of
+ *   writing to the document (used to stage a proposal card for amendments).
+ * @returns {Promise<{ results: Array, applicationResult?: object, chunks: Array, cancelled?: boolean,
+ *   staged?: boolean, apply?: Function, discard?: Function, failedCount?: number, cancelledCount?: number }>}
  */
-export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress } = {}) {
+export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, gateApply = false } = {}) {
     const { appState, log, logWithRetry } = deps;
     const signal = appState.processDocController ? appState.processDocController.signal : undefined;
     const promptShim = makePromptShim(appState.promptManager, category, promptTemplate);
@@ -344,39 +348,64 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         commentInstructions,
     });
 
-    // Step 6: Apply results to document
-    log('Applying changes to document...', 'info');
-    const applicationResult = await applyChunkResults(results, bookmarkMap, {
-        trackChangesEnabled: appState.config.trackChangesEnabled,
-        lineDiffEnabled: appState.config.lineDiffEnabled,
-        log,
-        commentGranularity: appState.config.commentGranularity,
-    });
-
-    // Step 7: Cleanup
-    await cleanupBookmarks(bookmarkMap);
-
-    // Step 8: Summary log + retry link for failed chunks
     const failed = results.filter(r => r.status === 'rejected').length;
     const cancelled = results.filter(r => r.status === 'cancelled').length;
-    log(
-        `Document processed: ${chunks.length} chunks, ` +
-        `${applicationResult.amendmentsApplied} amendments applied, ` +
-        `${applicationResult.commentsInserted} comments inserted` +
-        (failed > 0 ? `, ${failed} chunks failed` : '') +
-        (cancelled > 0 ? `, ${cancelled} chunks cancelled` : ''),
-        failed > 0 ? 'warning' : 'success'
-    );
 
-    if (failed > 0 && logWithRetry) {
-        const failedChunks = results.filter(r => r.status === 'rejected');
-        logWithRetry(
-            `${failed} chunk(s) failed. Click to retry failed chunks.`,
-            'warning',
-            () => retryFailedChunks(deps, { failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress })
+    /**
+     * Applies the processed results to the document (tracked changes +
+     * comments), cleans up bookmarks, logs the summary, and registers the
+     * retry link for failed chunks.
+     * @returns {Promise<object>} applicationResult from applyChunkResults
+     */
+    const apply = async () => {
+        log('Applying changes to document...', 'info');
+        const applicationResult = await applyChunkResults(results, bookmarkMap, {
+            trackChangesEnabled: appState.config.trackChangesEnabled,
+            lineDiffEnabled: appState.config.lineDiffEnabled,
+            log,
+            commentGranularity: appState.config.commentGranularity,
+        });
+
+        await cleanupBookmarks(bookmarkMap);
+
+        log(
+            `Document processed: ${chunks.length} chunks, ` +
+            `${applicationResult.amendmentsApplied} amendments applied, ` +
+            `${applicationResult.commentsInserted} comments inserted` +
+            (failed > 0 ? `, ${failed} chunks failed` : '') +
+            (cancelled > 0 ? `, ${cancelled} chunks cancelled` : ''),
+            failed > 0 ? 'warning' : 'success'
         );
+
+        if (failed > 0 && logWithRetry) {
+            const failedChunks = results.filter(r => r.status === 'rejected');
+            logWithRetry(
+                `${failed} chunk(s) failed. Click to retry failed chunks.`,
+                'warning',
+                () => retryFailedChunks(deps, { failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress })
+            );
+        }
+
+        return applicationResult;
+    };
+
+    /**
+     * Discards a staged run: removes the hidden chunk bookmarks without
+     * touching document text.
+     */
+    const discard = async () => {
+        await cleanupBookmarks(bookmarkMap);
+        log('Proposed changes discarded; no edits were applied.', 'info');
+    };
+
+    // Gated mode (amendment pipeline): stop before writing to the document
+    // and hand the caller an apply/discard continuation so the chat UI can
+    // stage a proposal card for user confirmation.
+    if (gateApply) {
+        return { staged: true, results, chunks, apply, discard, failedCount: failed, cancelledCount: cancelled };
     }
 
+    const applicationResult = await apply();
     return { results, applicationResult, chunks, cancelled: cancelled > 0 };
 }
 

@@ -1,9 +1,10 @@
 /**
  * Proposal Card Module
  *
- * Builds the staged edit-proposal card shown in chat for selection-scope
- * amendment turns. The LLM's proposed rewrite is NOT applied until the user
- * clicks "Apply as tracked changes"; "Reject" dismisses the card.
+ * Builds the staged edit-proposal card shown in chat for amendment turns
+ * (selection-scope edits and gated document-scope runs). The LLM's proposed
+ * rewrite is NOT applied until the user clicks "Apply as tracked changes";
+ * "Reject" dismisses the card.
  *
  * @module ui/proposal-card
  */
