@@ -188,8 +188,11 @@ docker compose up -d
 
 The manifest is regenerated inside the container at startup from
 `HOST`/`PORT`/`PROTOCOL`; a stable add-in GUID is persisted (pin with
-`ADDIN_GUID`). The production server does not proxy LLM traffic -- set an
-absolute endpoint URL in the add-in Settings.
+`ADDIN_GUID`). The server also proxies `/ollama` and `/vllm` to the
+upstreams configured via `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET`
+(host.docker.internal from a container), keeping LLM traffic same-origin
+so the add-in's default backend URLs work without mixed-content or CORS
+configuration.
 
 ## Licensing
 
