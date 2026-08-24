@@ -39,6 +39,13 @@ evals/
 # Generated manifest (use manifest.template.xml + generate-manifest.cjs)
 manifest.xml
 
+# Generated add-in identity (created on first manifest generation)
+.manifest-guid
+
+# Dev-server persisted data (user-authored prompts / dynamic test cases)
+user-prompts.json
+e2e-test-cases-dynamic.json
+
 # Word API reference docs
 word_api_docs/
 

@@ -1,9 +1,29 @@
-/* global Word */
 
 import { marked } from 'marked';
+import createDOMPurify from 'dompurify';
 
 // Configure marked for LLM output: GFM for tables/task lists, breaks for line breaks
 marked.use({ gfm: true, breaks: true });
+
+// The dompurify default export is a ready instance when a global window
+// exists at bundle time (browser/WebView2), but resolves to the factory
+// under babel/jest CommonJS interop. Initialized lazily so importing this
+// module in a no-DOM environment (node test specs) never touches window.
+let purifierInstance = null;
+
+/**
+ * Returns the DOMPurify instance for the current environment.
+ *
+ * @returns {{ sanitize: (string, object) => string }}
+ */
+function getPurifier() {
+    if (!purifierInstance) {
+        purifierInstance = typeof createDOMPurify.sanitize === 'function'
+            ? createDOMPurify
+            : createDOMPurify(window);
+    }
+    return purifierInstance;
+}
 
 /**
  * Document Generator Module
@@ -11,10 +31,30 @@ marked.use({ gfm: true, breaks: true });
  * Creates a new Word document with formatted summary content.
  * Uses Application.createDocument() (WordApi 1.3) for native document
  * creation and body.insertHtml() (WordApi 1.1) for formatted content.
- * LLM markdown output is converted to HTML via marked before insertion.
+ * LLM markdown output is converted to HTML via marked, sanitized with
+ * DOMPurify, then augmented with trusted inline table styles before
+ * insertion.
  *
  * @module document-generator
  */
+
+/**
+ * Converts LLM markdown to sanitized HTML.
+ *
+ * The summary text comes straight from the LLM, which may echo markup from
+ * prompt-injected document content. DOMPurify strips event handlers,
+ * scripts, and other active content before the HTML reaches Word's
+ * insertHtml(). Sanitization happens BEFORE the table-border transform so
+ * the inline styles added below are trusted code, not LLM output.
+ *
+ * @param {string} summaryText - Raw LLM markdown
+ * @returns {string} Sanitized HTML
+ */
+function renderSummaryHtml(summaryText) {
+  return getPurifier().sanitize(marked.parse(summaryText), {
+    USE_PROFILES: { html: true },
+  });
+}
 
 /**
  * Escapes HTML special characters to prevent rendering issues.
@@ -48,10 +88,10 @@ function escapeHtml(str) {
 export function buildSummaryHtml(summaryText, extractedComments, title = 'Comment Summary') {
     let html = `<h1>${escapeHtml(title)}</h1>`;
 
-    // Summary section (LLM markdown output converted to HTML)
+    // Summary section (LLM markdown output converted to sanitized HTML)
     // Add inline border styles to tables — Word's insertHtml renders tables
     // without borders by default, making them invisible in the output document.
-    let summaryHtml = marked.parse(summaryText);
+    let summaryHtml = renderSummaryHtml(summaryText);
     summaryHtml = summaryHtml
         .replace(/<table>/g, '<table style="border-collapse: collapse; width: 100%;">')
         .replace(/<th(?=[ >])/g, '<th style="border: 1px solid #999; padding: 6px 10px; background-color: #f2f2f2; font-weight: bold; text-align: left;"')

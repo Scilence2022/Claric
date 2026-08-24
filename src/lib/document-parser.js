@@ -1,4 +1,3 @@
-/* global Word */
 
 /**
  * Document Parser Module

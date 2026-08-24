@@ -4,7 +4,7 @@
  * and fireCommentRequest / resumeCommentFromBookmark integration flows.
  */
 const { CommentQueue, generateBookmarkName } = require('../src/lib/comment-queue.js');
-const { fireCommentRequest, resumeCommentFromBookmark } = require('../src/lib/comment-request.js');
+const { fireCommentRequest } = require('../src/lib/comment-request.js');
 
 // ============================================================================
 // Queue State Management
@@ -284,9 +284,6 @@ describe('fireCommentRequest and resumeCommentFromBookmark', () => {
 
     // Capture the retry callback
     const retryCallback = mockAddLogWithRetry.mock.calls[0][2];
-
-    // Get the bookmarkName that was used in the original request
-    const originalBookmarkName = commentQueue.captureSelectionAsBookmark.mock.calls[0][0];
 
     // Switch to a succeeding sendPrompt for retry
     const succeedingSendPrompt = jest.fn().mockResolvedValue('Retry LLM response');

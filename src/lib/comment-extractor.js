@@ -1,4 +1,3 @@
-/* global Word */
 
 /**
  * Comment Extractor Module

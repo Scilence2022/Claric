@@ -182,7 +182,6 @@ export async function processChunksParallel(chunks, options) {
   let completed = 0;
   let failed = 0;
   let cancelled = 0;
-  const startTime = Date.now();
   const chunkTimings = []; // Track per-chunk elapsed times for ETA
 
   function reportProgress() {

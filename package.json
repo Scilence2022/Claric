@@ -1,13 +1,15 @@
 {
   "name": "word-ai-redliner",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI-powered Microsoft Word add-in for tracked changes, document summarization, and comment analysis",
-  "main": "src/taskpane/taskpane.js",
+  "private": true,
   "scripts": {
     "start": "webpack serve --mode development",
     "build": "webpack --mode production",
-    "lint": "eslint src/**/*.js",
-    "test": "jest"
+    "lint": "eslint .",
+    "test": "jest",
+    "manifest": "node scripts/generate-manifest.cjs",
+    "verify": "npm run lint && npm test && npm run build"
   },
   "type": "module",
   "keywords": [
@@ -21,12 +23,14 @@
     "document-summary",
     "ooxml"
   ],
-  "author": "",
+  "author": "Lifu Song",
   "license": "MIT",
   "dependencies": {
     "diff-match-patch": "^1.0.5",
+    "dompurify": "^3.4.14",
+    "dotenv": "^17.2.3",
     "marked": "^17.0.4",
-    "office-word-diff": "github:yuch85/office-word-diff"
+    "office-word-diff": "git+https://github.com/yuch85/office-word-diff.git#711ea79829ab1fe63736ccecc95d46191f8a608d"
   },
   "devDependencies": {
     "@babel/core": "^7.28.5",
@@ -35,8 +39,8 @@
     "babel-jest": "^30.2.0",
     "copy-webpack-plugin": "^11.0.0",
     "css-loader": "^6.8.1",
-    "dotenv": "^17.2.3",
-    "eslint": "^8.51.0",
+    "eslint": "^9.39.5",
+    "globals": "^16.5.0",
     "html-webpack-plugin": "^5.5.3",
     "jest": "^30.2.0",
     "jest-environment-jsdom": "^30.3.0",
@@ -45,5 +49,16 @@
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^4.15.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Scilence2022/word-ai-redliner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Scilence2022/word-ai-redliner/issues"
+  },
+  "homepage": "https://github.com/Scilence2022/word-ai-redliner#readme",
+  "engines": {
+    "node": ">=22"
   }
 }

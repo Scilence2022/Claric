@@ -29,7 +29,6 @@ let getPanelButtonState;
 let updatePanelButtons;
 let importErr = null;
 try {
-  // eslint-disable-next-line global-require
   ({ getPanelButtonState, updatePanelButtons } = require('../src/taskpane/taskpane.js'));
 } catch (e) {
   importErr = e;

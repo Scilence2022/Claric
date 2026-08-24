@@ -1,4 +1,3 @@
-/* global Word */
 
 /**
  * Represents a structure-aware paragraph block.

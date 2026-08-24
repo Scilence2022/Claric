@@ -23,7 +23,6 @@ let createDispatcher;
 let ROUTES;
 let importErr = null;
 try {
-  // eslint-disable-next-line global-require
   ({ createDispatcher, ROUTES } = require('../src/taskpane/taskpane.js'));
 } catch (e) {
   importErr = e;

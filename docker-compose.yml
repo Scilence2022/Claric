@@ -1,12 +1,27 @@
+# Word AI Redliner -- production deployment.
+#
+# The container listens on 3000 (both HTTP and HTTPS per PROTOCOL) and
+# regenerates manifest.xml from HOST/PORT/PROTOCOL at startup, so no
+# manifest volume mount is needed (a stale mounted manifest would silently
+# override the env-based one).
+#
+# The production server does NOT proxy LLM traffic. Configure the add-in's
+# Endpoint URL (Settings) to an absolute URL reachable from the client,
+# e.g. https://llm-host:8026.
 services:
   word-ai-redliner:
-    image: ghcr.io/yuch85/word-ai-redliner:0.2.0
+    image: ghcr.io/yuch85/word-ai-redliner:0.3.0
+    build: . # fallback to a local build when the registry image is absent
     ports:
-      - "3000:3000"
+      - "${HOST_PORT:-3000}:3000"
+    environment:
+      # Inside the container the server always binds 3000; HOST is only used
+      # to render absolute URLs in the generated manifest.
+      PORT: "3000"
+      PROTOCOL: "https"
     env_file:
       - .env
     volumes:
       - ./server.pem:/app/server.pem:ro
       - ./server-key.pem:/app/server-key.pem:ro
-      - ./manifest.xml:/app/manifest.xml
     restart: unless-stopped
