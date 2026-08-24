@@ -4,299 +4,246 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Contract Review Add-in</title>
+    <title>Word AI Redliner</title>
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- CSS is injected by webpack via taskpane.js import -->
 </head>
 
 <body>
-    <div class="container">
+    <div class="app">
         <!-- Header -->
         <header class="header">
             <div class="header-brand">
                 <span class="header-suite">Word AI Redliner</span>
             </div>
-            <div class="connection-status" id="connectionStatus">
-                <span class="status-indicator" id="statusIndicator"></span>
-                <span id="statusText">Connecting...</span>
+            <div class="header-actions">
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-indicator" id="statusIndicator"></span>
+                    <span id="statusText" class="status-text">Connecting...</span>
+                </div>
+                <button id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">&#65291;</button>
+                <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
+                <button id="infoBtn" class="icon-btn" title="About" aria-label="About">&#9432;</button>
             </div>
         </header>
 
-        <!-- Prompt Management (Three-Category Tabbed Interface) -->
-        <section class="prompt-section">
-            <div class="prompt-tabs" role="tablist" aria-label="Prompt categories">
-                <button role="tab" id="tab-context" aria-selected="true" aria-controls="panel-context" class="prompt-tab active" tabindex="0">
-                    <span class="tab-dot" id="dot-context"></span>
-                    Context
-                </button>
-                <button role="tab" id="tab-amendment" aria-selected="false" aria-controls="panel-amendment" class="prompt-tab" tabindex="-1">
-                    <span class="tab-dot" id="dot-amendment"></span>
-                    Amendment
-                </button>
-                <button role="tab" id="tab-comment" aria-selected="false" aria-controls="panel-comment" class="prompt-tab" tabindex="-1">
-                    <span class="tab-dot" id="dot-comment"></span>
-                    Comment
-                </button>
-                <button role="tab" id="tab-summary" aria-selected="false" aria-controls="panel-summary" class="prompt-tab" tabindex="-1">
-                    <span class="tab-dot" id="dot-summary"></span>
-                    Summary
-                </button>
+        <!-- Chat message area -->
+        <main id="chatMessages" class="chat-messages" aria-live="polite">
+            <div id="welcome" class="welcome">
+                <h2 class="welcome-title">Word AI Redliner</h2>
+                <p class="welcome-subtitle">Get started with these skills:</p>
+                <div id="skillChips" class="skill-chips"></div>
+                <p class="welcome-hint">Or select text in the document and type an edit instruction, or just ask a question about the document.</p>
             </div>
+        </main>
 
-            <!-- Context Panel -->
-            <div role="tabpanel" id="panel-context" aria-labelledby="tab-context">
-                <div class="form-group">
-                    <select id="promptSelect-context" class="form-control" aria-label="Context prompt selection">
-                        <option value="">(None)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <textarea id="promptTextarea-context" class="form-control" rows="6"
-                        placeholder="Enter overall context instructions (no {selection} placeholder needed)" aria-label="Context prompt template"></textarea>
-                </div>
-                <div class="button-group compact-toolbar">
-                    <button id="savePromptBtn-context" class="btn btn-compact">Save</button>
-                    <button id="deletePromptBtn-context" class="btn btn-compact">Delete</button>
-                    <button id="resetPromptBtn-context" class="btn btn-compact">Clear</button>
-                </div>
-            </div>
+        <!-- Comment pending status bar -->
+        <div id="commentStatusBar" class="comment-status-bar" role="status" style="display: none;">
+            <span class="comment-spinner"></span>
+            <span id="commentStatusText">0 comments pending...</span>
+        </div>
 
-            <!-- Amendment Panel -->
-            <div role="tabpanel" id="panel-amendment" aria-labelledby="tab-amendment" hidden>
-                <div class="form-group">
-                    <select id="promptSelect-amendment" class="form-control" aria-label="Amendment prompt selection">
-                        <option value="">(None)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <textarea id="promptTextarea-amendment" class="form-control" rows="6"
-                        placeholder="Enter your prompt. Use {selection} for the selected text. Tick &quot;Include comments in selection&quot; in Settings to also include anchored Word comments and threaded replies." aria-label="Amendment prompt template"></textarea>
-                </div>
-                <div class="form-group comment-field-group">
-                    <label for="commentInstructions" class="comment-field-label">Comment Instructions (optional):</label>
-                    <textarea id="commentInstructions" class="form-control comment-instructions-textarea" rows="3"
-                        placeholder="Optionally add comment instructions. The LLM will return both the amendment and a comment in one response."></textarea>
-                    <small class="help-text">When filled, the LLM produces both tracked changes and a comment in a single call.</small>
-                </div>
-                <div class="button-group compact-toolbar">
-                    <button id="savePromptBtn-amendment" class="btn btn-compact">Save</button>
-                    <button id="deletePromptBtn-amendment" class="btn btn-compact">Delete</button>
-                    <button id="resetPromptBtn-amendment" class="btn btn-compact">Clear</button>
-                </div>
-                <div class="panel-action-buttons">
-                    <button data-panel="amendment" data-action="amend-selection"
-                            class="btn btn-primary panel-action-btn full-width" disabled
-                            title="Activate an Amendment prompt to enable">
-                        Amend Selection →
-                    </button>
-                    <button data-panel="amendment" data-action="amend-comment-selection"
-                            class="btn btn-primary panel-action-btn full-width" disabled
-                            title="Activate an Amendment prompt and add comment instructions to enable">
-                        Amend &amp; Comment Selection →
-                    </button>
-                    <button data-panel="amendment" data-action="amend-document"
-                            class="btn btn-primary panel-action-btn full-width" disabled
-                            title="Activate an Amendment prompt to enable">
-                        Amend Document →
-                    </button>
-                    <button data-panel="amendment" data-action="amend-comment-document"
-                            class="btn btn-primary panel-action-btn full-width" disabled
-                            title="Activate an Amendment prompt and add comment instructions to enable">
-                        Amend &amp; Comment Document →
-                    </button>
-                </div>
-            </div>
-
-            <!-- Comment Panel -->
-            <div role="tabpanel" id="panel-comment" aria-labelledby="tab-comment" hidden>
-                <div class="comment-mode-hint">
-                    <p><strong>Tip:</strong> For combined amendment + comment, use the Amendment tab's comment instructions field instead. This gives the LLM full context for both tasks in a single call.</p>
-                </div>
-                <div class="form-group">
-                    <select id="promptSelect-comment" class="form-control" aria-label="Comment prompt selection">
-                        <option value="">(None)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <textarea id="promptTextarea-comment" class="form-control" rows="6"
-                        placeholder="Enter your prompt. Use {selection} for the selected text. Tick &quot;Include comments in selection&quot; in Settings to also include anchored Word comments and threaded replies." aria-label="Comment prompt template"></textarea>
-                </div>
-                <div class="button-group compact-toolbar">
-                    <button id="savePromptBtn-comment" class="btn btn-compact">Save</button>
-                    <button id="deletePromptBtn-comment" class="btn btn-compact">Delete</button>
-                    <button id="resetPromptBtn-comment" class="btn btn-compact">Clear</button>
-                </div>
-                <div class="panel-action-buttons">
-                    <button data-panel="comment" data-action="comment-selection"
-                            class="btn btn-primary panel-action-btn full-width" disabled
-                            title="Activate a Comment prompt to enable">
-                        Comment on Selection →
-                    </button>
-                    <button data-panel="comment" data-action="comment-document"
-                            class="btn btn-primary panel-action-btn full-width" disabled
-                            title="Activate a Comment prompt to enable">
-                        Comment on Document →
-                    </button>
-                </div>
-            </div>
-
-            <!-- Summary Panel -->
-            <div role="tabpanel" id="panel-summary" aria-labelledby="tab-summary" hidden>
-                <div class="form-group">
-                    <select id="promptSelect-summary" class="form-control" aria-label="Summary prompt selection">
-                        <option value="">(None)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <textarea id="promptTextarea-summary" class="form-control" rows="6"
-                        placeholder="Enter summary prompt. Available placeholders:&#10;  {comments} — extracted comment data&#10;  {whole document} — full document text (richness controlled in Settings)&#10;  {tracked changes} — tracked changes data (enable in Settings)&#10;&#10;The LLM should output markdown (converted to HTML automatically)." aria-label="Summary prompt template"></textarea>
-                </div>
-                <div class="button-group compact-toolbar">
-                    <button id="savePromptBtn-summary" class="btn btn-compact">Save</button>
-                    <button id="deletePromptBtn-summary" class="btn btn-compact">Delete</button>
-                    <button id="resetPromptBtn-summary" class="btn btn-compact">Clear</button>
-                </div>
-                <div class="panel-action-buttons">
-                    <button data-panel="summary" data-action="summary-document"
-                            class="btn btn-primary panel-action-btn full-width" disabled
-                            title="Activate a Summary prompt to enable">
-                        Generate Summary
-                    </button>
-                </div>
-            </div>
-        </section>
-
-        <!-- Main Actions -->
-        <section class="action-section">
-            <!-- Comment Status Bar -->
-            <div id="commentStatusBar" class="comment-status-bar" role="status" style="display: none;">
-                <span class="comment-spinner"></span>
-                <span id="commentStatusText">0 comments pending...</span>
-            </div>
-            <!-- Token Estimation -->
-            <div id="tokenEstimate" class="token-estimate" role="status" style="display: none;">
-                <span class="token-estimate-label">Estimated tokens:</span>
-                <span id="tokenEstimateValue" class="token-estimate-value">0</span>
-                <span id="tokenEstimateBreakdown" class="token-estimate-breakdown"></span>
-            </div>
-            <!-- Process Document Progress Bar -->
-            <div id="processProgressBar" class="process-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="display: none;">
-                <div class="progress-track">
-                    <div id="progressFill" class="progress-fill" style="width: 0%"></div>
-                </div>
-                <span id="progressText" class="progress-text">Processing: 0/0 chunks</span>
-            </div>
-        </section>
-
-        <!-- Settings Section -->
-        <section class="settings-section">
-            <div class="collapsible-header" id="settingsToggle" role="button" tabindex="0" aria-expanded="false" aria-controls="settingsContent">
-                <span>⚙️ Settings</span>
-                <span class="toggle-icon">▼</span>
-            </div>
-            <div class="collapsible-content" id="settingsContent">
-                <div class="form-group">
-                    <label for="backendSelect">LLM Backend:</label>
-                    <select id="backendSelect" class="form-control">
-                        <option value="ollama">Ollama</option>
-                        <option value="vllm">vLLM (OpenAI-compatible)</option>
-                        <optgroup label="Cloud providers">
-                            <option value="deepseek">DeepSeek</option>
-                            <option value="glm">Zhipu GLM</option>
-                            <option value="kimi">Moonshot Kimi</option>
-                        </optgroup>
-                        <option value="custom">Custom (OpenAI-compatible)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="modelSelect">Model:</label>
-                    <div class="model-input-row">
-                        <input type="text" id="modelSelect" class="form-control" list="modelList"
-                               placeholder="Type a model name or refresh the list" autocomplete="off">
-                        <datalist id="modelList"></datalist>
-                        <button type="button" id="refreshModelsBtn" class="btn btn-compact"
-                                title="Refresh the model list from the provider">Refresh</button>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label for="endpointUrl">Endpoint URL:</label>
-                    <input type="text" id="endpointUrl" class="form-control" placeholder="e.g., /ollama or /vllm">
-                    <small class="help-text" id="endpointHint">Base URL for the selected provider</small>
-                </div>
-                <div class="form-group">
-                    <label for="apiKey">API Key (Optional):</label>
-                    <input type="password" id="apiKey" class="form-control" placeholder="Optional API key">
-                    <small class="help-text" id="apiKeyHint">Required for cloud providers; leave blank for local backends</small>
-                </div>
-                <div class="form-group checkbox-group">
-                    <label>
-                        <input type="checkbox" id="trackChangesCheckbox" checked>
-                        Enable Track Changes
-                    </label>
-                </div>
-                <div class="form-group checkbox-group">
-                    <label>
-                        <input type="checkbox" id="lineDiffCheckbox">
-                        Force Line Diff (Sentence Mode)
-                    </label>
-                </div>
-                <hr class="settings-divider">
-                <p class="settings-section-label">Summary Mode Settings</p>
-                <div class="form-group">
-                    <label for="docRichnessSelect">Document Extraction Richness:</label>
-                    <select id="docRichnessSelect" class="form-control">
-                        <option value="plain">Plain text</option>
-                        <option value="headings">Headings + text</option>
-                        <option value="structured" selected>Full structure (headings, lists)</option>
-                    </select>
-                    <small class="help-text">Controls {whole document} placeholder detail level</small>
-                </div>
-                <div class="form-group checkbox-group">
-                    <label>
-                        <input type="checkbox" id="trackedChangesExtraction">
-                        Include Tracked Changes in Summary
-                    </label>
-                    <small class="help-text">Extracts tracked changes (via OOXML) for {tracked changes} placeholder</small>
-                </div>
-                <hr class="settings-divider">
-                <p class="settings-section-label">Selection Settings</p>
-                <div class="form-group checkbox-group">
-                    <label>
-                        <input type="checkbox" id="includeCommentsInSelectionCheckbox">
-                        Include comments in selection
-                    </label>
-                    <small class="help-text">When enabled, {selection} includes Word comments and threaded replies anchored to the selected text. Default off — selection-scope runs use plain selected text.</small>
-                </div>
-                <hr class="settings-divider">
-                <p class="settings-section-label">Whole-Document Processing Settings</p>
-                <div class="form-group">
-                    <label for="commentGranularity">Comment granularity:</label>
-                    <select id="commentGranularity" class="form-control">
-                        <option value="0">Per chunk</option>
-                        <option value="1">Every paragraph</option>
-                        <option value="2">Every 2 paragraphs</option>
-                        <option value="5">Every 5 paragraphs</option>
-                    </select>
-                </div>
-            </div>
-        </section>
-
-        <!-- Verification Section -->
-        <section class="verification-section" id="verificationSection">
-            <button id="runVerificationBtn" class="btn btn-secondary full-width verification-btn">
-                <span class="btn-icon">🧪</span>
-                Run Verification Script
-            </button>
-        </section>
-
-        <!-- Logs -->
-        <section class="logs-section">
-            <div class="logs-header">
-                <label for="logs">Activity Log:</label>
+        <!-- Slim activity-log drawer -->
+        <section class="log-drawer">
+            <div class="log-drawer-bar">
+                <button id="logToggle" class="log-toggle" aria-expanded="false" aria-controls="logs">Activity log</button>
                 <button id="clearLogsBtn" class="btn-link">Clear</button>
             </div>
-            <div id="logs" class="logs-container" role="log" aria-live="polite"></div>
+            <div id="logs" class="logs-container" role="log" aria-live="polite" hidden></div>
         </section>
+
+        <!-- Input bar -->
+        <footer class="input-bar">
+            <div id="skillPicker" class="skill-picker" role="listbox" hidden></div>
+            <div class="input-row">
+                <textarea id="chatInput" class="chat-input" rows="1"
+                    placeholder="Ask for help, or / for skills"
+                    aria-label="Chat input"></textarea>
+                <button id="sendBtn" class="send-btn" title="Send" aria-label="Send">&uarr;</button>
+            </div>
+            <button id="modelPill" class="model-pill" title="Open settings"></button>
+        </footer>
+
+        <!-- Settings slide-over -->
+        <div id="settingsOverlay" class="settings-overlay" hidden>
+            <aside class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
+                <div class="settings-header">
+                    <h2>Settings</h2>
+                    <button id="settingsCloseBtn" class="icon-btn" title="Close settings" aria-label="Close settings">&times;</button>
+                </div>
+                <div class="settings-body">
+                    <p class="settings-section-label">LLM Backend</p>
+                    <div class="form-group">
+                        <label for="backendSelect">LLM Backend:</label>
+                        <select id="backendSelect" class="form-control">
+                            <option value="ollama">Ollama</option>
+                            <option value="vllm">vLLM (OpenAI-compatible)</option>
+                            <optgroup label="Cloud providers">
+                                <option value="deepseek">DeepSeek</option>
+                                <option value="glm">Zhipu GLM</option>
+                                <option value="kimi">Moonshot Kimi</option>
+                            </optgroup>
+                            <option value="custom">Custom (OpenAI-compatible)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="modelSelect">Model:</label>
+                        <div class="model-input-row">
+                            <input type="text" id="modelSelect" class="form-control" list="modelList"
+                                   placeholder="Type a model name or refresh the list" autocomplete="off">
+                            <datalist id="modelList"></datalist>
+                            <button type="button" id="refreshModelsBtn" class="btn btn-compact"
+                                    title="Refresh the model list from the provider">Refresh</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="endpointUrl">Endpoint URL:</label>
+                        <input type="text" id="endpointUrl" class="form-control" placeholder="e.g., /ollama or /vllm">
+                        <small class="help-text" id="endpointHint">Base URL for the selected provider</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="apiKey">API Key (Optional):</label>
+                        <input type="password" id="apiKey" class="form-control" placeholder="Optional API key">
+                        <small class="help-text" id="apiKeyHint">Required for cloud providers; leave blank for local backends</small>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="trackChangesCheckbox" checked>
+                            Enable Track Changes
+                        </label>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="lineDiffCheckbox">
+                            Force Line Diff (Sentence Mode)
+                        </label>
+                    </div>
+
+                    <hr class="settings-divider">
+                    <p class="settings-section-label">Summary Mode Settings</p>
+                    <div class="form-group">
+                        <label for="docRichnessSelect">Document Extraction Richness:</label>
+                        <select id="docRichnessSelect" class="form-control">
+                            <option value="plain">Plain text</option>
+                            <option value="headings">Headings + text</option>
+                            <option value="structured" selected>Full structure (headings, lists)</option>
+                        </select>
+                        <small class="help-text">Controls {whole document} placeholder detail level</small>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="trackedChangesExtraction">
+                            Include Tracked Changes in Summary
+                        </label>
+                        <small class="help-text">Extracts tracked changes (via OOXML) for {tracked changes} placeholder</small>
+                    </div>
+
+                    <hr class="settings-divider">
+                    <p class="settings-section-label">Selection Settings</p>
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="includeCommentsInSelectionCheckbox">
+                            Include comments in selection
+                        </label>
+                        <small class="help-text">When enabled, {selection} includes Word comments and threaded replies anchored to the selected text.</small>
+                    </div>
+
+                    <hr class="settings-divider">
+                    <p class="settings-section-label">Whole-Document Processing Settings</p>
+                    <div class="form-group">
+                        <label for="commentGranularity">Comment granularity:</label>
+                        <select id="commentGranularity" class="form-control">
+                            <option value="0">Per chunk</option>
+                            <option value="1">Every paragraph</option>
+                            <option value="2">Every 2 paragraphs</option>
+                            <option value="5">Every 5 paragraphs</option>
+                        </select>
+                    </div>
+
+                    <hr class="settings-divider">
+                    <p class="settings-section-label">Prompt Management</p>
+                    <p class="help-text">Saved prompts also appear as slash commands in the chat input. The active Context prompt is prepended to every request.</p>
+
+                    <div class="prompt-block" data-category="context">
+                        <p class="prompt-block-title">Context</p>
+                        <div class="form-group">
+                            <select id="promptSelect-context" class="form-control" aria-label="Context prompt selection">
+                                <option value="">(None)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <textarea id="promptTextarea-context" class="form-control" rows="4"
+                                placeholder="Enter overall context instructions (no {selection} placeholder needed)" aria-label="Context prompt template"></textarea>
+                        </div>
+                        <div class="button-group compact-toolbar">
+                            <button id="savePromptBtn-context" class="btn btn-compact">Save</button>
+                            <button id="deletePromptBtn-context" class="btn btn-compact">Delete</button>
+                            <button id="resetPromptBtn-context" class="btn btn-compact">Clear</button>
+                        </div>
+                    </div>
+
+                    <div class="prompt-block" data-category="amendment">
+                        <p class="prompt-block-title">Amendment</p>
+                        <div class="form-group">
+                            <select id="promptSelect-amendment" class="form-control" aria-label="Amendment prompt selection">
+                                <option value="">(None)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <textarea id="promptTextarea-amendment" class="form-control" rows="4"
+                                placeholder="Enter your prompt. Use {selection} for the selected text." aria-label="Amendment prompt template"></textarea>
+                        </div>
+                        <div class="form-group comment-field-group">
+                            <label for="commentInstructions" class="comment-field-label">Comment Instructions (optional):</label>
+                            <textarea id="commentInstructions" class="form-control comment-instructions-textarea" rows="3"
+                                placeholder="Optionally add comment instructions. The LLM will return both the amendment and a comment in one response."></textarea>
+                            <small class="help-text">When filled, amendment turns produce both tracked changes and a comment in a single call.</small>
+                        </div>
+                        <div class="button-group compact-toolbar">
+                            <button id="savePromptBtn-amendment" class="btn btn-compact">Save</button>
+                            <button id="deletePromptBtn-amendment" class="btn btn-compact">Delete</button>
+                            <button id="resetPromptBtn-amendment" class="btn btn-compact">Clear</button>
+                        </div>
+                    </div>
+
+                    <div class="prompt-block" data-category="comment">
+                        <p class="prompt-block-title">Comment</p>
+                        <div class="form-group">
+                            <select id="promptSelect-comment" class="form-control" aria-label="Comment prompt selection">
+                                <option value="">(None)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <textarea id="promptTextarea-comment" class="form-control" rows="4"
+                                placeholder="Enter your prompt. Use {selection} for the selected text." aria-label="Comment prompt template"></textarea>
+                        </div>
+                        <div class="button-group compact-toolbar">
+                            <button id="savePromptBtn-comment" class="btn btn-compact">Save</button>
+                            <button id="deletePromptBtn-comment" class="btn btn-compact">Delete</button>
+                            <button id="resetPromptBtn-comment" class="btn btn-compact">Clear</button>
+                        </div>
+                    </div>
+
+                    <div class="prompt-block" data-category="summary">
+                        <p class="prompt-block-title">Summary</p>
+                        <div class="form-group">
+                            <select id="promptSelect-summary" class="form-control" aria-label="Summary prompt selection">
+                                <option value="">(None)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <textarea id="promptTextarea-summary" class="form-control" rows="4"
+                                placeholder="Enter summary prompt. Available placeholders:&#10;  {comments} — extracted comment data&#10;  {whole document} — full document text&#10;  {tracked changes} — tracked changes data (enable above)" aria-label="Summary prompt template"></textarea>
+                        </div>
+                        <div class="button-group compact-toolbar">
+                            <button id="savePromptBtn-summary" class="btn btn-compact">Save</button>
+                            <button id="deletePromptBtn-summary" class="btn btn-compact">Delete</button>
+                            <button id="resetPromptBtn-summary" class="btn btn-compact">Clear</button>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
     </div>
 
     <!-- Save Prompt Modal -->

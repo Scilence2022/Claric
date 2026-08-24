@@ -30,12 +30,33 @@ src/
     structure-model.js         # Paragraph block model for diff strategies
   scripts/
     verify-word-api.js         # Word API version verification utility
-  taskpane/                    # Main UI
-    taskpane.html              # 4-tab prompt UI, settings, token estimation
-    taskpane.js                # Orchestration: workflows, event handlers, state
-    taskpane.css               # Styles including disabled tabs, token display
+  taskpane/                    # Chat-driven main UI
+    taskpane.html              # Chat layout: header, message list, input bar,
+                               #   settings slide-over
+    taskpane.js                # Bootstrap only: module wiring, Office.onReady,
+                               #   WordApi capability detection
+    taskpane.css               # Chat styles (messages, proposal cards, pills)
+    app-state.js               # Shared state: config, PromptManager, processing
+                               #   flags, normalizeConfig
+    skills.js                  # Skill registry: 6 built-ins + custom prompts
+                               #   exposed as slash commands
+    conversation.js            # Turn routing: skill / selection edit / doc Q&A,
+                               #   concurrency guard, cancel
+    word-actions.js            # Document/LLM pipelines with explicit args:
+                               #   selection edits (prepare/apply split for
+                               #   proposal cards), doc-scope chunked runs,
+                               #   summary, chat Q&A
+    ui/
+      chat-view.js             # Message rendering, streaming text, progress
+      input-bar.js             # Textarea, skill picker popup, send/cancel,
+                               #   model pill
+      welcome.js               # Welcome empty state with skill chips
+      settings-view.js         # Settings slide-over + prompt management
+      proposal-card.js         # Staged edit proposal card (Apply/Reject)
+      status-bar.js            # Activity log drawer, comment pending bar,
+                               #   connection status
 
-tests/                         # Jest unit tests (469 tests, 20 suites)
+tests/                         # Jest unit tests (514 tests, 22 suites)
   prompt-state.spec.js         # PromptManager CRUD, activation, summary category
   prompt-persistence.spec.js   # localStorage round-trip, migration, edge cases
   prompt-composition.spec.js   # composeMessages, composeSummaryMessages, placeholders
@@ -43,6 +64,9 @@ tests/                         # Jest unit tests (469 tests, 20 suites)
   document-generator.spec.js   # HTML building, markdown conversion, table borders
   comment-queue.spec.js        # Queue state management, bookmark naming
   llm-client.spec.js           # sendPrompt, stripThinkTags, testConnection
+  skills.spec.js               # Skill registry, resolveSkill parsing, custom skills
+  conversation.spec.js         # Turn routing, concurrency guard, cancel
+  llm-stream.spec.js           # sendPromptStream SSE parsing and fallback
 
 scripts/
   generate-manifest.cjs        # Builds manifest.xml from template + .env
@@ -60,18 +84,20 @@ assets/                        # Add-in icons (16/32/80px)
 ### Amendment/Comment Flow (AI Redlining)
 
 ```
-User selects text → clicks "Review Selection"
-  → taskpane.js reads selection via Word.run()
-  → promptManager.composeMessages(category, selection) builds prompt
+User selects text → types an instruction (or /copy-edit) in the chat input
+  → conversation.js routes the turn (skill / selection edit / doc Q&A)
+  → word-actions.js reads the selection via Word.run()
+  → promptManager.composeMessages(category, selection, templateOverride) builds prompt
   → llmClient.sendPrompt(config, prompt) calls LLM
-  → office-word-diff applies response as tracked changes
+  → chat shows a proposal card (Apply as tracked changes / Reject)
+  → on Apply: office-word-diff applies the response as tracked changes
   → Word shows insertions/deletions with track changes enabled
 ```
 
 ### Summary Flow (Document Summary)
 
 ```
-User clicks "Generate Summary"
+User runs "/summarize-contract"
   → extractAllComments() gets all document comments (WordApi 1.4)
   → extractDocumentStructured({ richness }) gets document text (if {whole document} in prompt)
   → extractTrackedChanges() parses OOXML for revisions (if {tracked changes} in prompt)
@@ -122,13 +148,16 @@ Cascading strategy for applying LLM-suggested text changes:
 2. **Sentence Diff** — tokenizes by sentence boundaries, handles structural changes
 3. **Block Replace** — complete replacement fallback
 
-### Taskpane (`src/taskpane/taskpane.js`)
+### Taskpane (`src/taskpane/`)
 
-Central orchestrator. Key responsibilities:
-- Tab switching with mode-dependent disable logic (Amendment/Comment disabled in Summary mode)
-- Settings auto-save on every input change (no Save button)
-- Live token estimation via async cached Word API reads (debounced 300ms)
-- Review button routing: amendment/comment → diff workflow, summary → summary workflow
+Chat-driven UI split into focused modules:
+- `taskpane.js` — bootstrap only (module wiring, Office.onReady, WordApi detection)
+- `app-state.js` — shared config/state; `normalizeConfig` field-by-field validation
+- `conversation.js` — turn routing: slash skill → pipeline, free text + selection → staged edit, free text → document Q&A; concurrency guard + AbortController cancel
+- `skills.js` — skill registry: six built-ins plus PromptManager prompts as custom slash commands
+- `word-actions.js` — the pipelines (selection prepare/apply split, doc-scope chunked runs, summary, chat Q&A) with explicit args instead of DOM/active-prompt reads
+- `ui/*` — chat view, input bar with skill picker and send/cancel morph, welcome chips, settings slide-over, proposal card, status bar
+- Settings auto-save on every input change (no Save button), unchanged localStorage keys
 - WordApi version detection and feature gating (1.4 for comments)
 
 ## Configuration
@@ -149,7 +178,7 @@ generated on first run and persisted to `.manifest-guid` so the add-in
 identity survives restarts. All substituted values are XML-escaped.
 
 Persisted settings are validated field-by-field by `normalizeConfig`
-(taskpane.js) -- corrupt localStorage data falls back to defaults instead
+(src/taskpane/app-state.js) -- corrupt localStorage data falls back to defaults instead
 of crashing the add-in.
 
 ### Runtime (localStorage)
@@ -170,7 +199,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 469 tests, 20 suites, ~2s
+npm test          # 514 tests, 22 suites, ~2s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + build (what CI runs)
