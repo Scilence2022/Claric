@@ -311,14 +311,17 @@ export class PromptManager {
      * The target category (amendment or comment) prompt becomes the user message
      * with all {selection} occurrences replaced by selectionText.
      *
-     * Returns an empty array if the target category has no active prompt.
+     * Returns an empty array if the target category has no active prompt and
+     * no templateOverride is given.
      * Does not throw -- callers should check canSubmit() before calling.
      *
      * @param {string} selectionText - The user's selected text from the document
      * @param {string} category - Target category: 'amendment' or 'comment'
+     * @param {string} [templateOverride] - Explicit template to use instead of the
+     *   category's active prompt (used by skill/chat turns)
      * @returns {Array<{role: string, content: string}>} Messages array for chat completions
      */
-    composeMessages(selectionText, category) {
+    composeMessages(selectionText, category, templateOverride) {
         const messages = [];
 
         // System message from context (if active) -- PRMT-07
@@ -328,7 +331,9 @@ export class PromptManager {
         }
 
         // User message from target category (amendment or comment) -- PRMT-08, PRMT-09
-        const targetPrompt = this.getActivePrompt(category);
+        const targetPrompt = templateOverride !== undefined
+            ? { template: templateOverride }
+            : this.getActivePrompt(category);
         if (targetPrompt) {
             let content;
             if (targetPrompt.template.includes('{selection}')) {
@@ -359,12 +364,14 @@ export class PromptManager {
      *
      * @param {string} selectionText - The user's selected text from the document
      * @param {string} commentInstructions - Comment instructions text (empty = amendment-only)
+     * @param {string} [templateOverride] - Explicit amendment template to use instead
+     *   of the active amendment prompt (used by skill/chat turns)
      * @returns {Array<{role: string, content: string}>} Messages array for chat completions
      */
-    composeMergedMessages(selectionText, commentInstructions) {
+    composeMergedMessages(selectionText, commentInstructions, templateOverride) {
         // Empty comment instructions = amendment-only (backward compatible)
         if (!commentInstructions || !commentInstructions.trim()) {
-            return this.composeMessages(selectionText, 'amendment');
+            return this.composeMessages(selectionText, 'amendment', templateOverride);
         }
 
         const messages = [];
@@ -376,7 +383,9 @@ export class PromptManager {
         }
 
         // User message from amendment prompt with {selection} replaced
-        const amendmentPrompt = this.getActivePrompt('amendment');
+        const amendmentPrompt = templateOverride !== undefined
+            ? { template: templateOverride }
+            : this.getActivePrompt('amendment');
         if (!amendmentPrompt) {
             return [];
         }
@@ -413,6 +422,9 @@ FORMAT YOUR RESPONSE WITH THESE EXACT DELIMITERS:
      * @param {Array<{index: number, commentText: string, associatedText: string, author: string, date: string, resolved: boolean}>} extractedComments
      * @param {object} [options] - Optional parameters
      * @param {string} [options.documentText] - Full document body text for {whole document} placeholder
+     * @param {string} [options.trackedChangesText] - Formatted tracked-changes text for {tracked changes} placeholder
+     * @param {string} [options.templateOverride] - Explicit summary template to use instead
+     *   of the active summary prompt (used by skill/chat turns)
      * @returns {Array<{role: string, content: string}>} Messages array for chat completions
      */
     composeSummaryMessages(extractedComments, options = {}) {
@@ -430,7 +442,9 @@ FORMAT YOUR RESPONSE WITH THESE EXACT DELIMITERS:
         ).join('\n\n');
 
         // User message from summary prompt with placeholder replacement
-        const summaryPrompt = this.getActivePrompt('summary');
+        const summaryPrompt = options.templateOverride !== undefined
+            ? { template: options.templateOverride }
+            : this.getActivePrompt('summary');
         if (summaryPrompt) {
             let content = summaryPrompt.template;
 

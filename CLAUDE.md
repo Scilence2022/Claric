@@ -14,6 +14,7 @@ AI-powered Microsoft Word add-in for tracked changes, document summarization, an
 ## Architecture
 
 - Office.js Word add-in (runs in WebView2)
+- Chat-driven taskpane: `src/taskpane/` split into `app-state.js`, `skills.js`, `conversation.js`, `word-actions.js`, and `ui/*`; `taskpane.js` is bootstrap only
 - LLM backends: vLLM (Qwen3.5-35B-A3B) on port 8026, Ollama on port 11434
 - Webpack dev server proxies `/vllm` → localhost:8026, `/ollama` → localhost:11434
 - Proxy timeout: 5 minutes (300s)

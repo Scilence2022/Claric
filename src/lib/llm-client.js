@@ -308,6 +308,138 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
 }
 
 /**
+ * Sends a prompt to the LLM backend with OpenAI-compatible streaming
+ * (`stream: true`) and invokes onToken for each content delta as it arrives.
+ *
+ * If the server ignores `stream: true` and answers with a plain JSON body
+ * (non-SSE content type), falls back to reading the whole response and
+ * delivering it as a single token -- so callers get correct output from
+ * backends without streaming support.
+ *
+ * Abort/timeout wiring mirrors sendMessages (WebView2-safe, no AbortSignal.any).
+ *
+ * @param {Object} config - { url, apiKey, model, apiPath }
+ * @param {string} promptText - The prompt text to send
+ * @param {function} [onToken] - Called with each streamed content delta
+ * @param {function} [log] - Optional logging callback (message, type)
+ * @param {AbortSignal} [signal] - Optional abort signal for cancellation
+ * @param {number} [timeoutMs=120000] - Per-request timeout in ms
+ * @returns {Promise<string>} The full cleaned response text (think tags stripped)
+ * @throws {Error} On non-ok HTTP response or network failure
+ * @throws {DOMException} AbortError on user cancellation via signal
+ * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
+ */
+export async function sendPromptStream(config, promptText, onToken, log, signal, timeoutMs = 120000) {
+  const { url, headers } = buildRequestConfig(config);
+
+  const body = JSON.stringify({
+    model: config.model,
+    messages: [{ role: 'user', content: promptText }],
+    stream: true,
+  });
+
+  const localController = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    localController.abort();
+  }, timeoutMs);
+
+  let onExternalAbort;
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+    onExternalAbort = () => localController.abort();
+    signal.addEventListener('abort', onExternalAbort);
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+      signal: localController.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const contentType = response.headers && typeof response.headers.get === 'function'
+      ? (response.headers.get('content-type') || '')
+      : '';
+
+    // Non-SSE fallback: the backend ignored stream:true and sent plain JSON.
+    if (!contentType.includes('text/event-stream') || !response.body || typeof response.body.getReader !== 'function') {
+      const data = await response.json();
+      const rawText = data.choices?.[0]?.message?.content ?? '';
+      const cleaned = stripThinkTags(rawText, log);
+      if (typeof onToken === 'function' && cleaned) {
+        onToken(cleaned);
+      }
+      return cleaned;
+    }
+
+    // SSE parsing: buffer partial lines across chunks, handle `data:` lines
+    // and the `[DONE]` terminator.
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let full = '';
+    let doneReceived = false;
+
+    while (!doneReceived) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let newlineIdx;
+      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim();
+        buffer = buffer.slice(newlineIdx + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') {
+          doneReceived = true;
+          break;
+        }
+        if (!payload) continue;
+        try {
+          const json = JSON.parse(payload);
+          const token = json.choices?.[0]?.delta?.content
+            ?? json.choices?.[0]?.message?.content
+            ?? '';
+          if (token) {
+            full += token;
+            if (typeof onToken === 'function') {
+              onToken(token);
+            }
+          }
+        } catch (_parseErr) {
+          // Incomplete or non-JSON data line -- skip it.
+        }
+      }
+    }
+
+    return stripThinkTags(full, log);
+  } catch (err) {
+    if (timedOut && err.name === 'AbortError') {
+      const timeoutErr = new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      timeoutErr.name = 'TimeoutError';
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    if (signal && onExternalAbort) {
+      signal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+}
+
+/**
  * Tests connection to the configured LLM backend and retrieves model list.
  * Uses the OpenAI-compatible models endpoint (prefix from config.apiPath,
  * default /v1) for all providers.

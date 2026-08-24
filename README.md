@@ -117,6 +117,32 @@ extraction and tracked changes analysis.
 - TDD workflow: failing tests written before implementation
 - Covers: prompt state/persistence/composition, comment extraction, document generation, tracked changes OOXML parsing, orchestrator dispatch/concurrency, reassembler paragraph alignment, document chunking, context extraction
 
+### v0.5.0: Chat-Driven UI
+
+**Chat Interface (Claude-for-Word style)**
+- Chat-first taskpane: message list, bottom input bar, welcome empty state with skill chips
+- Slash-command skill picker: type `/` to filter and pick skills; Enter/Tab/click to select
+- Built-in skills: `/copy-edit`, `/check-doc`, `/flag-issues`, `/summarize-contract`, `/industry-overview`, `/storylining`
+- Saved prompts (PromptManager) automatically register as custom slash commands
+- Send button morphs into Cancel while a run is processing (AbortController)
+
+**Scope-Aware Turn Routing**
+- `/skill args` runs the skill's pipeline (amendment / comment / summary / chat)
+- Free text + non-empty selection → amendment pipeline with the text as the edit instruction
+- Free text without selection → document Q&A answered in chat (streaming when the backend supports SSE)
+- `selection-first` skills run on the selection when one exists, otherwise on the whole document
+
+**Staged Edit Proposals + Citations**
+- Selection-scope edits render a proposal card (before/after char counts, Apply as tracked changes / Reject) — nothing is written until Apply
+- Document-scope runs apply directly with per-chunk progress + ETA, then show citation pills per section; clicking a pill jumps to that section in the document
+- Chat answers stream token-by-token via OpenAI-compatible SSE (`stream: true`), with automatic fallback to non-streaming
+
+**Settings Slide-Over**
+- All provider/extraction settings moved into a slide-over panel (same auto-save behavior, same localStorage keys)
+- Prompt management (per-category CRUD + activation + comment instructions) lives in the slide-over
+- Model pill under the input bar shows the active provider:model and opens settings on click
+- Activity log collapsed into a slim drawer; the document-mutating verification script button was removed from the UI
+
 ## Setup
 
 There are **two ways** to run this add-in:
@@ -457,7 +483,7 @@ See `ARCHITECTURE.md` for details.
 ## Testing
 
 ```bash
-npm test          # 469 tests across 20 suites
+npm test          # 514 tests across 22 suites
 npm run lint      # ESLint (flat config)
 npm run build     # webpack production build
 npm run verify    # lint + test + build (same as CI)
@@ -477,6 +503,9 @@ Test suites cover:
 - `orchestrator.spec.js` — processChunksParallel, concurrency, cancellation, merged mode parsing
 - `reassembler.spec.js` — paragraph alignment, line ending normalization, content validation
 - `response-parser.spec.js` — parseDelimitedResponse, fallback classification
+- `skills.spec.js` — built-in skill registry, resolveSkill parsing, custom skill registration
+- `conversation.spec.js` — chat turn routing (skill vs selection edit vs document Q&A), concurrency guard, cancel
+- `llm-stream.spec.js` — sendPromptStream SSE parsing, [DONE] terminator, non-SSE fallback, abort
 
 ## Acknowledgments
 
