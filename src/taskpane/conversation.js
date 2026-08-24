@@ -23,8 +23,35 @@ import { createProposalCard } from './ui/proposal-card.js';
 export const TURN_TYPE = Object.freeze({
     SKILL: 'skill',
     SELECTION_EDIT: 'selection-edit',
+    DOC_EDIT: 'doc-edit',
     DOC_QA: 'doc-qa',
 });
+
+/**
+ * English edit-intent verbs (word-boundary matched) and Chinese edit-intent
+ * substrings. Free text without a selection carrying one of these is an
+ * instruction to edit the document, not a question about it.
+ */
+const EDIT_INTENT_RE = /\b(edit|revise|revision|polish|proofread|rewrite|redline|fix|amend|correct|improve|rephrase)\b|润色|修订|修改|批改|校对|校对|改写|审改|修正|完善/i;
+
+/**
+ * Leading question markers (EN + ZH). When the input STARTS with one of these
+ * it is a question even if it contains an edit verb later ("how should I
+ * improve this section?"), so Q&A takes precedence over edit intent.
+ */
+const QUESTION_LEAD_RE = /^\s*(what|why|how|does|do|is|are|can|could|should|would|which|who|when|where|explain|describe|summarize|list|tell me)\b|^\s*(什么|为什么|为何|怎么|怎样|如何|哪些|哪个|是不是|是否|能否|解释|说明|总结|概述|介绍)/i;
+
+/**
+ * True when free text (no selection) expresses an instruction to edit the
+ * document rather than a question about it.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeEditIntent(text) {
+    if (QUESTION_LEAD_RE.test(text)) return false;
+    return EDIT_INTENT_RE.test(text);
+}
 
 /**
  * Routes raw chat input to a turn descriptor. Pure function.
@@ -46,6 +73,9 @@ export function routeTurn(text, { hasSelection, skills } = {}) {
     }
     if (hasSelection) {
         return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
+    }
+    if (looksLikeEditIntent(trimmed)) {
+        return { type: TURN_TYPE.DOC_EDIT, instruction: trimmed };
     }
     return { type: TURN_TYPE.DOC_QA, question: trimmed };
 }
@@ -213,6 +243,7 @@ export function createConversation(deps) {
                 question,
                 skillTemplate,
                 signal: appState.chatController.signal,
+                onStatus: (s) => msg.setStatus(s),
                 onToken: (token) => {
                     msg.setStatus('');
                     msg.appendText(token);
@@ -302,6 +333,14 @@ export function createConversation(deps) {
                 await runSkillTurn(turn.skill, turn.args, hasSelection, msg);
             } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
                 await runSelectionEditTurn(turn.instruction, msg);
+            } else if (turn.type === TURN_TYPE.DOC_EDIT) {
+                // Free-text edit instruction without a selection: run the
+                // whole-document amendment pipeline with the user's text as
+                // the edit template.
+                await runDocumentTurn({
+                    name: 'Edit', category: 'amendment', scope: 'document',
+                    defaultTemplate: turn.instruction,
+                }, undefined, msg);
             } else {
                 await runQaTurn(turn.question, null, msg);
             }

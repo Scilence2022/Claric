@@ -560,14 +560,16 @@ export async function runSummarySkill(deps, { promptTemplate } = {}) {
  * @param {string} args.question - The user's question
  * @param {string} [args.skillTemplate] - Persona/instruction template from a chat skill
  * @param {function} [args.onToken] - Called with each streamed token
+ * @param {function} [args.onStatus] - Called with stage updates ("Reading the document...", "Waiting for model...")
  * @param {AbortSignal} [args.signal] - Cancellation signal
  * @returns {Promise<string>} The full answer text
  */
-export async function answerQuestion(deps, { question, skillTemplate, onToken, signal } = {}) {
+export async function answerQuestion(deps, { question, skillTemplate, onToken, onStatus, signal } = {}) {
     const { appState, log } = deps;
 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
     log('Extracting document text for context...', 'info');
+    if (onStatus) onStatus('Reading the document...');
     const documentText = await extractDocumentStructured({ richness });
 
     let prompt = '';
@@ -582,7 +584,10 @@ export async function answerQuestion(deps, { question, skillTemplate, onToken, s
 
     const backendConfig = getActiveBackendConfig(appState);
     log(`Asking [${backendConfig.model}]...`, 'info');
-    return sendPromptStream(backendConfig, prompt, onToken, log, signal);
+    if (onStatus) onStatus(`Waiting for ${backendConfig.model}...`);
+    // Long documents + slow backends can exceed the 120s client default;
+    // chat answers get 5 minutes (the doc pipeline uses the same per-chunk).
+    return sendPromptStream(backendConfig, prompt, onToken, log, signal, 300000);
 }
 
 /**
