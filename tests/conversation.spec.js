@@ -168,10 +168,21 @@ describe('createConversation.submit', () => {
     expect(view._msg.setText).toHaveBeenCalledWith('the answer');
   });
 
-  test('edit intent without selection runs the document amendment pipeline', async () => {
+  test('edit intent without selection stages a document proposal (no direct apply)', async () => {
     const appState = makeAppState();
     const view = makeView();
-    const actions = makeActions();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => ({ amendmentsApplied: 1, commentsInserted: 0 })),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({
+      runDocumentSkill: jest.fn(async () => staged),
+    });
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
       actions, getSelectionState: async () => false,
@@ -182,7 +193,46 @@ describe('createConversation.submit', () => {
     expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
     expect(actions.runDocumentSkill.mock.calls[0][1].category).toBe('amendment');
     expect(actions.runDocumentSkill.mock.calls[0][1].promptTemplate).toBe('please polish the whole document');
+    expect(actions.runDocumentSkill.mock.calls[0][1].gateApply).toBe(true);
+    // Staged: proposal card shown, nothing applied yet.
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    expect(staged.apply).not.toHaveBeenCalled();
     expect(actions.answerQuestion).not.toHaveBeenCalled();
+
+    // Clicking "Apply as tracked changes" applies the staged run.
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(staged.apply).toHaveBeenCalledTimes(1);
+    expect(view._msg.addCitationPills).toHaveBeenCalledTimes(1);
+  });
+
+  test('staged document proposal with no amendments is discarded', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: null, chunk: { id: 'c0', text: 'same' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'same' }] }],
+      apply: jest.fn(),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({
+      runDocumentSkill: jest.fn(async () => staged),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionState: async () => false,
+    });
+
+    await conv.submit('please polish the whole document');
+
+    expect(staged.discard).toHaveBeenCalledTimes(1);
+    expect(staged.apply).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith('The model proposed no changes.');
   });
 
   test('summary skill routes to the summary pipeline', async () => {

@@ -111,21 +111,32 @@ export function createConversation(deps) {
 
     /**
      * Runs a document-scope skill with progress + citation pills.
+     * Amendment runs are gated: the LLM results are staged first and only
+     * written to the document when the user applies the proposal card.
      */
     async function runDocumentTurn(skill, args, msg) {
+        const gated = skill.category === 'amendment';
         appState.isProcessingDoc = true;
         appState.processDocController = new AbortController();
         input.setProcessing(true);
         try {
             msg.setStatus(`Processing document (${skill.name})...`);
             const commentInstructions = getCommentInstructions();
-            const { applicationResult, chunks, cancelled } = await actions.runDocumentSkill(actionDeps, {
+            const outcome = await actions.runDocumentSkill(actionDeps, {
                 category: skill.category,
                 promptTemplate: withArgs(skill.defaultTemplate, args),
                 commentInstructions,
                 onProgress: (p) => msg.showProgress(p),
+                gateApply: gated,
             });
             msg.hideProgress();
+
+            if (outcome.staged) {
+                await stageDocumentProposal(outcome, msg);
+                return;
+            }
+
+            const { applicationResult, chunks, cancelled } = outcome;
             if (cancelled) {
                 msg.setStatus('Cancelled — already-applied changes remain in the document.');
             } else {
@@ -149,6 +160,64 @@ export function createConversation(deps) {
             appState.processDocController = null;
             input.setProcessing(false);
         }
+    }
+
+    /**
+     * Renders the proposal card for a staged document amendment run.
+     * Apply writes the staged results as tracked changes; Reject discards
+     * them (word-actions cleans up the chunk bookmarks either way).
+     */
+    async function stageDocumentProposal(outcome, msg) {
+        const amendedChunks = outcome.results.filter((r) => r.status === 'fulfilled' && r.amendment);
+
+        if (amendedChunks.length === 0) {
+            await outcome.discard();
+            msg.setStatus(outcome.cancelledCount > 0
+                ? 'Cancelled — no changes were applied.'
+                : 'The model proposed no changes.');
+            return;
+        }
+
+        const beforeChars = amendedChunks.reduce((s, r) => s + (((r.chunk && r.chunk.text) || '').length), 0);
+        const afterChars = amendedChunks.reduce((s, r) => s + (r.amendment || '').length, 0);
+        msg.setStatus('');
+
+        const card = createProposalCard({
+            title: `Proposed edits to ${amendedChunks.length} section(s)`,
+            beforeChars,
+            afterChars,
+            comment: null,
+            onApply: async () => {
+                appState.isProcessingDoc = true;
+                input.setProcessing(true);
+                try {
+                    const applicationResult = await outcome.apply();
+                    card.markApplied();
+                    msg.setStatus(
+                        `Done: ${applicationResult.amendmentsApplied} amendment(s), ` +
+                        `${applicationResult.commentsInserted} comment(s) across ${outcome.chunks.length} section(s).`
+                    );
+                    msg.addCitationPills(outcome.chunks.map(chunkCitation), (searchText) => {
+                        actions.revealTextSnippet(actionDeps, searchText);
+                    });
+                } catch (error) {
+                    log(`Apply failed: ${error.message}`, 'error');
+                    card.markError(error.message);
+                } finally {
+                    appState.isProcessingDoc = false;
+                    input.setProcessing(false);
+                }
+            },
+            onReject: async () => {
+                try {
+                    await outcome.discard();
+                } catch (error) {
+                    log(`Discard failed: ${error.message}`, 'warning');
+                }
+                msg.setStatus('Proposed edits discarded.');
+            },
+        });
+        msg.attachProposal(card.el);
     }
 
     /**
