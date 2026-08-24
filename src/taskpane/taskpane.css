@@ -614,6 +614,12 @@ body {
     justify-content: flex-end;
 }
 
+/* The display:flex above overrides the UA [hidden] rule (equal specificity,
+   author beats UA), so the hidden attribute alone never hides the overlay. */
+.settings-overlay[hidden] {
+    display: none;
+}
+
 .settings-panel {
     width: min(420px, 100%);
     height: 100%;
