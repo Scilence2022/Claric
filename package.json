@@ -30,7 +30,7 @@
     "dompurify": "^3.4.14",
     "dotenv": "^17.2.3",
     "marked": "^17.0.4",
-    "office-word-diff": "git+https://github.com/yuch85/office-word-diff.git#711ea79829ab1fe63736ccecc95d46191f8a608d"
+    "office-word-diff": "git+https://github.com/yuch85/office-word-diff.git#81315f2fae23ba8cf9f40c13bdfd17d0e444d137"
   },
   "devDependencies": {
     "@babel/core": "^7.28.5",
