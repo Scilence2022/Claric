@@ -16,6 +16,7 @@ import { extractContext } from '../lib/context-extractor.js';
 import { processChunksParallel } from '../lib/orchestrator.js';
 import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks } from '../lib/reassembler.js';
 import { CATEGORY, SCOPE } from '../lib/panel-actions.js';
+import { KNOWN_PROVIDERS, defaultProviderConfig, getProviderPreset } from '../lib/providers.js';
 
 // Global configuration (defaults from env, overridable via UI/localStorage)
 let config = {
@@ -28,26 +29,15 @@ let config = {
     trackedChangesExtraction: false,
     commentGranularity: 0,
     includeCommentsInSelection: false,
-    backends: {
-        ollama: {
-            url: process.env.DEFAULT_OLLAMA_URL || '/ollama',
-            apiKey: '',
-            model: process.env.DEFAULT_MODEL || 'gpt-oss:20b'
-        },
-        vllm: {
-            url: process.env.DEFAULT_VLLM_URL || '/vllm',
-            apiKey: '',
-            model: process.env.DEFAULT_VLLM_MODEL || 'qwen3.5-35b-a3b'
-        }
-    }
+    providers: defaultProviderConfig()
 };
 
 /**
- * Returns the config object for the currently selected backend.
- * @returns {{ url: string, apiKey: string, model: string }}
+ * Returns the config object for the currently selected provider.
+ * @returns {{ url: string, apiKey: string, model: string, apiPath: string }}
  */
 function getActiveBackendConfig() {
-    return config.backends[config.backend];
+    return config.providers[config.backend];
 }
 
 const promptManager = new PromptManager();
@@ -324,7 +314,11 @@ function initialize() {
     // does not fire a save + connection probe per character.
     const debouncedSaveSettings = debounce(saveSettings, 400);
     document.getElementById("backendSelect").addEventListener('change', saveSettings);
-    document.getElementById("modelSelect").addEventListener('change', saveSettings);
+    document.getElementById("modelSelect").addEventListener('input', saveSettings);
+    document.getElementById("refreshModelsBtn").addEventListener('click', () => {
+        addLog('Refreshing model list...', 'info');
+        testConnectionUI();
+    });
     document.getElementById("endpointUrl").addEventListener('input', debouncedSaveSettings);
     document.getElementById("apiKey").addEventListener('input', debouncedSaveSettings);
     document.getElementById("trackChangesCheckbox").addEventListener('change', saveSettings);
@@ -460,17 +454,35 @@ function initialize() {
 // SETTINGS & UI
 // ============================================================================
 
-const KNOWN_BACKENDS = ['ollama', 'vllm'];
 const KNOWN_RICHNESS = ['plain', 'headings', 'structured'];
+
+/**
+ * Validates one per-provider entry against its preset defaults.
+ *
+ * @param {object} defaults - The built-in default entry for this provider
+ * @param {object} saved - The persisted entry (possibly partial/corrupt)
+ * @returns {{url: string, apiKey: string, model: string, apiPath: string}}
+ */
+function normalizeProviderEntry(defaults, saved) {
+    return {
+        url: typeof saved.url === 'string' && saved.url ? saved.url : defaults.url,
+        apiKey: typeof saved.apiKey === 'string' ? saved.apiKey : '',
+        model: typeof saved.model === 'string' && saved.model ? saved.model : defaults.model,
+        apiPath: typeof saved.apiPath === 'string' && saved.apiPath ? saved.apiPath : defaults.apiPath,
+    };
+}
 
 /**
  * Merges a persisted config object onto the defaults, field by field.
  *
  * A shallow spread ({ ...config, ...parsed }) lets a corrupt or hand-edited
- * localStorage entry drop whole sections (e.g. replace `backends` with a
- * partial object), which later crashes on config.backends[backend].url.
+ * localStorage entry drop whole sections (e.g. replace `providers` with a
+ * partial object), which later crashes on config.providers[backend].url.
  * Every field is validated here so loadSettings can never produce a config
  * that getActiveBackendConfig() cannot serve.
+ *
+ * Supports the pre-0.4.0 `backends` shape (Ollama/vLLM only) by migrating
+ * it into the `providers` map.
  *
  * @param {object} defaults - The built-in defaults
  * @param {object} parsed - Whatever JSON.parse returned from localStorage
@@ -479,19 +491,25 @@ const KNOWN_RICHNESS = ['plain', 'headings', 'structured'];
 export function normalizeConfig(defaults, parsed) {
     const out = { ...defaults };
 
-    if (typeof parsed.backend === 'string' && KNOWN_BACKENDS.includes(parsed.backend)) {
+    if (typeof parsed.backend === 'string' && KNOWN_PROVIDERS.includes(parsed.backend)) {
         out.backend = parsed.backend;
     }
 
-    if (parsed.backends && typeof parsed.backends === 'object') {
-        for (const name of KNOWN_BACKENDS) {
+    // New shape: providers map, merged entry-by-entry over the presets so
+    // unknown/partial provider entries never break getActiveBackendConfig().
+    if (parsed.providers && typeof parsed.providers === 'object') {
+        for (const name of KNOWN_PROVIDERS) {
+            const savedProvider = parsed.providers[name];
+            if (savedProvider && typeof savedProvider === 'object') {
+                out.providers[name] = normalizeProviderEntry(defaults.providers[name], savedProvider);
+            }
+        }
+    } else if (parsed.backends && typeof parsed.backends === 'object') {
+        // Legacy shape (v0.3.x): backends map with ollama/vllm entries.
+        for (const name of KNOWN_PROVIDERS) {
             const savedBackend = parsed.backends[name];
             if (savedBackend && typeof savedBackend === 'object') {
-                out.backends[name] = {
-                    url: typeof savedBackend.url === 'string' && savedBackend.url ? savedBackend.url : defaults.backends[name].url,
-                    apiKey: typeof savedBackend.apiKey === 'string' ? savedBackend.apiKey : '',
-                    model: typeof savedBackend.model === 'string' && savedBackend.model ? savedBackend.model : defaults.backends[name].model,
-                };
+                out.providers[name] = normalizeProviderEntry(defaults.providers[name], savedBackend);
             }
         }
     }
@@ -567,12 +585,11 @@ function saveSettings() {
     const selectedModel = document.getElementById("modelSelect").value;
 
     config.backend = backend;
-    config.backends[backend].url = endpointUrl || config.backends[backend].url;
-    config.backends[backend].apiKey = apiKey;
-    // Only update model for Ollama -- vLLM model is read-only
-    if (backend === 'ollama') {
-        config.backends[backend].model = selectedModel || config.backends[backend].model;
-    }
+    config.providers[backend].url = endpointUrl || config.providers[backend].url;
+    config.providers[backend].apiKey = apiKey;
+    // Every provider's model is editable: users can type a model id not
+    // present in the refreshable list (e.g. a newly released one).
+    config.providers[backend].model = selectedModel || config.providers[backend].model;
     config.trackChangesEnabled = trackChanges;
     config.lineDiffEnabled = lineDiff;
     config.docExtraction = {
@@ -605,18 +622,11 @@ function updateUIFromConfig() {
     document.getElementById("trackChangesCheckbox").checked = config.trackChangesEnabled;
     document.getElementById("lineDiffCheckbox").checked = config.lineDiffEnabled;
 
-    if (config.backend === 'vllm') {
-        // vLLM: show configured model as read-only (disabled dropdown)
-        modelSelect.innerHTML = '';
-        const option = document.createElement('option');
-        option.value = backendConfig.model;
-        option.textContent = backendConfig.model;
-        modelSelect.appendChild(option);
-        modelSelect.disabled = true;
-    } else {
-        // Ollama: enable dropdown (models populated by testConnectionUI)
-        modelSelect.disabled = false;
-    }
+    // Model field stays editable (datalist) for every provider; typed or
+    // selected values are saved as-is and the list refreshes on demand.
+    modelSelect.value = backendConfig.model || '';
+    modelSelect.disabled = false;
+    modelSelect.placeholder = backendConfig.model || 'Type a model name or refresh the list';
 
     const richnessSelect = document.getElementById('docRichnessSelect');
     if (richnessSelect && config.docExtraction) {
@@ -637,16 +647,39 @@ function updateUIFromConfig() {
     if (includeCommentsCheckbox) {
         includeCommentsCheckbox.checked = !!config.includeCommentsInSelection;
     }
+
+    updateProviderHints();
 }
 
 /**
- * Handles switching between backends in the UI.
- * Restores the selected backend's saved settings and triggers a connection test.
+ * Handles switching between providers in the UI.
+ * Restores the selected provider's saved settings, refreshes the endpoint
+ * hint text, and triggers a connection test (which also refreshes the model
+ * suggestions).
  */
 function handleBackendSwitch() {
     config.backend = document.getElementById('backendSelect').value;
     updateUIFromConfig();
     testConnectionUI();
+}
+
+/**
+ * Updates the endpoint/AI-key hint text to describe the selected provider
+ * preset (e.g. where to get a DeepSeek key).
+ */
+function updateProviderHints() {
+    const preset = getProviderPreset(config.backend);
+    const endpointHint = document.getElementById('endpointHint');
+    if (endpointHint) {
+        const isCustom = config.backend === 'custom';
+        endpointHint.textContent = isCustom
+            ? 'Base URL of any OpenAI-compatible server (proxy path or full https:// URL)'
+            : `Base URL for ${preset ? preset.label : config.backend} -- leave the default proxy path unless you host the backend elsewhere`;
+    }
+    const keyHint = document.getElementById('apiKeyHint');
+    if (keyHint && preset && preset.keyHint) {
+        keyHint.textContent = `Get an API key at ${preset.keyHint} (leave blank for local backends)`;
+    }
 }
 
 function toggleSettings() {
@@ -1205,10 +1238,18 @@ async function testConnectionUI() {
     const indicator = document.getElementById("statusIndicator");
     const statusText = document.getElementById("statusText");
     const backendConfig = getActiveBackendConfig();
-    const backendLabel = config.backend === 'vllm' ? 'vLLM' : 'Ollama';
+    const preset = getProviderPreset(config.backend);
+    const backendLabel = preset ? preset.label : config.backend;
 
     indicator.className = "status-indicator";
     statusText.textContent = "Connecting...";
+
+    // A custom provider with no URL yet cannot be probed.
+    if (!backendConfig.url) {
+        indicator.classList.add("error");
+        statusText.textContent = `${backendLabel}: enter an endpoint URL`;
+        return;
+    }
 
     try {
         const result = await llmTestConnection(backendConfig);
@@ -1217,19 +1258,8 @@ async function testConnectionUI() {
         statusText.textContent = `${backendLabel}: Connected`;
         addLog(`Connected to ${backendLabel}! Found ${result.models.length} model(s).`, "success");
 
-        // Populate model dropdown
+        // Populate the model suggestion list (input stays editable).
         populateModels(result.models);
-
-        if (config.backend === 'vllm') {
-            // vLLM: set model to configured value as read-only
-            const modelSelect = document.getElementById("modelSelect");
-            modelSelect.innerHTML = '';
-            const option = document.createElement('option');
-            option.value = backendConfig.model;
-            option.textContent = backendConfig.model;
-            modelSelect.appendChild(option);
-            modelSelect.disabled = true;
-        }
     } catch (error) {
         indicator.classList.add("error");
 
@@ -1247,35 +1277,33 @@ async function testConnectionUI() {
 }
 
 /**
- * Populates the model dropdown from the /v1/models response.
- * Models use OpenAI format: { id: "model-name" }.
+ * Populates the model suggestion list from the provider's models endpoint.
+ *
+ * The field is a text input backed by a <datalist>: refresh replaces the
+ * suggestions without touching the current value, so the user can keep a
+ * hand-typed model not advertised by the provider.
+ *
+ * @param {Array<{id: string}>} models - OpenAI-format model objects
  */
 function populateModels(models) {
-    const select = document.getElementById("modelSelect");
-    const activeModel = getActiveBackendConfig().model;
-    select.innerHTML = '';
+    const datalist = document.getElementById("modelList");
+    if (!datalist) return;
 
-    if (models.length === 0) {
-        select.innerHTML = '<option value="">No models available</option>';
-        return;
+    datalist.innerHTML = '';
+    const current = getActiveBackendConfig().model;
+    const ids = new Set(models.map(m => m.id));
+
+    // Prepend the configured model so it stays selectable even if the
+    // provider no longer lists it.
+    if (current && !ids.has(current)) {
+        const currentOption = document.createElement('option');
+        currentOption.value = current;
+        datalist.appendChild(currentOption);
     }
-
-    models.forEach(model => {
+    for (const model of models) {
         const option = document.createElement('option');
         option.value = model.id;
-        option.textContent = model.id;
-        if (model.id === activeModel) {
-            option.selected = true;
-        }
-        select.appendChild(option);
-    });
-
-    // If selected model not in list, select first available
-    const modelIds = models.map(m => m.id);
-    if (!modelIds.includes(activeModel)) {
-        const fallback = modelIds[0];
-        config.backends[config.backend].model = fallback;
-        select.value = fallback;
+        datalist.appendChild(option);
     }
 }
 

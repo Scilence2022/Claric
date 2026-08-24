@@ -24,7 +24,104 @@ const ENV = {
   // vLLM UI defaults (injected into bundle)
   DEFAULT_VLLM_URL: process.env.DEFAULT_VLLM_URL || '/vllm',
   DEFAULT_VLLM_MODEL: process.env.VLLM_MODEL || 'qwen3.5-35b-a3b',
+  // Cloud provider proxies (same-origin paths for the add-in)
+  DEEPSEEK_PROXY_PATH: process.env.DEEPSEEK_PROXY_PATH || '/deepseek',
+  DEEPSEEK_PROXY_TARGET: process.env.DEEPSEEK_PROXY_TARGET || 'https://api.deepseek.com',
+  GLM_PROXY_PATH: process.env.GLM_PROXY_PATH || '/glm',
+  GLM_PROXY_TARGET: process.env.GLM_PROXY_TARGET || 'https://open.bigmodel.cn',
+  KIMI_PROXY_PATH: process.env.KIMI_PROXY_PATH || '/kimi',
+  KIMI_PROXY_TARGET: process.env.KIMI_PROXY_TARGET || 'https://api.moonshot.cn',
 };
+
+
+/**
+ * Builds http-proxy-middleware entries for every enabled LLM provider.
+ *
+ * Each proxy strips its path prefix, rewrites Origin/Referer off the
+ * upstream request (some backends enforce CORS on the server side),
+ * answers OPTIONS preflights directly, and adds permissive CORS headers
+ * to proxied responses. LLM calls can take minutes, so both timeouts are
+ * 5 minutes and connections use a keep-alive agent.
+ *
+ * A provider is disabled by setting its *_PROXY_PATH to an empty string.
+ *
+ * @param {object} ENV - Parsed environment configuration
+ * @returns {object} Proxy config map for webpack-dev-server
+ */
+function buildLlmProxies(ENV) {
+  const LLM_PROXY_TIMEOUT_MS = 300000;
+
+  const providers = [
+    ['OLLAMA_PROXY_PATH', 'OLLAMA_PROXY_TARGET', 'Ollama'],
+    ['VLLM_PROXY_PATH', 'VLLM_PROXY_TARGET', 'vLLM'],
+    ['DEEPSEEK_PROXY_PATH', 'DEEPSEEK_PROXY_TARGET', 'DeepSeek'],
+    ['GLM_PROXY_PATH', 'GLM_PROXY_TARGET', 'GLM'],
+    ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET', 'Kimi'],
+  ];
+
+  const proxies = {};
+  for (const [pathKey, targetKey, label] of providers) {
+    const proxyPath = ENV[pathKey];
+    const target = ENV[targetKey];
+    if (!proxyPath || !target) continue;
+
+    proxies[proxyPath] = {
+      target,
+      changeOrigin: true,
+      pathRewrite: { [`^${proxyPath}`]: '' },
+      secure: false,
+      logLevel: 'debug',
+      timeout: LLM_PROXY_TIMEOUT_MS,
+      proxyTimeout: LLM_PROXY_TIMEOUT_MS,
+      agent: new (require('http').Agent)({
+        keepAlive: true,
+        keepAliveMsecs: 30000,
+        maxSockets: 50,
+        maxFreeSockets: 10,
+        timeout: LLM_PROXY_TIMEOUT_MS
+      }),
+      bypass: function (req, res) {
+        if (req.method === 'OPTIONS') {
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
+          res.setHeader('Access-Control-Max-Age', '86400');
+          res.statusCode = 204;
+          res.end();
+          return true;
+        }
+      },
+      onProxyReq: function (proxyReq, req) {
+        console.log(`[${label} Proxy Request]`, req.method, req.url, '→', proxyReq.path);
+        if (typeof proxyReq.removeHeader === 'function') {
+          proxyReq.removeHeader('origin');
+          proxyReq.removeHeader('referer');
+        }
+      },
+      onProxyRes: function (proxyRes, req) {
+        console.log(`[${label} Proxy Response]`, req.url, '←', proxyRes.statusCode);
+        proxyRes.headers['Access-Control-Allow-Origin'] = '*';
+        proxyRes.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
+        proxyRes.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, X-Requested-With';
+      },
+      onError: function (err, req, res) {
+        console.error(`[${label} Proxy Error]`, req.url, err.message);
+        if (!res.headersSent) {
+          res.writeHead(502, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          });
+          res.end(JSON.stringify({
+            error: `${label} Proxy Error`,
+            message: err.message,
+            code: err.code
+          }));
+        }
+      }
+    };
+  }
+  return proxies;
+}
 
 module.exports = (env, argv) => {
   const isDev = argv.mode === 'development';
@@ -638,210 +735,7 @@ module.exports = (env, argv) => {
 
         return middlewares;
       },
-      proxy: {
-        [ENV.OLLAMA_PROXY_PATH]: {
-          target: ENV.OLLAMA_PROXY_TARGET,
-          changeOrigin: true,
-          pathRewrite: { [`^${ENV.OLLAMA_PROXY_PATH}`]: '' },
-          secure: false,
-          logLevel: 'debug',
-          // LLM requests can take a long time
-          timeout: 300000, // 5 minutes
-          proxyTimeout: 300000, // 5 minutes
-          // Keep connection alive
-          agent: new (require('http').Agent)({
-            keepAlive: true,
-            keepAliveMsecs: 30000,
-            maxSockets: 50,
-            maxFreeSockets: 10,
-            timeout: 300000
-          }),
-          // Handle OPTIONS requests (CORS preflight) directly
-          bypass: function (req, res) {
-            if (req.method === 'OPTIONS') {
-              console.log('[Proxy] Handling OPTIONS preflight:', req.url);
-              res.setHeader('Access-Control-Allow-Origin', '*');
-              res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-              res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
-              res.setHeader('Access-Control-Max-Age', '86400'); // Cache preflight for 24 hours
-              res.statusCode = 204; // No content
-              res.end();
-              return true; // Don't proxy, we handled it
-            }
-          },
-          onProxyReq: function (proxyReq, req) {
-            // Log the proxy request
-            console.log('[Proxy Request]', req.method, req.url, '→', proxyReq.path);
-            try {
-              const headersToLog = {
-                host: req.headers.host,
-                origin: req.headers.origin,
-                referer: req.headers.referer,
-                'user-agent': req.headers['user-agent'],
-                'content-type': req.headers['content-type'],
-                'content-length': req.headers['content-length'],
-                'accept': req.headers['accept'],
-                'x-requested-with': req.headers['x-requested-with']
-              };
-              console.log('[Proxy Request Headers]', headersToLog);
-
-              // Strip Origin/Referer when forwarding to upstream to avoid upstream CORS enforcement
-              if (typeof proxyReq.removeHeader === 'function') {
-                proxyReq.removeHeader('origin');
-                proxyReq.removeHeader('referer');
-              } else {
-                // Fallback: overwrite with empty values
-                proxyReq.setHeader('origin', '');
-                proxyReq.setHeader('referer', '');
-              }
-            } catch (e) {
-              console.log('[Proxy Request Headers] failed to log:', e.message);
-            }
-          },
-          onProxyRes: function (proxyRes, req) {
-            // Log the response
-            console.log('[Proxy Response]', req.url, '←', proxyRes.statusCode);
-            // Add CORS headers to the response
-            proxyRes.headers['Access-Control-Allow-Origin'] = '*';
-            proxyRes.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-            proxyRes.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, X-Requested-With';
-            try {
-              const headersToLog = {
-                'content-type': proxyRes.headers['content-type'],
-                'content-length': proxyRes.headers['content-length'],
-                'www-authenticate': proxyRes.headers['www-authenticate']
-              };
-              console.log('[Upstream Response Headers]', headersToLog);
-            } catch (e) {
-              console.log('[Upstream Response Headers] failed to log:', e.message);
-            }
-          },
-          onError: function (err, req, res) {
-            console.error('[Proxy Error]', req.url, err.message);
-            console.error('[Proxy Error Details]', {
-              code: err.code,
-              errno: err.errno,
-              syscall: err.syscall,
-              method: req.method,
-              path: req.url
-            });
-
-            // Send error response to client
-            if (!res.headersSent) {
-              res.writeHead(502, {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-              });
-              res.end(JSON.stringify({
-                error: 'Proxy Error',
-                message: err.message,
-                code: err.code
-              }));
-            }
-          }
-        },
-        [ENV.VLLM_PROXY_PATH]: {
-          target: ENV.VLLM_PROXY_TARGET,
-          changeOrigin: true,
-          pathRewrite: { [`^${ENV.VLLM_PROXY_PATH}`]: '' },
-          secure: false,
-          logLevel: 'debug',
-          // LLM requests can take a long time
-          timeout: 300000, // 5 minutes
-          proxyTimeout: 300000, // 5 minutes
-          // Keep connection alive
-          agent: new (require('http').Agent)({
-            keepAlive: true,
-            keepAliveMsecs: 30000,
-            maxSockets: 50,
-            maxFreeSockets: 10,
-            timeout: 300000
-          }),
-          // Handle OPTIONS requests (CORS preflight) directly
-          bypass: function (req, res) {
-            if (req.method === 'OPTIONS') {
-              console.log('[vLLM Proxy] Handling OPTIONS preflight:', req.url);
-              res.setHeader('Access-Control-Allow-Origin', '*');
-              res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-              res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
-              res.setHeader('Access-Control-Max-Age', '86400'); // Cache preflight for 24 hours
-              res.statusCode = 204; // No content
-              res.end();
-              return true; // Don't proxy, we handled it
-            }
-          },
-          onProxyReq: function (proxyReq, req) {
-            // Log the proxy request
-            console.log('[vLLM Proxy Request]', req.method, req.url, '→', proxyReq.path);
-            try {
-              const headersToLog = {
-                host: req.headers.host,
-                origin: req.headers.origin,
-                referer: req.headers.referer,
-                'user-agent': req.headers['user-agent'],
-                'content-type': req.headers['content-type'],
-                'content-length': req.headers['content-length'],
-                'accept': req.headers['accept'],
-                'x-requested-with': req.headers['x-requested-with']
-              };
-              console.log('[vLLM Proxy Request Headers]', headersToLog);
-
-              // Strip Origin/Referer when forwarding to upstream to avoid upstream CORS enforcement
-              if (typeof proxyReq.removeHeader === 'function') {
-                proxyReq.removeHeader('origin');
-                proxyReq.removeHeader('referer');
-              } else {
-                // Fallback: overwrite with empty values
-                proxyReq.setHeader('origin', '');
-                proxyReq.setHeader('referer', '');
-              }
-            } catch (e) {
-              console.log('[vLLM Proxy Request Headers] failed to log:', e.message);
-            }
-          },
-          onProxyRes: function (proxyRes, req) {
-            // Log the response
-            console.log('[vLLM Proxy Response]', req.url, '←', proxyRes.statusCode);
-            // Add CORS headers to the response
-            proxyRes.headers['Access-Control-Allow-Origin'] = '*';
-            proxyRes.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-            proxyRes.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, X-Requested-With';
-            try {
-              const headersToLog = {
-                'content-type': proxyRes.headers['content-type'],
-                'content-length': proxyRes.headers['content-length'],
-                'www-authenticate': proxyRes.headers['www-authenticate']
-              };
-              console.log('[vLLM Upstream Response Headers]', headersToLog);
-            } catch (e) {
-              console.log('[vLLM Upstream Response Headers] failed to log:', e.message);
-            }
-          },
-          onError: function (err, req, res) {
-            console.error('[vLLM Proxy Error]', req.url, err.message);
-            console.error('[vLLM Proxy Error Details]', {
-              code: err.code,
-              errno: err.errno,
-              syscall: err.syscall,
-              method: req.method,
-              path: req.url
-            });
-
-            // Send error response to client
-            if (!res.headersSent) {
-              res.writeHead(502, {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-              });
-              res.end(JSON.stringify({
-                error: 'vLLM Proxy Error',
-                message: err.message,
-                code: err.code
-              }));
-            }
-          }
-        }
-      }
+      proxy: buildLlmProxies(ENV)
     },
     resolve: {
       extensions: ['.js', '.json']

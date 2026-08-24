@@ -14,10 +14,17 @@
  *   OLLAMA_PROXY_TARGET   - upstream Ollama base URL (default http://localhost:11434)
  *   VLLM_PROXY_PATH       - proxy path for vLLM (default /vllm; empty disables)
  *   VLLM_PROXY_TARGET     - upstream vLLM base URL (default http://localhost:8026)
+ *   DEEPSEEK_PROXY_PATH   - proxy path for DeepSeek (default /deepseek; empty disables)
+ *   DEEPSEEK_PROXY_TARGET - upstream DeepSeek API origin (https://api.deepseek.com)
+ *   GLM_PROXY_PATH        - proxy path for Zhipu GLM (default /glm; empty disables)
+ *   GLM_PROXY_TARGET      - upstream GLM API origin (https://open.bigmodel.cn)
+ *   KIMI_PROXY_PATH       - proxy path for Moonshot Kimi (default /kimi; empty disables)
+ *   KIMI_PROXY_TARGET     - upstream Kimi API origin (https://api.moonshot.cn)
  *   LLM_PROXY_TIMEOUT_MS  - upstream request timeout (default 300000 = 5 min)
  *
  * Why proxy LLM traffic at all: the add-in's UI defaults its backend URLs
- * to '/ollama' and '/vllm'. Serving those paths from the same HTTPS origin
+ * to same-origin paths ('/ollama', '/vllm', '/deepseek', '/glm', '/kimi').
+ * Serving those paths from the same HTTPS origin
  * avoids mixed-content blocking (https page fetching http://localhost) and
  * CORS configuration on the backend. This matters most when Word runs on
  * the same machine as the LLM (the common local-AI setup). Reach the host
@@ -53,6 +60,12 @@ function getEnv() {
     OLLAMA_PROXY_TARGET: process.env.OLLAMA_PROXY_TARGET || 'http://localhost:11434',
     VLLM_PROXY_PATH: process.env.VLLM_PROXY_PATH || '/vllm',
     VLLM_PROXY_TARGET: process.env.VLLM_PROXY_TARGET || 'http://localhost:8026',
+    DEEPSEEK_PROXY_PATH: process.env.DEEPSEEK_PROXY_PATH || '/deepseek',
+    DEEPSEEK_PROXY_TARGET: process.env.DEEPSEEK_PROXY_TARGET || 'https://api.deepseek.com',
+    GLM_PROXY_PATH: process.env.GLM_PROXY_PATH || '/glm',
+    GLM_PROXY_TARGET: process.env.GLM_PROXY_TARGET || 'https://open.bigmodel.cn',
+    KIMI_PROXY_PATH: process.env.KIMI_PROXY_PATH || '/kimi',
+    KIMI_PROXY_TARGET: process.env.KIMI_PROXY_TARGET || 'https://api.moonshot.cn',
     LLM_PROXY_TIMEOUT_MS: parseInt(process.env.LLM_PROXY_TIMEOUT_MS || String(DEFAULT_LLM_PROXY_TIMEOUT_MS), 10)
   };
 }
@@ -156,6 +169,9 @@ function buildProxyRoutes(env) {
   const backends = [
     ['OLLAMA_PROXY_PATH', 'OLLAMA_PROXY_TARGET'],
     ['VLLM_PROXY_PATH', 'VLLM_PROXY_TARGET'],
+    ['DEEPSEEK_PROXY_PATH', 'DEEPSEEK_PROXY_TARGET'],
+    ['GLM_PROXY_PATH', 'GLM_PROXY_TARGET'],
+    ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET'],
   ];
 
   for (const [pathKey, targetKey] of backends) {

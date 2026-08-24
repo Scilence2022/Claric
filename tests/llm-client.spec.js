@@ -215,6 +215,20 @@ describe('sendPrompt', () => {
     expect(fetchCall[0]).toBe('/vllm/v1/chat/completions');
   });
 
+  test('uses config.apiPath as the API prefix when provided (GLM)', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: 'response' } }]
+      })
+    });
+
+    await sendPrompt({ url: '/glm', apiPath: '/api/paas/v4', apiKey: 'k', model: 'glm-4.5' }, 'Hello');
+
+    const fetchCall = global.fetch.mock.calls[0];
+    expect(fetchCall[0]).toBe('/glm/api/paas/v4/chat/completions');
+  });
+
   test('includes Authorization Bearer header when config.apiKey is non-empty', async () => {
     global.fetch.mockResolvedValue({
       ok: true,
@@ -334,6 +348,19 @@ describe('testConnection', () => {
     const fetchCall = global.fetch.mock.calls[0];
     expect(fetchCall[0]).toBe('/ollama/v1/models');
     expect(fetchCall[1].method).toBe('GET');
+  });
+
+  test('honors config.apiPath for the models endpoint (GLM)', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: 'glm-4.5' }] })
+    });
+
+    await testConnection({ url: '/glm', apiPath: '/api/paas/v4', apiKey: 'k' });
+
+    const fetchCall = global.fetch.mock.calls[0];
+    expect(fetchCall[0]).toBe('/glm/api/paas/v4/models');
+    expect(fetchCall[1].headers.Authorization).toBe('Bearer k');
   });
 
   test('includes Authorization header when apiKey provided', async () => {
