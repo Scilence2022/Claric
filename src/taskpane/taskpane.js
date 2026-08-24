@@ -296,6 +296,26 @@ function initialize() {
 
     document.getElementById("clearLogsBtn").onclick = clearLogs;
     document.getElementById("settingsToggle").onclick = toggleSettings;
+
+    // The settings toggle is a div with role=button -- give it keyboard
+    // activation (Enter/Space) to match native button behavior.
+    document.getElementById("settingsToggle").addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+            e.preventDefault();
+            toggleSettings();
+        }
+    });
+
+    // Escape closes the save-prompt modal from anywhere in the taskpane.
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const modal = document.getElementById('savePromptModal');
+            if (modal && modal.classList.contains('active')) {
+                hideSavePromptModal();
+            }
+        }
+    });
+
     document.getElementById("runVerificationBtn").onclick = runVerification;
     document.getElementById("backendSelect").onchange = handleBackendSwitch;
 
@@ -632,8 +652,9 @@ function handleBackendSwitch() {
 function toggleSettings() {
     const content = document.getElementById("settingsContent");
     const header = document.getElementById("settingsToggle");
-    content.classList.toggle("active");
+    const expanded = content.classList.toggle("active");
     header.classList.toggle("active");
+    header.setAttribute('aria-expanded', String(expanded));
 }
 
 // ============================================================================
@@ -1033,11 +1054,16 @@ async function updateTokenEstimate() {
 
 /**
  * Opens the save prompt modal with category context.
+ * Focus moves into the modal; Escape closes it and restores focus.
  *
  * @param {string} category - The category being saved to
  */
+let _lastFocusedElement = null;
+
 function showSavePromptModal(category) {
-    document.getElementById('savePromptModal').classList.add('active');
+    _lastFocusedElement = document.activeElement;
+    const modal = document.getElementById('savePromptModal');
+    modal.classList.add('active');
     document.getElementById('savePromptCategory').textContent = `Saving to: ${capitalize(category)}`;
     document.getElementById('promptName').value = '';
     document.getElementById('promptDescription').value = '';
@@ -1045,10 +1071,14 @@ function showSavePromptModal(category) {
 }
 
 /**
- * Hides the save prompt modal.
+ * Hides the save prompt modal and restores focus to the invoking control.
  */
 function hideSavePromptModal() {
     document.getElementById('savePromptModal').classList.remove('active');
+    if (_lastFocusedElement && typeof _lastFocusedElement.focus === 'function') {
+        _lastFocusedElement.focus();
+    }
+    _lastFocusedElement = null;
 }
 
 /**
@@ -1680,7 +1710,9 @@ async function handleMergedAmendmentComment(selectionText, commentInstructions) 
 function updateProcessProgress(progress) {
     const fill = document.getElementById('progressFill');
     const text = document.getElementById('progressText');
+    const bar = document.getElementById('processProgressBar');
     if (fill) fill.style.width = `${progress.percentComplete}%`;
+    if (bar) bar.setAttribute('aria-valuenow', String(progress.percentComplete));
     if (text) {
         text.textContent = `Processing: ${progress.completed + progress.failed}/${progress.total} chunks`;
         if (progress.estimatedSecondsRemaining > 0) {

@@ -46,13 +46,13 @@
             <!-- Context Panel -->
             <div role="tabpanel" id="panel-context" aria-labelledby="tab-context">
                 <div class="form-group">
-                    <select id="promptSelect-context" class="form-control">
+                    <select id="promptSelect-context" class="form-control" aria-label="Context prompt selection">
                         <option value="">(None)</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <textarea id="promptTextarea-context" class="form-control" rows="6"
-                        placeholder="Enter overall context instructions (no {selection} placeholder needed)"></textarea>
+                        placeholder="Enter overall context instructions (no {selection} placeholder needed)" aria-label="Context prompt template"></textarea>
                 </div>
                 <div class="button-group compact-toolbar">
                     <button id="savePromptBtn-context" class="btn btn-compact">Save</button>
@@ -64,13 +64,13 @@
             <!-- Amendment Panel -->
             <div role="tabpanel" id="panel-amendment" aria-labelledby="tab-amendment" hidden>
                 <div class="form-group">
-                    <select id="promptSelect-amendment" class="form-control">
+                    <select id="promptSelect-amendment" class="form-control" aria-label="Amendment prompt selection">
                         <option value="">(None)</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <textarea id="promptTextarea-amendment" class="form-control" rows="6"
-                        placeholder="Enter your prompt. Use {selection} for the selected text. Tick &quot;Include comments in selection&quot; in Settings to also include anchored Word comments and threaded replies."></textarea>
+                        placeholder="Enter your prompt. Use {selection} for the selected text. Tick &quot;Include comments in selection&quot; in Settings to also include anchored Word comments and threaded replies." aria-label="Amendment prompt template"></textarea>
                 </div>
                 <div class="form-group comment-field-group">
                     <label for="commentInstructions" class="comment-field-label">Comment Instructions (optional):</label>
@@ -113,13 +113,13 @@
                     <p><strong>Tip:</strong> For combined amendment + comment, use the Amendment tab's comment instructions field instead. This gives the LLM full context for both tasks in a single call.</p>
                 </div>
                 <div class="form-group">
-                    <select id="promptSelect-comment" class="form-control">
+                    <select id="promptSelect-comment" class="form-control" aria-label="Comment prompt selection">
                         <option value="">(None)</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <textarea id="promptTextarea-comment" class="form-control" rows="6"
-                        placeholder="Enter your prompt. Use {selection} for the selected text. Tick &quot;Include comments in selection&quot; in Settings to also include anchored Word comments and threaded replies."></textarea>
+                        placeholder="Enter your prompt. Use {selection} for the selected text. Tick &quot;Include comments in selection&quot; in Settings to also include anchored Word comments and threaded replies." aria-label="Comment prompt template"></textarea>
                 </div>
                 <div class="button-group compact-toolbar">
                     <button id="savePromptBtn-comment" class="btn btn-compact">Save</button>
@@ -143,13 +143,13 @@
             <!-- Summary Panel -->
             <div role="tabpanel" id="panel-summary" aria-labelledby="tab-summary" hidden>
                 <div class="form-group">
-                    <select id="promptSelect-summary" class="form-control">
+                    <select id="promptSelect-summary" class="form-control" aria-label="Summary prompt selection">
                         <option value="">(None)</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <textarea id="promptTextarea-summary" class="form-control" rows="6"
-                        placeholder="Enter summary prompt. Available placeholders:&#10;  {comments} — extracted comment data&#10;  {whole document} — full document text (richness controlled in Settings)&#10;  {tracked changes} — tracked changes data (enable in Settings)&#10;&#10;The LLM should output markdown (converted to HTML automatically)."></textarea>
+                        placeholder="Enter summary prompt. Available placeholders:&#10;  {comments} — extracted comment data&#10;  {whole document} — full document text (richness controlled in Settings)&#10;  {tracked changes} — tracked changes data (enable in Settings)&#10;&#10;The LLM should output markdown (converted to HTML automatically)." aria-label="Summary prompt template"></textarea>
                 </div>
                 <div class="button-group compact-toolbar">
                     <button id="savePromptBtn-summary" class="btn btn-compact">Save</button>
@@ -169,18 +169,18 @@
         <!-- Main Actions -->
         <section class="action-section">
             <!-- Comment Status Bar -->
-            <div id="commentStatusBar" class="comment-status-bar" style="display: none;">
+            <div id="commentStatusBar" class="comment-status-bar" role="status" style="display: none;">
                 <span class="comment-spinner"></span>
                 <span id="commentStatusText">0 comments pending...</span>
             </div>
             <!-- Token Estimation -->
-            <div id="tokenEstimate" class="token-estimate" style="display: none;">
+            <div id="tokenEstimate" class="token-estimate" role="status" style="display: none;">
                 <span class="token-estimate-label">Estimated tokens:</span>
                 <span id="tokenEstimateValue" class="token-estimate-value">0</span>
                 <span id="tokenEstimateBreakdown" class="token-estimate-breakdown"></span>
             </div>
             <!-- Process Document Progress Bar -->
-            <div id="processProgressBar" class="process-progress-bar" style="display: none;">
+            <div id="processProgressBar" class="process-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="display: none;">
                 <div class="progress-track">
                     <div id="progressFill" class="progress-fill" style="width: 0%"></div>
                 </div>
@@ -190,7 +190,7 @@
 
         <!-- Settings Section -->
         <section class="settings-section">
-            <div class="collapsible-header" id="settingsToggle">
+            <div class="collapsible-header" id="settingsToggle" role="button" tabindex="0" aria-expanded="false" aria-controls="settingsContent">
                 <span>⚙️ Settings</span>
                 <span class="toggle-icon">▼</span>
             </div>
@@ -281,17 +281,17 @@
         <!-- Logs -->
         <section class="logs-section">
             <div class="logs-header">
-                <label>Activity Log:</label>
+                <label for="logs">Activity Log:</label>
                 <button id="clearLogsBtn" class="btn-link">Clear</button>
             </div>
-            <div id="logs" class="logs-container"></div>
+            <div id="logs" class="logs-container" role="log" aria-live="polite"></div>
         </section>
     </div>
 
     <!-- Save Prompt Modal -->
-    <div id="savePromptModal" class="modal">
+    <div id="savePromptModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="savePromptModalTitle">
         <div class="modal-content">
-            <h3>Save Prompt</h3>
+            <h3 id="savePromptModalTitle">Save Prompt</h3>
             <p id="savePromptCategory" class="modal-category-label"></p>
             <div class="form-group">
                 <label for="promptName">Prompt Name:</label>
