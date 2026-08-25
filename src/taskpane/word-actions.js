@@ -22,6 +22,8 @@
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from '../lib/word-diff/index.js';
 import { hasCjk, applyCharDiffStrategy } from '../lib/word-diff/char-diff.js';
 import { sendPrompt, sendPromptStream, stripMarkdown } from '../lib/llm-client.js';
+import { buildTableUserPrompt, parseTablePatchResponse } from '../lib/table-patch.js';
+import { supportsTrackedRowOps } from '../lib/platform.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
@@ -143,6 +145,74 @@ export async function readSelectionText(deps) {
 }
 
 /**
+ * Detects whether the current selection spans MULTIPLE table cells and, if
+ * so, extracts the covered region as coordinate-addressed cell data for the
+ * table patch protocol (lib/table-patch.js).
+ *
+ * Returns null for selections outside a table or contained within a single
+ * cell — those stay on the flat-text pipelines, whose in-cell text edits
+ * track natively and granularly. Only multi-cell regions need the protocol:
+ * flattening them would leak cell marks into the diff strategies.
+ *
+ * Word cell selections are rectangular, so the zero-width selection start
+ * and end points each sit in the top-left / bottom-right covered cell —
+ * two coordinate reads bound the whole region (no per-cell location
+ * compares, no row-collection iteration).
+ *
+ * @param {object} deps - { appState, log }
+ * @returns {Promise<null | {rowCount: number, colCount: number,
+ *   cells: Array<{row: number, col: number, text: string}>}>}
+ *   Row/col in cells are 1-based absolute table coordinates.
+ */
+export async function readSelectionTableRegion(deps) {
+    const { log } = deps;
+    let region = null;
+    await Word.run(async (context) => {
+        const selection = context.document.getSelection();
+        const table = selection.parentTableOrNullObject;
+        const anchorCell = selection.parentTableCellOrNullObject;
+        table.load('isNullObject');
+        anchorCell.load('isNullObject');
+        await context.sync();
+
+        // Outside any table, or fully inside one cell: not table mode.
+        if (table.isNullObject || !anchorCell.isNullObject) return;
+
+        const startCell = selection.getRange(Word.RangeLocation.start).parentTableCellOrNullObject;
+        const endCell = selection.getRange(Word.RangeLocation.end).parentTableCellOrNullObject;
+        startCell.load('isNullObject,rowIndex,columnIndex');
+        endCell.load('isNullObject,rowIndex,columnIndex');
+        table.load('rowCount,values');
+        await context.sync();
+
+        if (startCell.isNullObject || endCell.isNullObject) {
+            throw new Error('Could not locate the selected cells — re-select the table region.');
+        }
+
+        const startRow = Math.min(startCell.rowIndex, endCell.rowIndex);
+        const endRow = Math.max(startCell.rowIndex, endCell.rowIndex);
+        const startCol = Math.min(startCell.columnIndex, endCell.columnIndex);
+        const endCol = Math.max(startCell.columnIndex, endCell.columnIndex);
+
+        const values = table.values || [];
+        const colCount = values[0] ? values[0].length : 0;
+        const cells = [];
+        for (let r = startRow; r <= endRow; r++) {
+            for (let c = startCol; c <= endCol; c++) {
+                cells.push({ row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' });
+            }
+        }
+        region = { rowCount: table.rowCount, colCount, cells };
+    });
+    if (region) {
+        const first = region.cells[0];
+        const last = region.cells[region.cells.length - 1];
+        log(`Table selection: ${region.cells.length} cell(s), R${first.row}C${first.col} → R${last.row}C${last.col}`, 'info');
+    }
+    return region;
+}
+
+/**
  * Returns whether the document currently has a non-collapsed selection.
  * Resolves to false when the Word API is unavailable.
  *
@@ -246,8 +316,18 @@ export function watchSelection(callback, { debounceMs = 200 } = {}) {
  */
 export async function prepareSelectionAmendment(deps, { promptTemplate, commentInstructions, onToken, onReasoning } = {}) {
     const { appState, log } = deps;
-    const { selectionText } = await readSelectionText(deps);
     const backendConfig = getActiveBackendConfig(appState);
+
+    // Multi-cell table selections take the coordinate patch protocol — the
+    // flat-text pipelines below cannot represent cell boundaries.
+    const tableRegion = await readSelectionTableRegion(deps);
+    if (tableRegion) {
+        return _prepareTableAmendment(deps, {
+            tableRegion, promptTemplate, commentInstructions, backendConfig, onToken, onReasoning,
+        });
+    }
+
+    const { selectionText } = await readSelectionText(deps);
     log(`Processing selection (${selectionText.length} chars) via ${backendConfig.model}...`, 'info');
 
     const merged = !!(commentInstructions && commentInstructions.trim());
@@ -303,6 +383,87 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
 }
 
 /**
+ * Prepare half for multi-cell table selections: sends the covered cells as a
+ * coordinate grid and expects a JSON patch (lib/table-patch.js) back. The
+ * proposal carries per-cell/per-row items for the review card and the parsed
+ * patch for applySelectionAmendment.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} args
+ * @param {{rowCount: number, colCount: number, cells: Array}} args.tableRegion
+ * @param {string} args.promptTemplate - The amendment instruction/template
+ * @param {string} [args.commentInstructions] - Ignored for table selections
+ * @param {object} args.backendConfig - Active provider config
+ * @returns {Promise<object>} Proposal with tablePatch + tableItems
+ * @private
+ */
+async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, commentInstructions, backendConfig, onToken, onReasoning }) {
+    const { appState, log } = deps;
+    const { rowCount, colCount, cells } = tableRegion;
+    log(`Processing table selection (${cells.length} cells) via ${backendConfig.model}...`, 'info');
+    if (commentInstructions && commentInstructions.trim()) {
+        log('Comment instructions are ignored for table selections — the patch protocol returns JSON.', 'info');
+    }
+
+    // The grid plays the {selection} role: templates that name it read
+    // naturally when it points at the cell listing below.
+    const instruction = (promptTemplate || '').includes('{selection}')
+        ? promptTemplate.replace(/{selection}/g, 'the selected table cells')
+        : (promptTemplate || '');
+
+    const messages = [];
+    const contextPrompt = appState.promptManager.getActivePrompt('context');
+    if (contextPrompt) {
+        messages.push({ role: 'system', content: contextPrompt.template });
+    }
+    messages.push({ role: 'user', content: buildTableUserPrompt(instruction, cells, { rowCount, colCount }) });
+
+    const promptText = _flattenMessages(messages);
+    const rawResponse = (onToken || onReasoning)
+        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log)
+        : await sendPrompt(backendConfig, promptText, log);
+    log(`LLM response received [${backendConfig.model}]`, 'success');
+
+    // Full-table grid for no-op detection and per-cell "before" text.
+    const originals = Array.from({ length: rowCount }, () => Array(colCount).fill(''));
+    for (const c of cells) originals[c.row - 1][c.col - 1] = c.text;
+
+    const patch = parseTablePatchResponse(rawResponse, { rowCount, colCount, originals });
+    for (const warning of patch.warnings) log(`Table patch: ${warning}`, 'warning');
+
+    const tableItems = [
+        ...patch.cells.map((c) => ({
+            label: `Cell R${c.row}C${c.col}`,
+            before: originals[c.row - 1][c.col - 1],
+            after: c.text,
+            searchText: originals[c.row - 1][c.col - 1].trim().slice(0, 60) || undefined,
+        })),
+        ...patch.rowOps.map((op) => (op.op === 'delete'
+            ? {
+                label: `Delete row ${op.row}`,
+                before: (originals[op.row - 1] || []).join(' | '),
+                after: '',
+                searchText: ((originals[op.row - 1] || [])[0] || '').trim().slice(0, 60) || undefined,
+            }
+            : {
+                label: `${op.op === 'insertAfter' ? 'Insert row after' : 'Insert row before'} row ${op.row}`,
+                before: '',
+                after: op.values.join(' | '),
+                searchText: ((originals[op.row - 1] || [])[0] || '').trim().slice(0, 60) || undefined,
+            })),
+    ];
+
+    return {
+        selectionText: cells.map((c) => c.text).join('\n'),
+        amendedText: null,
+        commentText: null,
+        model: backendConfig.model,
+        tablePatch: { rowCount, colCount, cells: patch.cells, rowOps: patch.rowOps },
+        tableItems,
+    };
+}
+
+/**
  * Applies a prepared selection amendment to the document as tracked changes
  * (per config.trackChangesEnabled), then inserts the optional comment.
  *
@@ -312,6 +473,13 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
 export async function applySelectionAmendment(deps, proposal) {
     const { appState, log } = deps;
     const { selectionText, amendedText, commentText } = proposal;
+
+    // Table route: per-cell tracked revisions plus row-level structure ops.
+    // Table proposals never carry a comment (merged mode is skipped).
+    if (proposal.tablePatch) {
+        await _applyTablePatch(deps, proposal);
+        return;
+    }
 
     if (amendedText) {
         log('Applying changes...', 'info');
@@ -380,6 +548,166 @@ export async function applySelectionAmendment(deps, proposal) {
     } else if (commentText && !appState.supportsComments) {
         log(`Comment generated but Word API 1.4 not available. Comment: "${commentText}"`, 'warning');
     }
+}
+
+/**
+ * Applies a parsed table patch: per-cell text revisions first (original
+ * coordinates — cell edits never shift coordinates), then row structure ops
+ * in pre-sorted descending order.
+ *
+ * Row insertions/deletions are only recorded as tracked revisions by Word
+ * desktop (see lib/platform.js). On hosts without that support the structure
+ * phase runs with tracking OFF and a warning, so no half-tracked state leaks;
+ * cell text edits are still tracked wherever possible.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} proposal - Result of prepareSelectionAmendment (table route)
+ * @private
+ */
+async function _applyTablePatch(deps, proposal) {
+    const { appState, log } = deps;
+    const { tablePatch } = proposal;
+    const trackChanges = !!appState.config.trackChangesEnabled;
+    const rowTracking = trackChanges && supportsTrackedRowOps(appState.platform);
+
+    if (tablePatch.rowOps.length > 0 && trackChanges && !rowTracking) {
+        log(`Row insertions/deletions cannot be tracked as revisions on this host (${appState.platform}) — applying them directly. Cell text edits are still tracked.`, 'warning');
+    }
+
+    log('Applying table patch...', 'info');
+    let cellsApplied = 0;
+    let cellsSkipped = 0;
+    let rowOpsApplied = 0;
+
+    await Word.run(async (context) => {
+        const selection = context.document.getSelection();
+        const table = selection.parentTableOrNullObject;
+        table.load('isNullObject,rowCount');
+        await context.sync();
+        if (table.isNullObject) {
+            throw new Error('The selection is no longer inside the table — re-select the region and apply again.');
+        }
+        if (table.rowCount !== tablePatch.rowCount) {
+            throw new Error(`Table changed since this proposal was drafted (${tablePatch.rowCount} → ${table.rowCount} rows). Draft a new edit instead.`);
+        }
+
+        try {
+            // Phase 1: cell text patches (coordinates still original).
+            if (tablePatch.cells.length > 0) {
+                if (Word.ChangeTrackingMode) {
+                    context.document.changeTrackingMode = trackChanges
+                        ? Word.ChangeTrackingMode.trackAll
+                        : Word.ChangeTrackingMode.off;
+                }
+                for (const cellPatch of tablePatch.cells) {
+                    const applied = await _patchCell(context, table, cellPatch, log);
+                    if (applied) cellsApplied++; else cellsSkipped++;
+                }
+            }
+
+            // Phase 2: row structure ops (descending coordinates).
+            if (tablePatch.rowOps.length > 0) {
+                if (Word.ChangeTrackingMode) {
+                    context.document.changeTrackingMode = rowTracking
+                        ? Word.ChangeTrackingMode.trackAll
+                        : Word.ChangeTrackingMode.off;
+                    await context.sync();
+                }
+                for (const op of tablePatch.rowOps) {
+                    const row = table.getCell(op.row - 1, 0).parentRow;
+                    if (op.op === 'delete') {
+                        row.delete();
+                    } else if (typeof row.insertRows === 'function') {
+                        row.insertRows(
+                            op.op === 'insertAfter' ? Word.InsertLocation.after : Word.InsertLocation.before,
+                            1,
+                            [op.values]
+                        );
+                    } else {
+                        log(`Row insert is not supported by this Word API (skipped row ${op.row})`, 'warning');
+                        continue;
+                    }
+                    rowOpsApplied++;
+                }
+                await context.sync();
+            }
+        } finally {
+            // Later turns and comments must not inherit tracking state.
+            if (Word.ChangeTrackingMode) {
+                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                await context.sync();
+            }
+        }
+    });
+
+    log(`Table patch applied: ${cellsApplied} cell(s) revised, ${rowOpsApplied} row op(s)` +
+        (cellsSkipped ? `, ${cellsSkipped} cell(s) already up to date` : ''), 'success');
+}
+
+/**
+ * Revises one cell's text. Single-paragraph cells go through the granular
+ * diff strategies (tracked in-cell edits are native to Word); the rare
+ * multi-paragraph cell falls back to per-paragraph replacement when the line
+ * count matches, else a coarse whole-content replace. Returns true when the
+ * cell was written, false when its text already matched.
+ *
+ * @private
+ */
+async function _patchCell(context, table, cellPatch, log) {
+    const label = `R${cellPatch.row}C${cellPatch.col}`;
+    const cell = table.getCell(cellPatch.row - 1, cellPatch.col - 1);
+    const paragraphs = cell.body.paragraphs;
+    paragraphs.load('items');
+    await context.sync();
+    const items = paragraphs.items;
+    if (items.length === 0) return false; // a cell always holds ≥1 paragraph
+
+    if (items.length === 1) {
+        const range = items[0].getRange(Word.RangeLocation.content);
+        range.load('text');
+        await context.sync();
+        if (range.text.trim() === cellPatch.text.trim()) return false;
+        try {
+            // The outer scope owns the tracking mode for the whole patch.
+            const diffOptions = { trackChanges: false };
+            if (hasCjk(range.text) || hasCjk(cellPatch.text)) {
+                await applyCharDiffStrategy(context, range, range.text, cellPatch.text, log, diffOptions);
+            } else {
+                await applyTokenMapStrategy(context, range, range.text, cellPatch.text, log, diffOptions);
+            }
+        } catch (diffErr) {
+            // Loses edit granularity but never leaves a failed apply.
+            log(`Cell ${label}: granular diff failed (${diffErr.message}), replacing cell text`, 'warning');
+            range.insertText(cellPatch.text, Word.InsertLocation.replace);
+            await context.sync();
+        }
+        return true;
+    }
+
+    const whole = items[0].getRange(Word.RangeLocation.content)
+        .expandTo(items[items.length - 1].getRange(Word.RangeLocation.content));
+    whole.load('text');
+    await context.sync();
+    if (whole.text.replace(/\r/g, '\n').trim() === cellPatch.text.trim()) return false;
+
+    const newLines = cellPatch.text.split(/\r?\n/);
+    if (newLines.length === items.length) {
+        for (let i = 0; i < items.length; i++) {
+            const paraRange = items[i].getRange(Word.RangeLocation.content);
+            paraRange.load('text');
+            await context.sync();
+            if (paraRange.text !== newLines[i]) {
+                paraRange.insertText(newLines[i], Word.InsertLocation.replace);
+            }
+        }
+        await context.sync();
+        return true;
+    }
+
+    log(`Cell ${label}: paragraph count changed (${items.length} → ${newLines.length}); replacing content as one paragraph`, 'warning');
+    whole.insertText(newLines.join(' '), Word.InsertLocation.replace);
+    await context.sync();
+    return true;
 }
 
 /**

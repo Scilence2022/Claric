@@ -42,6 +42,8 @@ function createMockWordRun(paragraphItems, bookmarkRanges = {}) {
   const items = paragraphItems.map((p, i) => {
     return {
       text: p.text,
+      // Paragraphs in these mocks live outside tables unless flagged.
+      parentTableOrNullObject: { isNullObject: !p.inTable, load: jest.fn() },
       getRange: jest.fn().mockImplementation((position) => {
         // Return a range-like object that can be used with expandTo
         const r = makeRange(p.text, `para-${i}-${position}`);
@@ -109,6 +111,11 @@ global.Word = {
   ChangeTrackingMode: {
     trackAll: 'TrackAll',
     off: 'Off',
+  },
+  InsertLocation: {
+    after: 'After',
+    before: 'Before',
+    replace: 'Replace',
   },
 };
 
@@ -784,6 +791,10 @@ describe('_findAnchorWindow', () => {
 function createParagraphAwareMockRun(currentParaTexts) {
   const syncFn = jest.fn().mockResolvedValue(undefined);
 
+  // Entries may be plain strings (outside tables) or { text, inTable } specs.
+  const specs = currentParaTexts.map((p) => (typeof p === 'string' ? { text: p, inTable: false } : p));
+  const paraTexts = specs.map((s) => s.text);
+
   function makeNarrowedRange(startIdx, endIdx) {
     const windowItems = items.slice(startIdx, endIdx + 1);
     return {
@@ -797,23 +808,24 @@ function createParagraphAwareMockRun(currentParaTexts) {
   function makeSubRange(paraIdx) {
     return {
       paraIdx,
-      text: currentParaTexts[paraIdx],
+      text: paraTexts[paraIdx],
       load: jest.fn(),
       insertText: jest.fn(),
       expandTo: jest.fn((other) => makeNarrowedRange(paraIdx, other.paraIdx)),
     };
   }
 
-  const items = currentParaTexts.map((text, i) => ({
-    text,
+  const items = specs.map((spec, i) => ({
+    text: spec.text,
     load: jest.fn(),
     delete: jest.fn(),
     insertParagraph: jest.fn(),
+    parentTableOrNullObject: { isNullObject: !spec.inTable, load: jest.fn() },
     getRange: jest.fn(() => makeSubRange(i)),
   }));
 
   const bookmarkRange = {
-    text: currentParaTexts.join('\n'),
+    text: paraTexts.join('\n'),
     isNullObject: false,
     load: jest.fn(),
     paragraphs: { items, load: jest.fn() },
@@ -1105,5 +1117,110 @@ describe('applyChunkResults re-anchoring', () => {
     expect(outcome.amendmentsApplied).toBe(0);
     expect(outcome.noChangeCount).toBe(1);
     expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+  });
+});
+
+// --- Table paragraph guards ---
+
+describe('applyChunkResults table-paragraph guards', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('in-cell keep edits still diff granularly; insert anchored at a table paragraph is skipped', async () => {
+    const mock = createParagraphAwareMockRun([
+      'Intro',
+      { text: 'Cell A1 text', inTable: true },
+      'Outro',
+    ]);
+    global.Word.run = mock.wordRun;
+    const log = jest.fn();
+
+    const chunk = driftChunk('chunk-0', ['Intro', 'Cell A1 text', 'Outro'], 0, 2);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Intro\nCell A1 text revised\nBrand new paragraph\nOutro',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log,
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(1);
+    // The in-cell text edit went through the granular strategy as usual.
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+    expect(applyTokenMapStrategy.mock.calls[0][2]).toBe('Cell A1 text');
+    expect(applyTokenMapStrategy.mock.calls[0][3]).toBe('Cell A1 text revised');
+    // The new paragraph would anchor inside the table — skipped, not inserted.
+    for (const item of mock.items) {
+      expect(item.insertParagraph).not.toHaveBeenCalled();
+      expect(item.delete).not.toHaveBeenCalled();
+    }
+    const warnings = log.mock.calls.filter((c) => c[1] === 'warning').map((c) => c[0]).join('\n');
+    expect(warnings).toMatch(/Skipping insert after para 1/);
+  });
+
+  test('delete op on a table paragraph is skipped (cell content is not a row)', async () => {
+    const mock = createParagraphAwareMockRun([
+      'Intro',
+      { text: 'Cell A1 text', inTable: true },
+      'Outro',
+    ]);
+    global.Word.run = mock.wordRun;
+    const log = jest.fn();
+
+    const chunk = driftChunk('chunk-0', ['Intro', 'Cell A1 text', 'Outro'], 0, 2);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Intro\nOutro',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log,
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(mock.items[1].delete).not.toHaveBeenCalled();
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+    const warnings = log.mock.calls.filter((c) => c[1] === 'warning').map((c) => c[0]).join('\n');
+    expect(warnings).toMatch(/skipping delete/);
+  });
+
+  test('insert anchored at a non-table paragraph still inserts', async () => {
+    const mock = createParagraphAwareMockRun([
+      'Intro',
+      { text: 'Cell A1 text', inTable: true },
+      'Outro',
+    ]);
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Intro', 'Cell A1 text', 'Outro'], 0, 2);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Intro\nCell A1 text\nOutro\nBrand new paragraph',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(mock.items[2].insertParagraph).toHaveBeenCalledWith('Brand new paragraph', 'After');
   });
 });

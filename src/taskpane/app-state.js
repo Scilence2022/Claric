@@ -51,6 +51,7 @@ export const appState = {
     processDocController: null, // AbortController for document-scope runs
     chatController: null,       // AbortController for chat Q&A streaming
     supportsComments: false,    // set during initialize() via WordApi 1.4 check
+    platform: 'unknown',        // set during initialize() via Office.context.platform
     // Logging indirection so the CommentQueue can be constructed before the
     // DOM-backed addLog exists; initialize() replaces appState.log.
     log: (message, type = 'info') => console.log(`[${type.toUpperCase()}] ${message}`),

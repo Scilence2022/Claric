@@ -64,6 +64,11 @@ src/
                                #   (DOMPurify SVG profile)/dimensions/position
     task-planner.js            # Compound-instruction decomposition prompt +
                                #   plan parser (6 task types, caps)
+    table-patch.js             # Coordinate patch protocol for multi-cell
+                               #   table selections: prompt builder, JSON
+                               #   patch parser/validator, row-op ordering
+    platform.js                # Office host detection; which hosts record
+                               #   table row insert/delete as tracked revisions
     selection-with-comments.js # Splices comment anchors into selection OOXML
     panel-actions.js           # Legacy frozen enums (kept for tests)
     structure-model.js         # Legacy ParagraphBlock token-map model
@@ -113,11 +118,17 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (699 tests, 29 suites)
+tests/                         # Jest unit tests (789 tests, 34 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
-                               #   paragraphs, line endings, validation
+                               #   paragraphs, line endings, table-paragraph
+                               #   guards, validation
+  table-patch.spec.js          # Table patch prompt, JSON parsing/validation,
+                               #   row-op ordering
+  platform.spec.js             # Host detection, tracked-row-op support mapping
+  word-actions-table.spec.js   # Table selection route: prepare/apply ordering,
+                               #   desktop/web row-tracking split, stale guards
   llm-stream.spec.js           # SSE parsing, reasoning demux, fallback, abort,
                                #   idle timeout
   llm-client.spec.js           # Non-streaming client, stripping helpers
@@ -207,6 +218,16 @@ User selects text → types an instruction (or /copy-edit) in the chat input
   → on Apply: the word-diff layer applies the response as tracked changes
   → Word shows insertions/deletions with track changes enabled
 ```
+
+**Table selections:** when the selection spans multiple cells, the flat-text
+pipeline cannot represent cell boundaries, so word-actions.js switches to the
+table patch protocol instead: cells are sent as a coordinate grid (R1C1 …),
+the LLM returns a JSON delta (`{"cells":[{row,col,text}],"rowOps":[…]}`), and
+the card reviews one item per changed cell / row op. On Apply, cell text is
+revised per cell with the granular diff strategies (tracked natively), then
+row ops (`TableRow.insertRows`/`delete`) run in descending row order. Only
+Word desktop records row insert/delete as tracked revisions — on Word for
+the web the structure phase runs untracked with a warning (lib/platform.js).
 
 Document-scope edits (skill or free-text edit intent without selection) run the
 chunked pipeline (parse → context → chunk → parallel dispatch) but are **gated**:
@@ -320,6 +341,7 @@ OOXML tracked changes pipeline:
 
 - `bookmarkChunkRanges()` — hidden `_wdp…` bookmarks persist chunk ranges across LLM processing time
 - `applyChunkResults()` — aligns LLM output to original paragraphs (LCS on exact matches, then greedy similarity matching at 0.4 threshold; CJK uses bigram similarity; blank paragraphs excluded) and applies keep/delete/insert ops in reverse document order as tracked changes; comments are inserted in a separate later phase with tracking off (avoids `AccessDenied` on ranges with pending revisions)
+- Table guard: insert/delete alignment ops whose target paragraph sits inside a table are skipped with a warning (they would add in-cell paragraphs or delete cell content, never rows); in-cell `keep` edits still diff granularly
 - Re-anchoring: `_reanchorChunkRange()` narrows a drifted staged range to the contiguous window holding the staged paragraphs (`_findAnchorWindow` over stored original texts); if contiguity is lost, the chunk is **skipped** with an error entry rather than falling back to the raw range
 - Truncation guard rejects LLM output under 30% of the original chunk length
 - Returns `{ amendmentsApplied, commentsInserted, noChangeCount, errors }` for honest UI feedback

@@ -327,6 +327,18 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
     return false;
   }
 
+  // Table membership per paragraph. Insert/delete alignment ops against a
+  // table paragraph would add an in-cell paragraph or delete cell content —
+  // never a table row — so those ops are skipped in the loop below (in-cell
+  // 'keep' text edits are safe and still tracked).
+  const tableChecks = paraItems.map((p) => {
+    const t = p.parentTableOrNullObject;
+    t.load('isNullObject');
+    return t;
+  });
+  await context.sync();
+  const inTable = tableChecks.map((t) => !t.isNullObject);
+
   const origTexts = paraItems.map((p) => p.text);
   const amendedLines = _normalizeLineEndings(amendedText).split('\n');
 
@@ -412,7 +424,12 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         }
       }
     } else if (op.type === 'delete') {
-      // Paragraph was removed by LLM -- delete it
+      // Paragraph was removed by LLM -- delete it. Table paragraphs are
+      // skipped: deleting cell content never deletes a row, it corrupts one.
+      if (inTable[op.origIdx]) {
+        log(`Para ${op.origIdx}: skipping delete — paragraph is inside a table`, 'warning');
+        continue;
+      }
       const para = paraItems[op.origIdx];
       para.delete();
     } else if (op.type === 'insert') {
@@ -433,6 +450,12 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
       }
 
       if (anchorOrigIdx >= 0 && anchorOrigIdx < paraItems.length) {
+        // Anchoring inside a table would insert an in-cell paragraph, not a
+        // new row — skip instead of corrupting the table layout.
+        if (inTable[anchorOrigIdx]) {
+          log(`Skipping insert after para ${anchorOrigIdx} — anchor is inside a table`, 'warning');
+          continue;
+        }
         const anchorPara = paraItems[anchorOrigIdx];
         anchorPara.insertParagraph(insertText, Word.InsertLocation.after);
       } else if (paraItems.length > 0) {

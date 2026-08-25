@@ -33,6 +33,7 @@ import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleL
 import { initHistoryView, openHistory } from './ui/history-view.js';
 import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession } from './sessions.js';
 import { getProviderPreset } from '../lib/providers.js';
+import { getHostPlatform } from '../lib/platform.js';
 
 export { normalizeConfig } from './app-state.js';
 
@@ -163,6 +164,11 @@ function initialize() {
     if (!appState.supportsComments) {
         addLog('Comment features unavailable (requires Word API 1.4)', 'info');
     }
+
+    // Detect the host platform (PC/Mac/OfficeOnline/...) — table row-level
+    // revisions are only recorded by Word desktop, so table edits branch on it.
+    appState.platform = getHostPlatform();
+    addLog(`Host platform: ${appState.platform}`, 'info');
 
     // Auto-test connection and load models
     testConnectionUI();

@@ -499,22 +499,62 @@ export function createConversation(deps) {
                 onReasoning: (t) => msg.appendModelToken({ id: 'selection' }, 'reasoning', t),
             });
             msg.setStatus('');
-            const card = createProposalCard({
-                title: 'Proposed edit',
-                beforeChars: proposal.selectionText.length,
-                afterChars: proposal.amendedText ? proposal.amendedText.length : 0,
-                comment: proposal.commentText,
-                items: proposal.amendedText ? [{
+
+            // Table patches review per-cell / per-row items instead of a
+            // single before/after text diff.
+            const isTable = !!proposal.tablePatch;
+            if (isTable && proposal.tableItems.length === 0) {
+                msg.setStatus('The model proposed no changes.');
+                return;
+            }
+            const title = isTable ? 'Proposed table edit' : 'Proposed edit';
+            const beforeChars = isTable
+                ? proposal.tableItems.reduce((sum, item) => sum + (item.before || '').length, 0)
+                : proposal.selectionText.length;
+            const afterChars = isTable
+                ? proposal.tableItems.reduce((sum, item) => sum + (item.after || '').length, 0)
+                : (proposal.amendedText ? proposal.amendedText.length : 0);
+            const items = isTable
+                ? proposal.tableItems.map((item, index) => ({
+                    id: index,
+                    label: item.label,
+                    before: item.before,
+                    after: item.after,
+                    searchText: item.searchText,
+                }))
+                : (proposal.amendedText ? [{
                     id: 'selection',
                     label: 'Selection rewrite',
                     before: proposal.selectionText,
                     after: proposal.amendedText,
                     searchText: proposal.selectionText.trim().slice(0, 60),
-                }] : undefined,
+                }] : undefined);
+
+            const card = createProposalCard({
+                title,
+                beforeChars,
+                afterChars,
+                comment: proposal.commentText,
+                items,
                 onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
-                onApply: async () => {
+                onApply: async (selectedIds) => {
                     try {
-                        await actions.applySelectionAmendment(turnDeps, proposal);
+                        // Table cards list one checkbox per cell patch, then
+                        // one per row op — honor the user's unchecking.
+                        let toApply = proposal;
+                        if (isTable && selectedIds) {
+                            const cellCount = proposal.tablePatch.cells.length;
+                            const picked = new Set(selectedIds);
+                            toApply = {
+                                ...proposal,
+                                tablePatch: {
+                                    ...proposal.tablePatch,
+                                    cells: proposal.tablePatch.cells.filter((_, i) => picked.has(i)),
+                                    rowOps: proposal.tablePatch.rowOps.filter((_, j) => picked.has(cellCount + j)),
+                                },
+                            };
+                        }
+                        await actions.applySelectionAmendment(turnDeps, toApply);
                         card.markApplied();
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
@@ -526,16 +566,10 @@ export function createConversation(deps) {
                 },
             });
             msg.attachProposal(card, {
-                title: 'Proposed edit',
+                title,
                 state: 'pending',
-                countsText: `${proposal.selectionText.length} → ${proposal.amendedText ? proposal.amendedText.length : 0} chars`,
-                items: proposal.amendedText ? [{
-                    id: 'selection',
-                    label: 'Selection rewrite',
-                    before: proposal.selectionText,
-                    after: proposal.amendedText,
-                    searchText: proposal.selectionText.trim().slice(0, 60),
-                }] : [],
+                countsText: `${beforeChars} → ${afterChars} chars`,
+                items: items || [],
             });
         } catch (error) {
             msg.markError(error.message);
