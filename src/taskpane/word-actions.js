@@ -316,14 +316,22 @@ export async function applySelectionAmendment(deps, proposal) {
                     ? Word.ChangeTrackingMode.trackAll
                     : Word.ChangeTrackingMode.off;
             }
-            if (appState.config.lineDiffEnabled) {
-                await applySentenceDiffStrategy(context, selection, selectionText, amendedText, log);
-            } else if (hasCjk(selectionText) || hasCjk(amendedText)) {
-                // CJK text has no word boundaries for the token map — use
-                // char-level diff so e.g. a one-comma edit stays minimal.
-                await applyCharDiffStrategy(context, selection, selectionText, amendedText, log);
-            } else {
-                await applyTokenMapStrategy(context, selection, selectionText, amendedText, log);
+            try {
+                if (appState.config.lineDiffEnabled) {
+                    await applySentenceDiffStrategy(context, selection, selectionText, amendedText, log);
+                } else if (hasCjk(selectionText) || hasCjk(amendedText)) {
+                    // CJK text has no word boundaries for the token map — use
+                    // char-level diff so e.g. a one-comma edit stays minimal.
+                    await applyCharDiffStrategy(context, selection, selectionText, amendedText, log);
+                } else {
+                    await applyTokenMapStrategy(context, selection, selectionText, amendedText, log);
+                }
+            } catch (diffErr) {
+                // Last resort: replace the whole selection text (tracked).
+                // Loses edit granularity but never leaves a failed apply.
+                log(`Granular diff failed (${diffErr.message}), using whole-selection replacement`, 'warning');
+                selection.insertText(amendedText, Word.InsertLocation.replace);
+                await context.sync();
             }
         });
         log('Changes applied successfully', 'success');

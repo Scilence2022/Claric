@@ -53,16 +53,16 @@ const MAX_OPS = 200;
  *
  * Two phases, mirroring office-word-diff's token map architecture:
  *   Phase 1 (read-only): locate every op's span in the PRISTINE document
- *     text, verifying the diff still matches the live content. Interleaved
- *     delete+insert runs are merged into single "replace" ops over the
- *     contiguous deleted span — this keeps every plan entry anchored to one
- *     located range (no zero-width cursors between ops), which stays valid
- *     regardless of edit order.
+ *     text, walking a tail cursor built via getRange(End).expandTo(scopeEnd).
+ *     Interleaved delete+insert runs are merged into single "replace" ops
+ *     over the contiguous deleted span — this keeps every plan entry
+ *     anchored to one located range, which stays valid regardless of edit
+ *     order.
  *   Phase 2 (edit): execute the plan in REVERSE document order with tracked
  *     changes on, so each minimal insert/delete/replace becomes its own
  *     revision.
  *
- * Any divergence between the diff and the live document text throws, so
+ * When the expected text can no longer be found in the scope, this throws so
  * callers can fall back to another strategy.
  *
  * @param {Word.RequestContext} context
@@ -80,6 +80,14 @@ export async function applyCharDiffStrategy(context, range, originalText, newTex
     }
 
     // Phase 1: locate all spans against the pristine text (no edits yet).
+    //
+    // Cursor mechanics: the walking cursor is the tail of the scope spanning
+    // from the end of the last located match to the scope end, built with
+    // getRange(End).expandTo(scopeEnd). Do NOT use
+    // match.getRange(Word.RangeLocation.after): on search()-produced ranges
+    // it yields a zero-width point whose .text is '', so every locate after
+    // the first one fails.
+    const scopeEnd = range.getRange(Word.RangeLocation.end);
     const plan = [];
     let cursor = range;
     let lastEqualMatch = null;
@@ -106,13 +114,13 @@ export async function applyCharDiffStrategy(context, range, originalText, newTex
     for (const [op, text] of ops) {
         if (op === 0) {
             flushHunk();
-            const match = await _locateAt(context, cursor, text, 'equal');
-            cursor = match.getRange(Word.RangeLocation.after);
+            const match = await _locateAt(context, cursor, scopeEnd, text, 'equal', log);
+            cursor = match.getRange(Word.RangeLocation.end).expandTo(scopeEnd);
             lastEqualMatch = match;
         } else if (op === -1) {
-            const match = await _locateAt(context, cursor, text, 'delete');
+            const match = await _locateAt(context, cursor, scopeEnd, text, 'delete', log);
             pendingDels.push(match);
-            cursor = match.getRange(Word.RangeLocation.after);
+            cursor = match.getRange(Word.RangeLocation.end).expandTo(scopeEnd);
         } else {
             pendingIns += text;
         }
@@ -167,23 +175,28 @@ function _unionRanges(ranges) {
 const SEARCH_PIECE_MAX = 200;
 
 /**
- * Verifies the cursor's remaining text starts with expectedText and returns
- * the located match range. Throws on divergence.
+ * Locates expectedText starting at the cursor and returns the match range.
  *
- * The startsWith check covers the whole expectedText up front (pure JS, no
- * length limit); the located range is then walked in ≤ SEARCH_PIECE_MAX-char
- * pieces because Word rejects search strings longer than 255 chars. Each
- * piece is guaranteed to sit exactly at the piece cursor, so the first match
- * is always the right one.
+ * The located range is walked in ≤ SEARCH_PIECE_MAX-char pieces because Word
+ * rejects search strings longer than 255 chars. Each piece search starts from
+ * the tail after the previous piece (built via getRange(End).expandTo), so
+ * the first match is always the ordered next one.
+ *
+ * The cursor's .text is checked as a best-effort drift warning only: ranges
+ * derived from a selection occasionally report '' in Word, and the ordered
+ * search below still enforces op sequence. A genuine miss (search finds
+ * nothing) still throws so callers can fall back to a coarser strategy.
  * @private
  */
-async function _locateAt(context, cursor, expectedText, kind) {
-    cursor.load('text');
-    await context.sync();
-    if (!cursor.text.startsWith(expectedText)) {
-        throw new Error(
-            `char-diff: expected ${kind} "${_preview(expectedText)}" at cursor, found "${_preview(cursor.text)}"`
-        );
+async function _locateAt(context, cursor, scopeEnd, expectedText, kind, log) {
+    try {
+        cursor.load('text');
+        await context.sync();
+        if (cursor.text && !cursor.text.startsWith(expectedText)) {
+            log(`char-diff: cursor drifted before ${kind} "${_preview(expectedText)}" (found "${_preview(cursor.text)}"); continuing with ordered search`, 'warning');
+        }
+    } catch (_verifyErr) {
+        // Verification is best-effort; ordered search below is authoritative.
     }
     let union = null;
     let pieceCursor = cursor;
@@ -197,7 +210,7 @@ async function _locateAt(context, cursor, expectedText, kind) {
         }
         const match = matches.items[0];
         union = union ? union.expandTo(match) : match;
-        pieceCursor = match.getRange(Word.RangeLocation.after);
+        pieceCursor = match.getRange(Word.RangeLocation.end).expandTo(scopeEnd);
     }
     return union;
 }
