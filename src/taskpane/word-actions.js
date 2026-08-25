@@ -20,6 +20,7 @@
  */
 
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from 'office-word-diff';
+import { hasCjk, applyCharDiffStrategy } from '../lib/char-diff.js';
 import { sendPrompt, sendPromptStream, stripMarkdown } from '../lib/llm-client.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
@@ -244,6 +245,10 @@ export async function applySelectionAmendment(deps, proposal) {
             }
             if (appState.config.lineDiffEnabled) {
                 await applySentenceDiffStrategy(context, selection, selectionText, amendedText, log);
+            } else if (hasCjk(selectionText) || hasCjk(amendedText)) {
+                // CJK text has no word boundaries for the token map — use
+                // char-level diff so e.g. a one-comma edit stays minimal.
+                await applyCharDiffStrategy(context, selection, selectionText, amendedText, log);
             } else {
                 await applyTokenMapStrategy(context, selection, selectionText, amendedText, log);
             }
