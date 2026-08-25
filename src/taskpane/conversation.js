@@ -10,6 +10,8 @@
  *   - free text + illustration intent -> design an SVG illustration, stage an image-insert proposal
  *   - free text + append intent -> generate content, stage an append-to-end proposal
  *   - free text + format intent -> staged formatting/insert ops (existing text never rewritten)
+ *   - free text + cleanup intent -> deterministic empty-paragraph deletion (staged, no LLM —
+ *     the parser never sees blank paragraphs, so the text pipelines structurally cannot)
  *   - free text + selection    -> selection edit (user text is the edit instruction)
  *   - free text + edit intent  -> document amendment run (staged proposal)
  *   - free text + question lead -> document Q&A (answer in chat)
@@ -36,6 +38,7 @@ export const TURN_TYPE = Object.freeze({
     DOC_APPEND: 'doc-append',
     FORMAT: 'format',
     ILLUSTRATION: 'illustration',
+    CLEANUP: 'cleanup',
     COMPOUND: 'compound',
     DOC_QA: 'doc-qa',
 });
@@ -146,9 +149,30 @@ export function looksLikeFormatIntent(text) {
 }
 
 /**
+ * Cleanup-intent markers: the user wants redundant EMPTY paragraphs deleted
+ * (删除多余的空段落 / 清除空行 / "delete empty paragraphs"). This cannot go
+ * through the text pipelines — the document parser skips blank paragraphs
+ * (so the LLM never sees them) and the reassembler excludes them from
+ * alignment — so it routes to a deterministic Word.js cleanup instead.
+ */
+const CLEANUP_INTENT_RE = /(删除|清除|清理|去掉|移除|去除).{0,8}(空\s*段落|空白\s*段落|空行|空白行)|\b(delete|remove|clean\s*up|get rid of|strip)\b.{0,20}\b(empty|blank|whitespace)\b.{0,4}\b(paragraphs?|lines?)/i;
+
+/**
+ * True when free text asks to delete redundant empty paragraphs. Questions
+ * stay Q&A even when they mention blank paragraphs ("为什么有多余的空段落？").
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeCleanupIntent(text) {
+    if (looksLikeQuestion(text)) return false;
+    return CLEANUP_INTENT_RE.test(text);
+}
+
+/**
  * Counts how many intent families an instruction hits (illustration,
- * append, format, edit). Questions count as zero — the looksLike* guards
- * keep them Q&A. A count of 2+ means a compound instruction ("增加标题，并
+ * append, format, edit, cleanup). Questions count as zero — the looksLike*
+ * guards keep them Q&A. A count of 2+ means a compound instruction ("增加标题，并
  * 深度润色修改") that no single pipeline can serve; those go through the
  * task planner (TURN_TYPE.COMPOUND) instead of dropping or refusing the
  * non-matching parts.
@@ -162,6 +186,7 @@ export function countIntentFamilies(text) {
     if (looksLikeAppendIntent(text)) count++;
     if (looksLikeFormatIntent(text)) count++;
     if (looksLikeEditIntent(text)) count++;
+    if (looksLikeCleanupIntent(text)) count++;
     return count;
 }
 
@@ -205,6 +230,11 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
     // never rewrite text, so they must not enter the text-diff pipelines.
     if (looksLikeFormatIntent(trimmed)) {
         return { type: TURN_TYPE.FORMAT, instruction: trimmed, scope: hasSelection ? 'selection' : 'document' };
+    }
+    // Cleanup intent is document-scope and deterministic: empty paragraphs
+    // are invisible to the parser/LLM, so no text pipeline could serve this.
+    if (looksLikeCleanupIntent(trimmed)) {
+        return { type: TURN_TYPE.CLEANUP, instruction: trimmed };
     }
     if (hasSelection) {
         // Selection + a question is a question ABOUT the selection (answered
@@ -629,6 +659,54 @@ export function createConversation(deps) {
     }
 
     /**
+     * Runs a cleanup turn: deterministically scans the document for redundant
+     * empty paragraphs (no LLM — blank paragraphs are invisible to the parser
+     * and excluded from text-pipeline alignment, so a Word.js scan is the only
+     * way to serve this) and stages a proposal card. Apply deletes them as
+     * tracked changes.
+     */
+    async function runCleanupTurn(msg, turnDeps) {
+        appState.isProcessing = true;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Scanning for empty paragraphs...');
+            const proposal = await actions.prepareEmptyParagraphCleanup(turnDeps);
+            if (!proposal.emptyCount) {
+                msg.setStatus('No empty paragraphs found.');
+                return;
+            }
+            msg.setStatus('');
+            const card = createProposalCard({
+                title: 'Proposed cleanup',
+                countsText: `Delete ${proposal.emptyCount} empty paragraph(s)`,
+                comment: null,
+                onApply: async () => {
+                    try {
+                        const result = await actions.applyEmptyParagraphCleanup(turnDeps);
+                        if (!result || result.deleted === 0) {
+                            card.markWarning('Nothing applied — no empty paragraphs remained.');
+                        } else {
+                            card.markApplied();
+                        }
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Proposal rejected by user.', 'info');
+                },
+            });
+            msg.attachProposal(card.el);
+        } catch (error) {
+            msg.markError(error.message);
+        } finally {
+            appState.isProcessing = false;
+            input.setProcessing(false);
+        }
+    }
+
+    /**
      * Runs a selection-scope comment turn (fire-and-forget comment pipeline).
      */
     async function runSelectionCommentTurn(skill, args, msg, turnDeps) {
@@ -751,6 +829,13 @@ export function createConversation(deps) {
      */
     function turnForTask(task, hasSelection) {
         const instruction = task.instruction;
+        // A planner task that is really an empty-paragraph cleanup must not
+        // enter the text pipelines — the parser/LLM never see blank
+        // paragraphs, so only the deterministic cleanup can serve it,
+        // regardless of the planner's own type label (usually "edit").
+        if (task.type !== 'qa' && looksLikeCleanupIntent(instruction)) {
+            return { type: TURN_TYPE.CLEANUP, instruction };
+        }
         switch (task.type) {
             case 'insert':
                 // Structural inserts (e.g. a title) belong at document scope —
@@ -833,6 +918,8 @@ export function createConversation(deps) {
             await runIllustrationTurn(turn, msg, turnDeps);
         } else if (turn.type === TURN_TYPE.FORMAT) {
             await runFormatTurn(turn, msg, turnDeps, selectionText);
+        } else if (turn.type === TURN_TYPE.CLEANUP) {
+            await runCleanupTurn(msg, turnDeps);
         } else if (turn.type === TURN_TYPE.COMPOUND) {
             await runCompoundTurn(turn, msg, turnDeps, selectionText);
         } else if (turn.type === TURN_TYPE.DOC_EDIT) {
