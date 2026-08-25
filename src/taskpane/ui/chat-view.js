@@ -8,11 +8,26 @@
  * All text is rendered via textContent (no innerHTML for model output), so
  * LLM responses cannot inject markup into the taskpane.
  *
+ * In addition to live DOM, the module keeps a parallel `currentSessionMessages`
+ * array so the conversation can be serialized (history view, restart on
+ * reload). Each call to `createAssistantMessage()` returns a handle whose
+ * `finalizeForHistory()` snapshots the rendered state into the array. The
+ * bootstrap wires a single `onTurnCommitted` callback that persists the
+ * session after each turn settles.
+ *
  * @module ui/chat-view
  */
 
+import { buildTextDiffElement } from './diff-view.js';
+
 let _messagesEl = null;
 let _welcomeEl = null;
+
+let _currentSessionId = null;
+let _currentSessionTitle = null;
+let _currentSessionCreatedAt = null;
+let _currentSessionUpdatedAt = null;
+let _currentSessionMessages = [];
 
 /**
  * Captures the chat containers. Called once at startup.
@@ -37,13 +52,97 @@ export function showWelcome() {
 }
 
 /**
- * Removes all messages and restores the welcome state.
+ * Removes all messages and restores the welcome state. Wipes the live
+ * session tracking so the chat truly starts over.
  */
 export function clearChat() {
     if (_messagesEl) {
         _messagesEl.querySelectorAll('.chat-message').forEach((el) => el.remove());
     }
+    clearSessionMessages();
     showWelcome();
+}
+
+/**
+ * Resets the live session tracking (messages array + ids). Leaves DOM alone.
+ */
+export function clearSessionMessages() {
+    _currentSessionId = null;
+    _currentSessionTitle = null;
+    _currentSessionCreatedAt = null;
+    _currentSessionUpdatedAt = null;
+    _currentSessionMessages = [];
+}
+
+/**
+ * Returns the live session object: id, title, timestamps, and the running
+ * message array. The bootstrap persists a snapshot after each turn.
+ *
+ * @returns {{ id: string|null, title: string|null, createdAt: string|null, updatedAt: string|null, messages: Array<object> }}
+ */
+export function getCurrentSession() {
+    return {
+        id: _currentSessionId,
+        title: _currentSessionTitle,
+        createdAt: _currentSessionCreatedAt,
+        updatedAt: _currentSessionUpdatedAt,
+        messages: _currentSessionMessages,
+    };
+}
+
+/**
+ * Seeds the live session from a saved payload (history view "load" action).
+ * The DOM is rebuilt via renderHistory() and the welcome state is hidden.
+ *
+ * @param {object} session
+ * @param {string} [session.id]
+ * @param {string} [session.title]
+ * @param {string} [session.createdAt]
+ * @param {string} [session.updatedAt]
+ * @param {Array<object>} [session.messages]
+ */
+export function setCurrentSession(session) {
+    if (!session) {
+        clearSessionMessages();
+        renderHistory([]);
+        return;
+    }
+    _currentSessionId = session.id || _generateSessionId();
+    _currentSessionTitle = session.title || null;
+    _currentSessionCreatedAt = session.createdAt || new Date().toISOString();
+    _currentSessionUpdatedAt = session.updatedAt || new Date().toISOString();
+    _currentSessionMessages = Array.isArray(session.messages)
+        ? session.messages.map(_normalizeMessage)
+        : [];
+    renderHistory(_currentSessionMessages);
+}
+
+/**
+ * Builds DOM from a saved message array. Clears any existing messages,
+ * hides the welcome state, and renders each message in order.
+ *
+ * @param {Array<object>} messages
+ */
+export function renderHistory(messages) {
+    if (!_messagesEl) return;
+    _messagesEl.querySelectorAll('.chat-message').forEach((el) => el.remove());
+    if (!Array.isArray(messages) || messages.length === 0) {
+        showWelcome();
+        return;
+    }
+    hideWelcome();
+    for (const m of messages) {
+        if (!m) continue;
+        if (m.role === 'user') {
+            const bubble = document.createElement('div');
+            bubble.className = 'chat-message chat-message-user';
+            bubble.textContent = m.text || '';
+            _messagesEl.appendChild(bubble);
+        } else {
+            _messagesEl.appendChild(_renderHistoricalAssistant(m));
+        }
+    }
+    _scrollToBottom();
 }
 
 /**
@@ -57,7 +156,7 @@ function _scrollToBottom() {
 }
 
 /**
- * Renders text into an element as plain text with line breaks preserved.
+ * Renders a text node safely (no innerHTML).
  * @private
  */
 function _renderText(el, text) {
@@ -75,12 +174,28 @@ export function addUserMessage(text) {
     _renderText(el, text);
     _messagesEl.appendChild(el);
     _scrollToBottom();
+
+    if (_currentSessionId === null) {
+        _currentSessionId = _generateSessionId();
+        _currentSessionCreatedAt = new Date().toISOString();
+    }
+    _currentSessionUpdatedAt = new Date().toISOString();
+    _currentSessionMessages.push({
+        id: _generateMessageId(),
+        role: 'user',
+        text: String(text || ''),
+        status: '',
+        error: null,
+        worklog: null,
+        model: null,
+        citations: [],
+        proposals: [],
+        ts: new Date().toISOString(),
+    });
 }
 
 /**
  * Adds a small system note (about info, hints) as an assistant-style message.
- *
- * @param {string} text
  */
 export function addSystemNote(text) {
     hideWelcome();
@@ -90,13 +205,220 @@ export function addSystemNote(text) {
 }
 
 /**
+ * Generates a stable id for the current session.
+ * @private
+ */
+function _generateSessionId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return `s-${crypto.randomUUID()}`;
+    }
+    return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function _generateMessageId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return `m-${crypto.randomUUID()}`;
+    }
+    return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Normalizes one stored message into the live shape (drops unknown props).
+ * @private
+ */
+function _normalizeMessage(m) {
+    if (!m || typeof m !== 'object') return null;
+    return {
+        id: m.id || _generateMessageId(),
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        text: typeof m.text === 'string' ? m.text : '',
+        status: typeof m.status === 'string' ? m.status : '',
+        error: typeof m.error === 'string' ? m.error : null,
+        worklog: m.worklog && typeof m.worklog === 'object'
+            ? { count: Number(m.worklog.count) || 0, durationMs: Number(m.worklog.durationMs) || 0 }
+            : null,
+        model: m.model && typeof m.model === 'object'
+            ? { sections: Number(m.model.sections) || 0 }
+            : null,
+        citations: Array.isArray(m.citations) ? m.citations.filter((c) => c && typeof c === 'object') : [],
+        proposals: Array.isArray(m.proposals) ? m.proposals : [],
+        ts: typeof m.ts === 'string' ? m.ts : new Date().toISOString(),
+    };
+}
+
+/**
+ * Wraps a proposal card so its terminal-state methods also update the meta
+ * object that the chat-view tracks for history serialization.
+ * @private
+ */
+function _wrapProposalCard(card, meta) {
+    const origApplied = card.markApplied;
+    const origRejected = card.markRejected;
+    const origWarning = card.markWarning;
+    const origError = card.markError;
+    card.markApplied = function () {
+        meta.state = 'applied';
+        return origApplied.call(card);
+    };
+    card.markRejected = function () {
+        meta.state = 'rejected';
+        return origRejected.call(card);
+    };
+    card.markWarning = function (msg) {
+        meta.state = 'warning';
+        if (msg) meta.detail = String(msg);
+        return origWarning.call(card, msg);
+    };
+    card.markError = function (msg) {
+        meta.state = 'error';
+        if (msg) meta.detail = String(msg);
+        return origError.call(card, msg);
+    };
+}
+
+/**
+ * Renders an assistant message from saved history (no callbacks, no streaming).
+ * @private
+ */
+function _renderHistoricalAssistant(m) {
+    const el = document.createElement('div');
+    el.className = 'chat-message chat-message-assistant';
+    if (m.error) el.classList.add('chat-message-error');
+
+    if (m.status) {
+        const status = document.createElement('div');
+        status.className = 'msg-status';
+        status.textContent = m.status;
+        el.appendChild(status);
+    }
+
+    if (m.worklog && Number(m.worklog.count) > 0) {
+        const wrap = document.createElement('div');
+        wrap.className = 'msg-worklog';
+        wrap.style.display = '';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'msg-worklog-toggle';
+        toggle.setAttribute('aria-expanded', 'false');
+        const secs = Math.max(1, Math.round((Number(m.worklog.durationMs) || 0) / 1000));
+        const count = Number(m.worklog.count) || 0;
+        toggle.textContent = `▸ Worked for ${secs}s · ${count} step${count === 1 ? '' : 's'}`;
+        wrap.appendChild(toggle);
+        el.appendChild(wrap);
+    }
+
+    if (m.model && Number(m.model.sections) > 0) {
+        const wrap = document.createElement('div');
+        wrap.className = 'msg-model';
+        wrap.style.display = '';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'msg-model-toggle';
+        toggle.setAttribute('aria-expanded', 'false');
+        const sections = Number(m.model.sections) || 0;
+        toggle.textContent = `▸ Model activity · ${sections} section${sections === 1 ? '' : 's'}`;
+        wrap.appendChild(toggle);
+        el.appendChild(wrap);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    body.textContent = m.error ? `Error: ${m.error}` : (m.text || '');
+    el.appendChild(body);
+
+    if (Array.isArray(m.proposals)) {
+        for (const p of m.proposals) {
+            const card = renderStaticProposalCard(p);
+            if (card) el.appendChild(card);
+        }
+    }
+
+    return el;
+}
+
+/**
+ * Renders a read-only proposal card from saved history data. Shows terminal
+ * state badges and per-change before/after diffs but no interactive controls.
+ *
+ * @param {object} p
+ * @param {string} [p.title]
+ * @param {string} [p.state] - 'applied' | 'rejected' | 'warning' | 'error'
+ * @param {string} [p.detail] - extra status text for warning/error
+ * @param {string} [p.countsText]
+ * @param {string} [p.previewSrc]
+ * @param {Array<object>} [p.items] - { label, before?, after?, searchText? }
+ * @returns {HTMLElement|null}
+ */
+export function renderStaticProposalCard(p) {
+    if (!p || typeof p !== 'object') return null;
+    const el = document.createElement('div');
+    el.className = 'proposal-card';
+    if (p.state === 'applied') el.classList.add('proposal-applied');
+    else if (p.state === 'rejected') el.classList.add('proposal-rejected');
+    else if (p.state === 'warning') el.classList.add('proposal-warning');
+    else if (p.state === 'error') el.classList.add('proposal-error');
+
+    const head = document.createElement('div');
+    head.className = 'proposal-card-head';
+    const titleEl = document.createElement('span');
+    titleEl.className = 'proposal-card-title';
+    titleEl.textContent = p.title || 'Proposal';
+    head.appendChild(titleEl);
+    if (p.countsText) {
+        const counts = document.createElement('span');
+        counts.className = 'proposal-card-counts';
+        counts.textContent = p.countsText;
+        head.appendChild(counts);
+    }
+    el.appendChild(head);
+
+    if (p.previewSrc) {
+        const img = document.createElement('img');
+        img.className = 'proposal-card-preview';
+        img.alt = 'Proposal preview';
+        img.src = p.previewSrc;
+        el.appendChild(img);
+    }
+
+    if (Array.isArray(p.items) && p.items.length) {
+        const list = document.createElement('div');
+        list.className = 'proposal-card-changes-static';
+        for (const item of p.items) {
+            if (!item) continue;
+            const row = document.createElement('div');
+            row.className = 'proposal-card-change';
+            const label = document.createElement('div');
+            label.className = 'proposal-card-change-label';
+            label.textContent = item.label || '';
+            row.appendChild(label);
+            if (item.before !== undefined && item.after !== undefined) {
+                row.appendChild(buildTextDiffElement(item.before, item.after));
+            }
+            list.appendChild(row);
+        }
+        el.appendChild(list);
+    }
+
+    if (p.state && p.state !== 'pending') {
+        const status = document.createElement('div');
+        status.className = 'proposal-card-status';
+        let label;
+        if (p.state === 'applied') label = 'Applied as tracked changes.';
+        else if (p.state === 'rejected') label = 'Rejected — no changes were made.';
+        else if (p.state === 'warning') label = p.detail || 'Nothing applied.';
+        else if (p.state === 'error') label = `Apply failed: ${p.detail || ''}`;
+        else label = p.state;
+        status.textContent = label;
+        status.style.display = '';
+        el.appendChild(status);
+    }
+
+    return el;
+}
+
+/**
  * Creates an assistant message and returns a handle for updating it through
  * the turn lifecycle (status → streaming text/progress → final state).
- *
- * The message includes a collapsible "work log" region (Claude Code style):
- * pipeline log lines stream into it while the turn runs (expanded), and it
- * auto-collapses to a one-line summary ("Worked for Ns · M steps") when the
- * turn finishes via collapseLog().
  *
  * @returns {{
  *   el: HTMLElement,
@@ -109,10 +431,11 @@ export function addSystemNote(text) {
  *   collapseModelOutput: function(),
  *   showProgress: function(object),
  *   hideProgress: function(),
- *   attachProposal: function(HTMLElement),
+ *   attachProposal: function(card, meta?),
  *   addCitationPills: function(Array<{label: string, searchText: string}>, function(string)),
  *   markError: function(string),
- * }} Handle for the new message
+ *   finalizeForHistory: function(),
+ * }}
  */
 export function createAssistantMessage() {
     const el = document.createElement('div');
@@ -192,6 +515,15 @@ export function createAssistantMessage() {
     let logCollapsed = false;
     const modelSections = new Map();
     let modelCollapsed = false;
+    let lastStatus = '';
+    let lastError = null;
+    const trackedProposals = [];
+    let finalized = false;
+
+    if (_currentSessionId === null) {
+        _currentSessionId = _generateSessionId();
+        _currentSessionCreatedAt = new Date().toISOString();
+    }
 
     worklogToggle.addEventListener('click', () => {
         const expanding = worklogLines.style.display === 'none';
@@ -205,8 +537,6 @@ export function createAssistantMessage() {
         modelBody.style.display = expanding ? '' : 'none';
         modelToggle.setAttribute('aria-expanded', String(expanding));
         if (expanding) {
-            // Re-opening the region shows the latest output and re-engages
-            // the stream-follow.
             modelStickToBottom = true;
             modelBody.scrollTop = modelBody.scrollHeight;
         }
@@ -235,25 +565,22 @@ export function createAssistantMessage() {
 
     return {
         el,
-        /** Sets the small status line above the message body ('' hides it). */
         setStatus(text) {
+            lastStatus = text || '';
             statusEl.style.display = text ? '' : 'none';
             statusEl.textContent = text;
             _scrollToBottom();
         },
-        /** Replaces the message body text. */
         setText(text) {
             streamed = text || '';
             _renderText(bodyEl, streamed);
             _scrollToBottom();
         },
-        /** Appends a streamed token to the message body. */
         appendText(token) {
             streamed += token;
             _renderText(bodyEl, streamed);
             _scrollToBottom();
         },
-        /** Appends one pipeline log line to the expanded work log. */
         appendLogLine(text) {
             if (logLineCount === 0) {
                 logStartTime = Date.now();
@@ -268,7 +595,6 @@ export function createAssistantMessage() {
             worklogLines.appendChild(line);
             if (!logCollapsed) _scrollToBottom();
         },
-        /** Collapses the work log to a one-line duration summary. */
         collapseLog() {
             if (logLineCount === 0) return;
             logCollapsed = true;
@@ -276,12 +602,6 @@ export function createAssistantMessage() {
             worklogToggle.setAttribute('aria-expanded', 'false');
             _renderWorklogToggle();
         },
-        /**
-         * Appends one streamed model token to the collapsible model activity
-         * region. sectionRef ({ id, index? }) groups tokens into per-chunk
-         * sections (labels appear once a run spans multiple sections); kind
-         * is 'content' (model output) or 'reasoning' (dimmed thinking).
-         */
         appendModelToken(sectionRef, kind, token) {
             if (!token) return;
             const id = (sectionRef && sectionRef.id) || 'default';
@@ -298,7 +618,6 @@ export function createAssistantMessage() {
                 modelBody.appendChild(sectionEl);
                 section = { el: sectionEl, labelEl, reasoningEl: null, contentEl: null };
                 modelSections.set(id, section);
-                // Reveal section labels once more than one section exists
                 if (modelSections.size > 1) {
                     for (const s of modelSections.values()) {
                         if (s.labelEl.textContent) s.labelEl.style.display = '';
@@ -312,7 +631,6 @@ export function createAssistantMessage() {
                 if (!section.reasoningEl) {
                     const r = document.createElement('div');
                     r.className = 'msg-model-reasoning';
-                    // Thinking renders above the section's output text
                     section.el.insertBefore(r, section.contentEl || null);
                     section.reasoningEl = r;
                 }
@@ -334,7 +652,6 @@ export function createAssistantMessage() {
                 _scrollToBottom();
             }
         },
-        /** Collapses the model activity region to a one-line summary. */
         collapseModelOutput() {
             if (modelSections.size === 0) return;
             modelCollapsed = true;
@@ -342,7 +659,6 @@ export function createAssistantMessage() {
             modelToggle.setAttribute('aria-expanded', 'false');
             _renderModelToggle();
         },
-        /** Shows/updates the chunk progress bar. */
         showProgress(p) {
             progressEl.style.display = '';
             progressFill.style.width = `${p.percentComplete}%`;
@@ -353,19 +669,17 @@ export function createAssistantMessage() {
             progressText.textContent = label;
             _scrollToBottom();
         },
-        /** Hides the chunk progress bar. */
         hideProgress() {
             progressEl.style.display = 'none';
         },
-        /** Attaches a proposal card element under the message. */
-        attachProposal(cardEl) {
-            extrasEl.appendChild(cardEl);
+        attachProposal(card, meta) {
+            if (meta) {
+                _wrapProposalCard(card, meta);
+                trackedProposals.push(meta);
+            }
+            extrasEl.appendChild(card.el);
             _scrollToBottom();
         },
-        /**
-         * Adds citation pill buttons (one per processed chunk); clicking a
-         * pill calls onSelect with the chunk's search text.
-         */
         addCitationPills(citations, onSelect) {
             if (!citations || citations.length === 0) return;
             const row = document.createElement('div');
@@ -382,12 +696,52 @@ export function createAssistantMessage() {
             extrasEl.appendChild(row);
             _scrollToBottom();
         },
-        /** Marks the message as failed with an error line. */
         markError(message) {
+            lastError = String(message || '');
+            streamed = `Error: ${lastError}`;
             el.classList.add('chat-message-error');
             statusEl.style.display = 'none';
-            bodyEl.textContent = `Error: ${message}`;
+            bodyEl.textContent = streamed;
             _scrollToBottom();
+        },
+        /**
+         * Snapshots the current message state into the live session array.
+         * Idempotent — repeated calls are no-ops (so a turn that finalizes
+         * via both collapseLog and an explicit caller only commits once).
+         */
+        finalizeForHistory() {
+            if (finalized) return;
+            finalized = true;
+            _currentSessionUpdatedAt = new Date().toISOString();
+            const now = new Date().toISOString();
+            const record = {
+                id: _generateMessageId(),
+                role: 'assistant',
+                text: streamed || '',
+                status: lastStatus || '',
+                error: lastError,
+                worklog: logLineCount > 0
+                    ? { count: logLineCount, durationMs: Math.max(0, Date.now() - logStartTime) }
+                    : null,
+                model: modelSections.size > 0 ? { sections: modelSections.size } : null,
+                citations: [],
+                proposals: trackedProposals.map((p) => ({
+                    title: p.title,
+                    state: p.state || 'pending',
+                    detail: p.detail,
+                    countsText: p.countsText,
+                    previewSrc: p.previewSrc || null,
+                    items: Array.isArray(p.items) ? p.items.map((it) => ({
+                        id: it.id,
+                        label: it.label,
+                        before: it.before,
+                        after: it.after,
+                        searchText: it.searchText,
+                    })) : [],
+                })),
+                ts: now,
+            };
+            _currentSessionMessages.push(record);
         },
     };
 }

@@ -1,10 +1,10 @@
 /**
  * Status Bar Module
  *
- * Owns the slim activity-log drawer, the comment-pending status bar, and the
- * header connection indicator. The activity log keeps the original behavior
- * (timestamped entries + best-effort dev-server POST /log), but lives behind
- * a collapsible toggle instead of occupying permanent screen space.
+ * Owns the floating activity-log drawer, the comment-pending status bar, and
+ * the header connection indicator. The activity log keeps the original
+ * behavior (timestamped entries + best-effort dev-server POST /log), but
+ * defaults to hidden and is opened/closed by the header #logBtn.
  *
  * @module ui/status-bar
  */
@@ -134,24 +134,64 @@ export function setConnectionStatus(state, text) {
 }
 
 /**
- * Wires the log drawer toggle and clear button. Called once at startup.
+ * Wires the floating log drawer to the header button, the drawer's close
+ * button, and the Clear control. Called once at startup. Drawer is hidden
+ * by default; the caller wires #logBtn via this module's exported
+ * toggleLogDrawer() so the click handler stays in one place.
  */
 export function initStatusBar() {
-    const toggle = document.getElementById('logToggle');
-    const logs = document.getElementById('logs');
-    if (toggle && logs) {
-        toggle.addEventListener('click', () => {
-            const expanded = logs.hasAttribute('hidden');
-            if (expanded) {
-                logs.removeAttribute('hidden');
-            } else {
-                logs.setAttribute('hidden', '');
-            }
-            toggle.setAttribute('aria-expanded', String(expanded));
-        });
-    }
+    const drawer = document.getElementById('logDrawer');
+    const logBtn = document.getElementById('logBtn');
+    const closeBtn = document.getElementById('logDrawerCloseBtn');
     const clearBtn = document.getElementById('clearLogsBtn');
+
+    if (logBtn && drawer) {
+        logBtn.addEventListener('click', () => toggleLogDrawer());
+    }
+    if (closeBtn && drawer) {
+        closeBtn.addEventListener('click', () => closeLogDrawer());
+    }
     if (clearBtn) {
         clearBtn.addEventListener('click', clearLogs);
     }
+}
+
+/**
+ * Toggles the floating log drawer open/closed. Returns true when the drawer
+ * is open after the call.
+ *
+ * @returns {boolean}
+ */
+export function toggleLogDrawer() {
+    const drawer = document.getElementById('logDrawer');
+    if (!drawer) return false;
+    const willOpen = drawer.hasAttribute('hidden');
+    if (willOpen) {
+        drawer.removeAttribute('hidden');
+    } else {
+        drawer.setAttribute('hidden', '');
+    }
+    const btn = document.getElementById('logBtn');
+    if (btn) btn.setAttribute('aria-expanded', String(willOpen));
+    return willOpen;
+}
+
+/**
+ * Forces the log drawer closed. Safe to call when already closed.
+ */
+export function closeLogDrawer() {
+    const drawer = document.getElementById('logDrawer');
+    if (!drawer) return;
+    drawer.setAttribute('hidden', '');
+    const btn = document.getElementById('logBtn');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * True when the floating log drawer is currently visible.
+ * @returns {boolean}
+ */
+export function isLogDrawerOpen() {
+    const drawer = document.getElementById('logDrawer');
+    return !!drawer && !drawer.hasAttribute('hidden');
 }

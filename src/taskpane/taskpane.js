@@ -29,7 +29,9 @@ import * as chatView from './ui/chat-view.js';
 import { renderWelcomeChips } from './ui/welcome.js';
 import { initInputBar } from './ui/input-bar.js';
 import { initSettings, openSettings, testConnectionUI } from './ui/settings-view.js';
-import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar } from './ui/status-bar.js';
+import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer } from './ui/status-bar.js';
+import { initHistoryView, openHistory } from './ui/history-view.js';
+import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession } from './sessions.js';
 import { getProviderPreset } from '../lib/providers.js';
 
 export { normalizeConfig } from './app-state.js';
@@ -57,6 +59,32 @@ function initialize() {
     // Chat view
     chatView.initChatView();
 
+    // History slide-over (sessions saved to localStorage; survives reloads).
+    initHistoryView({
+        onLoadSession: (session) => {
+            chatView.setCurrentSession(session);
+            input.focus();
+        },
+        onDeleteSession: (id) => {
+            try { deleteSession(id); } catch (e) { addLog(`Delete session failed: ${e.message}`, 'error'); }
+        },
+        onNewChat: () => conversation.newChat(),
+    });
+
+    /**
+     * Persists the live session after a turn completes. Called by the
+     * conversation orchestrator via createConversation's onTurnCommitted dep.
+     * @param {object|null} session
+     */
+    function persistCurrentSession(session) {
+        if (!session || !Array.isArray(session.messages) || session.messages.length === 0) return;
+        try {
+            saveSession(session.messages, { id: session.id, title: session.title });
+        } catch (e) {
+            addLog(`Save session failed: ${e.message}`, 'error');
+        }
+    }
+
     // Input bar + conversation orchestration
     const input = initInputBar({
         onSubmit: (text) => conversation.submit(text),
@@ -74,17 +102,21 @@ function initialize() {
             hideWelcome: chatView.hideWelcome,
             renderWelcome: chatView.showWelcome,
             clearChat: chatView.clearChat,
+            getCurrentSession: chatView.getCurrentSession,
         },
         input,
         log: addLog,
         logWithRetry: addLogWithRetry,
         updateStatusBar: updateCommentStatusBar,
+        onTurnCommitted: persistCurrentSession,
     });
 
     // Settings slide-over (provider settings + prompt management)
     initSettings({ onConfigChanged: updateModelPill });
 
     // Header buttons
+    document.getElementById('historyBtn').addEventListener('click', openHistory);
+    document.getElementById('logBtn').addEventListener('click', toggleLogDrawer);
     document.getElementById('newChatBtn').addEventListener('click', () => conversation.newChat());
     document.getElementById('infoBtn').addEventListener('click', showAbout);
 
@@ -95,6 +127,14 @@ function initialize() {
     });
 
     updateModelPill();
+
+    // Restore the most recent session if one exists; otherwise stay on the
+    // welcome page (the current chat-view already shows the welcome by default).
+    const recent = listSessions();
+    if (recent.length > 0) {
+        const full = loadStoredSession(recent[0].id);
+        if (full) chatView.setCurrentSession(full);
+    }
 
     // Live selection preview above the input bar (selection text is also
     // added to the next turn's context at submit time)
