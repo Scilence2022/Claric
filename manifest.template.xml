@@ -4,7 +4,7 @@
            xsi:type="TaskPaneApp">
   <Id>${GUID}</Id>
   <Version>${VERSION}</Version>
-  <ProviderName>Word AI Redliner</ProviderName>
+  <ProviderName>Claric</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="${DISPLAY_NAME}"/>
   <Description DefaultValue="AI-powered contract review and editing for Microsoft Word with word-level tracked changes"/>
