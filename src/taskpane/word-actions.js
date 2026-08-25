@@ -1032,11 +1032,22 @@ export async function retryFailedChunks(deps, { failedResults, bookmarkMap, back
             commentInstructions: '',
         });
 
+        // Retry chunks are rebuilt without paragraphs, so carry the staged
+        // original texts forward explicitly: applyChunkResults uses them to
+        // re-anchor bookmark ranges that drifted since staging.
+        const chunkOriginals = new Map();
+        for (const r of failedResults) {
+            if (r.chunk && Array.isArray(r.chunk.paragraphs) && r.chunk.paragraphs.length > 0) {
+                chunkOriginals.set(r.chunkId, r.chunk.paragraphs.map((p) => p.text));
+            }
+        }
+
         const applicationResult = await applyChunkResults(results, bookmarkMap, {
             trackChangesEnabled: appState.config.trackChangesEnabled,
             lineDiffEnabled: appState.config.lineDiffEnabled,
             log,
             commentGranularity: appState.config.commentGranularity,
+            chunkOriginals,
         });
 
         const stillFailed = results.filter(r => r.status === 'rejected').length;

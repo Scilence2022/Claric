@@ -393,7 +393,9 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
  *   A plain function is treated as onContent (legacy shorthand)
  * @param {function} [log] - Optional logging callback (message, type)
  * @param {AbortSignal} [signal] - Optional abort signal for cancellation
- * @param {number} [timeoutMs=120000] - Per-request timeout in ms
+ * @param {number} [timeoutMs=120000] - Idle timeout in ms: the request aborts
+ *   only when the backend sends no data for this long (a long but actively
+ *   streaming generation never trips it)
  * @returns {Promise<{content: string, reasoning: string}>} Full text per channel
  *   (content is think-tag stripped)
  * @throws {Error} On non-ok HTTP response or network failure
@@ -419,10 +421,18 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
 
   const localController = new AbortController();
   let timedOut = false;
-  const timeoutId = setTimeout(() => {
-    timedOut = true;
-    localController.abort();
-  }, timeoutMs);
+  // Idle timeout: the clock resets whenever the backend sends data, so a
+  // long-but-active generation (e.g. a large SVG illustration) never trips
+  // it -- only a genuinely stalled stream does.
+  let timeoutId;
+  const armIdleTimeout = () => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      localController.abort();
+    }, timeoutMs);
+  };
+  armIdleTimeout();
 
   let onExternalAbort;
   if (signal) {
@@ -445,6 +455,9 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+
+    // Headers arrived: the backend is alive -- restart the idle clock.
+    armIdleTimeout();
 
     const contentType = response.headers && typeof response.headers.get === 'function'
       ? (response.headers.get('content-type') || '')
@@ -474,6 +487,8 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     while (!doneReceived) {
       const { done, value } = await reader.read();
       if (done) break;
+      // Data is flowing: restart the idle clock on every received chunk.
+      armIdleTimeout();
       buffer += decoder.decode(value, { stream: true });
 
       let newlineIdx;
@@ -507,7 +522,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     return { content: stripThinkTags(full, log), reasoning: reasoning.trim() };
   } catch (err) {
     if (timedOut && err.name === 'AbortError') {
-      const timeoutErr = new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      const timeoutErr = new Error(`LLM request timed out: no output from the model for ${Math.round(timeoutMs / 1000)}s`);
       timeoutErr.name = 'TimeoutError';
       throw timeoutErr;
     }
