@@ -61,6 +61,22 @@ export const PROVIDER_PRESETS = {
     model: 'kimi-k2-0905',
     keyHint: 'platform.moonshot.cn',
   },
+  // MiniMax runs two platforms with separate API origins and key portals:
+  // international (api.minimax.io) and China (api.minimaxi.com).
+  minimax: {
+    label: 'MiniMax',
+    url: '/minimax',
+    apiPath: '/v1',
+    model: 'MiniMax-M3',
+    keyHint: 'platform.minimax.io',
+  },
+  'minimax-cn': {
+    label: 'MiniMax 中国站',
+    url: '/minimax-cn',
+    apiPath: '/v1',
+    model: 'MiniMax-M3',
+    keyHint: 'platform.minimax.cn',
+  },
   custom: {
     label: 'Custom (OpenAI-compatible)',
     url: '',

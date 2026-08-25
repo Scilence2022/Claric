@@ -12,7 +12,7 @@ const {
 
 describe('providers catalog', () => {
   test('exposes the expected provider ids in a stable order', () => {
-    expect(KNOWN_PROVIDERS).toEqual(['ollama', 'vllm', 'deepseek', 'glm', 'kimi', 'custom']);
+    expect(KNOWN_PROVIDERS).toEqual(['ollama', 'vllm', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'custom']);
   });
 
   test('every preset has label, url, apiPath, and model', () => {
@@ -37,6 +37,8 @@ describe('providers catalog', () => {
   test('cloud presets point at their documented API prefixes', () => {
     expect(PROVIDER_PRESETS.deepseek.apiPath).toBe('/v1');
     expect(PROVIDER_PRESETS.kimi.apiPath).toBe('/v1');
+    expect(PROVIDER_PRESETS.minimax.apiPath).toBe('/v1');
+    expect(PROVIDER_PRESETS['minimax-cn'].apiPath).toBe('/v1');
     // Zhipu GLM serves OpenAI-compatible endpoints under /api/paas/v4
     expect(PROVIDER_PRESETS.glm.apiPath).toBe('/api/paas/v4');
   });
@@ -45,8 +47,19 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.deepseek.keyHint).toContain('deepseek.com');
     expect(PROVIDER_PRESETS.glm.keyHint).toContain('bigmodel.cn');
     expect(PROVIDER_PRESETS.kimi.keyHint).toContain('moonshot.cn');
+    expect(PROVIDER_PRESETS.minimax.keyHint).toContain('minimax.io');
+    expect(PROVIDER_PRESETS['minimax-cn'].keyHint).toContain('minimax.cn');
     expect(PROVIDER_PRESETS.ollama.keyHint).toBeUndefined();
     expect(PROVIDER_PRESETS.vllm.keyHint).toBeUndefined();
+  });
+
+  test('MiniMax exposes separate international and China presets', () => {
+    // The two platforms have separate API origins and key portals.
+    expect(PROVIDER_PRESETS.minimax.url).toBe('/minimax');
+    expect(PROVIDER_PRESETS['minimax-cn'].url).toBe('/minimax-cn');
+    expect(PROVIDER_PRESETS.minimax.model).toBe('MiniMax-M3');
+    expect(PROVIDER_PRESETS['minimax-cn'].model).toBe('MiniMax-M3');
+    expect(PROVIDER_PRESETS['minimax-cn'].label).toContain('中国站');
   });
 
   test('getProviderPreset returns null for unknown ids', () => {
