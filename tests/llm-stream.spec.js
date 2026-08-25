@@ -235,3 +235,77 @@ describe('sendMessagesStream', () => {
     expect(body.stream).toBe(true);
   });
 });
+
+describe('sendPromptStream idle timeout', () => {
+  test('active streaming past the idle window does not abort (clock resets per chunk)', async () => {
+    jest.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      const chunks = [sseLine('a'), sseLine('b'), sseLine('c'), 'data: [DONE]\n'];
+      let i = 0;
+      global.fetch = jest.fn(async () => ({
+        ok: true,
+        headers: { get: () => 'text/event-stream' },
+        body: {
+          getReader: () => ({
+            read: async () => {
+              // Each chunk takes 600ms to arrive: under the 1000ms idle
+              // window, but 4 x 600ms = 2400ms exceeds it in total. A
+              // total-elapsed timeout would kill this; the idle timeout
+              // must not.
+              jest.advanceTimersByTime(600);
+              return i < chunks.length
+                ? { done: false, value: encoder.encode(chunks[i++]) }
+                : { done: true, value: undefined };
+            },
+          }),
+        },
+      }));
+
+      const tokens = [];
+      const result = await sendPromptStream(CONFIG, 'prompt', (t) => tokens.push(t), undefined, undefined, 1000);
+      expect(result).toBe('abc');
+      expect(tokens).toEqual(['a', 'b', 'c']);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('stalled stream aborts with TimeoutError after the idle window', async () => {
+    jest.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      const chunks = [sseLine('a'), sseLine('b')];
+      let i = 0;
+      global.fetch = jest.fn(async () => ({
+        ok: true,
+        headers: { get: () => 'text/event-stream' },
+        body: {
+          getReader: () => ({
+            read: async () => {
+              if (i < chunks.length) {
+                return { done: false, value: encoder.encode(chunks[i++]) };
+              }
+              // Stall: no more data. Advance past the idle window so the
+              // abort fires, then emulate the browser rejecting the read.
+              jest.advanceTimersByTime(5000);
+              throw new DOMException('The operation was aborted.', 'AbortError');
+            },
+          }),
+        },
+      }));
+
+      let caught;
+      try {
+        await sendPromptStream(CONFIG, 'prompt', () => {}, undefined, undefined, 1000);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      expect(caught.name).toBe('TimeoutError');
+      expect(caught.message).toBe('LLM request timed out: no output from the model for 1s');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
