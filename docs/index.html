@@ -1165,7 +1165,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
 
     <p>For each alignment operation:</p>
     <ul>
-      <li><strong>keep with text difference:</strong> Applies word-level diff within the single paragraph using the <code>office-word-diff</code> library's token-map strategy. At paragraph scope, this preserves character-level formatting (bold, italic, font, color) while generating tracked changes. Falls back to full text replacement if the word-level diff fails.</li>
+      <li><strong>keep with text difference:</strong> Applies word-level diff within the single paragraph using the token-map strategy of the vendored word-diff layer (<code>src/lib/word-diff/</code>). At paragraph scope, this preserves character-level formatting (bold, italic, font, color) while generating tracked changes. Falls back to full text replacement if the word-level diff fails.</li>
       <li><strong>delete:</strong> Calls <code>paragraph.delete()</code>, which generates a tracked deletion in Word.</li>
       <li><strong>insert:</strong> Calls <code>anchorParagraph.insertParagraph(text, 'After')</code>, which generates a tracked insertion.</li>
     </ul>
@@ -1180,7 +1180,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   <section class="section reveal" id="diff">
     <div class="section-number">Section 8</div>
     <h2>The Diff Engine</h2>
-    <p>Word-level tracked changes are produced by the <code>office-word-diff</code> npm package, which implements a cascading strategy:</p>
+    <p>Word-level tracked changes are produced by the word-diff layer in <code>src/lib/word-diff/</code> (vendored from the Apache-2.0 <code>office-word-diff</code> project), which implements a cascading strategy:</p>
 
     <div class="table-wrap">
     <table>
@@ -1304,7 +1304,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
 <!-- ── Footer ── -->
 <footer class="footer">
   <p><strong>Claric</strong> &mdash; MIT License</p>
-  <p>Diff engine: <a href="https://github.com/niclasgrunworked/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: vLLM (Qwen 3.5-35B-A3B), Ollama</p>
+  <p>Diff engine: vendored word-diff layer based on <a href="https://github.com/yuch85/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: vLLM (Qwen 3.5-35B-A3B), Ollama</p>
   <p style="margin-top: 0.75rem;"><a href="https://github.com/yuch85/word-ai-redliner">View on GitHub</a></p>
 </footer>
 

@@ -17,8 +17,8 @@
  * @module reassembler
  */
 
-import { applyTokenMapStrategy, applySentenceDiffStrategy } from 'office-word-diff';
-import { hasCjk, applyCharDiffStrategy } from './char-diff.js';
+import { applyTokenMapStrategy, applySentenceDiffStrategy } from './word-diff/index.js';
+import { hasCjk, applyCharDiffStrategy } from './word-diff/char-diff.js';
 
 /**
  * Generates a unique hidden bookmark name for chunk range persistence.

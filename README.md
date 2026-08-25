@@ -15,7 +15,7 @@ extraction and tracked changes analysis.
 ## Features
 
 ### Core: AI Redlining (v0.1.0)
-- Word-level diffs with tracked changes via [office-word-diff](https://github.com/yuch85/office-word-diff)
+- Word-level diffs with tracked changes via the vendored word-diff layer (`src/lib/word-diff/`, based on Apache-2.0 [office-word-diff](https://github.com/yuch85/office-word-diff)) plus a CJK char-level strategy
 - Token map strategy with sentence fallback, block replace as last resort
 - Configurable LLM backends: Ollama and vLLM (OpenAI-compatible)
 
@@ -553,6 +553,6 @@ their authors for sharing their work:
 This project is dual-licensed:
 
 - **MIT License** applies to the Word add-in codebase.
-- **Apache 2.0 License** applies to the `office-word-diff` library (used as a dependency).
+- **Apache 2.0 License** applies to the diff strategies vendored from `office-word-diff` in `src/lib/word-diff/` (see `LICENSE`/`NOTICE` there).
 
 See `LICENSE` and `LICENSE-APACHE` for details.

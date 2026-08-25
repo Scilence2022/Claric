@@ -112,13 +112,13 @@ global.Word = {
   },
 };
 
-// Mock the office-word-diff module
-jest.mock('office-word-diff', () => ({
+// Mock the vendored word-diff strategy layer
+jest.mock('../src/lib/word-diff/index.js', () => ({
   applyTokenMapStrategy: jest.fn().mockResolvedValue(undefined),
   applySentenceDiffStrategy: jest.fn().mockResolvedValue(undefined),
 }));
 
-const { applyTokenMapStrategy, applySentenceDiffStrategy } = require('office-word-diff');
+const { applyTokenMapStrategy, applySentenceDiffStrategy } = require('../src/lib/word-diff/index.js');
 const { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _normalizeLineEndings, _alignParagraphs } = require('../src/lib/reassembler.js');
 
 // --- Mock Helpers ---
