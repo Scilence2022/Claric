@@ -657,8 +657,12 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           try {
             anchored = await _reanchorChunkRange(context, range, storedTexts, log);
           } catch (anchorErr) {
-            log(`Chunk ${result.chunkId}: re-anchor check failed (${anchorErr.message}), using bookmark range as-is`, 'warning');
-            anchored = range;
+            // A failed drift check means we cannot tell whether the range
+            // absorbed new content; falling back to the raw bookmark range
+            // would risk deleting absorbed paragraphs. Skip instead.
+            errors.push(`Chunk ${result.chunkId}: re-anchor check failed (${anchorErr.message}); amendment skipped`);
+            log(`Chunk ${result.chunkId}: re-anchor check failed (${anchorErr.message}), skipping to avoid deleting absorbed content`, 'warning');
+            return;
           }
           if (anchored === null) {
             errors.push(`Chunk ${result.chunkId}: original content no longer matches the staged range (edited since staging?); amendment skipped`);

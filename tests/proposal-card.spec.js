@@ -122,4 +122,16 @@ describe('createProposalCard', () => {
     expect(card.el.querySelector('.btn-primary').disabled).toBe(false);
     expect(card.el.querySelector('.proposal-card-status').textContent).toBe('Apply failed: boom');
   });
+
+  test('markWarning settles with the warning class and keeps buttons disabled', () => {
+    const card = makeCard({ items: makeItems() });
+    card.markWarning('Nothing applied: chunk skipped');
+    expect(card.el.classList.contains('proposal-warning')).toBe(true);
+    expect(card.el.classList.contains('proposal-applied')).toBe(false);
+    const status = card.el.querySelector('.proposal-card-status');
+    expect(status.textContent).toBe('Nothing applied: chunk skipped');
+    expect(status.style.display).not.toBe('none');
+    expect(card.el.querySelector('.btn-primary').disabled).toBe(true);
+    expect(card.el.querySelector('.btn-secondary').disabled).toBe(true);
+  });
 });

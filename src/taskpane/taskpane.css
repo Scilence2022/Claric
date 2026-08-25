@@ -564,6 +564,10 @@ body {
     color: var(--secondary-text);
 }
 
+.proposal-warning .proposal-card-status {
+    color: var(--warning-color);
+}
+
 .proposal-error .proposal-card-status {
     color: var(--error-color);
 }
