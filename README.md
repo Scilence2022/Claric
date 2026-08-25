@@ -482,9 +482,13 @@ Test suites cover:
 
 ## Acknowledgments
 
-Claric's formatting-preserving reassembly draws on insights from several
-excellent open-source projects in the document editing space. We are grateful to
-their authors for sharing their work:
+Claric is a fork of **[word-ai-redliner](https://github.com/yuch85/word-ai-redliner)**
+by yuch85 — its original architecture (the IR pipeline, chunking, and
+formatting-preserving reassembly) is the foundation this codebase builds on.
+
+Beyond that, Claric's reassembly also draws on insights from several excellent
+open-source projects in the document editing space. We are grateful to their
+authors for sharing their work:
 
 - **[docx-redline-js](https://github.com/AnsonLai/docx-redline-js)** by Anson Lai --
   A JavaScript OOXML-level redlining engine whose surgical mode, paragraph
