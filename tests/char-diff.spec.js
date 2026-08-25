@@ -208,4 +208,28 @@ describe('applyCharDiffStrategy', () => {
     expect(world.applied).toEqual([{ type: 'replace', from: '，', to: '、' }]);
     expect(world.docText).toBe(amended);
   });
+
+  test('default: enables tracking for the edits and always restores off', async () => {
+    const original = '但有一个女孩选择不备份自己与母亲的回忆。';
+    const amended = '但有一个女孩，选择不备份自己与母亲的回忆。';
+    const world = makeWordWorld(original);
+
+    await applyCharDiffStrategy(world.context, world.range, original, amended, jest.fn());
+
+    // trackAll was set for the edit phase and restored to off afterwards.
+    expect(world.context.document.changeTrackingMode).toBe('off');
+  });
+
+  test('trackChanges:false leaves the document tracking mode untouched', async () => {
+    const original = '但有一个女孩选择不备份自己与母亲的回忆。';
+    const amended = '但有一个女孩，选择不备份自己与母亲的回忆。';
+    const world = makeWordWorld(original);
+
+    const result = await applyCharDiffStrategy(world.context, world.range, original, amended, jest.fn(), { trackChanges: false });
+
+    expect(result.insertions).toBe(1);
+    expect(world.docText).toBe(amended);
+    // The strategy never touched the caller-owned tracking mode.
+    expect('changeTrackingMode' in world.context.document).toBe(false);
+  });
 });

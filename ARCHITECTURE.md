@@ -149,6 +149,18 @@ Cascading strategy for applying LLM-suggested text changes:
 3. **Sentence Diff** — tokenizes by sentence boundaries, handles structural changes
 4. **Block Replace** — complete replacement fallback
 
+Local modifications on top of upstream (kept intentionally small):
+- Every strategy accepts `options.trackChanges` (default `true`); when `false`
+  it does not touch the document's `changeTrackingMode` — the caller owns it.
+  Callers always set the mode explicitly (on or off) from
+  `config.trackChangesEnabled`, so the settings toggle is honored end to end,
+  and a mid-edit failure can never leak `trackAll` (finally-restore).
+- Sentence-mode diffs the occurrence-ordered sentence sequence (upstream
+  diffed the deduped list, silently misaligning repeated sentences).
+- Token-map resolves the Nth occurrence of a token to the Nth search match
+  inside a coarse range (upstream always took the first match).
+- Fallback resets run with tracking off so they don't add spurious revisions.
+
 ### Taskpane (`src/taskpane/`)
 
 Chat-driven UI split into focused modules:

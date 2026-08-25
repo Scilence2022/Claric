@@ -348,9 +348,12 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   // Align paragraphs
   const alignment = _alignParagraphs(origTexts, amendedLines);
 
-  // Enable tracked changes
-  if (Word.ChangeTrackingMode && trackChangesEnabled) {
-    context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+  // Set tracked changes explicitly (on OR off) so the whole alignment loop —
+  // including the per-paragraph diff strategies — runs under one mode.
+  if (Word.ChangeTrackingMode) {
+    context.document.changeTrackingMode = trackChangesEnabled
+      ? Word.ChangeTrackingMode.trackAll
+      : Word.ChangeTrackingMode.off;
   }
 
   // Process alignment operations in REVERSE order to prevent index invalidation.
@@ -378,11 +381,14 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         // This preserves run-level formatting (w:rPr) while applying tracked changes.
         // CJK text has no word boundaries for the token map (a whole sentence
         // becomes one token), so it uses the char-level strategy instead.
+        // The outer scope already owns the tracking mode (set above, restored
+        // below), so the strategy must not clobber it mid-loop.
         try {
+          const diffOptions = { trackChanges: false };
           if (hasCjk(paraRange.text) || hasCjk(newText)) {
-            await applyCharDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log);
+            await applyCharDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
           } else {
-            await applyTokenMapStrategy(context, paraRange, paraRange.text, newText.trim(), log);
+            await applyTokenMapStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
           }
         } catch (_diffErr) {
           // If word-level diff fails, fall back to full paragraph text replacement.
@@ -543,19 +549,26 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           log(`Chunk ${result.chunkId}: paragraph-level strategy failed (${paraErr.message}), falling back to range-level`, 'warning');
 
           // Fallback to range-level diff strategies
-          // Enable tracked changes
-          if (Word.ChangeTrackingMode && trackChangesEnabled) {
-            context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+          if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = trackChangesEnabled
+              ? Word.ChangeTrackingMode.trackAll
+              : Word.ChangeTrackingMode.off;
           }
 
           // Normalize line endings for consistent diffing
           const originalText = _normalizeLineEndings(range.text);
           const normalizedAmendment = _normalizeLineEndings(result.amendment);
 
+          const strategyOptions = { trackChanges: trackChangesEnabled };
           if (lineDiffEnabled) {
-            await applySentenceDiffStrategy(context, range, originalText, normalizedAmendment, log);
+            await applySentenceDiffStrategy(context, range, originalText, normalizedAmendment, log, strategyOptions);
+          } else if (hasCjk(originalText) || hasCjk(normalizedAmendment)) {
+            // Same CJK rule as the paragraph-level path: a whole CJK run is a
+            // single token to the word-level strategies, which would turn a
+            // one-comma edit into a whole-range replacement redline.
+            await applyCharDiffStrategy(context, range, originalText, normalizedAmendment, log, strategyOptions);
           } else {
-            await applyTokenMapStrategy(context, range, originalText, normalizedAmendment, log);
+            await applyTokenMapStrategy(context, range, originalText, normalizedAmendment, log, strategyOptions);
           }
 
           // Disable tracked changes after fallback (matching paragraph-level strategy behavior)
