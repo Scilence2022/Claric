@@ -51,12 +51,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Scilence2022/word-ai-redliner.git"
+    "url": "git+https://github.com/Scilence2022/Claric.git"
   },
   "bugs": {
-    "url": "https://github.com/Scilence2022/word-ai-redliner/issues"
+    "url": "https://github.com/Scilence2022/Claric/issues"
   },
-  "homepage": "https://github.com/Scilence2022/word-ai-redliner#readme",
+  "homepage": "https://github.com/Scilence2022/Claric#readme",
   "engines": {
     "node": ">=22"
   }

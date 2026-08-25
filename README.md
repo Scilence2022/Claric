@@ -168,7 +168,7 @@ Both methods require HTTPS certificates trusted by the machine running Word.
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/Scilence2022/word-ai-redliner.git
+git clone https://github.com/Scilence2022/Claric.git
 cd word-ai-redliner
 ```
 
@@ -238,7 +238,7 @@ docker compose up -d
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/Scilence2022/word-ai-redliner.git
+git clone https://github.com/Scilence2022/Claric.git
 cd word-ai-redliner
 ```
 
