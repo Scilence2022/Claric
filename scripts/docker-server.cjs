@@ -20,10 +20,15 @@
  *   GLM_PROXY_TARGET      - upstream GLM API origin (https://open.bigmodel.cn)
  *   KIMI_PROXY_PATH       - proxy path for Moonshot Kimi (default /kimi; empty disables)
  *   KIMI_PROXY_TARGET     - upstream Kimi API origin (https://api.moonshot.cn)
+ *   MINIMAX_PROXY_PATH    - proxy path for MiniMax international (default /minimax; empty disables)
+ *   MINIMAX_PROXY_TARGET  - upstream MiniMax API origin (https://api.minimax.io)
+ *   MINIMAX_CN_PROXY_PATH - proxy path for MiniMax China (default /minimax-cn; empty disables)
+ *   MINIMAX_CN_PROXY_TARGET - upstream MiniMax CN API origin (https://api.minimaxi.com)
  *   LLM_PROXY_TIMEOUT_MS  - upstream request timeout (default 300000 = 5 min)
  *
  * Why proxy LLM traffic at all: the add-in's UI defaults its backend URLs
- * to same-origin paths ('/ollama', '/vllm', '/deepseek', '/glm', '/kimi').
+ * to same-origin paths ('/ollama', '/vllm', '/deepseek', '/glm', '/kimi',
+ * '/minimax', '/minimax-cn').
  * Serving those paths from the same HTTPS origin
  * avoids mixed-content blocking (https page fetching http://localhost) and
  * CORS configuration on the backend. This matters most when Word runs on
@@ -66,6 +71,10 @@ function getEnv() {
     GLM_PROXY_TARGET: process.env.GLM_PROXY_TARGET || 'https://open.bigmodel.cn',
     KIMI_PROXY_PATH: process.env.KIMI_PROXY_PATH || '/kimi',
     KIMI_PROXY_TARGET: process.env.KIMI_PROXY_TARGET || 'https://api.moonshot.cn',
+    MINIMAX_PROXY_PATH: process.env.MINIMAX_PROXY_PATH || '/minimax',
+    MINIMAX_PROXY_TARGET: process.env.MINIMAX_PROXY_TARGET || 'https://api.minimax.io',
+    MINIMAX_CN_PROXY_PATH: process.env.MINIMAX_CN_PROXY_PATH || '/minimax-cn',
+    MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
     LLM_PROXY_TIMEOUT_MS: parseInt(process.env.LLM_PROXY_TIMEOUT_MS || String(DEFAULT_LLM_PROXY_TIMEOUT_MS), 10)
   };
 }
@@ -172,6 +181,8 @@ function buildProxyRoutes(env) {
     ['DEEPSEEK_PROXY_PATH', 'DEEPSEEK_PROXY_TARGET'],
     ['GLM_PROXY_PATH', 'GLM_PROXY_TARGET'],
     ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET'],
+    ['MINIMAX_PROXY_PATH', 'MINIMAX_PROXY_TARGET'],
+    ['MINIMAX_CN_PROXY_PATH', 'MINIMAX_CN_PROXY_TARGET'],
   ];
 
   for (const [pathKey, targetKey] of backends) {

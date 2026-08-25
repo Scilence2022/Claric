@@ -62,9 +62,9 @@ extraction and tracked changes analysis.
 - Review button relabels to "Generate Summary" in Summary mode
 
 **Backend Selector**
-- Providers: Ollama, vLLM, DeepSeek, Zhipu GLM, Moonshot Kimi, and Custom (any OpenAI-compatible endpoint)
+- Providers: Ollama, vLLM, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international + China sites), and Custom (any OpenAI-compatible endpoint)
 - Unified OpenAI-compatible chat API; per-provider API prefix handled automatically (GLM uses `/api/paas/v4`)
-- Cloud providers proxied same-origin (`/deepseek`, `/glm`, `/kimi`) by the dev and production servers -- no CORS setup, API key entered in Settings
+- Cloud providers proxied same-origin (`/deepseek`, `/glm`, `/kimi`, `/minimax`, `/minimax-cn`) by the dev and production servers -- no CORS setup, API key entered in Settings
 - Model field is typeable with a refreshable suggestion list (Refresh button re-queries the provider's models endpoint)
 - Configurable endpoint URL and optional API key per provider
 - Track Changes and Line Diff toggles
@@ -433,6 +433,10 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | `GLM_PROXY_TARGET` | `https://open.bigmodel.cn` | Upstream Zhipu GLM API origin |
 | `KIMI_PROXY_PATH` | `/kimi` | Proxy path for Moonshot Kimi (empty disables) |
 | `KIMI_PROXY_TARGET` | `https://api.moonshot.cn` | Upstream Moonshot Kimi API origin |
+| `MINIMAX_PROXY_PATH` | `/minimax` | Proxy path for MiniMax international (empty disables) |
+| `MINIMAX_PROXY_TARGET` | `https://api.minimax.io` | Upstream MiniMax API origin |
+| `MINIMAX_CN_PROXY_PATH` | `/minimax-cn` | Proxy path for MiniMax China (empty disables) |
+| `MINIMAX_CN_PROXY_TARGET` | `https://api.minimaxi.com` | Upstream MiniMax China API origin |
 | `LLM_PROXY_TIMEOUT_MS` | `300000` | Proxy upstream timeout in ms |
 
 ### Dev server only (webpack)

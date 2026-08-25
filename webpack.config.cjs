@@ -31,6 +31,10 @@ const ENV = {
   GLM_PROXY_TARGET: process.env.GLM_PROXY_TARGET || 'https://open.bigmodel.cn',
   KIMI_PROXY_PATH: process.env.KIMI_PROXY_PATH || '/kimi',
   KIMI_PROXY_TARGET: process.env.KIMI_PROXY_TARGET || 'https://api.moonshot.cn',
+  MINIMAX_PROXY_PATH: process.env.MINIMAX_PROXY_PATH || '/minimax',
+  MINIMAX_PROXY_TARGET: process.env.MINIMAX_PROXY_TARGET || 'https://api.minimax.io',
+  MINIMAX_CN_PROXY_PATH: process.env.MINIMAX_CN_PROXY_PATH || '/minimax-cn',
+  MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
 };
 
 
@@ -57,6 +61,8 @@ function buildLlmProxies(ENV) {
     ['DEEPSEEK_PROXY_PATH', 'DEEPSEEK_PROXY_TARGET', 'DeepSeek'],
     ['GLM_PROXY_PATH', 'GLM_PROXY_TARGET', 'GLM'],
     ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET', 'Kimi'],
+    ['MINIMAX_PROXY_PATH', 'MINIMAX_PROXY_TARGET', 'MiniMax'],
+    ['MINIMAX_CN_PROXY_PATH', 'MINIMAX_CN_PROXY_TARGET', 'MiniMax-CN'],
   ];
 
   const proxies = {};
