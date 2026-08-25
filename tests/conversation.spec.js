@@ -192,6 +192,18 @@ describe('routeTurn', () => {
     expect(turn.scope).toBe('document');
   });
 
+  test('"add a title" routes to format — insert ops live in the format pipeline', () => {
+    const turn = routeTurn('增加文章标题', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.FORMAT);
+    expect(turn.scope).toBe('document');
+  });
+
+  test('compound "add title + restyle document" routes to format as one proposal', () => {
+    const turn = routeTurn('增加标题，全文样式设计修改', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.FORMAT);
+    expect(turn.scope).toBe('document');
+  });
+
   test('format intent routes to format (EN)', () => {
     const turn = routeTurn('make this bold and set it to Heading 2', { hasSelection: true, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.FORMAT);
@@ -567,7 +579,7 @@ describe('createConversation.submit', () => {
     await conv.submit('把所有标题设为居中');
 
     expect(view._msg.attachProposal).not.toHaveBeenCalled();
-    expect(view._msg.setStatus).toHaveBeenCalledWith('The model proposed no formatting changes.');
+    expect(view._msg.setStatus).toHaveBeenCalledWith('The model proposed no changes.');
     expect(actions.applyFormatProposal).not.toHaveBeenCalled();
   });
 });

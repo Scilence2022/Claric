@@ -92,9 +92,11 @@ export function looksLikeAppendIntent(text) {
 
 /**
  * Format-intent markers: the user wants formatting/styling changes (bold,
- * color, heading, alignment, ...) WITHOUT altering the text content. These
+ * color, heading, alignment, ...) WITHOUT altering existing text. These
  * route to the format pipeline (JSON formatting ops), not the text-diff
- * amendment pipelines. Chinese substrings cover 加粗/标红/居中-style
+ * amendment pipelines. The format pipeline also handles short structural
+ * inserts (an insert op), so "增加文章标题" (add a title) correctly lands
+ * here via 标题. Chinese substrings cover 加粗/标红/居中-style
  * phrasings; English terms are word-boundary matched.
  */
 const FORMAT_INTENT_RE = /样式|格式|加粗|粗体|斜体|下划线|高亮|标红|字体|字号|颜色|居中|对齐|缩进|标题\s*[1-9一二三]?|设为标题|设置为标题|\bbold\b|\bitalic|underline|highlight|font\b|\bcolor\b|\bcenter(ed)?\b|\balign|indent|heading\s*[1-9]|format(ting)?\b/i;
@@ -408,16 +410,17 @@ export function createConversation(deps) {
     }
 
     /**
-     * Runs a format turn: the LLM emits JSON formatting ops against the
-     * selection or document scope, staged in a proposal card. Apply writes
-     * font/paragraph changes via Word.js (tracked when track-changes is on);
-     * the text content is never touched by this pipeline.
+     * Runs a format turn: the LLM emits JSON ops against the selection or
+     * document scope — font/paragraph changes plus short structural inserts
+     * (e.g. a title) — staged in a proposal card. Apply writes them via
+     * Word.js (tracked when track-changes is on); existing text content is
+     * never rewritten by this pipeline.
      */
     async function runFormatTurn(turn, msg, turnDeps, selectionText) {
         appState.isProcessing = true;
         input.setProcessing(true);
         try {
-            msg.setStatus('Planning formatting changes...');
+            msg.setStatus('Planning document changes...');
             const proposal = await actions.prepareFormatProposal(turnDeps, {
                 instruction: turn.instruction,
                 scope: turn.scope,
@@ -426,13 +429,13 @@ export function createConversation(deps) {
                 onReasoning: (t) => msg.appendModelToken({ id: 'format' }, 'reasoning', t),
             });
             if (!proposal.ops || proposal.ops.length === 0) {
-                msg.setStatus('The model proposed no formatting changes.');
+                msg.setStatus('The model proposed no changes.');
                 return;
             }
             msg.setStatus('');
             const card = createProposalCard({
-                title: `Proposed formatting changes (${turn.scope} scope)`,
-                countsText: `${proposal.ops.length} formatting op(s)`,
+                title: `Proposed changes (${turn.scope} scope)`,
+                countsText: `${proposal.ops.length} change op(s)`,
                 comment: null,
                 onApply: async () => {
                     try {

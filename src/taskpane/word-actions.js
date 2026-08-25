@@ -507,10 +507,11 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
 }
 
 /**
- * Applies a prepared format proposal. Each op's targets are resolved inside
- * the scope range (whole scope, substring matches, or paragraphs of a given
- * built-in style), then font/paragraph properties are set with change
- * tracking per config (Word records them as Formatted revisions).
+ * Applies a prepared format proposal. Insert ops add their paragraph(s) at
+ * the scope start/end; other ops' targets are resolved inside the scope
+ * range (whole scope, substring matches, or paragraphs of a given built-in
+ * style), then font/paragraph properties are set with change tracking per
+ * config (Word records them as Formatted revisions).
  *
  * @param {object} deps - { appState, log }
  * @param {object} proposal - Result of prepareFormatProposal
@@ -534,7 +535,13 @@ export async function applyFormatProposal(deps, proposal) {
             : context.document.getSelection();
 
         let applied = 0;
+        let inserted = 0;
         for (const op of ops) {
+            if (op.insert) {
+                inserted += _applyInsertOp(scopeRange, op, log);
+                await context.sync();
+                continue;
+            }
             const targets = await _resolveFormatTargets(context, scopeRange, op);
             if (targets.length === 0) {
                 log(`Format op found no target (${op.match || op.paragraphStyle || 'scope'})`, 'warning');
@@ -559,9 +566,30 @@ export async function applyFormatProposal(deps, proposal) {
             context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
             await context.sync();
         }
-        log(`Applied formatting to ${applied} range(s) across ${ops.length} op(s).`, 'success');
+        log(`Applied formatting to ${applied} range(s) and inserted ${inserted} paragraph(s) across ${ops.length} op(s).`, 'success');
     });
     return { applied: true };
+}
+
+/**
+ * Applies an insert op: queues the op's paragraph(s) at the start or end of
+ * the scope range, styled by the op's font/paragraph payload. Paragraphs
+ * inserted at the start are queued in reverse so their final order matches
+ * the text. Only queues commands — the caller syncs. Returns the number of
+ * paragraphs inserted.
+ * @private
+ */
+function _applyInsertOp(scopeRange, op, log) {
+    const paragraphs = op.insert.text.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+    const atStart = op.insert.position === 'start';
+    const location = atStart ? Word.InsertLocation.start : Word.InsertLocation.end;
+    const ordered = atStart ? [...paragraphs].reverse() : paragraphs;
+    for (const text of ordered) {
+        const paragraph = scopeRange.insertParagraph(text, location);
+        if (op.font) _applyFontOps(paragraph.font, op.font, log);
+        if (op.paragraph) _applyParagraphOps(paragraph, op.paragraph, log);
+    }
+    return paragraphs.length;
 }
 
 /**
