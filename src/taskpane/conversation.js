@@ -5,6 +5,8 @@
  *
  * Routing rules (routeTurn — pure, testable):
  *   - "/skill args"            -> skill turn (pipeline depends on skill.category)
+ *   - free text hitting 2+ intent families -> compound turn (task planner decomposes
+ *     into per-pipeline tasks, executed in order, one proposal card each)
  *   - free text + illustration intent -> design an SVG illustration, stage an image-insert proposal
  *   - free text + append intent -> generate content, stage an append-to-end proposal
  *   - free text + format intent -> staged formatting/insert ops (existing text never rewritten)
@@ -31,6 +33,7 @@ export const TURN_TYPE = Object.freeze({
     DOC_APPEND: 'doc-append',
     FORMAT: 'format',
     ILLUSTRATION: 'illustration',
+    COMPOUND: 'compound',
     DOC_QA: 'doc-qa',
 });
 
@@ -138,22 +141,49 @@ export function looksLikeFormatIntent(text) {
 }
 
 /**
+ * Counts how many intent families an instruction hits (illustration,
+ * append, format, edit). Questions count as zero — the looksLike* guards
+ * keep them Q&A. A count of 2+ means a compound instruction ("增加标题，并
+ * 深度润色修改") that no single pipeline can serve; those go through the
+ * task planner (TURN_TYPE.COMPOUND) instead of dropping or refusing the
+ * non-matching parts.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {number}
+ */
+export function countIntentFamilies(text) {
+    let count = 0;
+    if (looksLikeIllustrationIntent(text)) count++;
+    if (looksLikeAppendIntent(text)) count++;
+    if (looksLikeFormatIntent(text)) count++;
+    if (looksLikeEditIntent(text)) count++;
+    return count;
+}
+
+/**
  * Routes raw chat input to a turn descriptor. Pure function.
  *
  * @param {string} text - Raw chat input
  * @param {object} ctx
  * @param {boolean} ctx.hasSelection - Whether the document has a non-empty selection
  * @param {Array<object>} ctx.skills - Available skills (from listSkills)
+ * @param {boolean} [ctx.allowCompound=true] - False disables the compound
+ *   branch (planner fallback re-routes through single intent)
  * @returns {{ type: string, skill?: object, args?: string, instruction?: string, question?: string, scope?: string } | null}
  *   Null for empty input.
  */
-export function routeTurn(text, { hasSelection, skills } = {}) {
+export function routeTurn(text, { hasSelection, skills, allowCompound = true } = {}) {
     const trimmed = (text || '').trim();
     if (!trimmed) return null;
 
     const resolved = resolveSkill(trimmed, skills);
     if (resolved) {
         return { type: TURN_TYPE.SKILL, skill: resolved.skill, args: resolved.args };
+    }
+    // Compound instructions hit several intent families at once; the task
+    // planner decomposes them into per-pipeline tasks, executed in order.
+    if (allowCompound && countIntentFamilies(trimmed) >= 2) {
+        return { type: TURN_TYPE.COMPOUND, instruction: trimmed };
     }
     // Illustration intent wins over the append/edit branches: the artifact
     // nouns (插图/配图/svg...) name an image to design and insert, not text
@@ -650,6 +680,114 @@ export function createConversation(deps) {
     }
 
     /**
+     * Maps a planned task (task-planner.js) to the turn descriptor its
+     * pipeline runner expects.
+     *
+     * @param {{ type: string, instruction: string }} task
+     * @param {boolean} hasSelection
+     * @returns {{ type: string, instruction?: string, question?: string, scope?: string }}
+     * @private
+     */
+    function turnForTask(task, hasSelection) {
+        const instruction = task.instruction;
+        switch (task.type) {
+            case 'insert':
+                // Structural inserts (e.g. a title) belong at document scope —
+                // inserting a title into a selection would misplace it.
+                return { type: TURN_TYPE.FORMAT, instruction, scope: 'document' };
+            case 'format':
+                return { type: TURN_TYPE.FORMAT, instruction, scope: hasSelection ? 'selection' : 'document' };
+            case 'edit':
+                return hasSelection
+                    ? { type: TURN_TYPE.SELECTION_EDIT, instruction }
+                    : { type: TURN_TYPE.DOC_EDIT, instruction };
+            case 'append':
+                return { type: TURN_TYPE.DOC_APPEND, instruction };
+            case 'illustration':
+                return { type: TURN_TYPE.ILLUSTRATION, instruction };
+            case 'qa':
+            default:
+                return { type: TURN_TYPE.DOC_QA, question: instruction };
+        }
+    }
+
+    /**
+     * Runs a compound turn: the planner decomposes a multi-intent instruction
+     * ("增加标题，并深度润色修改") into atomic tasks, then dispatches each to
+     * its own pipeline runner — every task stages its own proposal card on
+     * this message, in the user-stated order. When planning fails, falls
+     * back to single-intent routing of the whole instruction (the
+     * pre-planner behavior).
+     */
+    async function runCompoundTurn(turn, msg, turnDeps, selectionText) {
+        appState.isProcessing = true;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Planning tasks...');
+            const plan = await actions.planDocumentTasks(turnDeps, {
+                instruction: turn.instruction,
+                hasSelection: !!selectionText,
+                onToken: (t) => msg.appendModelToken({ id: 'plan' }, 'content', t),
+                onReasoning: (t) => msg.appendModelToken({ id: 'plan' }, 'reasoning', t),
+            });
+            if (!plan.tasks || plan.tasks.length === 0) {
+                log('Task planning failed; falling back to single-intent routing.', 'warning');
+                const fallback = routeTurn(turn.instruction, {
+                    hasSelection: !!selectionText, skills: [], allowCompound: false,
+                });
+                if (fallback) await dispatchTurn(fallback, msg, turnDeps, selectionText);
+                return;
+            }
+            log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
+            for (let i = 0; i < plan.tasks.length; i++) {
+                const task = plan.tasks[i];
+                msg.setStatus(`Task ${i + 1}/${plan.tasks.length} [${task.type}]: ${task.instruction}`);
+                // Sub-runners toggle isProcessing individually; re-assert the
+                // compound turn's busy flag between tasks.
+                appState.isProcessing = true;
+                input.setProcessing(true);
+                await dispatchTurn(turnForTask(task, !!selectionText), msg, turnDeps, selectionText);
+            }
+            msg.setStatus('');
+        } catch (error) {
+            msg.markError(error.message);
+        } finally {
+            appState.isProcessing = false;
+            input.setProcessing(false);
+        }
+    }
+
+    /**
+     * Dispatches one routed turn to its pipeline runner. Shared by submit
+     * (single turns) and runCompoundTurn (one call per planned task).
+     */
+    async function dispatchTurn(turn, msg, turnDeps, selectionText) {
+        if (turn.type === TURN_TYPE.SKILL) {
+            await runSkillTurn(turn.skill, turn.args, !!selectionText, msg, turnDeps, selectionText);
+        } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
+            await runSelectionEditTurn(turn.instruction, msg, turnDeps);
+        } else if (turn.type === TURN_TYPE.DOC_APPEND) {
+            await runAppendTurn(turn.instruction, msg, turnDeps, selectionText);
+        } else if (turn.type === TURN_TYPE.ILLUSTRATION) {
+            await runIllustrationTurn(turn, msg, turnDeps);
+        } else if (turn.type === TURN_TYPE.FORMAT) {
+            await runFormatTurn(turn, msg, turnDeps, selectionText);
+        } else if (turn.type === TURN_TYPE.COMPOUND) {
+            await runCompoundTurn(turn, msg, turnDeps, selectionText);
+        } else if (turn.type === TURN_TYPE.DOC_EDIT) {
+            // Free-text edit instruction without a selection: run the
+            // whole-document amendment pipeline with the user's text as
+            // the edit template.
+            await runDocumentTurn({
+                name: 'Edit', category: 'amendment', scope: 'document',
+                defaultTemplate: turn.instruction,
+            }, undefined, msg, turnDeps);
+        } else {
+            await runQaTurn(turn.question, null, msg, turnDeps, selectionText);
+        }
+    }
+
+    /**
      * Submits raw chat input as a new turn.
      *
      * @param {string} text
@@ -685,27 +823,7 @@ export function createConversation(deps) {
         const turnDeps = actionDepsFor(msg);
 
         try {
-            if (turn.type === TURN_TYPE.SKILL) {
-                await runSkillTurn(turn.skill, turn.args, hasSelection, msg, turnDeps, selectionText);
-            } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
-                await runSelectionEditTurn(turn.instruction, msg, turnDeps);
-            } else if (turn.type === TURN_TYPE.DOC_APPEND) {
-                await runAppendTurn(turn.instruction, msg, turnDeps, selectionText);
-            } else if (turn.type === TURN_TYPE.ILLUSTRATION) {
-                await runIllustrationTurn(turn, msg, turnDeps);
-            } else if (turn.type === TURN_TYPE.FORMAT) {
-                await runFormatTurn(turn, msg, turnDeps, selectionText);
-            } else if (turn.type === TURN_TYPE.DOC_EDIT) {
-                // Free-text edit instruction without a selection: run the
-                // whole-document amendment pipeline with the user's text as
-                // the edit template.
-                await runDocumentTurn({
-                    name: 'Edit', category: 'amendment', scope: 'document',
-                    defaultTemplate: turn.instruction,
-                }, undefined, msg, turnDeps);
-            } else {
-                await runQaTurn(turn.question, null, msg, turnDeps, selectionText);
-            }
+            await dispatchTurn(turn, msg, turnDeps, selectionText);
         } catch (error) {
             msg.markError(error.message || String(error));
         } finally {

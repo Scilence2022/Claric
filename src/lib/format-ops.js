@@ -90,8 +90,9 @@ export function buildFormatPrompt(instruction, scopeText, scope) {
         'or heading, not long-form content. For an article title, compose a concise title from the ' +
         `${scopeName} text, position it at "start", and style it with the built-in "title" style.\n` +
         '- Include ONLY the properties the user asked to change; spacing/indent values are points.\n' +
-        '- Do NOT rewrite or change any existing text. If the instruction asks to rewrite existing ' +
-        'content rather than format it or add a short structural element, output exactly [].\n\n' +
+        '- Do NOT rewrite or change any existing text. If the instruction asks ONLY to rewrite existing ' +
+        'content, output exactly []. If it mixes rewriting with formatting/insertion, perform ONLY the ' +
+        'formatting/insertion parts.\n\n' +
         'USER INSTRUCTION:\n' + (instruction || '').trim() + '\n\n' +
         `--- ${scopeName.toUpperCase()} TEXT (for choosing "match" substrings) ---\n` + (scopeText || '')
     );

@@ -37,6 +37,7 @@ import {
     buildIllustrationPrompt, parseIllustration, sanitizeSvg,
     ensureSvgDimensions, svgDimensions, illustrationPositionFromInstruction,
 } from '../lib/illustration.js';
+import { buildPlanPrompt, parsePlan } from '../lib/task-planner.js';
 import { getActiveBackendConfig } from './app-state.js';
 
 /**
@@ -468,6 +469,37 @@ export async function applyDocumentAppend(deps, proposal) {
     });
     log(`Appended ${paragraphs.length} paragraph(s) to the document end.`, 'success');
     return { paragraphsAppended: paragraphs.length, chars: text.length };
+}
+
+/**
+ * Decomposes a compound instruction into ordered pipeline tasks — the
+ * planning step of a compound turn ("增加标题，并深度润色修改" →
+ * [insert title, edit document]). The document text is NOT sent: the
+ * planner only classifies intent, so this is a cheap call. Returns
+ * tasks=null when the plan cannot be parsed; the caller then falls back to
+ * single-intent routing.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} args
+ * @param {string} args.instruction - The user's compound instruction
+ * @param {boolean} [args.hasSelection] - Whether the document has a non-empty selection
+ * @param {function} [args.onToken] - Called with each streamed content token
+ * @param {function} [args.onReasoning] - Called with each streamed thinking token
+ * @returns {Promise<{ tasks: Array<{ type: string, instruction: string }> | null, model: string }>}
+ */
+export async function planDocumentTasks(deps, { instruction, hasSelection = false, onToken, onReasoning } = {}) {
+    const { appState, log } = deps;
+
+    const prompt = buildPlanPrompt(instruction, hasSelection);
+    const backendConfig = getActiveBackendConfig(appState);
+    log(`Planning tasks [${backendConfig.model}]...`, 'info');
+    const rawResponse = (onToken || onReasoning)
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
+        : await sendPrompt(backendConfig, prompt, log);
+
+    const tasks = parsePlan(rawResponse, log);
+    if (tasks) log(`Planned ${tasks.length} task(s): ${tasks.map((t) => t.type).join(' → ')}`, 'success');
+    return { tasks, model: backendConfig.model };
 }
 
 /**
