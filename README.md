@@ -1,18 +1,12 @@
 # Claric — your redlining scribe for Word
 
-AI-powered Microsoft Word add-in with a chat-driven UI: it applies word-level
-tracked changes using a structure-aware diff strategy, rewrites and restyles
-documents through staged proposal cards, designs and inserts illustrations, and
-decomposes compound instructions with a task planner — plus document
-summarization with comment extraction and tracked changes analysis.
-
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=SusffH8eT-Y">
-    <img src="docs/word-ai-redliner.gif" alt="Claric — Word add-in demo" />
-  </a>
-</p>
-
-**Project history**: This library was extracted from a private codebase and open-sourced as a standalone project in Jan 2026.
+Claric is an AI-powered Microsoft Word add-in with a chat-driven taskpane. Tell
+it what to do — polish a passage, restyle the headings, add a title, draw an
+illustration, continue writing, delete empty paragraphs, or summarize the
+comments — and it routes the request to the right pipeline, stages the result
+as a reviewable proposal card, and applies it as native tracked changes.
+Instructions work in English or Chinese, against any OpenAI-compatible LLM
+backend, local or hosted.
 
 ## Features
 
