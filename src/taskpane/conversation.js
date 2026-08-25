@@ -24,6 +24,7 @@
 import * as defaultActions from './word-actions.js';
 import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard } from './ui/proposal-card.js';
+import { describeFormatOp } from '../lib/format-ops.js';
 
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
@@ -345,11 +346,24 @@ export function createConversation(deps) {
             beforeChars,
             afterChars,
             comment: null,
-            onApply: async () => {
+            // One selectable change per amended section: inline diff plus a
+            // locate-in-document link; Apply writes only the checked sections.
+            items: amendedChunks.map((r) => {
+                const citation = chunkCitation(r.chunk);
+                return {
+                    id: r.chunk.id,
+                    label: citation.label,
+                    before: chunkOriginalText(r),
+                    after: r.amendment,
+                    searchText: citation.searchText,
+                };
+            }),
+            onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
+            onApply: async (selectedChunkIds) => {
                 appState.isProcessingDoc = true;
                 input.setProcessing(true);
                 try {
-                    const applicationResult = await outcome.apply();
+                    const applicationResult = await outcome.apply(selectedChunkIds);
                     card.markApplied();
                     msg.setStatus(
                         `Done: ${applicationResult.amendmentsApplied} amendment(s), ` +
@@ -399,6 +413,14 @@ export function createConversation(deps) {
                 beforeChars: proposal.selectionText.length,
                 afterChars: proposal.amendedText ? proposal.amendedText.length : 0,
                 comment: proposal.commentText,
+                items: proposal.amendedText ? [{
+                    id: 'selection',
+                    label: 'Selection rewrite',
+                    before: proposal.selectionText,
+                    after: proposal.amendedText,
+                    searchText: proposal.selectionText.trim().slice(0, 60),
+                }] : undefined,
+                onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
                 onApply: async () => {
                     try {
                         await actions.applySelectionAmendment(turnDeps, proposal);
@@ -497,9 +519,17 @@ export function createConversation(deps) {
                 title: `Proposed changes (${turn.scope} scope)`,
                 countsText: `${proposal.ops.length} change op(s)`,
                 comment: null,
-                onApply: async () => {
+                // One selectable change per op; Apply runs only the checked ops.
+                items: proposal.ops.map((op, index) => ({
+                    id: index,
+                    label: describeFormatOp(op),
+                    searchText: op.match ? op.match.trim().slice(0, 60) : undefined,
+                })),
+                onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
+                onApply: async (selectedIds) => {
                     try {
-                        await actions.applyFormatProposal(turnDeps, proposal);
+                        const ops = proposal.ops.filter((_, index) => selectedIds.includes(index));
+                        await actions.applyFormatProposal(turnDeps, { ...proposal, ops });
                         card.markApplied();
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');

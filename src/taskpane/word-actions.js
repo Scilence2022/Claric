@@ -927,11 +927,18 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
      * Applies the processed results to the document (tracked changes +
      * comments), cleans up bookmarks, logs the summary, and registers the
      * retry link for failed chunks.
+     * @param {Array<string>} [chunkIds] - Selective apply from the proposal
+     *   card's change list: only amendment results for these chunks are
+     *   applied. Results without an amendment (comment-only) are not
+     *   selectable items, so they always ride along.
      * @returns {Promise<object>} applicationResult from applyChunkResults
      */
-    const apply = async () => {
-        log('Applying changes to document...', 'info');
-        const applicationResult = await applyChunkResults(results, bookmarkMap, {
+    const apply = async (chunkIds) => {
+        const selected = Array.isArray(chunkIds)
+            ? results.filter((r) => !r.amendment || (r.chunk && chunkIds.includes(r.chunk.id)))
+            : results;
+        log(`Applying changes to document${Array.isArray(chunkIds) ? ` (${selected.length} of ${results.length} section(s))` : ''}...`, 'info');
+        const applicationResult = await applyChunkResults(selected, bookmarkMap, {
             trackChangesEnabled: appState.config.trackChangesEnabled,
             lineDiffEnabled: appState.config.lineDiffEnabled,
             log,
