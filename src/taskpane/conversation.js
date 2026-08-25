@@ -5,8 +5,10 @@
  *
  * Routing rules (routeTurn — pure, testable):
  *   - "/skill args"            -> skill turn (pipeline depends on skill.category)
+ *   - free text + append intent -> generate content, stage an append-to-end proposal
  *   - free text + selection    -> selection edit (user text is the edit instruction)
- *   - free text, no selection  -> document Q&A (answer in chat)
+ *   - free text + edit intent  -> document amendment run (staged proposal)
+ *   - free text, otherwise     -> document Q&A (answer in chat)
  *
  * createConversation(deps) wires routing to the chat view, input bar, and
  * word actions. All Word/LLM side effects live behind deps.actions so the
@@ -24,6 +26,7 @@ export const TURN_TYPE = Object.freeze({
     SKILL: 'skill',
     SELECTION_EDIT: 'selection-edit',
     DOC_EDIT: 'doc-edit',
+    DOC_APPEND: 'doc-append',
     DOC_QA: 'doc-qa',
 });
 
@@ -64,6 +67,28 @@ export function looksLikeEditIntent(text) {
 }
 
 /**
+ * Append-intent markers: the user wants NEW content generated and inserted
+ * into the document (typically at the end), not an edit of existing text and
+ * not a chat answer. Chinese substrings cover 追加/续写/写到文档-style
+ * phrasings; English patterns require an explicit target ("...to the
+ * document/end") so plain "add a paragraph" stays Q&A.
+ */
+const APPEND_INTENT_RE = /\bappend\b|\badd\b.{0,30}\bto the (document|doc|end)\b|\bcontinue writing\b|\bkeep writing\b|\bextend the (document|doc|text)\b|追加|续写|补写|接着写|继续写|写到文档|写入文档|加到文档|添加到文档|插入到文档|附加到文档|到文档末尾|到文末/i;
+
+/**
+ * True when free text asks for new content to be appended/inserted into the
+ * document. Questions stay Q&A even when they mention appending
+ * ("如何续写这篇文章？").
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeAppendIntent(text) {
+    if (looksLikeQuestion(text)) return false;
+    return APPEND_INTENT_RE.test(text);
+}
+
+/**
  * Routes raw chat input to a turn descriptor. Pure function.
  *
  * @param {string} text - Raw chat input
@@ -80,6 +105,11 @@ export function routeTurn(text, { hasSelection, skills } = {}) {
     const resolved = resolveSkill(trimmed, skills);
     if (resolved) {
         return { type: TURN_TYPE.SKILL, skill: resolved.skill, args: resolved.args };
+    }
+    // Append intent wins over the selection/edit branches: the user explicitly
+    // asked for new content in the document, not a rewrite of existing text.
+    if (looksLikeAppendIntent(trimmed)) {
+        return { type: TURN_TYPE.DOC_APPEND, instruction: trimmed };
     }
     if (hasSelection) {
         // Selection + a question is a question ABOUT the selection (answered
@@ -302,6 +332,54 @@ export function createConversation(deps) {
     }
 
     /**
+     * Runs an append turn: the LLM drafts new content against the document
+     * context, staged in a proposal card. Apply inserts it at the document
+     * end as tracked changes; nothing is written before that.
+     */
+    async function runAppendTurn(instruction, msg, turnDeps, selectionText) {
+        appState.isProcessing = true;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Drafting content to append...');
+            const proposal = await actions.prepareDocumentAppend(turnDeps, {
+                instruction,
+                selectionText,
+                onToken: (t) => msg.appendModelToken({ id: 'append' }, 'content', t),
+                onReasoning: (t) => msg.appendModelToken({ id: 'append' }, 'reasoning', t),
+            });
+            if (!proposal.generatedText) {
+                msg.setStatus('The model returned no content to append.');
+                return;
+            }
+            msg.setStatus('');
+            const card = createProposalCard({
+                title: 'Proposed content to append at the document end',
+                beforeChars: 0,
+                afterChars: proposal.generatedText.length,
+                comment: null,
+                onApply: async () => {
+                    try {
+                        await actions.applyDocumentAppend(turnDeps, proposal);
+                        card.markApplied();
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Proposal rejected by user.', 'info');
+                },
+            });
+            msg.attachProposal(card.el);
+        } catch (error) {
+            msg.markError(error.message);
+        } finally {
+            appState.isProcessing = false;
+            input.setProcessing(false);
+        }
+    }
+
+    /**
      * Runs a selection-scope comment turn (fire-and-forget comment pipeline).
      */
     async function runSelectionCommentTurn(skill, args, msg, turnDeps) {
@@ -453,6 +531,8 @@ export function createConversation(deps) {
                 await runSkillTurn(turn.skill, turn.args, hasSelection, msg, turnDeps, selectionText);
             } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
                 await runSelectionEditTurn(turn.instruction, msg, turnDeps);
+            } else if (turn.type === TURN_TYPE.DOC_APPEND) {
+                await runAppendTurn(turn.instruction, msg, turnDeps, selectionText);
             } else if (turn.type === TURN_TYPE.DOC_EDIT) {
                 // Free-text edit instruction without a selection: run the
                 // whole-document amendment pipeline with the user's text as

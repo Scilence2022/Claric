@@ -359,6 +359,95 @@ export async function applySelectionAmendment(deps, proposal) {
 }
 
 /**
+ * Generates new content to append at the document end — the prepare half of
+ * the staged append flow. The document text is sent as context; the model is
+ * instructed to return ONLY the text to append. The result is staged in a
+ * proposal card and written by applyDocumentAppend.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} args
+ * @param {string} args.instruction - The user's generation instruction
+ * @param {string} [args.selectionText] - Current selection, sent as focused context
+ * @param {function} [args.onToken] - Called with each streamed content token
+ * @param {function} [args.onReasoning] - Called with each streamed thinking token
+ * @returns {Promise<{ instruction: string, generatedText: string, model: string }>}
+ */
+export async function prepareDocumentAppend(deps, { instruction, selectionText, onToken, onReasoning } = {}) {
+    const { appState, log } = deps;
+
+    const richness = (appState.config.docExtraction || {}).richness || 'structured';
+    log('Extracting document text for context...', 'info');
+    const documentText = await extractDocumentStructured({ richness });
+
+    let prompt =
+        'You are a writing assistant embedded in a Word document. The user wants NEW content generated and appended to the END of the document.\n' +
+        'Continue the document in its own language, style, and tone, following the user instruction below.\n\n' +
+        'CRITICAL OUTPUT RULES:\n' +
+        '- Output ONLY the new content to append, as PLAIN TEXT.\n' +
+        '- Do NOT repeat, quote, or paraphrase the existing document text.\n' +
+        '- Do NOT use markdown formatting (no bold, italics, asterisks, headings, bullet points).\n' +
+        '- Do NOT include explanations, commentary, introductory phrases, or concluding remarks.\n' +
+        '- Separate paragraphs with a single blank line.\n\n' +
+        'USER INSTRUCTION:\n' + (instruction || '').trim() + '\n';
+    if (selectionText && selectionText.trim()) {
+        prompt += '\n--- SELECTED TEXT (excerpt the user selected; treat it as the immediate context) ---\n' + selectionText.trim() + '\n';
+    }
+    prompt += '\n--- EXISTING DOCUMENT (context only — do not repeat it; continue after it) ---\n' + documentText;
+
+    const backendConfig = getActiveBackendConfig(appState);
+    log(`Drafting content to append [${backendConfig.model}]...`, 'info');
+    const rawResponse = (onToken || onReasoning)
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
+        : await sendPrompt(backendConfig, prompt, log);
+    log(`LLM response received [${backendConfig.model}]`, 'success');
+
+    return {
+        instruction: (instruction || '').trim(),
+        generatedText: (stripMarkdown(rawResponse, log) || '').trim(),
+        model: backendConfig.model,
+    };
+}
+
+/**
+ * Applies a prepared append proposal: inserts the generated text at the
+ * document end, one Word paragraph per line, as tracked changes
+ * (per config.trackChangesEnabled).
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} proposal - Result of prepareDocumentAppend
+ * @returns {Promise<{ paragraphsAppended: number, chars: number }>}
+ */
+export async function applyDocumentAppend(deps, proposal) {
+    const { appState, log } = deps;
+    const text = ((proposal && proposal.generatedText) || '').trim();
+    if (!text) {
+        throw new Error('Nothing to append — the model returned empty text.');
+    }
+    // The model is instructed to blank-line-separate paragraphs; treating
+    // every newline as a paragraph break also covers single-\n output.
+    const paragraphs = text.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+
+    await Word.run(async (context) => {
+        if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = appState.config.trackChangesEnabled
+                ? Word.ChangeTrackingMode.trackAll
+                : Word.ChangeTrackingMode.off;
+        }
+        const body = context.document.body;
+        for (const paragraph of paragraphs) {
+            body.insertParagraph(paragraph, Word.InsertLocation.end);
+        }
+        await context.sync();
+        if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+            await context.sync();
+        }
+    });
+    log(`Appended ${paragraphs.length} paragraph(s) to the document end.`, 'success');
+    return { paragraphsAppended: paragraphs.length, chars: text.length };
+}
+
+/**
  * Fires the fire-and-forget comment pipeline on the current selection
  * (bookmark capture + async LLM call + comment insertion with retry link).
  *
