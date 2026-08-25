@@ -16,181 +16,95 @@ summarization with comment extraction and tracked changes analysis.
 
 ## Features
 
-### Core: AI Redlining (v0.1.0)
-- Word-level diffs with tracked changes via the vendored word-diff layer (`src/lib/word-diff/`, based on Apache-2.0 [office-word-diff](https://github.com/yuch85/office-word-diff)) plus a CJK char-level strategy
-- Token map strategy with sentence fallback, block replace as last resort
-- Configurable LLM backends: Ollama and vLLM (OpenAI-compatible)
+### Chat Interface & Turn Routing
 
-### v0.2.0: Prompt System + Document Summary
+- Chat-first taskpane: message list, bottom input bar, welcome empty state with skill chips
+- Slash-command skill picker — type `/` to filter; Enter/Tab/click to select; the send button morphs into Cancel while a run is processing (AbortController)
+- Built-in skills: `/copy-edit`, `/check-doc`, `/flag-issues`, `/summarize-contract`, `/industry-overview`, `/storylining`; saved prompts register as custom slash commands
+- Intent routing for free text (English and Chinese): edit, format, append, illustration, and empty-paragraph cleanup each route to their own pipeline; questions always go to Q&A
+- Free text with a non-empty selection → amendment pipeline with the text as the edit instruction; `selection-first` skills run on the selection when one exists, otherwise on the whole document
+- Compound instructions ("add a title, then polish the whole text") are decomposed by an LLM task planner into up to 6 ordered tasks (`insert`, `format`, `edit`, `append`, `illustration`, `qa`), one proposal card per pipeline
+- Ambiguous instructions with no intent keyword are classified by the planner instead of defaulting to Q&A; planning failure falls back gracefully
 
-**Three-Category Prompt System**
-- Context, Amendment, and Comment prompt categories with dedicated tabs
-- Full CRUD: create, save, update, delete prompts per category
-- Per-category activation with `{selection}` placeholder replacement
-- Prompts persist in localStorage across sessions
+### Staged Proposals & Per-Change Review
 
-**Document Comment Summary**
-- 4th "Summary" tab — extract all document comments, send to LLM, generate a formatted Word document
-- `{comments}` placeholder inserts structured comment data (author, annotated text, comment text)
-- `{whole document}` placeholder extracts full document text with configurable richness:
-  - **Plain** — raw paragraph text
-  - **Headings** — markdown-style heading markers (`## Section Title`)
-  - **Structured** — headings + list item numbering and indentation
-- `{tracked changes}` placeholder extracts revision marks via OOXML parsing (w:ins, w:del, w:moveFrom, w:moveTo)
-- Generated summary document includes annex with numbered source comments
-- LLM markdown output auto-converted to HTML via [marked](https://github.com/markedjs/marked)
-- Tables in generated documents render with visible borders
+Every document mutation is staged as a proposal card — nothing is written until you apply it:
 
-**Tracked Changes Extraction (OOXML)**
-- Parses `body.getOoxml()` with browser DOMParser — no external dependencies
-- Handles `pkg:package` wrapper, `w:proofErr` normalization
-- Pairs adjacent `w:del` + `w:ins` from same author as replacements
-- Detects move operations (`w:moveFrom` / `w:moveTo`)
-- Skips table row revision markers (`w:ins`/`w:del` inside `w:trPr`)
-- Namespace-aware querying with prefix fallback for cross-browser compatibility
-- Author identity prominently included in LLM-formatted output
+- Selection edits show before/after character counts; document-scope runs show per-section citation pills that jump to that section in the document
+- One checkbox per change, an inline deleted/inserted diff preview (diff-match-patch semantic cleanup), and a locate button that selects the source text in the document
+- Apply writes only the checked changes; Reject discards and cleans up bookmarks
+- Honest feedback: skipped sections are reported, no-change echoes are never proposed, and a card that lands nothing settles into a warning state
+- Staged ranges are re-anchored at apply time, so applying another card first (e.g. an inserted title) never causes deletions on drifted paragraphs
 
-**Async Comment Queue**
-- Bookmark-based range persistence for async comment insertion
-- Comment status bar with pending count and retry-on-error
-- WordApi 1.4 detection with graceful degradation
+### AI Redlining
 
-**Settings & UX**
-- Settings auto-save on every change (no Save button)
-- Live token estimation with real document metrics (async Word API read, cached, debounced)
-- Document extraction richness dropdown (Summary mode only)
-- Tracked changes extraction toggle (Summary mode only)
-- Mode switching: Amendment/Comment tabs disabled when Summary is active
-- Review button relabels to "Generate Summary" in Summary mode
+- Word-level tracked changes via the vendored word-diff layer (`src/lib/word-diff/`, based on Apache-2.0 [office-word-diff](https://github.com/yuch85/office-word-diff)) plus a project-original CJK character-level strategy
+- Cascading strategies: char diff (CJK) → token map (preserves run-level formatting: bold, italic, font, color) → sentence diff → block replace
+- Hardened diff layer: caller-owned change-tracking mode with finally-restore, occurrence-ordered sentence diffs, and Nth-occurrence token resolution
 
-**Backend Selector**
+### Whole-Document Processing
+
+- Full-document amendment and commenting: parse → chunk → parallel LLM dispatch → reassemble
+- Paragraph-level parsing with style, heading, list, and table detection; token-aware chunking (default 12K tokens per chunk) with heading-based boundaries (H1/H2 trigger splits, H3+ stay coherent), table atomicity, and overlap context
+- Tiny trailing chunks are merged into the previous chunk to prevent orphans
+- Worker-pool dispatch with auto-tuned concurrency (4 workers for large chunks, 6 for smaller), AbortController cancellation, per-chunk progress with ETA estimation, and retry of failed chunks without re-processing successful ones
+- Context extraction: definitions (means / shall mean / is defined as / the-X / hereinafter-X patterns), abbreviations via word-initial matching, and a document outline from the heading hierarchy — injected as a per-chunk filtered prefix into each LLM system message
+- Formatting-preserving reassembly: LCS + word-level similarity paragraph alignment; paragraph properties (styles, numbering, indentation) preserved through paragraph-scoped operations; reverse-order application; bookmark-persisted ranges; line-ending normalization; truncation guard against severely shortened LLM output
+- Merged amendment + comment mode: one LLM call returns delimited `===AMENDMENT===` / `===COMMENT===` sections; comments are inserted on bookmarked ranges after all amendments; undelimited responses are treated as amendment-only; comment instructions persist with the prompt data
+- Output quality: no-commentary/no-markdown rules appended to prompts, `stripMarkdown()` as a safety net, and `stripThinkTags()` removing reasoning blocks
+
+### Formatting & Insert Ops
+
+- Natural-language formatting instructions ("make this Heading 2", "center all headings") are planned into a strict JSON op allowlist: font (bold, italic, underline, highlight, color, size, …) and paragraph (style, alignment, spacing, indentation, …) properties, targeted by substring match, paragraph style, or whole scope
+- Insert ops add short structural elements — "add an article title" composes a title, inserts it at the document start, and styles it with the built-in Title style
+- Applied as tracked Formatted revisions; existing text is never rewritten
+
+### Illustration Pipeline
+
+- "Design and insert an illustration" asks the LLM for a self-contained SVG, sanitizes it with DOMPurify (no scripts or `foreignObject`), rasterizes it to PNG via an offscreen canvas, and inserts it as a centered inline picture (≤ 450 pt wide)
+- Position heuristic: header/title-image requests go to the document start, otherwise the end; the proposal card shows an image preview
+
+### Document Append
+
+- "Continue writing" drafts new content against the full document context and stages an append-to-end proposal; Apply inserts it as tracked changes
+
+### Empty-Paragraph Cleanup
+
+- "Delete empty paragraphs" runs a deterministic Word.js scan (no LLM — blank paragraphs are invisible to the text pipelines), excluding the final paragraph, table-cell paragraphs, and paragraphs holding inline pictures
+- Staged as a proposal card; Apply deletes them as tracked changes and reports the actual count
+
+### Document Summary & Comments
+
+- The `/summarize-contract` skill extracts all document comments, document text, and tracked changes, then generates a formatted Word document in a new file
+- `{comments}` inserts structured comment data (author, annotated text, comment text); `{whole document}` extracts the full text with configurable richness — **Plain** (raw paragraph text), **Headings** (markdown heading markers), **Structured** (headings + list numbering and indentation); `{tracked changes}` extracts revision marks via OOXML parsing
+- Generated documents include an annex with numbered source comments; LLM markdown is converted to HTML via [marked](https://github.com/markedjs/marked) and tables render with visible borders
+- OOXML tracked-changes parsing uses the browser DOMParser (no external dependencies): handles the `pkg:package` wrapper and `w:proofErr` normalization, pairs adjacent `w:del` + `w:ins` from the same author as replacements, detects move operations (`w:moveFrom` / `w:moveTo`), skips table-row revision markers, queries namespace-aware with prefix fallback, and includes author identity in the LLM-formatted output
+- Async comment queue: bookmark-based range persistence, a pending counter with retry-on-error, and WordApi 1.4 detection with graceful degradation
+
+### Prompt System
+
+- Four independent prompt categories — context, amendment, comment, summary — each with full CRUD, per-category activation, and `{selection}` placeholder replacement
+- Prompts persist in localStorage across sessions and double as custom slash commands in the chat UI
+
+### Model Activity, Work Log & Streaming
+
+- Each turn shows a collapsible work log ("Worked for Ns · M steps") and a live model-activity region streaming reasoning (dimmed) and output tokens per section
+- Model activity auto-scrolls while pinned to the bottom; scrolling up disengages, scrolling back re-engages
+- Chat answers and pipelines stream token-by-token via OpenAI-compatible SSE; an idle timeout resets on every chunk, so long generations survive and only stalled streams abort; automatic fallback to non-streaming
+- A live selection preview chip sits above the input bar; the current selection is injected into Q&A prompts as focused context
+
+### LLM Backends
+
 - Providers: Ollama, vLLM, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international + China sites), and Custom (any OpenAI-compatible endpoint)
 - Unified OpenAI-compatible chat API; per-provider API prefix handled automatically (GLM uses `/api/paas/v4`)
-- Cloud providers proxied same-origin (`/deepseek`, `/glm`, `/kimi`, `/minimax`, `/minimax-cn`) by the dev and production servers -- no CORS setup, API key entered in Settings
-- Model field is typeable with a refreshable suggestion list (Refresh button re-queries the provider's models endpoint)
-- Configurable endpoint URL and optional API key per provider
-- Track Changes and Line Diff toggles
+- Cloud providers are proxied same-origin (`/deepseek`, `/glm`, `/kimi`, `/minimax`, `/minimax-cn`) by the dev and production servers — no CORS setup; the API key is entered in Settings
+- Typeable model field with a refreshable suggestion list (Refresh re-queries the provider's models endpoint); configurable endpoint URL and optional API key per provider; Track Changes and Line Diff toggles
 
-### v0.3.0: Whole-Document Processing
+### Settings & UX
 
-**Parallel LLM Orchestration**
-- Full-document amendment and commenting: parse, chunk, dispatch to LLM in parallel, reassemble
-- Worker-pool concurrency with configurable limits (auto-tuned: 4 workers for large chunks, 6 for smaller)
-- AbortController-based cancellation stops pending chunks immediately
-- Progress tracking with per-chunk ETA estimation
-- Retry failed chunks without re-processing successful ones
-
-**Document Parsing & Chunking**
-- Paragraph-level document parsing with style and heading detection
-- Token-aware chunking with configurable max size (default 6K tokens)
-- Heading-based chunk boundaries (H1/H2 trigger splits; H3+ stay coherent)
-- Overlap paragraphs provide preceding context to each chunk
-- Tiny trailing chunks merged into previous chunk to prevent orphans
-
-**Context Extraction**
-- Automatic definition extraction via regex (means/shall-mean/is-defined-as, the-X, hereinafter-X patterns)
-- Abbreviation expansion via word-initial matching heuristic
-- Document outline generation from heading hierarchy
-- Context prefix formatted and injected into each chunk's LLM system message
-
-**Formatting-Preserving Reassembly**
-- Paragraph-level amendment strategy: aligns LLM output paragraphs to original document paragraphs using LCS + word-level similarity matching
-- Within-paragraph word-level diff via token map strategy preserves run-level formatting (bold, italic, font, color)
-- Paragraph properties (styles, numbering, indentation) preserved through paragraph-scoped operations
-- Graceful degradation chain: paragraph-level -> word-level diff -> sentence diff -> block replace
-- Line ending normalization (`\r` <-> `\n`) throughout the pipeline
-- Content validation rejects severely truncated LLM output before applying
-- Amendments applied in reverse document order to prevent range invalidation
-- Bookmarks persist chunk ranges across LLM processing time
-
-**Merged Amendment + Comment Mode**
-- Comment instructions persisted with prompt data (save/restore across sessions)
-- When comment instructions are provided in amendment mode, LLM produces delimited `===AMENDMENT===` / `===COMMENT===` output
-- Response parser extracts both sections; comments inserted on bookmarked ranges after all amendments
-- Fallback: undelimited responses treated as amendment-only
-
-**LLM Output Quality**
-- Critical output rules appended to amendment prompts: no commentary, no markdown, preserve structure
-- `stripMarkdown()` post-processor as safety net for amendment responses
-- `stripThinkTags()` removes `<think>` reasoning blocks from LLM output
-
-**Testing**
-- 469 unit tests across 20 test suites (Jest)
-- TDD workflow: failing tests written before implementation
-- Covers: prompt state/persistence/composition, comment extraction, document generation, tracked changes OOXML parsing, orchestrator dispatch/concurrency, reassembler paragraph alignment, document chunking, context extraction
-
-### v0.5.0: Chat-Driven UI
-
-**Chat Interface (Claude-for-Word style)**
-- Chat-first taskpane: message list, bottom input bar, welcome empty state with skill chips
-- Slash-command skill picker: type `/` to filter and pick skills; Enter/Tab/click to select
-- Built-in skills: `/copy-edit`, `/check-doc`, `/flag-issues`, `/summarize-contract`, `/industry-overview`, `/storylining`
-- Saved prompts (PromptManager) automatically register as custom slash commands
-- Send button morphs into Cancel while a run is processing (AbortController)
-
-**Scope-Aware Turn Routing**
-- `/skill args` runs the skill's pipeline (amendment / comment / summary / chat)
-- Free text + non-empty selection → amendment pipeline with the text as the edit instruction
-- Free text without selection → routed by intent (edit / format / append / illustration / compound task plan / document Q&A — see below)
-- `selection-first` skills run on the selection when one exists, otherwise on the whole document
-
-**Staged Edit Proposals + Citations**
-- Selection-scope edits render a proposal card (before/after char counts, Apply as tracked changes / Reject) — nothing is written until Apply
-- Document-scope runs stream per-chunk progress + ETA, then show citation pills per section; clicking a pill jumps to that section in the document
-- Chat answers stream token-by-token via OpenAI-compatible SSE (`stream: true`), with automatic fallback to non-streaming
-
-**Settings Slide-Over**
-- All provider/extraction settings moved into a slide-over panel (same auto-save behavior, same localStorage keys)
-- Prompt management (per-category CRUD + activation + comment instructions) lives in the slide-over
+- All provider, extraction, and prompt settings live in a slide-over panel with auto-save (no Save button)
 - Model pill under the input bar shows the active provider:model and opens settings on click
-- Activity log collapsed into a slim drawer; the document-mutating verification script button was removed from the UI
-
-### Unreleased (on `main` since v0.5.0)
-
-**Task Planner + Intent Routing**
-- Free-text instructions are classified by intent regexes (English + Chinese): edit, format, append, illustration; question leads always win and go to Q&A
-- Compound instructions ("add a title, then polish the whole text") are decomposed by an LLM task planner into up to 6 ordered tasks across six pipeline types (`insert`, `format`, `edit`, `append`, `illustration`, `qa`), each staging its own proposal card
-- Ambiguous instructions with no intent keyword are routed through the planner for classification instead of defaulting to Q&A; planning failure falls back gracefully
-- Free-text edit instructions without a selection run the whole-document amendment pipeline with the text as the edit instruction
-
-**Staged Proposals Everywhere + Per-Change Review**
-- Document-scope amendments are gated behind a proposal card — nothing is written until Apply
-- Every change in a card gets a checkbox, an inline del/ins diff preview (diff-match-patch semantic cleanup), and a "§" locate button that selects the source text in the document
-- Apply writes only the checked changes ("Applied X of Y"); Reject discards and cleans up bookmarks
-- Honest apply feedback: sections whose staged content no longer matches are skipped and reported; cards that landed nothing settle into a warning state instead of claiming success
-- Amendments identical to the original (LLM echo) are never counted or proposed
-
-**Formatting Pipeline (format ops)**
-- Natural-language formatting instructions ("make this Heading 2", "center all headings", "加粗") are planned by the LLM into a strict JSON op allowlist: font (bold, italic, underline, highlight, color, size, …), paragraph (style, alignment, spacing, indentation, …), targeted by substring match, paragraph style, or whole scope
-- Insert ops add short structural elements — e.g. "增加文章标题" composes a title, inserts it at the document start, and styles it with the built-in Title style
-- Applied as tracked changes (Formatted revisions); existing text is never rewritten — rewrite-only instructions yield no ops
-
-**Illustration Pipeline**
-- "设计插图并插入" asks the LLM for a self-contained SVG, sanitizes it with DOMPurify (SVG profile, no scripts/`foreignObject`), rasterizes to PNG via an offscreen canvas, and inserts it as a centered inline picture (≤450 pt wide)
-- Position heuristic: header/题图/头图 → document start, otherwise end; staged with an image preview in the proposal card
-
-**Doc-Append Route**
-- "继续写 / append to the document" drafts new content against the full document context and stages an append-to-end proposal; Apply inserts paragraphs at the document end as tracked changes
-
-**Empty-Paragraph Cleanup (deterministic)**
-- "删除多余的空段落 / delete empty paragraphs" routes to a Word.js scan — no LLM, because the parser never sees blank paragraphs and the text pipelines structurally cannot serve this instruction
-- The scan excludes the body's final paragraph, table-cell paragraphs, and paragraphs holding inline pictures (an illustration lives in an otherwise "empty" paragraph)
-- Staged as a proposal card; Apply deletes the paragraphs as tracked changes, reporting the actual deletions
-
-**Model Activity + Work Log**
-- Every turn shows a collapsible work log (pipeline steps, auto-collapses to "Worked for Ns · M steps") and a live "Model activity" region streaming reasoning (dimmed) and output tokens per section
-- Model activity auto-scrolls while pinned to the bottom; scrolling up disengages, scrolling back down (or re-expanding) re-engages
-- Streaming uses an idle timeout — the clock resets on every received chunk, so long active generations survive and only genuinely stalled streams abort
-- Live selection preview chip above the input bar; the current selection is injected into Q&A prompts as focused context
-
-**Reliability Hardening**
-- Staged chunk ranges are re-anchored before applying: if an earlier card (e.g. an inserted title) shifted the document, the amendment targets only the staged content window instead of deleting drifted paragraphs
-- Blank paragraphs are excluded from anchoring and paragraph alignment (the parser skips them, `range.paragraphs` doesn't)
-- Word-diff layer hardened: caller-owned change-tracking mode with finally-restore, occurrence-ordered sentence diffs, Nth-occurrence token resolution
-- MiniMax provider presets (international + China sites)
-
-**Testing**
-- 708 unit tests across 29 suites (Jest), including conversation routing, task planner, format ops, illustration, proposal card, re-anchoring, and streaming idle-timeout coverage
+- Activity log in a slim drawer; connection status and comment-pending indicators in the status bar
 
 ## Setup
 
@@ -535,7 +449,7 @@ See `ARCHITECTURE.md` for details.
 ## Testing
 
 ```bash
-npm test          # 699 tests across 29 suites
+npm test          # 708 tests across 29 suites
 npm run lint      # ESLint (flat config)
 npm run build     # webpack production build
 npm run verify    # lint + test + build (same as CI)
