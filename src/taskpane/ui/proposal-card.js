@@ -6,8 +6,15 @@
  * rewrite is NOT applied until the user clicks "Apply as tracked changes";
  * "Reject" dismisses the card.
  *
+ * When `items` are given, the card carries an expandable change list — one
+ * checkbox row per change, with an optional inline diff (before/after) and
+ * an optional locate-in-document link. Apply then passes the SELECTED item
+ * ids to onApply, so the user applies only the changes they checked.
+ *
  * @module ui/proposal-card
  */
+
+import { buildTextDiffElement } from './diff-view.js';
 
 /**
  * Creates a proposal card.
@@ -20,12 +27,19 @@
  *   (for non-text proposals such as formatting ops)
  * @param {string} [args.previewSrc] - Optional image data-URL preview shown
  *   under the heading (illustration proposals)
+ * @param {Array<object>} [args.items] - Optional change list. Each item:
+ *   { id: string|number, label: string, before?: string, after?: string,
+ *     searchText?: string }. before+after render an inline diff; searchText
+ *   plus onLocate adds a locate-in-document link.
+ * @param {function(string)} [args.onLocate] - Locate-in-document callback
+ *   (receives the item's searchText)
  * @param {string} [args.comment] - Optional comment text (merged mode)
- * @param {function()} args.onApply - Async apply callback
+ * @param {function(Array<string|number>|undefined)} args.onApply - Async
+ *   apply callback; receives the selected item ids when items are given
  * @param {function()} [args.onReject] - Reject callback
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markError: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, comment, onApply, onReject }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, items, onLocate, comment, onApply, onReject }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -73,6 +87,62 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     rejectBtn.className = 'btn btn-secondary btn-compact';
     rejectBtn.textContent = 'Reject';
 
+    // Expandable per-change list: checkbox + label (+ locate link + inline
+    // diff). Apply forwards the checked ids; unchecking everything disables
+    // Apply. The applied count is remembered for the terminal status line.
+    const changeBoxes = [];
+    let lastAppliedCount = 0;
+    if (items && items.length) {
+        const details = document.createElement('details');
+        details.className = 'proposal-card-changes';
+        const summary = document.createElement('summary');
+        summary.textContent = `${items.length} change(s)`;
+        details.appendChild(summary);
+
+        for (const item of items) {
+            const row = document.createElement('div');
+            row.className = 'proposal-card-change';
+
+            const rowHead = document.createElement('label');
+            rowHead.className = 'proposal-card-change-head';
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.checked = true;
+            changeBoxes.push(box);
+            const text = document.createElement('span');
+            text.className = 'proposal-card-change-label';
+            text.textContent = item.label;
+            rowHead.appendChild(box);
+            rowHead.appendChild(text);
+            if (item.searchText && onLocate) {
+                const locate = document.createElement('button');
+                locate.type = 'button';
+                locate.className = 'proposal-card-locate';
+                locate.title = 'Show in document';
+                locate.textContent = '§';
+                locate.addEventListener('click', () => onLocate(item.searchText));
+                rowHead.appendChild(locate);
+            }
+            row.appendChild(rowHead);
+
+            if (item.before !== undefined && item.after !== undefined) {
+                row.appendChild(buildTextDiffElement(item.before, item.after));
+            }
+            details.appendChild(row);
+        }
+
+        changeBoxes.forEach((box) => box.addEventListener('change', () => {
+            applyBtn.disabled = changeBoxes.every((b) => !b.checked);
+        }));
+        el.appendChild(details);
+    }
+
+    /** Ids of the currently checked change items (undefined without items). */
+    function selectedIds() {
+        if (!changeBoxes.length) return undefined;
+        return items.filter((_, i) => changeBoxes[i].checked).map((item) => item.id);
+    }
+
     actions.appendChild(applyBtn);
     actions.appendChild(rejectBtn);
     el.appendChild(actions);
@@ -88,9 +158,10 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     }
 
     applyBtn.addEventListener('click', async () => {
+        lastAppliedCount = changeBoxes.filter((b) => b.checked).length;
         applyBtn.disabled = true;
         rejectBtn.disabled = true;
-        await onApply();
+        await onApply(selectedIds());
     });
 
     rejectBtn.addEventListener('click', () => {
@@ -102,7 +173,12 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         el,
         /** Terminal state after a successful apply. */
         markApplied() {
-            settle('Applied as tracked changes.', 'proposal-applied');
+            settle(
+                changeBoxes.length
+                    ? `Applied ${lastAppliedCount} of ${changeBoxes.length} change(s) as tracked changes.`
+                    : 'Applied as tracked changes.',
+                'proposal-applied'
+            );
         },
         /** Terminal state for a rejected proposal (idempotent). */
         markRejected() {
@@ -110,7 +186,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         },
         /** Re-enables Apply after a failed attempt so the user can retry. */
         markError(message) {
-            applyBtn.disabled = false;
+            applyBtn.disabled = changeBoxes.length > 0 && changeBoxes.every((b) => !b.checked);
             rejectBtn.disabled = false;
             status.style.display = '';
             status.textContent = `Apply failed: ${message}`;

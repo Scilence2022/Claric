@@ -4,7 +4,7 @@
  * allowlist so nothing arbitrary reaches the Word API.
  */
 
-const { buildFormatPrompt, parseFormatOps } = require('../src/lib/format-ops.js');
+const { buildFormatPrompt, parseFormatOps, describeFormatOp } = require('../src/lib/format-ops.js');
 
 describe('parseFormatOps', () => {
   test('parses a bare JSON array', () => {
@@ -171,5 +171,38 @@ describe('buildFormatPrompt', () => {
     expect(p).toContain('"insert"');
     expect(p).toContain('"position": "start|end"');
     expect(p).toContain('built-in "title" style');
+  });
+});
+
+describe('describeFormatOp', () => {
+  test('match + font payload', () => {
+    expect(describeFormatOp({ match: 'exact text', font: { bold: true, color: '#FF0000' } }))
+      .toBe('"exact text" → bold, color: #FF0000');
+  });
+
+  test('paragraphStyle + paragraph payload', () => {
+    expect(describeFormatOp({ paragraphStyle: 'heading1', paragraph: { alignment: 'centered' } }))
+      .toBe('heading1 paragraphs → alignment: centered');
+  });
+
+  test('whole-scope op', () => {
+    expect(describeFormatOp({ font: { size: 12 } })).toBe('whole scope → size: 12');
+  });
+
+  test('insert op with styling', () => {
+    expect(describeFormatOp({ insert: { text: '标题', position: 'start' }, paragraph: { styleBuiltIn: 'title' } }))
+      .toBe('insert at start → "标题", styleBuiltIn: title');
+  });
+
+  test('long match/insert text is truncated', () => {
+    const long = 'x'.repeat(50);
+    expect(describeFormatOp({ match: long, font: { bold: true } }))
+      .toBe(`"${'x'.repeat(40)}…" → bold`);
+    expect(describeFormatOp({ insert: { text: long, position: 'end' } }))
+      .toBe(`insert at end → "${'x'.repeat(40)}…"`);
+  });
+
+  test('explicit false flags are shown as key: false', () => {
+    expect(describeFormatOp({ font: { bold: false } })).toBe('whole scope → bold: false');
   });
 });

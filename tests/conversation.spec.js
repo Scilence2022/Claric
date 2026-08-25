@@ -765,6 +765,101 @@ describe('createConversation.submit', () => {
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
   });
+
+  test('format card lists one selectable change per op; apply runs only checked ops', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareFormatProposal: jest.fn(async () => ({
+        instruction: 'x', scope: 'selection',
+        ops: [
+          { match: 'a', font: { bold: true } },
+          { paragraphStyle: 'heading1', paragraph: { alignment: 'centered' } },
+        ],
+        model: 'm',
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'some selected text',
+    });
+
+    await conv.submit('把这段话加粗并标红');
+
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const boxes = cardEl.querySelectorAll('.proposal-card-change input[type="checkbox"]');
+    expect(boxes).toHaveLength(2);
+    expect(cardEl.textContent).toContain('"a" → bold');
+    expect(cardEl.textContent).toContain('heading1 paragraphs → alignment: centered');
+
+    // Uncheck the second op; Apply must run only the first.
+    boxes[1].checked = false;
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(actions.applyFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.applyFormatProposal.mock.calls[0][1].ops)
+      .toEqual([{ match: 'a', font: { bold: true } }]);
+    expect(cardEl.querySelector('.proposal-card-status').textContent).toContain('1 of 2');
+  });
+
+  test('document edit card lists one selectable change per section', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [
+        { status: 'fulfilled', amendment: 'new zero', chunk: { id: 'c0', paragraphs: [{ text: 'old zero' }] } },
+        { status: 'fulfilled', amendment: 'new one', chunk: { id: 'c1', paragraphs: [{ text: 'old one' }] } },
+      ],
+      chunks: [
+        { id: 'c0', paragraphs: [{ text: 'old zero' }] },
+        { id: 'c1', paragraphs: [{ text: 'old one' }] },
+      ],
+      apply: jest.fn(async () => ({ amendmentsApplied: 1, commentsInserted: 0 })),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({ runDocumentSkill: jest.fn(async () => staged) });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('please polish the whole document');
+
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const boxes = cardEl.querySelectorAll('.proposal-card-change input[type="checkbox"]');
+    expect(boxes).toHaveLength(2);
+    // Each section shows an inline before/after diff (word-level).
+    const diffs = cardEl.querySelectorAll('.diff-view');
+    expect(diffs).toHaveLength(2);
+    expect(diffs[0].querySelector('del').textContent).toBe('old');
+    expect(diffs[0].querySelector('ins').textContent).toBe('new');
+
+    // Uncheck section c1; Apply must carry only c0's chunk id.
+    boxes[1].checked = false;
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(staged.apply).toHaveBeenCalledWith(['c0']);
+  });
+
+  test('selection edit card shows an inline diff of the rewrite', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'some selected text',
+    });
+
+    await conv.submit('润色这段话');
+
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    expect(cardEl.querySelectorAll('.proposal-card-change')).toHaveLength(1);
+    expect(cardEl.querySelector('.diff-view del').textContent).toBe('before');
+    expect(cardEl.querySelector('.diff-view ins').textContent).toBe('after');
+  });
 });
 
 describe('createConversation.cancel', () => {

@@ -477,6 +477,66 @@ body {
     border-radius: var(--border-radius-md);
 }
 
+.proposal-card-changes {
+    margin-bottom: var(--spacing-sm);
+}
+
+.proposal-card-changes > summary {
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+    user-select: none;
+}
+
+.proposal-card-change {
+    border-top: 1px solid var(--border-color);
+    padding: var(--spacing-xs) 0;
+}
+
+.proposal-card-change-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--spacing-xs);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+}
+
+.proposal-card-change-label {
+    flex: 1;
+    word-break: break-word;
+}
+
+.proposal-card-locate {
+    border: none;
+    background: none;
+    color: var(--accent-color);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    padding: 0 var(--spacing-xs);
+}
+
+.diff-view {
+    font-size: var(--font-size-sm);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 160px;
+    overflow-y: auto;
+    margin-top: var(--spacing-xs);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    background: var(--secondary-bg);
+    border-radius: var(--border-radius-sm);
+}
+
+.diff-view del {
+    color: var(--error-color);
+    text-decoration: line-through;
+}
+
+.diff-view ins {
+    color: var(--success-color);
+    text-decoration: none;
+}
+
 .proposal-card-comment {
     font-size: var(--font-size-sm);
     color: var(--secondary-text);

@@ -244,3 +244,36 @@ function _sanitizeParagraph(paragraph, log) {
     }
     return Object.keys(out).length > 0 ? out : null;
 }
+
+/** @private */
+function _truncate(s, max) {
+    const text = String(s || '');
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * Renders one op as a short human-readable line for the proposal card's
+ * change list, e.g. `"exact text" → bold, color: #FF0000` or
+ * `insert at start → "标题", styleBuiltIn: title`.
+ *
+ * @param {object} op - Sanitized op (see parseFormatOps)
+ * @returns {string}
+ */
+export function describeFormatOp(op) {
+    const target = op.insert
+        ? `insert at ${op.insert.position}`
+        : op.match
+            ? `"${_truncate(op.match, 40)}"`
+            : op.paragraphStyle
+                ? `${op.paragraphStyle} paragraphs`
+                : 'whole scope';
+    const changes = [];
+    if (op.insert) changes.push(`"${_truncate(op.insert.text, 40)}"`);
+    for (const payload of [op.font, op.paragraph]) {
+        if (!payload) continue;
+        for (const [key, value] of Object.entries(payload)) {
+            changes.push(value === true ? key : `${key}: ${value}`);
+        }
+    }
+    return `${target} → ${changes.join(', ')}`;
+}
