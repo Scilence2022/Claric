@@ -12,7 +12,9 @@
  *   - free text + format intent -> staged formatting/insert ops (existing text never rewritten)
  *   - free text + selection    -> selection edit (user text is the edit instruction)
  *   - free text + edit intent  -> document amendment run (staged proposal)
- *   - free text, otherwise     -> document Q&A (answer in chat)
+ *   - free text + question lead -> document Q&A (answer in chat)
+ *   - free text, zero intent hits -> compound turn (task planner classifies the
+ *     ambiguous instruction into the right pipeline; planning failure falls back to Q&A)
  *
  * createConversation(deps) wires routing to the chat view, input bar, and
  * word actions. All Word/LLM side effects live behind deps.actions so the
@@ -41,9 +43,11 @@ export const TURN_TYPE = Object.freeze({
 /**
  * English edit-intent verbs (word-boundary matched) and Chinese edit-intent
  * substrings. Free text without a selection carrying one of these is an
- * instruction to edit the document, not a question about it.
+ * instruction to edit the document, not a question about it. Update/enrich
+ * verbs (更新/丰富/充实/增补/扩写) require a document-ish object nearby, so
+ * phrasings like "是谁更新的" stay out of the edit pipelines.
  */
-const EDIT_INTENT_RE = /\b(edit|revise|revision|polish|proofread|rewrite|redline|fix|amend|correct|improve|rephrase)\b|润色|修订|修改|批改|校对|校对|改写|审改|修正|完善/i;
+const EDIT_INTENT_RE = /\b(edit|revise|revision|polish|proofread|rewrite|redline|fix|amend|correct|improve|rephrase)\b|\bupdate\b.{0,20}\b(document|doc|content|text)\b|润色|修订|修改|批改|校对|改写|审改|修正|完善|(更新|充实|增补|扩写).{0,4}(文档|文章|内容|正文|文本|文字|段落|章节|故事|论文|报告)/i;
 
 /**
  * Leading question markers (EN + ZH). When the input STARTS with one of these
@@ -212,6 +216,17 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
     }
     if (looksLikeEditIntent(trimmed)) {
         return { type: TURN_TYPE.DOC_EDIT, instruction: trimmed };
+    }
+    // Clear questions skip the classifier: straight to Q&A, no extra call.
+    if (looksLikeQuestion(trimmed)) {
+        return { type: TURN_TYPE.DOC_QA, question: trimmed };
+    }
+    // Zero intent-family hits and not a question lead: the instruction is
+    // ambiguous. Let the task planner classify it into the right pipeline
+    // (a cheap call — the planner never sees document text). Planning
+    // failure falls back to single-intent routing (Q&A) in runCompoundTurn.
+    if (allowCompound) {
+        return { type: TURN_TYPE.COMPOUND, instruction: trimmed };
     }
     return { type: TURN_TYPE.DOC_QA, question: trimmed };
 }

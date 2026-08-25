@@ -239,6 +239,35 @@ describe('routeTurn', () => {
     expect(turn.type).toBe(TURN_TYPE.DOC_QA);
   });
 
+  test('"enrich content and update the document" hits edit intent (ZH)', () => {
+    const turn = routeTurn('丰富内容并更新文档', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_EDIT);
+    expect(turn.instruction).toBe('丰富内容并更新文档');
+  });
+
+  test('update/enrich verbs need a document-ish object ("是谁更新的" stays out)', () => {
+    // No edit intent hit, no question lead: ambiguous -> planner classify.
+    const turn = routeTurn('文档最后是谁更新的', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+  });
+
+  test('ambiguous zero-hit instruction routes to the planner for classification', () => {
+    const turn = routeTurn('让文章更有感染力', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+    expect(turn.instruction).toBe('让文章更有感染力');
+  });
+
+  test('ambiguous zero-hit instruction falls back to Q&A when compound is disabled', () => {
+    const turn = routeTurn('让文章更有感染力', { hasSelection: false, skills: BUILTIN_SKILLS, allowCompound: false });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+    expect(turn.question).toBe('让文章更有感染力');
+  });
+
+  test('question lead still skips the classifier (no planner call)', () => {
+    const turn = routeTurn('如何评价这篇文章？', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+  });
+
   test('illustration intent routes to illustration (ZH)', () => {
     const turn = routeTurn('设计并增加SVG插图', { hasSelection: false, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.ILLUSTRATION);
@@ -764,6 +793,48 @@ describe('createConversation.submit', () => {
     expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test('ambiguous zero-hit instruction goes through the planner, then the classified pipeline runs', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({
+        tasks: [{ type: 'edit', instruction: '丰富内容并更新文档' }],
+        model: 'm',
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('让文章更有感染力');
+
+    expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
+    expect(actions.planDocumentTasks.mock.calls[0][1].instruction).toBe('让文章更有感染力');
+    // The planner classified it as an edit -> document amendment pipeline.
+    expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
+    expect(actions.runDocumentSkill.mock.calls[0][1].promptTemplate).toBe('丰富内容并更新文档');
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+  });
+
+  test('ambiguous input falls back to Q&A when planning fails', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({ tasks: null, model: 'm' })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('让文章更有感染力');
+
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    expect(actions.answerQuestion.mock.calls[0][1].question).toBe('让文章更有感染力');
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
   });
 
   test('format card lists one selectable change per op; apply runs only checked ops', async () => {
