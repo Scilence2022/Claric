@@ -15,10 +15,15 @@
  *     {
  *       "match": "optional exact substring to format",
  *       "paragraphStyle": "optional built-in style target (e.g. \"heading1\")",
+ *       "insert": { "text": "new paragraph(s) to add", "position": "start|end" },
  *       "font": { "bold": true, "color": "#FF0000", ... },
  *       "paragraph": { "styleBuiltIn": "heading2", "alignment": "centered", ... }
  *     }
  *   ]
+ *
+ * An "insert" op adds NEW short structural content that does not exist yet
+ * (e.g. an article title) without touching existing text; the font/paragraph
+ * payload on the same op styles the inserted paragraph(s).
  *
  * Pure module — no DOM, no Word API. Safe to import under Jest/node.
  *
@@ -40,6 +45,14 @@ const PARA_NUMBER_KEYS = ['lineSpacing', 'spaceBefore', 'spaceAfter', 'leftInden
 
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
+/** Insert positions: where in the scope the new paragraph(s) land. */
+const INSERT_POSITIONS = ['start', 'end'];
+/**
+ * Insert ops cover short structural elements (a title, a heading). Long-form
+ * generation belongs to the append pipeline, so insert text is capped.
+ */
+const MAX_INSERT_CHARS = 2000;
+
 /**
  * Builds the LLM prompt that turns a formatting instruction into JSON ops.
  *
@@ -52,14 +65,16 @@ export function buildFormatPrompt(instruction, scopeText, scope) {
     const scopeName = scope === 'document' ? 'document' : 'selection';
     return (
         'You are a formatting assistant embedded in Microsoft Word. The user describes FORMATTING changes ' +
-        '(font, size, color, highlight, underline, paragraph style, alignment, spacing, indentation). ' +
-        'Translate the instruction into a JSON array of formatting operations.\n\n' +
+        '(font, size, color, highlight, underline, paragraph style, alignment, spacing, indentation), ' +
+        'optionally including short NEW structural elements to add (e.g. an article title). ' +
+        'Translate the instruction into a JSON array of operations.\n\n' +
         'OUTPUT CONTRACT (strict):\n' +
         '- Output ONLY a JSON array. No markdown, no code fences, no explanations, no commentary.\n' +
         '- Each array item is one operation:\n' +
         '  {\n' +
         '    "match": "optional exact substring of the text to format (use one op per distinct target)",\n' +
         '    "paragraphStyle": "optional built-in style of paragraphs to target (e.g. \\"heading1\\")",\n' +
+        '    "insert": { "text": "new paragraph text to add (\\n separates paragraphs)", "position": "start|end" },\n' +
         '    "font": { "bold": true, "italic": true, "underline": "single|double|none", "strikeThrough": true, ' +
         '"superscript": false, "subscript": false, "allCaps": false, "smallCaps": false, "color": "#RRGGBB", ' +
         '"highlightColor": "yellow|green|cyan|magenta|red|blue|darkBlue|darkGreen|darkRed|darkYellow|darkCyan|darkMagenta|black|white", ' +
@@ -69,9 +84,14 @@ export function buildFormatPrompt(instruction, scopeText, scope) {
         '"lineSpacing": 14, "spaceBefore": 6, "spaceAfter": 6, "leftIndent": 18, "rightIndent": 18, "firstLineIndent": 24 }\n' +
         '  }\n' +
         `- Omit both "match" and "paragraphStyle" to target the entire ${scopeName}.\n` +
+        '- Use an "insert" op to ADD a short structural element that does not exist yet (e.g. a title): ' +
+        `"text" is the new content and "position" is "start" or "end" of the ${scopeName} (default "end"); ` +
+        '"font"/"paragraph" on the same op style the inserted paragraph(s). Keep inserts short — a title ' +
+        'or heading, not long-form content. For an article title, compose a concise title from the ' +
+        `${scopeName} text, position it at "start", and style it with the built-in "title" style.\n` +
         '- Include ONLY the properties the user asked to change; spacing/indent values are points.\n' +
-        '- Do NOT rewrite or change any text — formatting only. If the instruction asks for content ' +
-        'changes instead of formatting, output exactly [].\n\n' +
+        '- Do NOT rewrite or change any existing text. If the instruction asks to rewrite existing ' +
+        'content rather than format it or add a short structural element, output exactly [].\n\n' +
         'USER INSTRUCTION:\n' + (instruction || '').trim() + '\n\n' +
         `--- ${scopeName.toUpperCase()} TEXT (for choosing "match" substrings) ---\n` + (scopeText || '')
     );
@@ -132,16 +152,45 @@ function _sanitizeOp(entry, log) {
         op.paragraphStyle = entry.paragraphStyle.trim();
     }
 
+    const insert = _sanitizeInsert(entry.insert, log);
     const font = _sanitizeFont(entry.font, log);
     const paragraph = _sanitizeParagraph(entry.paragraph, log);
+    if (insert) op.insert = insert;
     if (font) op.font = font;
     if (paragraph) op.paragraph = paragraph;
 
-    if (!font && !paragraph) {
-        log('Format ops: dropped an entry with no valid font/paragraph payload', 'warning');
+    if (!insert && !font && !paragraph) {
+        log('Format ops: dropped an entry with no valid font/paragraph/insert payload', 'warning');
         return null;
     }
     return op;
+}
+
+/**
+ * Validates an insert payload: the new paragraph text plus where in the
+ * scope it lands ('start' | 'end', default 'end'). Text is capped at
+ * MAX_INSERT_CHARS — long-form generation belongs to the append pipeline.
+ * @private
+ */
+function _sanitizeInsert(insert, log) {
+    if (!insert || typeof insert !== 'object' || Array.isArray(insert)) return null;
+    const text = String(insert.text === undefined || insert.text === null ? '' : insert.text).trim();
+    if (!text) {
+        log('Format ops: dropped an insert op with empty text', 'warning');
+        return null;
+    }
+    const out = { text: text.slice(0, MAX_INSERT_CHARS) };
+    if (text.length > MAX_INSERT_CHARS) {
+        log(`Format ops: insert text truncated to ${MAX_INSERT_CHARS} chars`, 'warning');
+    }
+    const position = String(insert.position || '').trim().toLowerCase();
+    if (INSERT_POSITIONS.includes(position)) {
+        out.position = position;
+    } else {
+        if (position) log(`Format ops: unknown insert position "${insert.position}"; using "end"`, 'warning');
+        out.position = 'end';
+    }
+    return out;
 }
 
 /** @private */

@@ -48,7 +48,7 @@ describe('parseFormatOps', () => {
     const log = jest.fn();
     const ops = parseFormatOps('[{"match":"hello"},{"font":{"bold":true}}]', log);
     expect(ops).toEqual([{ font: { bold: true } }]);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('no valid font/paragraph payload'), 'warning');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('no valid font/paragraph/insert payload'), 'warning');
   });
 
   test('unknown font properties are dropped, known ones kept', () => {
@@ -101,6 +101,48 @@ describe('parseFormatOps', () => {
     const ops = parseFormatOps('[null,"x",42,[{"font":{"bold":true}}],{"font":{"bold":true}}]');
     expect(ops).toEqual([{ font: { bold: true } }]);
   });
+
+  test('parses an insert op with font/paragraph styling', () => {
+    const ops = parseFormatOps(
+      '[{"insert":{"text":"我的标题","position":"start"},"paragraph":{"styleBuiltIn":"title"},"font":{"bold":true}}]'
+    );
+    expect(ops).toEqual([{
+      insert: { text: '我的标题', position: 'start' },
+      font: { bold: true },
+      paragraph: { styleBuiltIn: 'title' },
+    }]);
+  });
+
+  test('insert op without styling is valid; position defaults to "end"', () => {
+    const ops = parseFormatOps('[{"insert":{"text":"落款"}}]');
+    expect(ops).toEqual([{ insert: { text: '落款', position: 'end' } }]);
+  });
+
+  test('insert op with empty text is dropped with a warning', () => {
+    const log = jest.fn();
+    expect(parseFormatOps('[{"insert":{"text":"  "}}]', log)).toEqual([]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('empty text'), 'warning');
+  });
+
+  test('unknown insert position falls back to "end" with a warning', () => {
+    const log = jest.fn();
+    const ops = parseFormatOps('[{"insert":{"text":"t","position":"middle"}}]', log);
+    expect(ops).toEqual([{ insert: { text: 't', position: 'end' } }]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('unknown insert position'), 'warning');
+  });
+
+  test('insert text is truncated at the cap with a warning', () => {
+    const log = jest.fn();
+    const ops = parseFormatOps(JSON.stringify([{ insert: { text: 'x'.repeat(2500), position: 'start' } }]), log);
+    expect(ops[0].insert.text).toHaveLength(2000);
+    expect(ops[0].insert.position).toBe('start');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('truncated'), 'warning');
+  });
+
+  test('non-object insert payloads are ignored; op survives on font/paragraph', () => {
+    const ops = parseFormatOps('[{"insert":"nope","font":{"bold":true}}]');
+    expect(ops).toEqual([{ font: { bold: true } }]);
+  });
 });
 
 describe('buildFormatPrompt', () => {
@@ -122,5 +164,12 @@ describe('buildFormatPrompt', () => {
     const p = buildFormatPrompt('x', 'y', 'selection');
     expect(p).toContain('Output ONLY a JSON array');
     expect(p).toContain('output exactly []');
+  });
+
+  test('documents the insert op for short structural elements (e.g. a title)', () => {
+    const p = buildFormatPrompt('增加文章标题', '正文第一段', 'document');
+    expect(p).toContain('"insert"');
+    expect(p).toContain('"position": "start|end"');
+    expect(p).toContain('built-in "title" style');
   });
 });
