@@ -86,6 +86,12 @@ function makeActions(overrides = {}) {
       instruction: 'x', scope: 'selection', ops: [{ font: { bold: true } }], model: 'm',
     })),
     applyFormatProposal: jest.fn(async () => ({ applied: 1, warnings: [] })),
+    prepareIllustrationProposal: jest.fn(async () => ({
+      instruction: 'x',
+      svg: '<svg width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>',
+      position: 'end', model: 'm',
+    })),
+    applyIllustrationProposal: jest.fn(async () => ({ inserted: true })),
     revealTextSnippet: jest.fn(async () => true),
     ...overrides,
   };
@@ -202,6 +208,32 @@ describe('routeTurn', () => {
     const turn = routeTurn('增加标题，全文样式设计修改', { hasSelection: false, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.FORMAT);
     expect(turn.scope).toBe('document');
+  });
+
+  test('illustration intent routes to illustration (ZH)', () => {
+    const turn = routeTurn('设计并增加SVG插图', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.ILLUSTRATION);
+    expect(turn.instruction).toBe('设计并增加SVG插图');
+  });
+
+  test('illustration intent routes to illustration (EN)', () => {
+    const turn = routeTurn('add an image of a cat', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.ILLUSTRATION);
+  });
+
+  test('illustration intent wins over a selection', () => {
+    const turn = routeTurn('给这篇文章配一张插图', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.ILLUSTRATION);
+  });
+
+  test('generic image words without a creation verb stay an edit', () => {
+    const turn = routeTurn('修改图像描述的措辞', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
+  });
+
+  test('question lead beats illustration intent ("如何给文章配插图？")', () => {
+    const turn = routeTurn('如何给文章配插图？', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
   });
 
   test('format intent routes to format (EN)', () => {
@@ -581,6 +613,52 @@ describe('createConversation.submit', () => {
     expect(view._msg.attachProposal).not.toHaveBeenCalled();
     expect(view._msg.setStatus).toHaveBeenCalledWith('The model proposed no changes.');
     expect(actions.applyFormatProposal).not.toHaveBeenCalled();
+  });
+
+  test('illustration turn stages a previewable proposal (apply on click)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('设计并增加SVG插图');
+
+    expect(actions.prepareIllustrationProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareIllustrationProposal.mock.calls[0][1].instruction).toBe('设计并增加SVG插图');
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    // Staged: nothing written to the document before the user clicks Apply.
+    expect(actions.applyIllustrationProposal).not.toHaveBeenCalled();
+    expect(actions.prepareDocumentAppend).not.toHaveBeenCalled();
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+
+    // The staged card carries an image preview of the proposed artwork.
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    expect(cardEl.querySelector('img.proposal-card-preview')).not.toBeNull();
+
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(actions.applyIllustrationProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test('illustration turn with no usable SVG shows a status instead of a card', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareIllustrationProposal: jest.fn(async () => ({ instruction: 'x', svg: null, position: 'end', model: 'm' })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('设计并增加SVG插图');
+
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith('The model produced no usable SVG illustration.');
+    expect(actions.applyIllustrationProposal).not.toHaveBeenCalled();
   });
 });
 

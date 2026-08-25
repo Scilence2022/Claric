@@ -5,8 +5,9 @@
  *
  * Routing rules (routeTurn — pure, testable):
  *   - "/skill args"            -> skill turn (pipeline depends on skill.category)
+ *   - free text + illustration intent -> design an SVG illustration, stage an image-insert proposal
  *   - free text + append intent -> generate content, stage an append-to-end proposal
- *   - free text + format intent -> staged formatting ops (font/paragraph, no text change)
+ *   - free text + format intent -> staged formatting/insert ops (existing text never rewritten)
  *   - free text + selection    -> selection edit (user text is the edit instruction)
  *   - free text + edit intent  -> document amendment run (staged proposal)
  *   - free text, otherwise     -> document Q&A (answer in chat)
@@ -29,6 +30,7 @@ export const TURN_TYPE = Object.freeze({
     DOC_EDIT: 'doc-edit',
     DOC_APPEND: 'doc-append',
     FORMAT: 'format',
+    ILLUSTRATION: 'illustration',
     DOC_QA: 'doc-qa',
 });
 
@@ -76,6 +78,28 @@ export function looksLikeEditIntent(text) {
  * document/end") so plain "add a paragraph" stays Q&A.
  */
 const APPEND_INTENT_RE = /\bappend\b|\badd\b.{0,30}\bto the (document|doc|end)\b|\bcontinue writing\b|\bkeep writing\b|\bextend the (document|doc|text)\b|追加|续写|补写|接着写|继续写|写到文档|写入文档|加到文档|添加到文档|插入到文档|附加到文档|到文档末尾|到文末/i;
+
+/**
+ * Illustration-intent markers: the user wants NEW artwork designed and
+ * inserted into the document. The dedicated nouns (插图/插画/配图/svg/...)
+ * match directly; generic image words (图片/图像/image/picture) require a
+ * creation verb nearby, so an edit that merely mentions an image
+ * ("修改图像描述的措辞") still routes to an edit pipeline. These route to
+ * the illustration pipeline (SVG design + image insertion).
+ */
+const ILLUSTRATION_INTENT_RE = /插图|插画|配图|扉页图|题图|头图|画作|绘制|\bsvg\b|\billustrat|\bartwork\b|(设计|生成|插入|添加|增加|创作|制作).{0,15}(图片|图像|图画)|(draw|generate|create|add|insert|design)\b.{0,20}\b(image|picture|drawing)\b/i;
+
+/**
+ * True when free text asks for an illustration to be designed and inserted.
+ * Questions stay Q&A even when they mention artwork ("如何给文章配插图？").
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeIllustrationIntent(text) {
+    if (looksLikeQuestion(text)) return false;
+    return ILLUSTRATION_INTENT_RE.test(text);
+}
 
 /**
  * True when free text asks for new content to be appended/inserted into the
@@ -130,6 +154,12 @@ export function routeTurn(text, { hasSelection, skills } = {}) {
     const resolved = resolveSkill(trimmed, skills);
     if (resolved) {
         return { type: TURN_TYPE.SKILL, skill: resolved.skill, args: resolved.args };
+    }
+    // Illustration intent wins over the append/edit branches: the artifact
+    // nouns (插图/配图/svg...) name an image to design and insert, not text
+    // to append or existing text to edit.
+    if (looksLikeIllustrationIntent(trimmed)) {
+        return { type: TURN_TYPE.ILLUSTRATION, instruction: trimmed };
     }
     // Append intent wins over the selection/edit branches: the user explicitly
     // asked for new content in the document, not a rewrite of existing text.
@@ -460,6 +490,54 @@ export function createConversation(deps) {
     }
 
     /**
+     * Runs an illustration turn: the LLM designs one self-contained SVG from
+     * the document's subject and mood, staged in a proposal card with an
+     * image preview. Apply rasterizes it to PNG and inserts it into the
+     * document via Word.js (tracked when track-changes is on).
+     */
+    async function runIllustrationTurn(turn, msg, turnDeps) {
+        appState.isProcessing = true;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Designing illustration...');
+            const proposal = await actions.prepareIllustrationProposal(turnDeps, {
+                instruction: turn.instruction,
+                onToken: (t) => msg.appendModelToken({ id: 'illustration' }, 'content', t),
+                onReasoning: (t) => msg.appendModelToken({ id: 'illustration' }, 'reasoning', t),
+            });
+            if (!proposal.svg) {
+                msg.setStatus('The model produced no usable SVG illustration.');
+                return;
+            }
+            msg.setStatus('');
+            const card = createProposalCard({
+                title: 'Proposed illustration',
+                countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at document ${proposal.position}`,
+                previewSrc: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(proposal.svg)))}`,
+                comment: null,
+                onApply: async () => {
+                    try {
+                        await actions.applyIllustrationProposal(turnDeps, proposal);
+                        card.markApplied();
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Proposal rejected by user.', 'info');
+                },
+            });
+            msg.attachProposal(card.el);
+        } catch (error) {
+            msg.markError(error.message);
+        } finally {
+            appState.isProcessing = false;
+            input.setProcessing(false);
+        }
+    }
+
+    /**
      * Runs a selection-scope comment turn (fire-and-forget comment pipeline).
      */
     async function runSelectionCommentTurn(skill, args, msg, turnDeps) {
@@ -613,6 +691,8 @@ export function createConversation(deps) {
                 await runSelectionEditTurn(turn.instruction, msg, turnDeps);
             } else if (turn.type === TURN_TYPE.DOC_APPEND) {
                 await runAppendTurn(turn.instruction, msg, turnDeps, selectionText);
+            } else if (turn.type === TURN_TYPE.ILLUSTRATION) {
+                await runIllustrationTurn(turn, msg, turnDeps);
             } else if (turn.type === TURN_TYPE.FORMAT) {
                 await runFormatTurn(turn, msg, turnDeps, selectionText);
             } else if (turn.type === TURN_TYPE.DOC_EDIT) {
