@@ -33,6 +33,10 @@ import { extractContext } from '../lib/context-extractor.js';
 import { processChunksParallel } from '../lib/orchestrator.js';
 import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks } from '../lib/reassembler.js';
 import { buildFormatPrompt, parseFormatOps } from '../lib/format-ops.js';
+import {
+    buildIllustrationPrompt, parseIllustration, sanitizeSvg,
+    ensureSvgDimensions, svgDimensions, illustrationPositionFromInstruction,
+} from '../lib/illustration.js';
 import { getActiveBackendConfig } from './app-state.js';
 
 /**
@@ -677,6 +681,131 @@ function _applyParagraphOps(paragraph, ops, log) {
         } catch (e) {
             log(`Format ops: paragraph.${key} failed (${e.message})`, 'warning');
         }
+    }
+}
+
+/** Maximum width of an inserted illustration, in points (A4/Letter content width is ~450-470pt). */
+const MAX_ILLUSTRATION_WIDTH_PT = 450;
+
+/**
+ * Designs an illustration for the document — the prepare half of the staged
+ * illustration flow. The model returns ONE self-contained SVG (see
+ * illustration.js); it is parsed, sanitized (safe for DOM preview), and
+ * staged in a proposal card, written by applyIllustrationProposal only when
+ * the user applies.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} args
+ * @param {string} args.instruction - The user's illustration instruction
+ * @param {function} [args.onToken] - Called with each streamed content token
+ * @param {function} [args.onReasoning] - Called with each streamed thinking token
+ * @returns {Promise<{ instruction: string, svg: string|null, position: string, model: string }>}
+ *   svg is null when the model returned nothing usable.
+ */
+export async function prepareIllustrationProposal(deps, { instruction, onToken, onReasoning } = {}) {
+    const { appState, log } = deps;
+
+    const richness = (appState.config.docExtraction || {}).richness || 'structured';
+    log('Extracting document text for context...', 'info');
+    const documentText = await extractDocumentStructured({ richness });
+
+    const prompt = buildIllustrationPrompt(instruction, documentText);
+    const backendConfig = getActiveBackendConfig(appState);
+    log(`Designing illustration [${backendConfig.model}]...`, 'info');
+    const rawResponse = (onToken || onReasoning)
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
+        : await sendPrompt(backendConfig, prompt, log);
+
+    const parsed = parseIllustration(rawResponse, log);
+    const svg = parsed ? ensureSvgDimensions(sanitizeSvg(parsed.svg)) : null;
+    if (svg) log(`Illustration SVG received (${(svg.length / 1024).toFixed(1)} KB).`, 'success');
+    return {
+        instruction: (instruction || '').trim(),
+        svg,
+        position: illustrationPositionFromInstruction(instruction),
+        model: backendConfig.model,
+    };
+}
+
+/**
+ * Applies a prepared illustration proposal: rasterizes the sanitized SVG to
+ * PNG (Word's insertInlinePictureFromBase64 takes PNG/JPEG/GIF/BMP base64,
+ * not SVG) and inserts it as a centered inline picture in its own paragraph
+ * at the document start or end, as a tracked change per config.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} proposal - Result of prepareIllustrationProposal
+ * @returns {Promise<{ inserted: boolean }>}
+ */
+export async function applyIllustrationProposal(deps, proposal) {
+    const { appState, log } = deps;
+    const svg = ((proposal && proposal.svg) || '').trim();
+    if (!svg) {
+        throw new Error('No illustration to apply — the model returned no usable SVG.');
+    }
+    const { base64, width, height } = await _svgToPngBase64(svg);
+    const atStart = proposal.position === 'start';
+
+    await Word.run(async (context) => {
+        if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = appState.config.trackChangesEnabled
+                ? Word.ChangeTrackingMode.trackAll
+                : Word.ChangeTrackingMode.off;
+        }
+        const body = context.document.body;
+        const location = atStart ? Word.InsertLocation.start : Word.InsertLocation.end;
+        // A dedicated paragraph keeps the image standalone and centerable.
+        const paragraph = body.insertParagraph('', location);
+        const picture = paragraph.getRange(Word.RangeLocation.start)
+            .insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
+        paragraph.alignment = Word.Alignment.centered;
+        picture.load('width,height');
+        await context.sync();
+        // Inline picture dimensions are points; scale oversized images down
+        // to the content width, keeping the aspect ratio.
+        if (picture.width > MAX_ILLUSTRATION_WIDTH_PT) {
+            picture.height = picture.height * (MAX_ILLUSTRATION_WIDTH_PT / picture.width);
+            picture.width = MAX_ILLUSTRATION_WIDTH_PT;
+        }
+        try {
+            picture.altTextDescription = (proposal.instruction || 'Illustration').slice(0, 200);
+        } catch (_e) {
+            // Alt text is best-effort (not critical for the insertion).
+        }
+        await context.sync();
+        if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+            await context.sync();
+        }
+        log(`Inserted illustration at the document ${atStart ? 'start' : 'end'} (${width}x${height}px PNG).`, 'success');
+    });
+    return { inserted: true };
+}
+
+/**
+ * Rasterizes an SVG string to PNG base64 at 1600px wide via an offscreen
+ * canvas (browser/WebView2 only — not exercised under node tests). The SVG
+ * is vector, so rendering up to 1600px keeps the inserted image crisp.
+ * @private
+ */
+async function _svgToPngBase64(svg) {
+    const dims = svgDimensions(svg) || { width: 1200, height: 800 };
+    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    try {
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => reject(new Error('The SVG could not be rendered.'));
+            img.src = url;
+        });
+        const canvas = document.createElement('canvas');
+        canvas.width = 1600;
+        canvas.height = Math.max(1, Math.round(dims.height * (1600 / dims.width)));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        return { base64: canvas.toDataURL('image/png').split(',')[1], width: canvas.width, height: canvas.height };
+    } finally {
+        URL.revokeObjectURL(url);
     }
 }
 

@@ -18,12 +18,14 @@
  * @param {number} [args.afterChars] - Character count of the proposed rewrite
  * @param {string} [args.countsText] - Overrides the "before → after chars" line
  *   (for non-text proposals such as formatting ops)
+ * @param {string} [args.previewSrc] - Optional image data-URL preview shown
+ *   under the heading (illustration proposals)
  * @param {string} [args.comment] - Optional comment text (merged mode)
  * @param {function()} args.onApply - Async apply callback
  * @param {function()} [args.onReject] - Reject callback
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markError: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, comment, onApply, onReject }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, comment, onApply, onReject }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -38,6 +40,14 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     head.appendChild(titleEl);
     head.appendChild(counts);
     el.appendChild(head);
+
+    if (previewSrc) {
+        const img = document.createElement('img');
+        img.className = 'proposal-card-preview';
+        img.alt = 'Proposal preview';
+        img.src = previewSrc;
+        el.appendChild(img);
+    }
 
     if (comment) {
         const commentEl = document.createElement('div');
