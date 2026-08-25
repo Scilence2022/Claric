@@ -99,7 +99,24 @@ export function createConversation(deps) {
     const actions = deps.actions || defaultActions;
     const getSelectionState = deps.getSelectionState || actions.hasNonEmptySelection;
 
-    const actionDeps = { appState, log, logWithRetry, updateStatusBar };
+    /**
+     * Builds per-turn action deps whose log lines also stream into the
+     * assistant message's collapsible work log (Claude Code style).
+     *
+     * @param {object} msg - Assistant message handle
+     * @returns {object} action deps for one turn
+     */
+    function actionDepsFor(msg) {
+        return {
+            appState,
+            logWithRetry,
+            updateStatusBar,
+            log: (message, type) => {
+                log(message, type);
+                msg.appendLogLine(message);
+            },
+        };
+    }
 
     /**
      * True while any pipeline is running (blocks new turns).
@@ -114,7 +131,7 @@ export function createConversation(deps) {
      * Amendment runs are gated: the LLM results are staged first and only
      * written to the document when the user applies the proposal card.
      */
-    async function runDocumentTurn(skill, args, msg) {
+    async function runDocumentTurn(skill, args, msg, turnDeps) {
         const gated = skill.category === 'amendment';
         appState.isProcessingDoc = true;
         appState.processDocController = new AbortController();
@@ -122,7 +139,7 @@ export function createConversation(deps) {
         try {
             msg.setStatus(`Processing document (${skill.name})...`);
             const commentInstructions = getCommentInstructions();
-            const outcome = await actions.runDocumentSkill(actionDeps, {
+            const outcome = await actions.runDocumentSkill(turnDeps, {
                 category: skill.category,
                 promptTemplate: withArgs(skill.defaultTemplate, args),
                 commentInstructions,
@@ -132,7 +149,7 @@ export function createConversation(deps) {
             msg.hideProgress();
 
             if (outcome.staged) {
-                await stageDocumentProposal(outcome, msg);
+                await stageDocumentProposal(outcome, msg, turnDeps);
                 return;
             }
 
@@ -145,7 +162,7 @@ export function createConversation(deps) {
                     `${applicationResult.commentsInserted} comment(s) across ${chunks.length} section(s).`
                 );
                 msg.addCitationPills(chunks.map(chunkCitation), (searchText) => {
-                    actions.revealTextSnippet(actionDeps, searchText);
+                    actions.revealTextSnippet(turnDeps, searchText);
                 });
             }
         } catch (error) {
@@ -167,7 +184,7 @@ export function createConversation(deps) {
      * Apply writes the staged results as tracked changes; Reject discards
      * them (word-actions cleans up the chunk bookmarks either way).
      */
-    async function stageDocumentProposal(outcome, msg) {
+    async function stageDocumentProposal(outcome, msg, turnDeps) {
         // Only offer chunks whose amendment actually differs from the
         // original text — an LLM echo of the input is not a proposal.
         const amendedChunks = outcome.results.filter((r) => r.status === 'fulfilled'
@@ -202,7 +219,7 @@ export function createConversation(deps) {
                         `${applicationResult.commentsInserted} comment(s) across ${outcome.chunks.length} section(s).`
                     );
                     msg.addCitationPills(outcome.chunks.map(chunkCitation), (searchText) => {
-                        actions.revealTextSnippet(actionDeps, searchText);
+                        actions.revealTextSnippet(turnDeps, searchText);
                     });
                 } catch (error) {
                     log(`Apply failed: ${error.message}`, 'error');
@@ -227,13 +244,13 @@ export function createConversation(deps) {
     /**
      * Runs a selection-scope amendment turn and stages the proposal card.
      */
-    async function runSelectionEditTurn(promptTemplate, msg) {
+    async function runSelectionEditTurn(promptTemplate, msg, turnDeps) {
         appState.isProcessing = true;
         input.setProcessing(true);
         try {
             msg.setStatus('Drafting edit...');
             const commentInstructions = getCommentInstructions();
-            const proposal = await actions.prepareSelectionAmendment(actionDeps, {
+            const proposal = await actions.prepareSelectionAmendment(turnDeps, {
                 promptTemplate,
                 commentInstructions,
             });
@@ -245,7 +262,7 @@ export function createConversation(deps) {
                 comment: proposal.commentText,
                 onApply: async () => {
                     try {
-                        await actions.applySelectionAmendment(actionDeps, proposal);
+                        await actions.applySelectionAmendment(turnDeps, proposal);
                         card.markApplied();
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
@@ -268,13 +285,13 @@ export function createConversation(deps) {
     /**
      * Runs a selection-scope comment turn (fire-and-forget comment pipeline).
      */
-    async function runSelectionCommentTurn(skill, args, msg) {
+    async function runSelectionCommentTurn(skill, args, msg, turnDeps) {
         if (!appState.supportsComments) {
             msg.markError('Comment features require Word API 1.4.');
             return;
         }
         try {
-            await actions.fireSelectionComment(actionDeps, {
+            await actions.fireSelectionComment(turnDeps, {
                 promptTemplate: withArgs(skill.defaultTemplate, args),
             });
             msg.setStatus('Comment request fired — it will appear in the document shortly.');
@@ -286,12 +303,12 @@ export function createConversation(deps) {
     /**
      * Runs the summary pipeline (result opens as a new document).
      */
-    async function runSummaryTurn(skill, args, msg) {
+    async function runSummaryTurn(skill, args, msg, turnDeps) {
         appState.isProcessingSummary = true;
         input.setProcessing(true);
         try {
             msg.setStatus('Generating summary document...');
-            const result = await actions.runSummarySkill(actionDeps, {
+            const result = await actions.runSummarySkill(turnDeps, {
                 promptTemplate: withArgs(skill.defaultTemplate, args),
             });
             msg.setStatus(`Summary document created (${result.chars} chars${result.commentCount ? `, ${result.commentCount} comment(s) included` : ''}).`);
@@ -306,13 +323,13 @@ export function createConversation(deps) {
     /**
      * Runs a chat Q&A turn with streaming.
      */
-    async function runQaTurn(question, skillTemplate, msg) {
+    async function runQaTurn(question, skillTemplate, msg, turnDeps) {
         appState.isProcessing = true;
         appState.chatController = new AbortController();
         input.setProcessing(true);
         try {
             msg.setStatus('Reading the document...');
-            const answer = await actions.answerQuestion(actionDeps, {
+            const answer = await actions.answerQuestion(turnDeps, {
                 question,
                 skillTemplate,
                 signal: appState.chatController.signal,
@@ -340,29 +357,29 @@ export function createConversation(deps) {
     /**
      * Dispatches a skill turn by category and resolved scope.
      */
-    async function runSkillTurn(skill, args, hasSelection, msg) {
+    async function runSkillTurn(skill, args, hasSelection, msg, turnDeps) {
         switch (skill.category) {
             case 'chat':
             case 'context':
                 // Custom context prompts act as chat personas.
-                await runQaTurn(args || skill.description, skill.defaultTemplate, msg);
+                await runQaTurn(args || skill.description, skill.defaultTemplate, msg, turnDeps);
                 break;
             case 'summary':
-                await runSummaryTurn(skill, args, msg);
+                await runSummaryTurn(skill, args, msg, turnDeps);
                 break;
             case 'comment':
                 if (skill.scope === 'selection-first' && hasSelection) {
-                    await runSelectionCommentTurn(skill, args, msg);
+                    await runSelectionCommentTurn(skill, args, msg, turnDeps);
                 } else {
-                    await runDocumentTurn(skill, args, msg);
+                    await runDocumentTurn(skill, args, msg, turnDeps);
                 }
                 break;
             case 'amendment':
             default:
                 if (skill.scope === 'selection-first' && hasSelection) {
-                    await runSelectionEditTurn(withArgs(skill.defaultTemplate, args), msg);
+                    await runSelectionEditTurn(withArgs(skill.defaultTemplate, args), msg, turnDeps);
                 } else {
-                    await runDocumentTurn(skill, args, msg);
+                    await runDocumentTurn(skill, args, msg, turnDeps);
                 }
                 break;
         }
@@ -400,12 +417,13 @@ export function createConversation(deps) {
         input.setValue('');
 
         const msg = view.createAssistantMessage();
+        const turnDeps = actionDepsFor(msg);
 
         try {
             if (turn.type === TURN_TYPE.SKILL) {
-                await runSkillTurn(turn.skill, turn.args, hasSelection, msg);
+                await runSkillTurn(turn.skill, turn.args, hasSelection, msg, turnDeps);
             } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
-                await runSelectionEditTurn(turn.instruction, msg);
+                await runSelectionEditTurn(turn.instruction, msg, turnDeps);
             } else if (turn.type === TURN_TYPE.DOC_EDIT) {
                 // Free-text edit instruction without a selection: run the
                 // whole-document amendment pipeline with the user's text as
@@ -413,12 +431,15 @@ export function createConversation(deps) {
                 await runDocumentTurn({
                     name: 'Edit', category: 'amendment', scope: 'document',
                     defaultTemplate: turn.instruction,
-                }, undefined, msg);
+                }, undefined, msg, turnDeps);
             } else {
-                await runQaTurn(turn.question, null, msg);
+                await runQaTurn(turn.question, null, msg, turnDeps);
             }
         } catch (error) {
             msg.markError(error.message || String(error));
+        } finally {
+            // Collapse the per-turn work log to a one-line duration summary.
+            msg.collapseLog();
         }
     }
 

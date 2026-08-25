@@ -18,6 +18,7 @@
  */
 
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from 'office-word-diff';
+import { hasCjk, applyCharDiffStrategy } from './char-diff.js';
 
 /**
  * Generates a unique hidden bookmark name for chunk range persistence.
@@ -337,8 +338,14 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         // - no \r/\n mismatch (no paragraph breaks)
         // - smaller token count = fewer alignment errors
         // This preserves run-level formatting (w:rPr) while applying tracked changes.
+        // CJK text has no word boundaries for the token map (a whole sentence
+        // becomes one token), so it uses the char-level strategy instead.
         try {
-          await applyTokenMapStrategy(context, paraRange, paraRange.text, newText.trim(), log);
+          if (hasCjk(paraRange.text) || hasCjk(newText)) {
+            await applyCharDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log);
+          } else {
+            await applyTokenMapStrategy(context, paraRange, paraRange.text, newText.trim(), log);
+          }
         } catch (_diffErr) {
           // If word-level diff fails, fall back to full paragraph text replacement.
           // This loses run-level formatting but preserves paragraph-level properties.

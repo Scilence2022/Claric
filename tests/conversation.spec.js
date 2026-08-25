@@ -35,6 +35,8 @@ function makeView() {
     setStatus: jest.fn(),
     setText: jest.fn(),
     appendText: jest.fn(),
+    appendLogLine: jest.fn(),
+    collapseLog: jest.fn(),
     showProgress: jest.fn(),
     hideProgress: jest.fn(),
     attachProposal: jest.fn(),

@@ -93,11 +93,18 @@ export function addSystemNote(text) {
  * Creates an assistant message and returns a handle for updating it through
  * the turn lifecycle (status → streaming text/progress → final state).
  *
+ * The message includes a collapsible "work log" region (Claude Code style):
+ * pipeline log lines stream into it while the turn runs (expanded), and it
+ * auto-collapses to a one-line summary ("Worked for Ns · M steps") when the
+ * turn finishes via collapseLog().
+ *
  * @returns {{
  *   el: HTMLElement,
  *   setStatus: function(string),
  *   setText: function(string),
  *   appendText: function(string),
+ *   appendLogLine: function(string),
+ *   collapseLog: function(),
  *   showProgress: function(object),
  *   hideProgress: function(),
  *   attachProposal: function(HTMLElement),
@@ -108,6 +115,19 @@ export function addSystemNote(text) {
 export function createAssistantMessage() {
     const el = document.createElement('div');
     el.className = 'chat-message chat-message-assistant';
+
+    // Collapsible work log (expanded while the turn runs)
+    const worklogEl = document.createElement('div');
+    worklogEl.className = 'msg-worklog';
+    worklogEl.style.display = 'none';
+    const worklogToggle = document.createElement('button');
+    worklogToggle.type = 'button';
+    worklogToggle.className = 'msg-worklog-toggle';
+    worklogToggle.setAttribute('aria-expanded', 'true');
+    const worklogLines = document.createElement('div');
+    worklogLines.className = 'msg-worklog-lines';
+    worklogEl.appendChild(worklogToggle);
+    worklogEl.appendChild(worklogLines);
 
     const statusEl = document.createElement('div');
     statusEl.className = 'msg-status';
@@ -132,6 +152,7 @@ export function createAssistantMessage() {
     const extrasEl = document.createElement('div');
     extrasEl.className = 'msg-extras';
 
+    el.appendChild(worklogEl);
     el.appendChild(statusEl);
     el.appendChild(bodyEl);
     el.appendChild(progressEl);
@@ -140,6 +161,27 @@ export function createAssistantMessage() {
     _scrollToBottom();
 
     let streamed = '';
+    let logLineCount = 0;
+    let logStartTime = 0;
+    let logCollapsed = false;
+
+    worklogToggle.addEventListener('click', () => {
+        const expanding = worklogLines.style.display === 'none';
+        worklogLines.style.display = expanding ? '' : 'none';
+        worklogToggle.setAttribute('aria-expanded', String(expanding));
+        _renderWorklogToggle();
+    });
+
+    function _renderWorklogToggle() {
+        const expanded = worklogLines.style.display !== 'none';
+        const chevron = expanded ? '▾' : '▸';
+        if (logCollapsed) {
+            const secs = Math.max(1, Math.round((Date.now() - logStartTime) / 1000));
+            worklogToggle.textContent = `${chevron} Worked for ${secs}s · ${logLineCount} step${logLineCount === 1 ? '' : 's'}`;
+        } else {
+            worklogToggle.textContent = `${chevron} Working…`;
+        }
+    }
 
     return {
         el,
@@ -160,6 +202,29 @@ export function createAssistantMessage() {
             streamed += token;
             _renderText(bodyEl, streamed);
             _scrollToBottom();
+        },
+        /** Appends one pipeline log line to the expanded work log. */
+        appendLogLine(text) {
+            if (logLineCount === 0) {
+                logStartTime = Date.now();
+                worklogEl.style.display = '';
+                worklogLines.style.display = '';
+                _renderWorklogToggle();
+            }
+            logLineCount++;
+            const line = document.createElement('div');
+            line.className = 'msg-worklog-line';
+            line.textContent = text;
+            worklogLines.appendChild(line);
+            if (!logCollapsed) _scrollToBottom();
+        },
+        /** Collapses the work log to a one-line duration summary. */
+        collapseLog() {
+            if (logLineCount === 0) return;
+            logCollapsed = true;
+            worklogLines.style.display = 'none';
+            worklogToggle.setAttribute('aria-expanded', 'false');
+            _renderWorklogToggle();
         },
         /** Shows/updates the chunk progress bar. */
         showProgress(p) {
