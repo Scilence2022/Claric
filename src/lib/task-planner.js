@@ -42,8 +42,9 @@ const MAX_TASK_INSTRUCTION_CHARS = 500;
  */
 export function buildPlanPrompt(instruction, hasSelection) {
     return (
-        'You are the task planner of a Microsoft Word add-in. The user instruction below mixes several ' +
-        'request types. Split it into an ordered list of atomic tasks, one per specialized pipeline.\n\n' +
+        'You are the task planner of a Microsoft Word add-in. The user instruction below may mix several ' +
+        'request types, or may be ambiguous about which pipeline it belongs to. Split it into an ordered ' +
+        'list of atomic tasks, one per specialized pipeline.\n\n' +
         'CAPABILITIES (task "type"):\n' +
         '- "insert": add a short NEW structural element that does not exist yet (e.g. an article title, a heading).\n' +
         '- "format": change the FORMATTING of existing text (font, size, color, highlight, paragraph style, ' +
