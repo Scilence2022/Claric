@@ -1,7 +1,7 @@
 {
-  "name": "word-ai-redliner",
-  "version": "0.4.0",
-  "description": "AI-powered Microsoft Word add-in for tracked changes, document summarization, and comment analysis",
+  "name": "claric",
+  "version": "0.5.0",
+  "description": "Claric \u2014 your redlining scribe for Microsoft Word. AI-powered tracked changes, summarization, and comment analysis.",
   "private": true,
   "scripts": {
     "start": "webpack serve --mode development",

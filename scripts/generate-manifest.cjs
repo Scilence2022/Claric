@@ -140,7 +140,7 @@ function generateManifest(options = {}) {
     PROTOCOL: env.PROTOCOL,
     VERSION: getVersion(rootDir),
     GUID: templateGuid || resolveGuid(rootDir, env.ADDIN_GUID),
-    DISPLAY_NAME: options.displayName || 'Word AI Redliner',
+    DISPLAY_NAME: options.displayName || 'Claric',
   };
 
   const output = renderTemplate(template, values);

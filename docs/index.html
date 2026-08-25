@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Word AI Redliner &mdash; Technical Architecture</title>
+<title>Claric &mdash; Technical Architecture</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -659,7 +659,7 @@
         <polyline points="14 2 14 8 20 8"/>
         <path d="M9 15l2 2 4-4" stroke="var(--accent)"/>
       </svg>
-      Word AI Redliner
+      Claric — your redlining scribe for Word
     </a>
     <ul class="nav-links">
       <li><a href="#problem" data-section="problem">Problem</a></li>
@@ -740,7 +740,7 @@
   <!-- Demo -->
   <div class="demo-section reveal">
     <a href="https://www.youtube.com/watch?v=SusffH8eT-Y">
-      <img src="word-ai-redliner.gif" alt="Word AI Redliner demo" loading="lazy"/>
+      <img src="word-ai-redliner.gif" alt="Claric — Word add-in demo" loading="lazy"/>
     </a>
     <p class="caption">Click to watch the full demo on YouTube</p>
   </div>
@@ -751,7 +751,7 @@
     <h2>The Problem</h2>
     <p>Microsoft Word documents are not flat text. They are deeply nested XML structures (OOXML) where every paragraph carries style metadata, list numbering, table membership, and character-level formatting runs. An LLM, however, operates on plain text strings.</p>
     <p>The core engineering challenge: how do you send a Word document to an LLM, get back amended text, and apply those amendments as word-level tracked changes&mdash;without destroying the document's formatting, structure, or semantic markup?</p>
-    <p>Word AI Redliner solves this with a structured <strong>intermediate representation (IR)</strong> that preserves document semantics through a pipeline:</p>
+    <p>Claric solves this with a structured <strong>intermediate representation (IR)</strong> that preserves document semantics through a pipeline:</p>
     <div class="pipeline-steps">
       <div class="pipeline-step">
         <div class="step-icon">1</div>
@@ -1303,7 +1303,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
 
 <!-- ── Footer ── -->
 <footer class="footer">
-  <p><strong>Word AI Redliner</strong> &mdash; MIT License</p>
+  <p><strong>Claric</strong> &mdash; MIT License</p>
   <p>Diff engine: <a href="https://github.com/niclasgrunworked/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: vLLM (Qwen 3.5-35B-A3B), Ollama</p>
   <p style="margin-top: 0.75rem;"><a href="https://github.com/yuch85/word-ai-redliner">View on GitHub</a></p>
 </footer>

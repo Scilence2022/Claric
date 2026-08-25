@@ -2,7 +2,7 @@
 
 ## Overview
 
-Word AI Redliner is a Microsoft Word add-in that provides two core workflows:
+Claric is a Microsoft Word add-in that provides two core workflows:
 
 1. **AI Redlining** — select text, send to LLM with a prompt, apply the response as word-level tracked changes
 2. **Document Summary** — extract comments, document text, and tracked changes, send to LLM, generate a formatted Word document
@@ -218,7 +218,7 @@ runs as the non-root `node` user and serves static files via
 405 for non-GET, `/healthz` endpoint, graceful SIGTERM shutdown).
 
 ```bash
-docker build -t word-ai-redliner:0.3.0 .
+docker build -t claric:0.3.0 .
 docker compose up -d
 ```
 
