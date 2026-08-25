@@ -18,7 +18,7 @@
  * @module orchestrator
  */
 
-import { sendMessages as defaultSendMessages, stripMarkdown, stripChunkDelimiters } from './llm-client.js';
+import { sendMessages as defaultSendMessages, sendMessagesStream as defaultSendMessagesStream, stripMarkdown, stripChunkDelimiters } from './llm-client.js';
 import { formatContextPrefix as defaultFormatContextPrefix } from './context-extractor.js';
 import { parseDelimitedResponse as defaultParseDelimitedResponse } from './response-parser.js';
 
@@ -35,6 +35,7 @@ import { parseDelimitedResponse as defaultParseDelimitedResponse } from './respo
  * @property {string|null} amendment - Amended text (for amendment/merged mode)
  * @property {string|null} comment - Comment text (for comment/merged mode)
  * @property {string|null} error - Error message if rejected
+ * @property {string|null} reasoning - Model chain-of-thought when streamed
  * @property {DocumentChunk} chunk - Reference to original chunk
  */
 
@@ -151,7 +152,11 @@ FORMAT YOUR RESPONSE WITH THESE EXACT DELIMITERS:
  * @param {number} [options.concurrency=4] - Max parallel LLM calls
  * @param {number} [options.timeoutMs=30000] - Per-chunk LLM timeout
  * @param {string} [options.commentInstructions=''] - Comment instructions for merged mode
+ * @param {function} [options.onChunkToken] - When provided, chunks are sent with
+ *   streaming enabled and this callback fires as (chunkInfo, kind, token) for
+ *   each delta; chunkInfo is { id, index }, kind is 'content' or 'reasoning'
  * @param {function} [options.sendMessagesFn] - Injectable sendMessages (for testing)
+ * @param {function} [options.sendMessagesStreamFn] - Injectable sendMessagesStream (for testing)
  * @param {function} [options.formatContextPrefixFn] - Injectable formatContextPrefix (for testing)
  * @param {function} [options.parseDelimitedResponseFn] - Injectable parseDelimitedResponse (for testing)
  * @returns {Promise<ChunkResult[]>}
@@ -167,7 +172,9 @@ export async function processChunksParallel(chunks, options) {
     concurrency = 4,
     timeoutMs = 30000,
     commentInstructions = '',
+    onChunkToken,
     sendMessagesFn = defaultSendMessages,
+    sendMessagesStreamFn = defaultSendMessagesStream,
     formatContextPrefixFn = defaultFormatContextPrefix,
     parseDelimitedResponseFn = defaultParseDelimitedResponse,
   } = options;
@@ -216,6 +223,7 @@ export async function processChunksParallel(chunks, options) {
       amendment: data.amendment || null,
       comment: data.comment || null,
       error: data.error || null,
+      reasoning: data.reasoning || null,
       chunk,
     };
   }
@@ -243,8 +251,22 @@ export async function processChunksParallel(chunks, options) {
         formatContextPrefixFn
       );
 
-      // Send to LLM
-      const responseText = await sendMessagesFn(config, messages, log, signal, timeoutMs);
+      // Send to LLM. When the caller wants live tokens (chat UI model
+      // activity view), use the streaming transport; otherwise the plain
+      // request/response path keeps working for tests and headless callers.
+      let responseText;
+      let reasoningText = null;
+      if (typeof onChunkToken === 'function') {
+        const chunkInfo = { id: chunk.id, index: chunkIndex };
+        const streamed = await sendMessagesStreamFn(config, messages, {
+          onContent: (t) => onChunkToken(chunkInfo, 'content', t),
+          onReasoning: (t) => onChunkToken(chunkInfo, 'reasoning', t),
+        }, log, signal, timeoutMs);
+        responseText = streamed.content;
+        reasoningText = streamed.reasoning || null;
+      } else {
+        responseText = await sendMessagesFn(config, messages, log, signal, timeoutMs);
+      }
 
       // Parse response based on mode.
       // When mode is 'amendment' but commentInstructions are provided,
@@ -275,7 +297,7 @@ export async function processChunksParallel(chunks, options) {
 
       completed++;
       chunkTimings.push(Date.now() - chunkStart);
-      results[chunkIndex] = makeResult(chunkIndex, chunk, 'fulfilled', { amendment, comment });
+      results[chunkIndex] = makeResult(chunkIndex, chunk, 'fulfilled', { amendment, comment, reasoning: reasoningText });
     } catch (error) {
       if (error.name === 'AbortError') {
         cancelled++;

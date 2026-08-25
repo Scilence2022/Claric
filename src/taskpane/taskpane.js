@@ -24,6 +24,7 @@ import './taskpane.css';
 import { appState, loadSettings, getActiveBackendConfig } from './app-state.js';
 import { BUILTIN_SKILLS, listSkills } from './skills.js';
 import { createConversation } from './conversation.js';
+import { watchSelection } from './word-actions.js';
 import * as chatView from './ui/chat-view.js';
 import { renderWelcomeChips } from './ui/welcome.js';
 import { initInputBar } from './ui/input-bar.js';
@@ -94,6 +95,10 @@ function initialize() {
     });
 
     updateModelPill();
+
+    // Live selection preview above the input bar (selection text is also
+    // added to the next turn's context at submit time)
+    watchSelection((text) => input.setSelectionPreview(text));
 
     // Detect and log supported Word API version (diagnostics only)
     const apiVersions = ['1.8', '1.7', '1.6', '1.5', '1.4', '1.3', '1.2', '1.1'];

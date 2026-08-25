@@ -166,6 +166,72 @@ export function stripChunkDelimiters(text, log) {
 }
 
 /**
+ * Incremental <think>...</think> demultiplexer for streamed tokens.
+ *
+ * Reasoning models emit their chain-of-thought either in a separate
+ * `reasoning_content` field (handled by the SSE parsers) or inline in the
+ * content wrapped in <think> tags. This demux routes streamed content tokens
+ * to onContent and inline think-tag content to onReasoning as they arrive,
+ * holding back partial tag suffixes across token boundaries.
+ *
+ * Mirrors stripThinkTags semantics: a never-closed <think> leaves its text in
+ * the reasoning channel (the tag itself is never emitted to content).
+ *
+ * @param {object} handlers
+ * @param {function} [handlers.onContent] - Receives answer-text deltas
+ * @param {function} [handlers.onReasoning] - Receives thinking deltas
+ * @returns {{ push: function(string), flush: function() }}
+ */
+export function createStreamDemux({ onContent, onReasoning } = {}) {
+  let buffer = '';
+  let inThink = false;
+
+  const emit = (text, toReasoning) => {
+    if (!text) return;
+    if (toReasoning) {
+      if (typeof onReasoning === 'function') onReasoning(text);
+    } else if (typeof onContent === 'function') {
+      onContent(text);
+    }
+  };
+
+  // Longest k such that `text` ends with a k-char prefix of `tag`
+  // (case-insensitive) — those chars may be the start of a tag split
+  // across tokens and must be held back for the next push.
+  function suffixHold(text, tag) {
+    const lower = text.toLowerCase();
+    for (let k = Math.min(tag.length - 1, text.length); k > 0; k--) {
+      if (lower.endsWith(tag.slice(0, k))) return k;
+    }
+    return 0;
+  }
+
+  return {
+    push(token) {
+      buffer += token;
+      for (;;) {
+        const tag = inThink ? '</think>' : '<think>';
+        const idx = buffer.toLowerCase().indexOf(tag);
+        if (idx === -1) {
+          const hold = suffixHold(buffer, tag);
+          emit(buffer.slice(0, buffer.length - hold), inThink);
+          buffer = buffer.slice(buffer.length - hold);
+          return;
+        }
+        emit(buffer.slice(0, idx), inThink);
+        buffer = buffer.slice(idx + tag.length);
+        inThink = !inThink;
+      }
+    },
+    flush() {
+      if (buffer) emit(buffer, inThink);
+      buffer = '';
+      inThink = false;
+    },
+  };
+}
+
+/**
  * Private helper to build the request URL and headers for chat completions.
  *
  * The API prefix comes from config.apiPath (default '/v1'). Most providers
@@ -308,33 +374,46 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
 }
 
 /**
- * Sends a prompt to the LLM backend with OpenAI-compatible streaming
- * (`stream: true`) and invokes onToken for each content delta as it arrives.
+ * Sends a messages array to the LLM backend with OpenAI-compatible streaming
+ * (`stream: true`), preserving system/user roles. Content deltas are demuxed
+ * through createStreamDemux: reasoning (the `reasoning_content` field plus
+ * inline <think> blocks) streams to handlers.onReasoning, answer text to
+ * handlers.onContent.
  *
  * If the server ignores `stream: true` and answers with a plain JSON body
  * (non-SSE content type), falls back to reading the whole response and
- * delivering it as a single token -- so callers get correct output from
+ * delivering it as a single delta -- so callers get correct output from
  * backends without streaming support.
  *
  * Abort/timeout wiring mirrors sendMessages (WebView2-safe, no AbortSignal.any).
  *
  * @param {Object} config - { url, apiKey, model, apiPath }
- * @param {string} promptText - The prompt text to send
- * @param {function} [onToken] - Called with each streamed content delta
+ * @param {Array<{role: string, content: string}>} messages - Chat messages
+ * @param {function|{onContent?: function, onReasoning?: function}} [handlers] -
+ *   A plain function is treated as onContent (legacy shorthand)
  * @param {function} [log] - Optional logging callback (message, type)
  * @param {AbortSignal} [signal] - Optional abort signal for cancellation
  * @param {number} [timeoutMs=120000] - Per-request timeout in ms
- * @returns {Promise<string>} The full cleaned response text (think tags stripped)
+ * @returns {Promise<{content: string, reasoning: string}>} Full text per channel
+ *   (content is think-tag stripped)
  * @throws {Error} On non-ok HTTP response or network failure
  * @throws {DOMException} AbortError on user cancellation via signal
  * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
  */
-export async function sendPromptStream(config, promptText, onToken, log, signal, timeoutMs = 120000) {
+export async function sendMessagesStream(config, messages, handlers, log, signal, timeoutMs = 120000) {
   const { url, headers } = buildRequestConfig(config);
+  const onContent = typeof handlers === 'function' ? handlers : handlers?.onContent;
+  const onReasoning = typeof handlers === 'function' ? undefined : handlers?.onReasoning;
+  let full = '';
+  let reasoning = '';
+  const demux = createStreamDemux({
+    onContent: (t) => { full += t; if (onContent) onContent(t); },
+    onReasoning: (t) => { reasoning += t; if (onReasoning) onReasoning(t); },
+  });
 
   const body = JSON.stringify({
     model: config.model,
-    messages: [{ role: 'user', content: promptText }],
+    messages: messages,
     stream: true,
   });
 
@@ -374,12 +453,15 @@ export async function sendPromptStream(config, promptText, onToken, log, signal,
     // Non-SSE fallback: the backend ignored stream:true and sent plain JSON.
     if (!contentType.includes('text/event-stream') || !response.body || typeof response.body.getReader !== 'function') {
       const data = await response.json();
-      const rawText = data.choices?.[0]?.message?.content ?? '';
-      const cleaned = stripThinkTags(rawText, log);
-      if (typeof onToken === 'function' && cleaned) {
-        onToken(cleaned);
+      const message = data.choices?.[0]?.message ?? {};
+      const reasoningText = message.reasoning_content ?? '';
+      if (reasoningText) {
+        reasoning += reasoningText;
+        if (onReasoning) onReasoning(reasoningText);
       }
-      return cleaned;
+      demux.push(message.content ?? '');
+      demux.flush();
+      return { content: stripThinkTags(full, log), reasoning: reasoning.trim() };
     }
 
     // SSE parsing: buffer partial lines across chunks, handle `data:` lines
@@ -387,7 +469,6 @@ export async function sendPromptStream(config, promptText, onToken, log, signal,
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let full = '';
     let doneReceived = false;
 
     while (!doneReceived) {
@@ -408,22 +489,22 @@ export async function sendPromptStream(config, promptText, onToken, log, signal,
         if (!payload) continue;
         try {
           const json = JSON.parse(payload);
-          const token = json.choices?.[0]?.delta?.content
-            ?? json.choices?.[0]?.message?.content
-            ?? '';
-          if (token) {
-            full += token;
-            if (typeof onToken === 'function') {
-              onToken(token);
-            }
+          const delta = json.choices?.[0]?.delta ?? json.choices?.[0]?.message ?? {};
+          const reasoningToken = delta.reasoning_content ?? '';
+          if (reasoningToken) {
+            reasoning += reasoningToken;
+            if (onReasoning) onReasoning(reasoningToken);
           }
+          const token = delta.content ?? '';
+          if (token) demux.push(token);
         } catch (_parseErr) {
           // Incomplete or non-JSON data line -- skip it.
         }
       }
     }
 
-    return stripThinkTags(full, log);
+    demux.flush();
+    return { content: stripThinkTags(full, log), reasoning: reasoning.trim() };
   } catch (err) {
     if (timedOut && err.name === 'AbortError') {
       const timeoutErr = new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
@@ -437,6 +518,31 @@ export async function sendPromptStream(config, promptText, onToken, log, signal,
       signal.removeEventListener('abort', onExternalAbort);
     }
   }
+}
+
+/**
+ * Sends a prompt to the LLM backend with streaming. Thin wrapper over
+ * sendMessagesStream for single-string prompts.
+ *
+ * @param {Object} config - { url, apiKey, model, apiPath }
+ * @param {string} promptText - The prompt text to send
+ * @param {function|{onContent?: function, onReasoning?: function}} [handlers] -
+ *   A plain function is treated as onContent (legacy shorthand)
+ * @param {function} [log] - Optional logging callback (message, type)
+ * @param {AbortSignal} [signal] - Optional abort signal for cancellation
+ * @param {number} [timeoutMs=120000] - Per-request timeout in ms
+ * @returns {Promise<string>} The full cleaned response text (think tags stripped)
+ */
+export async function sendPromptStream(config, promptText, handlers, log, signal, timeoutMs = 120000) {
+  const { content } = await sendMessagesStream(
+    config,
+    [{ role: 'user', content: promptText }],
+    handlers,
+    log,
+    signal,
+    timeoutMs
+  );
+  return content;
 }
 
 /**

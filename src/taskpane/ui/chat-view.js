@@ -105,6 +105,8 @@ export function addSystemNote(text) {
  *   appendText: function(string),
  *   appendLogLine: function(string),
  *   collapseLog: function(),
+ *   appendModelToken: function({id: string, index?: number}, string, string),
+ *   collapseModelOutput: function(),
  *   showProgress: function(object),
  *   hideProgress: function(),
  *   attachProposal: function(HTMLElement),
@@ -128,6 +130,20 @@ export function createAssistantMessage() {
     worklogLines.className = 'msg-worklog-lines';
     worklogEl.appendChild(worklogToggle);
     worklogEl.appendChild(worklogLines);
+
+    // Collapsible model activity region: the model's streamed thinking
+    // (dimmed) and output, split into per-chunk sections for document runs.
+    const modelEl = document.createElement('div');
+    modelEl.className = 'msg-model';
+    modelEl.style.display = 'none';
+    const modelToggle = document.createElement('button');
+    modelToggle.type = 'button';
+    modelToggle.className = 'msg-model-toggle';
+    modelToggle.setAttribute('aria-expanded', 'true');
+    const modelBody = document.createElement('div');
+    modelBody.className = 'msg-model-body';
+    modelEl.appendChild(modelToggle);
+    modelEl.appendChild(modelBody);
 
     const statusEl = document.createElement('div');
     statusEl.className = 'msg-status';
@@ -153,6 +169,7 @@ export function createAssistantMessage() {
     extrasEl.className = 'msg-extras';
 
     el.appendChild(worklogEl);
+    el.appendChild(modelEl);
     el.appendChild(statusEl);
     el.appendChild(bodyEl);
     el.appendChild(progressEl);
@@ -164,6 +181,8 @@ export function createAssistantMessage() {
     let logLineCount = 0;
     let logStartTime = 0;
     let logCollapsed = false;
+    const modelSections = new Map();
+    let modelCollapsed = false;
 
     worklogToggle.addEventListener('click', () => {
         const expanding = worklogLines.style.display === 'none';
@@ -171,6 +190,22 @@ export function createAssistantMessage() {
         worklogToggle.setAttribute('aria-expanded', String(expanding));
         _renderWorklogToggle();
     });
+
+    modelToggle.addEventListener('click', () => {
+        const expanding = modelBody.style.display === 'none';
+        modelBody.style.display = expanding ? '' : 'none';
+        modelToggle.setAttribute('aria-expanded', String(expanding));
+        _renderModelToggle();
+    });
+
+    function _renderModelToggle() {
+        const expanded = modelBody.style.display !== 'none';
+        const chevron = expanded ? '▾' : '▸';
+        const n = modelSections.size;
+        modelToggle.textContent = modelCollapsed
+            ? `${chevron} Model activity · ${n} section${n === 1 ? '' : 's'}`
+            : `${chevron} Model activity`;
+    }
 
     function _renderWorklogToggle() {
         const expanded = worklogLines.style.display !== 'none';
@@ -225,6 +260,67 @@ export function createAssistantMessage() {
             worklogLines.style.display = 'none';
             worklogToggle.setAttribute('aria-expanded', 'false');
             _renderWorklogToggle();
+        },
+        /**
+         * Appends one streamed model token to the collapsible model activity
+         * region. sectionRef ({ id, index? }) groups tokens into per-chunk
+         * sections (labels appear once a run spans multiple sections); kind
+         * is 'content' (model output) or 'reasoning' (dimmed thinking).
+         */
+        appendModelToken(sectionRef, kind, token) {
+            if (!token) return;
+            const id = (sectionRef && sectionRef.id) || 'default';
+            const index = sectionRef && typeof sectionRef.index === 'number' ? sectionRef.index : null;
+            let section = modelSections.get(id);
+            if (!section) {
+                const sectionEl = document.createElement('div');
+                sectionEl.className = 'msg-model-section';
+                const labelEl = document.createElement('div');
+                labelEl.className = 'msg-model-section-label';
+                labelEl.textContent = index !== null ? `Section ${index + 1}` : '';
+                labelEl.style.display = 'none';
+                sectionEl.appendChild(labelEl);
+                modelBody.appendChild(sectionEl);
+                section = { el: sectionEl, labelEl, reasoningEl: null, contentEl: null };
+                modelSections.set(id, section);
+                // Reveal section labels once more than one section exists
+                if (modelSections.size > 1) {
+                    for (const s of modelSections.values()) {
+                        if (s.labelEl.textContent) s.labelEl.style.display = '';
+                    }
+                }
+                modelEl.style.display = '';
+                _renderModelToggle();
+            }
+            let target;
+            if (kind === 'reasoning') {
+                if (!section.reasoningEl) {
+                    const r = document.createElement('div');
+                    r.className = 'msg-model-reasoning';
+                    // Thinking renders above the section's output text
+                    section.el.insertBefore(r, section.contentEl || null);
+                    section.reasoningEl = r;
+                }
+                target = section.reasoningEl;
+            } else {
+                if (!section.contentEl) {
+                    const c = document.createElement('div');
+                    c.className = 'msg-model-content';
+                    section.el.appendChild(c);
+                    section.contentEl = c;
+                }
+                target = section.contentEl;
+            }
+            target.textContent += token;
+            if (!modelCollapsed) _scrollToBottom();
+        },
+        /** Collapses the model activity region to a one-line summary. */
+        collapseModelOutput() {
+            if (modelSections.size === 0) return;
+            modelCollapsed = true;
+            modelBody.style.display = 'none';
+            modelToggle.setAttribute('aria-expanded', 'false');
+            _renderModelToggle();
         },
         /** Shows/updates the chunk progress bar. */
         showProgress(p) {

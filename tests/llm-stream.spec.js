@@ -138,3 +138,100 @@ describe('sendPromptStream', () => {
     await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
+
+describe('sendPromptStream reasoning demux', () => {
+  function sseLineFull(delta) {
+    return `data: ${JSON.stringify({ choices: [{ delta }] })}\n`;
+  }
+
+  test('routes delta.reasoning_content to onReasoning, not the answer stream', async () => {
+    global.fetch = jest.fn(async () =>
+      sseResponse([
+        sseLineFull({ reasoning_content: '让我想想' }),
+        sseLineFull({ reasoning_content: '……' }),
+        sseLineFull({ content: '答案是' }),
+        sseLineFull({ content: '42' }),
+        'data: [DONE]\n',
+      ])
+    );
+
+    const content = [];
+    const reasoning = [];
+    const result = await sendPromptStream(CONFIG, 'prompt', {
+      onContent: (t) => content.push(t),
+      onReasoning: (t) => reasoning.push(t),
+    });
+
+    expect(content).toEqual(['答案是', '42']);
+    expect(reasoning).toEqual(['让我想想', '……']);
+    expect(result).toBe('答案是42');
+  });
+
+  test('demuxes inline <think> blocks across token boundaries', async () => {
+    global.fetch = jest.fn(async () =>
+      sseResponse([
+        sseLineFull({ content: '好的<th' }),
+        sseLineFull({ content: 'ink>思考一下' }),
+        sseLineFull({ content: '这个问题</think>最终回答' }),
+        'data: [DONE]\n',
+      ])
+    );
+
+    const content = [];
+    const reasoning = [];
+    const result = await sendPromptStream(CONFIG, 'prompt', {
+      onContent: (t) => content.push(t),
+      onReasoning: (t) => reasoning.push(t),
+    });
+
+    expect(content.join('')).toBe('好的最终回答');
+    expect(reasoning.join('')).toBe('思考一下这个问题');
+    expect(result).toBe('好的最终回答');
+  });
+
+  test('non-SSE fallback surfaces message.reasoning_content', async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({
+        choices: [{ message: { content: '<think>想</think>正文', reasoning_content: '想' } }],
+      }),
+    }));
+
+    const content = [];
+    const reasoning = [];
+    const result = await sendPromptStream(CONFIG, 'prompt', {
+      onContent: (t) => content.push(t),
+      onReasoning: (t) => reasoning.push(t),
+    });
+
+    expect(result).toBe('正文');
+    expect(reasoning.join('')).toContain('想');
+    expect(content.join('')).toBe('正文');
+  });
+});
+
+describe('sendMessagesStream', () => {
+  const { sendMessagesStream } = require('../src/lib/llm-client.js');
+
+  test('sends the messages array and returns content plus reasoning', async () => {
+    global.fetch = jest.fn(async () =>
+      sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: 'r' } }] })}\n`,
+        sseLine('out'),
+        'data: [DONE]\n',
+      ])
+    );
+
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'user' },
+    ];
+    const result = await sendMessagesStream(CONFIG, messages, {});
+
+    expect(result).toEqual({ content: 'out', reasoning: 'r' });
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.messages).toEqual(messages);
+    expect(body.stream).toBe(true);
+  });
+});

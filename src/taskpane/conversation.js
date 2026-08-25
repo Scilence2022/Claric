@@ -42,6 +42,16 @@ const EDIT_INTENT_RE = /\b(edit|revise|revision|polish|proofread|rewrite|redline
 const QUESTION_LEAD_RE = /^\s*(what|why|how|does|do|is|are|can|could|should|would|which|who|when|where|explain|describe|summarize|list|tell me)\b|^\s*(什么|为什么|为何|怎么|怎样|如何|哪些|哪个|是不是|是否|能否|解释|说明|总结|概述|介绍)/i;
 
 /**
+ * True when free text starts with a question marker (EN + ZH).
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeQuestion(text) {
+    return QUESTION_LEAD_RE.test(text);
+}
+
+/**
  * True when free text (no selection) expresses an instruction to edit the
  * document rather than a question about it.
  *
@@ -49,7 +59,7 @@ const QUESTION_LEAD_RE = /^\s*(what|why|how|does|do|is|are|can|could|should|woul
  * @returns {boolean}
  */
 export function looksLikeEditIntent(text) {
-    if (QUESTION_LEAD_RE.test(text)) return false;
+    if (looksLikeQuestion(text)) return false;
     return EDIT_INTENT_RE.test(text);
 }
 
@@ -72,6 +82,11 @@ export function routeTurn(text, { hasSelection, skills } = {}) {
         return { type: TURN_TYPE.SKILL, skill: resolved.skill, args: resolved.args };
     }
     if (hasSelection) {
+        // Selection + a question is a question ABOUT the selection (answered
+        // in chat with the selection as context), not an edit instruction.
+        if (looksLikeQuestion(trimmed)) {
+            return { type: TURN_TYPE.DOC_QA, question: trimmed };
+        }
         return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
     }
     if (looksLikeEditIntent(trimmed)) {
@@ -91,13 +106,14 @@ export function routeTurn(text, { hasSelection, skills } = {}) {
  * @param {function} [deps.logWithRetry] - Log-with-retry-link callback
  * @param {function} [deps.updateStatusBar] - Comment pending-count callback
  * @param {object} [deps.actions] - word-actions overrides (tests)
- * @param {function} [deps.getSelectionState] - async () => boolean (tests)
+ * @param {function} [deps.getSelectionText] - async () => string (current
+ *   selection text, '' when empty; tests)
  * @returns {{ submit: Function, cancel: Function, newChat: Function }}
  */
 export function createConversation(deps) {
     const { appState, view, input, log, logWithRetry, updateStatusBar } = deps;
     const actions = deps.actions || defaultActions;
-    const getSelectionState = deps.getSelectionState || actions.hasNonEmptySelection;
+    const getSelectionText = deps.getSelectionText || actions.readSelectionSnippet;
 
     /**
      * Builds per-turn action deps whose log lines also stream into the
@@ -144,6 +160,7 @@ export function createConversation(deps) {
                 promptTemplate: withArgs(skill.defaultTemplate, args),
                 commentInstructions,
                 onProgress: (p) => msg.showProgress(p),
+                onChunkToken: (info, kind, token) => msg.appendModelToken(info, kind, token),
                 gateApply: gated,
             });
             msg.hideProgress();
@@ -253,6 +270,8 @@ export function createConversation(deps) {
             const proposal = await actions.prepareSelectionAmendment(turnDeps, {
                 promptTemplate,
                 commentInstructions,
+                onToken: (t) => msg.appendModelToken({ id: 'selection' }, 'content', t),
+                onReasoning: (t) => msg.appendModelToken({ id: 'selection' }, 'reasoning', t),
             });
             msg.setStatus('');
             const card = createProposalCard({
@@ -310,6 +329,11 @@ export function createConversation(deps) {
             msg.setStatus('Generating summary document...');
             const result = await actions.runSummarySkill(turnDeps, {
                 promptTemplate: withArgs(skill.defaultTemplate, args),
+                onToken: (t) => {
+                    msg.setStatus('');
+                    msg.appendText(t);
+                },
+                onReasoning: (t) => msg.appendModelToken({ id: 'summary' }, 'reasoning', t),
             });
             msg.setStatus(`Summary document created (${result.chars} chars${result.commentCount ? `, ${result.commentCount} comment(s) included` : ''}).`);
         } catch (error) {
@@ -322,8 +346,10 @@ export function createConversation(deps) {
 
     /**
      * Runs a chat Q&A turn with streaming.
+     * selectionText (when non-empty) is added to the prompt as a focused
+     * excerpt alongside the full document context.
      */
-    async function runQaTurn(question, skillTemplate, msg, turnDeps) {
+    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText) {
         appState.isProcessing = true;
         appState.chatController = new AbortController();
         input.setProcessing(true);
@@ -332,12 +358,14 @@ export function createConversation(deps) {
             const answer = await actions.answerQuestion(turnDeps, {
                 question,
                 skillTemplate,
+                selectionText,
                 signal: appState.chatController.signal,
                 onStatus: (s) => msg.setStatus(s),
                 onToken: (token) => {
                     msg.setStatus('');
                     msg.appendText(token);
                 },
+                onReasoning: (t) => msg.appendModelToken({ id: 'qa' }, 'reasoning', t),
             });
             // Re-render with think tags stripped (tokens stream raw).
             msg.setText(answer);
@@ -357,12 +385,12 @@ export function createConversation(deps) {
     /**
      * Dispatches a skill turn by category and resolved scope.
      */
-    async function runSkillTurn(skill, args, hasSelection, msg, turnDeps) {
+    async function runSkillTurn(skill, args, hasSelection, msg, turnDeps, selectionText) {
         switch (skill.category) {
             case 'chat':
             case 'context':
                 // Custom context prompts act as chat personas.
-                await runQaTurn(args || skill.description, skill.defaultTemplate, msg, turnDeps);
+                await runQaTurn(args || skill.description, skill.defaultTemplate, msg, turnDeps, selectionText);
                 break;
             case 'summary':
                 await runSummaryTurn(skill, args, msg, turnDeps);
@@ -399,12 +427,13 @@ export function createConversation(deps) {
             return;
         }
 
-        let hasSelection = false;
+        let selectionText = '';
         try {
-            hasSelection = await getSelectionState();
+            selectionText = ((await getSelectionText()) || '').trim();
         } catch (_err) {
-            hasSelection = false;
+            selectionText = '';
         }
+        const hasSelection = !!selectionText;
 
         const turn = routeTurn(trimmed, {
             hasSelection,
@@ -421,7 +450,7 @@ export function createConversation(deps) {
 
         try {
             if (turn.type === TURN_TYPE.SKILL) {
-                await runSkillTurn(turn.skill, turn.args, hasSelection, msg, turnDeps);
+                await runSkillTurn(turn.skill, turn.args, hasSelection, msg, turnDeps, selectionText);
             } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
                 await runSelectionEditTurn(turn.instruction, msg, turnDeps);
             } else if (turn.type === TURN_TYPE.DOC_EDIT) {
@@ -433,13 +462,14 @@ export function createConversation(deps) {
                     defaultTemplate: turn.instruction,
                 }, undefined, msg, turnDeps);
             } else {
-                await runQaTurn(turn.question, null, msg, turnDeps);
+                await runQaTurn(turn.question, null, msg, turnDeps, selectionText);
             }
         } catch (error) {
             msg.markError(error.message || String(error));
         } finally {
-            // Collapse the per-turn work log to a one-line duration summary.
+            // Collapse the per-turn work log and model activity to one-line summaries.
             msg.collapseLog();
+            msg.collapseModelOutput();
         }
     }
 

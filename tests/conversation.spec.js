@@ -37,6 +37,8 @@ function makeView() {
     appendText: jest.fn(),
     appendLogLine: jest.fn(),
     collapseLog: jest.fn(),
+    appendModelToken: jest.fn(),
+    collapseModelOutput: jest.fn(),
     showProgress: jest.fn(),
     hideProgress: jest.fn(),
     attachProposal: jest.fn(),
@@ -65,6 +67,7 @@ function makeInput() {
 function makeActions(overrides = {}) {
   return {
     hasNonEmptySelection: jest.fn(async () => false),
+    readSelectionSnippet: jest.fn(async () => ''),
     prepareSelectionAmendment: jest.fn(async () => ({
       selectionText: 'before', amendedText: 'after', commentText: null, model: 'm',
     })),
@@ -126,6 +129,17 @@ describe('routeTurn', () => {
     expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
   });
 
+  test('question with a selection routes to Q&A (selection becomes context)', () => {
+    const turn = routeTurn('如何评价这段话?', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+    expect(turn.question).toBe('如何评价这段话?');
+  });
+
+  test('question lead with selection routes to Q&A (EN)', () => {
+    const turn = routeTurn('what does this clause mean?', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+  });
+
   test('empty input returns null', () => {
     expect(routeTurn('   ', { hasSelection: false, skills: BUILTIN_SKILLS })).toBeNull();
     expect(routeTurn('', { hasSelection: true, skills: BUILTIN_SKILLS })).toBeNull();
@@ -140,7 +154,7 @@ describe('createConversation.submit', () => {
     const actions = makeActions();
     const conv = createConversation({
       appState, view, input, log: jest.fn(),
-      actions, getSelectionState: async () => true,
+      actions, getSelectionText: async () => 'some selected text',
     });
 
     await conv.submit('make it formal');
@@ -160,7 +174,7 @@ describe('createConversation.submit', () => {
     const actions = makeActions();
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('what is this document about?');
@@ -168,6 +182,24 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
     expect(actions.answerQuestion.mock.calls[0][1].question).toBe('what is this document about?');
     expect(view._msg.setText).toHaveBeenCalledWith('the answer');
+  });
+
+  test('question with a selection runs Q&A with the selection as context', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '  the selected clause  ',
+    });
+
+    await conv.submit('what does this clause mean?');
+
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    expect(actions.answerQuestion.mock.calls[0][1].question).toBe('what does this clause mean?');
+    expect(actions.answerQuestion.mock.calls[0][1].selectionText).toBe('the selected clause');
+    // Must not run the selection-edit pipeline for a question
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
   });
 
   test('edit intent without selection stages a document proposal (no direct apply)', async () => {
@@ -187,7 +219,7 @@ describe('createConversation.submit', () => {
     });
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('please polish the whole document');
@@ -226,7 +258,7 @@ describe('createConversation.submit', () => {
     });
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('please polish the whole document');
@@ -258,7 +290,7 @@ describe('createConversation.submit', () => {
     });
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('please polish the whole document');
@@ -274,7 +306,7 @@ describe('createConversation.submit', () => {
     const actions = makeActions();
     const conv = createConversation({
       appState, view: makeView(), input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('/summarize-contract');
@@ -296,7 +328,7 @@ describe('createConversation.submit', () => {
     });
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('/check-doc');
@@ -315,7 +347,7 @@ describe('createConversation.submit', () => {
     const actions = makeActions();
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => true,
+      actions, getSelectionText: async () => 'some selected text',
     });
 
     await conv.submit('/copy-edit');
@@ -330,7 +362,7 @@ describe('createConversation.submit', () => {
     const actions = makeActions();
     const conv = createConversation({
       appState, view: makeView(), input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('/copy-edit');
@@ -344,7 +376,7 @@ describe('createConversation.submit', () => {
     const actions = makeActions();
     const conv = createConversation({
       appState, view: makeView(), input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('/industry-overview tell me about SaaS');
@@ -361,7 +393,7 @@ describe('createConversation.submit', () => {
     const actions = makeActions();
     const conv = createConversation({
       appState, view, input: makeInput(), log,
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('/check-doc');
@@ -379,7 +411,7 @@ describe('createConversation.submit', () => {
     });
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
-      actions, getSelectionState: async () => false,
+      actions, getSelectionText: async () => '',
     });
 
     await conv.submit('/summarize-contract');
