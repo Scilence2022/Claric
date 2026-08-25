@@ -280,6 +280,26 @@ export function createConversation(deps) {
     const { appState, view, input, log, logWithRetry, updateStatusBar } = deps;
     const actions = deps.actions || defaultActions;
     const getSelectionText = deps.getSelectionText || actions.readSelectionSnippet;
+    // Optional dep fired whenever the live session has new content worth
+    // persisting (after a turn settles, and before newChat wipes the array).
+    // The bootstrap wires this to sessions.saveSession(...).
+    const onTurnCommitted = typeof deps.onTurnCommitted === 'function' ? deps.onTurnCommitted : null;
+
+    /**
+     * Fires onTurnCommitted with the current session snapshot. Best-effort —
+     * a persistence failure must not break the chat pipeline.
+     */
+    function _commitSession() {
+        if (!onTurnCommitted) return;
+        try {
+            const session = (view && typeof view.getCurrentSession === 'function')
+                ? view.getCurrentSession()
+                : null;
+            onTurnCommitted(session);
+        } catch (_err) {
+            // Persistence errors must never break the live turn.
+        }
+    }
 
     /**
      * Builds per-turn action deps whose log lines also stream into the
@@ -446,7 +466,21 @@ export function createConversation(deps) {
                 msg.setStatus('Proposed edits discarded.');
             },
         });
-        msg.attachProposal(card.el);
+        msg.attachProposal(card, {
+            title: `Proposed edits to ${amendedChunks.length} section(s)`,
+            state: 'pending',
+            countsText: `${beforeChars} → ${afterChars} chars`,
+            items: amendedChunks.map((r) => {
+                const citation = chunkCitation(r.chunk);
+                return {
+                    id: r.chunk.id,
+                    label: citation.label,
+                    before: chunkOriginalText(r),
+                    after: r.amendment,
+                    searchText: citation.searchText,
+                };
+            }),
+        });
     }
 
     /**
@@ -491,7 +525,18 @@ export function createConversation(deps) {
                     log('Proposal rejected by user.', 'info');
                 },
             });
-            msg.attachProposal(card.el);
+            msg.attachProposal(card, {
+                title: 'Proposed edit',
+                state: 'pending',
+                countsText: `${proposal.selectionText.length} → ${proposal.amendedText ? proposal.amendedText.length : 0} chars`,
+                items: proposal.amendedText ? [{
+                    id: 'selection',
+                    label: 'Selection rewrite',
+                    before: proposal.selectionText,
+                    after: proposal.amendedText,
+                    searchText: proposal.selectionText.trim().slice(0, 60),
+                }] : [],
+            });
         } catch (error) {
             msg.markError(error.message);
         } finally {
@@ -539,7 +584,12 @@ export function createConversation(deps) {
                     log('Proposal rejected by user.', 'info');
                 },
             });
-            msg.attachProposal(card.el);
+            msg.attachProposal(card, {
+                title: 'Proposed content to append at the document end',
+                state: 'pending',
+                countsText: `0 → ${proposal.generatedText.length} chars`,
+                items: [],
+            });
         } catch (error) {
             msg.markError(error.message);
         } finally {
@@ -601,7 +651,16 @@ export function createConversation(deps) {
                     log('Proposal rejected by user.', 'info');
                 },
             });
-            msg.attachProposal(card.el);
+            msg.attachProposal(card, {
+                title: `Proposed changes (${turn.scope} scope)`,
+                state: 'pending',
+                countsText: `${proposal.ops.length} change op(s)`,
+                items: proposal.ops.map((op, index) => ({
+                    id: index,
+                    label: describeFormatOp(op),
+                    searchText: op.match ? op.match.trim().slice(0, 60) : undefined,
+                })),
+            });
         } catch (error) {
             msg.markError(error.message);
         } finally {
@@ -649,7 +708,13 @@ export function createConversation(deps) {
                     log('Proposal rejected by user.', 'info');
                 },
             });
-            msg.attachProposal(card.el);
+            msg.attachProposal(card, {
+                title: 'Proposed illustration',
+                state: 'pending',
+                countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at document ${proposal.position}`,
+                previewSrc: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(proposal.svg)))}`,
+                items: [],
+            });
         } catch (error) {
             msg.markError(error.message);
         } finally {
@@ -697,7 +762,12 @@ export function createConversation(deps) {
                     log('Proposal rejected by user.', 'info');
                 },
             });
-            msg.attachProposal(card.el);
+            msg.attachProposal(card, {
+                title: 'Proposed cleanup',
+                state: 'pending',
+                countsText: `Delete ${proposal.emptyCount} empty paragraph(s)`,
+                items: [],
+            });
         } catch (error) {
             msg.markError(error.message);
         } finally {
@@ -978,6 +1048,12 @@ export function createConversation(deps) {
             // Collapse the per-turn work log and model activity to one-line summaries.
             msg.collapseLog();
             msg.collapseModelOutput();
+            // Snapshot the assistant message into the live session array,
+            // then notify bootstrap so the session is persisted.
+            if (typeof msg.finalizeForHistory === 'function') {
+                msg.finalizeForHistory();
+            }
+            _commitSession();
         }
     }
 
@@ -1001,6 +1077,8 @@ export function createConversation(deps) {
         if (isBusy()) {
             cancel();
         }
+        // Persist the outgoing session BEFORE clearing the live array.
+        _commitSession();
         view.clearChat();
         view.renderWelcome();
         input.setValue('');

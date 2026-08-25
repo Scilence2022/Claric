@@ -44,6 +44,7 @@ function makeView() {
     attachProposal: jest.fn(),
     addCitationPills: jest.fn(),
     markError: jest.fn(),
+    finalizeForHistory: jest.fn(),
   };
   return {
     addUserMessage: jest.fn(),
@@ -52,6 +53,7 @@ function makeView() {
     hideWelcome: jest.fn(),
     renderWelcome: jest.fn(),
     clearChat: jest.fn(),
+    getCurrentSession: jest.fn(() => ({ id: 's-test', title: null, messages: [] })),
     _msg: msg,
   };
 }
@@ -396,7 +398,7 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).not.toHaveBeenCalled();
 
     // Clicking "Apply as tracked changes" writes the generated content.
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
     expect(actions.applyDocumentAppend).toHaveBeenCalledTimes(1);
@@ -438,7 +440,7 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).not.toHaveBeenCalled();
 
     // Clicking "Apply as tracked changes" deletes the empty paragraphs.
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
     expect(actions.applyEmptyParagraphCleanup).toHaveBeenCalledTimes(1);
@@ -476,7 +478,7 @@ describe('createConversation.submit', () => {
 
     await conv.submit('删除多余的空段落');
 
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
     expect(cardEl.classList.contains('proposal-warning')).toBe(true);
@@ -556,7 +558,7 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).not.toHaveBeenCalled();
 
     // Clicking "Apply as tracked changes" applies the staged run.
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
     expect(staged.apply).toHaveBeenCalledTimes(1);
@@ -763,7 +765,7 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).not.toHaveBeenCalled();
 
     // Clicking "Apply as tracked changes" applies the formatting ops.
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
     expect(actions.applyFormatProposal).toHaveBeenCalledTimes(1);
@@ -807,7 +809,7 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).not.toHaveBeenCalled();
 
     // The staged card carries an image preview of the proposed artwork.
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     expect(cardEl.querySelector('img.proposal-card-preview')).not.toBeNull();
 
     cardEl.querySelector('.btn-primary').click();
@@ -971,7 +973,7 @@ describe('createConversation.submit', () => {
 
     await conv.submit('把这段话加粗并标红');
 
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     const boxes = cardEl.querySelectorAll('.proposal-card-change input[type="checkbox"]');
     expect(boxes).toHaveLength(2);
     expect(cardEl.textContent).toContain('"a" → bold');
@@ -1013,7 +1015,7 @@ describe('createConversation.submit', () => {
 
     await conv.submit('please polish the whole document');
 
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     const boxes = cardEl.querySelectorAll('.proposal-card-change input[type="checkbox"]');
     expect(boxes).toHaveLength(2);
     // Each section shows an inline before/after diff (word-level).
@@ -1052,7 +1054,7 @@ describe('createConversation.submit', () => {
     });
 
     await conv.submit('please polish the whole document');
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
 
@@ -1085,7 +1087,7 @@ describe('createConversation.submit', () => {
     });
 
     await conv.submit('please polish the whole document');
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
 
@@ -1117,7 +1119,7 @@ describe('createConversation.submit', () => {
     });
 
     await conv.submit('please polish the whole document');
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
 
@@ -1137,7 +1139,7 @@ describe('createConversation.submit', () => {
     });
 
     await conv.submit('把这段话加粗并标红');
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
 
@@ -1158,10 +1160,73 @@ describe('createConversation.submit', () => {
 
     await conv.submit('润色这段话');
 
-    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
     expect(cardEl.querySelectorAll('.proposal-card-change')).toHaveLength(1);
     expect(cardEl.querySelector('.diff-view del').textContent).toBe('before');
     expect(cardEl.querySelector('.diff-view ins').textContent).toBe('after');
+  });
+
+  test('onTurnCommitted fires after a turn completes with the live session', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const onTurnCommitted = jest.fn();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions: makeActions(), onTurnCommitted,
+      getSelectionText: async () => '',
+    });
+
+    await conv.submit('what is the deadline?');
+
+    expect(view._msg.finalizeForHistory).toHaveBeenCalledTimes(1);
+    expect(onTurnCommitted).toHaveBeenCalledTimes(1);
+    expect(onTurnCommitted).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 's-test' })
+    );
+  });
+
+  test('attachProposal receives the full card plus a tracking meta object', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions: makeActions(), getSelectionText: async () => 'some text',
+    });
+
+    await conv.submit('polish this');
+
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    const [card, meta] = view._msg.attachProposal.mock.calls[0];
+    expect(card.el).toBeDefined();
+    expect(meta).toEqual(expect.objectContaining({
+      title: 'Proposed edit',
+      state: 'pending',
+      items: expect.any(Array),
+    }));
+    // Note: the wrap-into-meta behavior lives in chat-view (covered there);
+    // the mock here just records the call args.
+  });
+});
+
+describe('createConversation.newChat', () => {
+  test('persists the outgoing session before clearing', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const onTurnCommitted = jest.fn();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions: makeActions(), onTurnCommitted, getSelectionText: async () => '',
+    });
+
+    await conv.submit('what is the deadline?');
+    expect(onTurnCommitted).toHaveBeenCalledTimes(1);
+
+    conv.newChat();
+
+    // Called once on submit, once on newChat for the outgoing session.
+    expect(onTurnCommitted).toHaveBeenCalledTimes(2);
+    expect(view.clearChat).toHaveBeenCalledTimes(1);
+    expect(view.renderWelcome).toHaveBeenCalledTimes(1);
   });
 });
 

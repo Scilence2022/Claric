@@ -18,6 +18,8 @@
                     <span class="status-indicator" id="statusIndicator"></span>
                     <span id="statusText" class="status-text">Connecting...</span>
                 </div>
+                <button id="historyBtn" class="icon-btn" title="Chat history" aria-label="Chat history">&#9776;</button>
+                <button id="logBtn" class="icon-btn" title="Activity log" aria-label="Activity log">&#128203;</button>
                 <button id="newChatBtn" class="icon-btn" title="New chat" aria-label="New chat">&#65291;</button>
                 <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
                 <button id="infoBtn" class="icon-btn" title="About" aria-label="About">&#9432;</button>
@@ -40,14 +42,15 @@
             <span id="commentStatusText">0 comments pending...</span>
         </div>
 
-        <!-- Slim activity-log drawer -->
-        <section class="log-drawer">
+        <!-- Floating activity-log drawer (toggled from #logBtn in the header) -->
+        <aside id="logDrawer" class="log-drawer-floating" hidden aria-label="Activity log">
             <div class="log-drawer-bar">
-                <button id="logToggle" class="log-toggle" aria-expanded="false" aria-controls="logs">Activity log</button>
+                <span class="log-drawer-title">Activity log</span>
+                <button id="logDrawerCloseBtn" class="icon-btn" title="Close" aria-label="Close activity log">&times;</button>
                 <button id="clearLogsBtn" class="btn-link">Clear</button>
             </div>
-            <div id="logs" class="logs-container" role="log" aria-live="polite" hidden></div>
-        </section>
+            <div id="logs" class="logs-container" role="log" aria-live="polite"></div>
+        </aside>
 
         <!-- Input bar -->
         <footer class="input-bar">
@@ -260,6 +263,20 @@
                 </div>
             </aside>
         </div>
+    </div>
+
+    <!-- History slide-over (toggled from #historyBtn in the header) -->
+    <div id="historyOverlay" class="history-overlay" hidden>
+        <aside class="history-panel" role="dialog" aria-modal="true" aria-label="Chat history">
+            <div class="history-header">
+                <h2>Chat history</h2>
+                <div class="history-header-actions">
+                    <button id="historyNewChatBtn" class="btn btn-compact">New chat</button>
+                    <button id="historyCloseBtn" class="icon-btn" title="Close history" aria-label="Close history">&times;</button>
+                </div>
+            </div>
+            <div id="historyBody" class="history-body"></div>
+        </aside>
     </div>
 
     <!-- Save Prompt Modal -->

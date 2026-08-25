@@ -632,6 +632,45 @@ body {
     content: '\25BE';
 }
 
+/* Floating activity log (toggled from the header). Default hidden; slides
+   up from the bottom-right above the input bar so it overlays the chat area
+   without rearranging the flex layout. */
+.log-drawer-floating {
+    position: fixed;
+    right: var(--spacing-sm);
+    bottom: 76px; /* clear of the input-bar footer */
+    width: min(360px, calc(100% - var(--spacing-md)));
+    max-height: 40vh;
+    background: var(--secondary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-md);
+    box-shadow: var(--shadow-lg);
+    z-index: 25;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.log-drawer-floating[hidden] {
+    display: none;
+}
+
+.log-drawer-floating .log-drawer-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    padding: 2px var(--spacing-sm);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.log-drawer-title {
+    flex: 1 1 auto;
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--secondary-text);
+}
+
 .logs-container {
     max-height: 160px;
     overflow-y: auto;
@@ -1041,6 +1080,133 @@ textarea.form-control {
 .prompt-block-title {
     font-weight: 600;
     margin-bottom: var(--spacing-sm);
+}
+
+/* ==========================================================================
+   History slide-over
+   ========================================================================== */
+
+.history-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    z-index: 30;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.history-overlay[hidden] {
+    display: none;
+}
+
+.history-panel {
+    width: min(420px, 100%);
+    height: 100%;
+    background: var(--primary-bg);
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+}
+
+.history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--spacing-md);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.history-header h2 {
+    font-size: var(--font-size-lg);
+}
+
+.history-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.history-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: var(--spacing-sm);
+}
+
+.history-empty {
+    padding: var(--spacing-lg);
+    text-align: center;
+    color: var(--secondary-text);
+    font-size: var(--font-size-sm);
+}
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+}
+
+.history-item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-md);
+    background: var(--secondary-bg);
+    cursor: pointer;
+    text-align: left;
+}
+
+.history-item:hover {
+    border-color: var(--accent-color);
+    background: var(--tertiary-bg);
+}
+
+.history-item-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.history-item-title {
+    font-weight: 600;
+    font-size: var(--font-size-base);
+    color: var(--primary-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-item-preview {
+    margin-top: 2px;
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-item-meta {
+    margin-top: var(--spacing-xs);
+    display: flex;
+    gap: var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+}
+
+.history-item-delete {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--secondary-text);
+    font-size: var(--font-size-sm);
+    padding: 2px var(--spacing-xs);
+    cursor: pointer;
+}
+
+.history-item-delete:hover {
+    border-color: var(--error-color);
+    color: var(--error-color);
 }
 
 /* ==========================================================================
