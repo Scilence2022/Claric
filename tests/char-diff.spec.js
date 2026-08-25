@@ -49,37 +49,21 @@ describe('computeCharEdits', () => {
 });
 
 /**
- * Builds a minimal Word API mock: ranges are string cursors over a mutable
- * document text; every mutation is recorded in `applied`. Positions are
- * absolute offsets — the strategy locates all spans before editing (phase 1)
- * and executes edits in reverse document order (phase 2), so stored offsets
- * stay valid for the physical mock too.
+ * Builds a minimal Word API mock: every range is a span over a mutable
+ * document text carrying absolute [start, end) offsets; every mutation is
+ * recorded in `applied`. The strategy locates all spans before editing
+ * (phase 1) and executes edits in reverse document order (phase 2), so
+ * stored offsets stay valid for the physical mock too.
+ *
+ * Mirrors the real Word semantics the strategy relies on:
+ *  - getRange('End'|'Start') yields a zero-width span;
+ *  - expandTo(other) merges two spans;
+ *  - search(needle) only matches fully inside the span's [start, end);
+ *  - search rejects needles longer than `searchLimit` (Word's 255 cap).
  */
 function makeWordWorld(originalText, { searchLimit } = {}) {
   let docText = originalText;
   const applied = [];
-
-  function makeCursor(start) {
-    return {
-      get text() { return docText.slice(start); },
-      load() {},
-      search(needle) {
-        // Word rejects search strings longer than 255 chars with
-        // SearchStringInvalid; simulate that when a limit is given.
-        if (searchLimit && needle.length > searchLimit) {
-          throw new Error('SearchStringInvalid');
-        }
-        const idx = docText.indexOf(needle, start);
-        return { items: idx === -1 ? [] : [makeMatch(idx, needle)], load() {} };
-      },
-      insertText(text, location) {
-        if (location !== 'Before') throw new Error(`unexpected cursor insert location: ${location}`);
-        docText = docText.slice(0, start) + text + docText.slice(start);
-        applied.push({ type: 'insert', text });
-      },
-      getRange() { return makeCursor(start); },
-    };
-  }
 
   function makeSpan(start, end) {
     return {
@@ -87,42 +71,40 @@ function makeWordWorld(originalText, { searchLimit } = {}) {
       _end: end,
       get text() { return docText.slice(start, end); },
       load() {},
+      search(needle) {
+        if (searchLimit && needle.length > searchLimit) {
+          throw new Error('SearchStringInvalid');
+        }
+        const idx = docText.indexOf(needle, start);
+        const hit = idx !== -1 && idx + needle.length <= end;
+        return { items: hit ? [makeSpan(idx, idx + needle.length)] : [], load() {} };
+      },
       delete() {
         applied.push({ type: 'delete', text: docText.slice(start, end) });
         docText = docText.slice(0, start) + docText.slice(end);
       },
       insertText(text, location) {
-        if (location !== 'Replace') throw new Error(`unexpected span insert location: ${location}`);
-        applied.push({ type: 'replace', from: docText.slice(start, end), to: text });
-        docText = docText.slice(0, start) + text + docText.slice(end);
-      },
-      getRange() { return makeCursor(end); },
-      expandTo(other) { return makeSpan(Math.min(start, other._start), Math.max(end, other._end)); },
-    };
-  }
-
-  function makeMatch(idx, needle) {
-    return {
-      _start: idx,
-      _end: idx + needle.length,
-      text: needle,
-      delete() {
-        docText = docText.slice(0, idx) + docText.slice(idx + needle.length);
-        applied.push({ type: 'delete', text: needle });
-      },
-      insertText(text, location) {
-        if (location === 'After') {
-          docText = docText.slice(0, idx + needle.length) + text + docText.slice(idx + needle.length);
+        if (location === 'Before') {
+          docText = docText.slice(0, start) + text + docText.slice(start);
+          applied.push({ type: 'insert', text });
+        } else if (location === 'After') {
+          docText = docText.slice(0, end) + text + docText.slice(end);
           applied.push({ type: 'insert', text });
         } else if (location === 'Replace') {
-          applied.push({ type: 'replace', from: needle, to: text });
-          docText = docText.slice(0, idx) + text + docText.slice(idx + needle.length);
+          applied.push({ type: 'replace', from: docText.slice(start, end), to: text });
+          docText = docText.slice(0, start) + text + docText.slice(end);
         } else {
-          throw new Error(`unexpected match insert location: ${location}`);
+          throw new Error(`unexpected insert location: ${location}`);
         }
       },
-      getRange() { return makeCursor(idx + needle.length); },
-      expandTo(other) { return makeSpan(Math.min(idx, other._start), Math.max(idx + needle.length, other._end)); },
+      getRange(location) {
+        if (location === 'End') return makeSpan(end, end);
+        if (location === 'Start') return makeSpan(start, start);
+        throw new Error(`unexpected getRange location: ${location}`);
+      },
+      expandTo(other) {
+        return makeSpan(Math.min(start, other._start), Math.max(end, other._end));
+      },
     };
   }
 
@@ -130,7 +112,7 @@ function makeWordWorld(originalText, { searchLimit } = {}) {
     applied,
     get docText() { return docText; },
     context: { sync: async () => {}, document: {} },
-    range: makeCursor(0),
+    range: makeSpan(0, originalText.length),
   };
 }
 
@@ -139,7 +121,7 @@ describe('applyCharDiffStrategy', () => {
     global.Word = {
       ChangeTrackingMode: { trackAll: 'trackAll', off: 'off' },
       InsertLocation: { before: 'Before', after: 'After', replace: 'Replace' },
-      RangeLocation: { after: 'After', start: 'Start' },
+      RangeLocation: { start: 'Start', end: 'End' },
     };
   });
 
