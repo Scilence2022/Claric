@@ -92,6 +92,10 @@ function makeActions(overrides = {}) {
       position: 'end', model: 'm',
     })),
     applyIllustrationProposal: jest.fn(async () => ({ inserted: true })),
+    planDocumentTasks: jest.fn(async () => ({
+      tasks: [{ type: 'insert', instruction: '增加标题' }, { type: 'edit', instruction: '深度润色修改' }],
+      model: 'm',
+    })),
     revealTextSnippet: jest.fn(async () => true),
     ...overrides,
   };
@@ -204,10 +208,35 @@ describe('routeTurn', () => {
     expect(turn.scope).toBe('document');
   });
 
-  test('compound "add title + restyle document" routes to format as one proposal', () => {
+  test('"add title + restyle document" hits format+edit families -> compound turn', () => {
     const turn = routeTurn('增加标题，全文样式设计修改', { hasSelection: false, skills: BUILTIN_SKILLS });
-    expect(turn.type).toBe(TURN_TYPE.FORMAT);
-    expect(turn.scope).toBe('document');
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+    expect(turn.instruction).toBe('增加标题，全文样式设计修改');
+  });
+
+  test('"add title + deep polish" routes to compound (ZH)', () => {
+    const turn = routeTurn('增加标题，并深度润色修改', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+  });
+
+  test('"continue writing + center everything" routes to compound (append+format)', () => {
+    const turn = routeTurn('续写第三章并把全文居中', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+  });
+
+  test('compound detection also applies with a selection (format+edit verbs)', () => {
+    const turn = routeTurn('把这段话加粗并润色', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+  });
+
+  test('single-intent instructions never route to compound', () => {
+    expect(routeTurn('增加文章标题', { hasSelection: false, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.FORMAT);
+    expect(routeTurn('润色这段话', { hasSelection: true, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.SELECTION_EDIT);
+  });
+
+  test('question lead beats compound detection', () => {
+    const turn = routeTurn('如何润色并加标题？', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
   });
 
   test('illustration intent routes to illustration (ZH)', () => {
@@ -659,6 +688,82 @@ describe('createConversation.submit', () => {
     expect(view._msg.attachProposal).not.toHaveBeenCalled();
     expect(view._msg.setStatus).toHaveBeenCalledWith('The model produced no usable SVG illustration.');
     expect(actions.applyIllustrationProposal).not.toHaveBeenCalled();
+  });
+
+  test('compound turn plans tasks and stages one proposal per pipeline', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => ({ amendmentsApplied: 1, commentsInserted: 0 })),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({ runDocumentSkill: jest.fn(async () => staged) });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('增加标题，并深度润色修改');
+
+    expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
+    expect(actions.planDocumentTasks.mock.calls[0][1].instruction).toBe('增加标题，并深度润色修改');
+    // insert task -> format pipeline at document scope (a title never
+    // inserts into a selection); edit task -> whole-document amendment run.
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal.mock.calls[0][1].instruction).toBe('增加标题');
+    expect(actions.prepareFormatProposal.mock.calls[0][1].scope).toBe('document');
+    expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
+    expect(actions.runDocumentSkill.mock.calls[0][1].promptTemplate).toBe('深度润色修改');
+    // One card per task; nothing applied before the user clicks Apply.
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
+    expect(actions.applyFormatProposal).not.toHaveBeenCalled();
+    expect(staged.apply).not.toHaveBeenCalled();
+  });
+
+  test('compound turn with a selection scopes edit/format tasks to the selection', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({
+        tasks: [{ type: 'format', instruction: '加粗' }, { type: 'edit', instruction: '润色' }],
+        model: 'm',
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'some selected text',
+    });
+
+    await conv.submit('把这段话加粗并润色');
+
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal.mock.calls[0][1].scope).toBe('selection');
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+  });
+
+  test('compound turn falls back to single-intent routing when planning fails', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({ tasks: null, model: 'm' })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('增加标题，并深度润色修改');
+
+    // Single-intent fallback: 标题 -> format pipeline (document scope).
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
   });
 });
 
