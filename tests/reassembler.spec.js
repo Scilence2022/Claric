@@ -119,7 +119,7 @@ jest.mock('../src/lib/word-diff/index.js', () => ({
 }));
 
 const { applyTokenMapStrategy, applySentenceDiffStrategy } = require('../src/lib/word-diff/index.js');
-const { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _normalizeLineEndings, _alignParagraphs } = require('../src/lib/reassembler.js');
+const { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _normalizeLineEndings, _alignParagraphs, _findAnchorWindow } = require('../src/lib/reassembler.js');
 
 // --- Mock Helpers ---
 
@@ -732,5 +732,265 @@ describe('_alignParagraphs', () => {
       { type: 'keep', origIdx: 0, newIdx: 0 },
       { type: 'keep', origIdx: 1, newIdx: 1 },
     ]);
+  });
+});
+
+describe('_findAnchorWindow', () => {
+  test('no drift: stored sequence matches the whole range at offset 0', () => {
+    expect(_findAnchorWindow(['A', 'B', 'C'], ['A', 'B', 'C'])).toEqual({ start: 0, end: 3 });
+  });
+
+  test('prefix drift: paragraph absorbed at range start (title insertion)', () => {
+    expect(_findAnchorWindow(['Title', 'A', 'B'], ['A', 'B'])).toEqual({ start: 1, end: 3 });
+  });
+
+  test('suffix drift: paragraph absorbed at range end', () => {
+    expect(_findAnchorWindow(['A', 'B', 'Appended'], ['A', 'B'])).toEqual({ start: 0, end: 2 });
+  });
+
+  test('prefix + suffix drift', () => {
+    expect(_findAnchorWindow(['Title', 'A', 'B', 'Tail'], ['A', 'B'])).toEqual({ start: 1, end: 3 });
+  });
+
+  test('middle insertion breaks contiguity: returns null', () => {
+    expect(_findAnchorWindow(['A', 'Inserted', 'B'], ['A', 'B'])).toBeNull();
+  });
+
+  test('stored longer than current: returns null', () => {
+    expect(_findAnchorWindow(['A'], ['A', 'B'])).toBeNull();
+  });
+
+  test('empty stored sequence: returns null', () => {
+    expect(_findAnchorWindow(['A'], [])).toBeNull();
+  });
+
+  test('compares trimmed text', () => {
+    expect(_findAnchorWindow(['Title', '  A  ', ' B '], ['A', 'B'])).toEqual({ start: 1, end: 3 });
+  });
+});
+
+// --- Re-anchoring scenario tests ---
+// Regression: a staged card's bookmark range absorbs paragraphs inserted
+// after staging (e.g. a title from another card). Applying the staged
+// amendment then treated the absorbed paragraph as LLM-deleted and removed
+// it. The apply step must re-anchor to the stored original paragraphs.
+
+/**
+ * Builds a mock Word.run whose bookmark range exposes a real paragraphs
+ * collection (unlike createMockWordRun, which exercises the fallback path).
+ * expandTo on a paragraph Start range produces a narrowed range whose
+ * paragraphs are the [paraIdx..other.paraIdx] window, mirroring Word.
+ */
+function createParagraphAwareMockRun(currentParaTexts) {
+  const syncFn = jest.fn().mockResolvedValue(undefined);
+
+  function makeNarrowedRange(startIdx, endIdx) {
+    const windowItems = items.slice(startIdx, endIdx + 1);
+    return {
+      text: windowItems.map((p) => p.text).join('\n'),
+      isNullObject: false,
+      load: jest.fn(),
+      paragraphs: { items: windowItems, load: jest.fn() },
+    };
+  }
+
+  function makeSubRange(paraIdx) {
+    return {
+      paraIdx,
+      text: currentParaTexts[paraIdx],
+      load: jest.fn(),
+      insertText: jest.fn(),
+      expandTo: jest.fn((other) => makeNarrowedRange(paraIdx, other.paraIdx)),
+    };
+  }
+
+  const items = currentParaTexts.map((text, i) => ({
+    text,
+    load: jest.fn(),
+    delete: jest.fn(),
+    insertParagraph: jest.fn(),
+    getRange: jest.fn(() => makeSubRange(i)),
+  }));
+
+  const bookmarkRange = {
+    text: currentParaTexts.join('\n'),
+    isNullObject: false,
+    load: jest.fn(),
+    paragraphs: { items, load: jest.fn() },
+    insertComment: jest.fn(),
+  };
+
+  const mockContext = {
+    document: {
+      body: { paragraphs: { items: [], load: jest.fn() } },
+      getBookmarkRangeOrNullObject: jest.fn(() => bookmarkRange),
+      deleteBookmark: jest.fn(),
+    },
+    sync: syncFn,
+  };
+
+  let _trackingMode = null;
+  Object.defineProperty(mockContext.document, 'changeTrackingMode', {
+    get: () => _trackingMode,
+    set: (val) => { _trackingMode = val; },
+  });
+
+  const wordRun = jest.fn().mockImplementation(async (callback) => {
+    await callback(mockContext);
+  });
+
+  return { wordRun, mockContext, items, bookmarkRange };
+}
+
+function driftChunk(id, paraTexts, startIndex, endIndex) {
+  return {
+    id,
+    paragraphs: paraTexts.map((text, k) => ({ index: startIndex + k, text, headingLevel: 0 })),
+    startIndex,
+    endIndex,
+    tokenCount: 100,
+  };
+}
+
+describe('applyChunkResults re-anchoring', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('prefix drift: absorbed title paragraph is not deleted by the amendment', async () => {
+    // Card 1 inserted a title at document start; the chunk-0 bookmark range
+    // absorbed it. Card 2's amendment was generated against the original
+    // paragraphs only and must not touch the absorbed title.
+    const mock = createParagraphAwareMockRun(['A New Title', 'Para one text.', 'Para two text.']);
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Para one text.', 'Para two text.'], 0, 1);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(1);
+    // The title paragraph must be untouched: no delete, no diff, no insert.
+    expect(mock.items[0].delete).not.toHaveBeenCalled();
+    expect(mock.items[0].insertParagraph).not.toHaveBeenCalled();
+    expect(mock.items[0].getRange).not.toHaveBeenCalled();
+    // Paragraph two changed -> exactly one word-level diff call on it.
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+    expect(applyTokenMapStrategy.mock.calls[0][2]).toBe('Para two text.');
+    expect(applyTokenMapStrategy.mock.calls[0][3]).toBe('Para two revised text.');
+  });
+
+  test('suffix drift: absorbed trailing paragraph is not deleted', async () => {
+    const mock = createParagraphAwareMockRun(['Para one text.', 'Para two text.', 'Appended paragraph']);
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Para one text.', 'Para two text.'], 0, 1);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(1);
+    expect(mock.items[2].delete).not.toHaveBeenCalled();
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+  });
+
+  test('no contiguous match (middle insertion): chunk skipped, nothing deleted', async () => {
+    const mock = createParagraphAwareMockRun(['Para one text.', 'Inserted in middle', 'Para two text.']);
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Para one text.', 'Para two text.'], 0, 1);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.amendmentsApplied).toBe(0);
+    expect(outcome.errors).toHaveLength(1);
+    expect(outcome.errors[0]).toMatch(/no longer matches/);
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+    for (const item of mock.items) {
+      expect(item.delete).not.toHaveBeenCalled();
+    }
+  });
+
+  test('no drift: amendment applies to the whole range as before', async () => {
+    const mock = createParagraphAwareMockRun(['Para one text.', 'Para two text.']);
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Para one text.', 'Para two text.'], 0, 1);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(1);
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+  });
+
+  test('chunkOriginals option supplies staged texts when the result chunk has no paragraphs (retry path)', async () => {
+    const mock = createParagraphAwareMockRun(['A New Title', 'Para one text.', 'Para two text.']);
+    global.Word.run = mock.wordRun;
+
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk: { id: 'chunk-0', startIndex: 0, endIndex: 1 }, // rebuilt retry chunk: no paragraphs
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+    const chunkOriginals = new Map([['chunk-0', ['Para one text.', 'Para two text.']]]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+      chunkOriginals,
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(1);
+    expect(mock.items[0].delete).not.toHaveBeenCalled();
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
   });
 });

@@ -479,6 +479,111 @@ export async function bookmarkChunkRanges(chunks) {
 }
 
 /**
+ * Finds the stored original paragraph sequence as a contiguous window within
+ * the range's current paragraph texts (trim-compared). A staged bookmark
+ * range can absorb paragraphs inserted after staging (e.g. a title added by
+ * another proposal card), shifting the original content within the bookmark.
+ *
+ * @param {string[]} currentTexts - Paragraph texts currently inside the range
+ * @param {string[]} storedTexts - Paragraph texts captured at staging time
+ * @returns {{start: number, end: number} | null} Window [start, end) within
+ *   currentTexts matching the full stored sequence, or null when no
+ *   contiguous match exists
+ * @private
+ */
+function _findAnchorWindow(currentTexts, storedTexts) {
+  const stored = storedTexts.map((t) => (t || '').trim());
+  const current = currentTexts.map((t) => (t || '').trim());
+  if (stored.length === 0 || stored.length > current.length) return null;
+
+  for (let start = 0; start + stored.length <= current.length; start++) {
+    let match = true;
+    for (let k = 0; k < stored.length; k++) {
+      if (current[start + k] !== stored[k]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return { start, end: start + stored.length };
+  }
+  return null;
+}
+
+/**
+ * Resolves the staged original paragraph texts for a chunk result.
+ * Prefers the explicit chunkOriginals map (the retry path rebuilds chunks
+ * without paragraphs); falls back to result.chunk.paragraphs.
+ *
+ * @param {Object} result - ChunkResult
+ * @param {Map<string, string[]> | null} chunkOriginals - chunkId -> texts
+ * @returns {string[] | null} Stored paragraph texts, or null when unavailable
+ * @private
+ */
+function _storedParagraphTexts(result, chunkOriginals) {
+  if (chunkOriginals && typeof chunkOriginals.has === 'function' && chunkOriginals.has(result.chunkId)) {
+    const texts = chunkOriginals.get(result.chunkId);
+    if (Array.isArray(texts) && texts.length > 0) return texts;
+  }
+  const chunk = result.chunk;
+  if (chunk && Array.isArray(chunk.paragraphs) && chunk.paragraphs.length > 0) {
+    return chunk.paragraphs.map((p) => p.text);
+  }
+  return null;
+}
+
+/**
+ * Re-anchors a staged bookmark range to the stored original paragraphs.
+ * When the bookmark absorbed paragraphs inserted after staging, narrows the
+ * working range to just the window holding the original content, so the
+ * amendment never deletes absorbed content (e.g. a title inserted by another
+ * proposal card).
+ *
+ * @param {Word.RequestContext} context
+ * @param {Word.Range} range - The bookmarked chunk range
+ * @param {string[]} storedTexts - Paragraph texts captured at staging time
+ * @param {function} log
+ * @returns {Promise<Word.Range | null>} The (possibly narrowed) range, or
+ *   null when the stored sequence is no longer contiguously locatable
+ * @private
+ */
+async function _reanchorChunkRange(context, range, storedTexts, log) {
+  // Ranges without a paragraphs collection (test mocks, exotic bookmarks)
+  // cannot be re-anchored; use them as-is.
+  if (!range.paragraphs) return range;
+
+  const rangeParagraphs = range.paragraphs;
+  rangeParagraphs.load('items');
+  await context.sync();
+
+  const paraItems = rangeParagraphs.items;
+  if (paraItems.length === 0) return range;
+
+  for (const para of paraItems) {
+    para.load('text');
+  }
+  await context.sync();
+
+  const currentTexts = paraItems.map((p) => p.text);
+  const window = _findAnchorWindow(currentTexts, storedTexts);
+  if (!window) return null;
+
+  if (window.start === 0 && window.end === currentTexts.length) {
+    return range; // No drift: original content still spans the whole range
+  }
+
+  log(
+    `Range drifted since staging; narrowed to paragraphs ${window.start + 1}-${window.end} of ${currentTexts.length}`,
+    'info'
+  );
+  const startRange = paraItems[window.start].getRange('Start');
+  const endRange = paraItems[window.end - 1].getRange('End');
+  const narrowed = startRange.expandTo(endRange);
+  narrowed.load('text');
+  await context.sync();
+  return narrowed;
+}
+
+/**
  * Applies all chunk results to the document.
  * Amendments applied in reverse chunk order as tracked changes.
  * Uses paragraph-level strategy to preserve formatting; falls back to
@@ -491,6 +596,8 @@ export async function bookmarkChunkRanges(chunks) {
  * @param {boolean} options.trackChangesEnabled
  * @param {boolean} options.lineDiffEnabled - use sentence-diff vs token-map for fallback
  * @param {function} options.log
+ * @param {Map<string, string[]>} [options.chunkOriginals] - chunkId -> staged
+ *   paragraph texts, used to re-anchor ranges that drifted since staging
  * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, noChangeCount: number, errors: string[]}>}
  */
 export async function applyChunkResults(results, bookmarkMap, options) {
@@ -498,6 +605,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     trackChangesEnabled = true,
     lineDiffEnabled = false,
     log = () => {},
+    chunkOriginals = null,
   } = options;
 
   let amendmentsApplied = 0;
@@ -538,11 +646,33 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           return;
         }
 
+        // Re-anchor: the bookmark may have absorbed paragraphs inserted after
+        // staging (e.g. a title from another proposal card). Narrow the
+        // working range to the stored original paragraphs so the amendment
+        // never deletes absorbed content.
+        const storedTexts = _storedParagraphTexts(result, chunkOriginals);
+        let workRange = range;
+        if (storedTexts) {
+          let anchored;
+          try {
+            anchored = await _reanchorChunkRange(context, range, storedTexts, log);
+          } catch (anchorErr) {
+            log(`Chunk ${result.chunkId}: re-anchor check failed (${anchorErr.message}), using bookmark range as-is`, 'warning');
+            anchored = range;
+          }
+          if (anchored === null) {
+            errors.push(`Chunk ${result.chunkId}: original content no longer matches the staged range (edited since staging?); amendment skipped`);
+            log(`Chunk ${result.chunkId}: original content not found contiguously in staged range, skipping to avoid deleting absorbed content`, 'warning');
+            return;
+          }
+          workRange = anchored;
+        }
+
         // Try paragraph-level strategy first (preserves formatting)
         let applied;
         try {
           applied = await _applyParagraphLevelAmendment(
-            context, range, result.amendment,
+            context, workRange, result.amendment,
             trackChangesEnabled, lineDiffEnabled, log
           ) !== false;
         } catch (paraErr) {
@@ -556,19 +686,19 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           }
 
           // Normalize line endings for consistent diffing
-          const originalText = _normalizeLineEndings(range.text);
+          const originalText = _normalizeLineEndings(workRange.text);
           const normalizedAmendment = _normalizeLineEndings(result.amendment);
 
           const strategyOptions = { trackChanges: trackChangesEnabled };
           if (lineDiffEnabled) {
-            await applySentenceDiffStrategy(context, range, originalText, normalizedAmendment, log, strategyOptions);
+            await applySentenceDiffStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
           } else if (hasCjk(originalText) || hasCjk(normalizedAmendment)) {
             // Same CJK rule as the paragraph-level path: a whole CJK run is a
             // single token to the word-level strategies, which would turn a
             // one-comma edit into a whole-range replacement redline.
-            await applyCharDiffStrategy(context, range, originalText, normalizedAmendment, log, strategyOptions);
+            await applyCharDiffStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
           } else {
-            await applyTokenMapStrategy(context, range, originalText, normalizedAmendment, log, strategyOptions);
+            await applyTokenMapStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
           }
 
           // Disable tracked changes after fallback (matching paragraph-level strategy behavior)
@@ -676,4 +806,4 @@ export async function cleanupBookmarks(bookmarkMap) {
 }
 
 // Export internals for testing
-export { _normalizeLineEndings, _alignParagraphs };
+export { _normalizeLineEndings, _alignParagraphs, _findAnchorWindow };
