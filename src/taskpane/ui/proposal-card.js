@@ -37,7 +37,7 @@ import { buildTextDiffElement } from './diff-view.js';
  * @param {function(Array<string|number>|undefined)} args.onApply - Async
  *   apply callback; receives the selected item ids when items are given
  * @param {function()} [args.onReject] - Reject callback
- * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markError: function(string) }}
+ * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string) }}
  */
 export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, items, onLocate, comment, onApply, onReject }) {
     const el = document.createElement('div');
@@ -183,6 +183,11 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         /** Terminal state for a rejected proposal (idempotent). */
         markRejected() {
             settle('Rejected — no changes were made.', 'proposal-rejected');
+        },
+        /** Terminal state when apply finished but nothing (or only part)
+         *  landed — "Applied" would be a lie, so surface the reason. */
+        markWarning(message) {
+            settle(message, 'proposal-warning');
         },
         /** Re-enables Apply after a failed attempt so the user can retry. */
         markError(message) {

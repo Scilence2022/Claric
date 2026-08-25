@@ -993,4 +993,34 @@ describe('applyChunkResults re-anchoring', () => {
     expect(mock.items[0].delete).not.toHaveBeenCalled();
     expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
   });
+
+  test('re-anchor check failure: chunk skipped safely instead of falling back to the raw range', async () => {
+    const mock = createParagraphAwareMockRun(['A New Title', 'Para one text.', 'Para two text.']);
+    // Simulate a Word API failure while reading the range's paragraphs.
+    mock.bookmarkRange.paragraphs.load = jest.fn(() => { throw new Error('boom'); });
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Para one text.', 'Para two text.'], 0, 1);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.amendmentsApplied).toBe(0);
+    expect(outcome.errors).toHaveLength(1);
+    expect(outcome.errors[0]).toMatch(/re-anchor check failed/);
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+    for (const item of mock.items) {
+      expect(item.delete).not.toHaveBeenCalled();
+    }
+  });
 });

@@ -551,7 +551,7 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
  *
  * @param {object} deps - { appState, log }
  * @param {object} proposal - Result of prepareFormatProposal
- * @returns {Promise<{ applied: boolean }>}
+ * @returns {Promise<{ applied: boolean, appliedRanges: number, insertedParagraphs: number }>}
  */
 export async function applyFormatProposal(deps, proposal) {
     const { appState, log } = deps;
@@ -560,6 +560,8 @@ export async function applyFormatProposal(deps, proposal) {
         throw new Error('No formatting ops to apply.');
     }
 
+    let appliedRanges = 0;
+    let insertedParagraphs = 0;
     await Word.run(async (context) => {
         if (Word.ChangeTrackingMode) {
             context.document.changeTrackingMode = appState.config.trackChangesEnabled
@@ -602,9 +604,11 @@ export async function applyFormatProposal(deps, proposal) {
             context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
             await context.sync();
         }
+        appliedRanges = applied;
+        insertedParagraphs = inserted;
         log(`Applied formatting to ${applied} range(s) and inserted ${inserted} paragraph(s) across ${ops.length} op(s).`, 'success');
     });
-    return { applied: true };
+    return { applied: appliedRanges > 0 || insertedParagraphs > 0, appliedRanges, insertedParagraphs };
 }
 
 /**

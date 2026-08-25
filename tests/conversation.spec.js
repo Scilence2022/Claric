@@ -844,6 +844,124 @@ describe('createConversation.submit', () => {
     expect(staged.apply).toHaveBeenCalledWith(['c0']);
   });
 
+  test('document edit card warns honestly when apply lands nothing (skipped chunk)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => ({
+        amendmentsApplied: 0,
+        commentsInserted: 0,
+        errors: ['Chunk c0: original content no longer matches the staged range (edited since staging?); amendment skipped'],
+      })),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({ runDocumentSkill: jest.fn(async () => staged) });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('please polish the whole document');
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(staged.apply).toHaveBeenCalledTimes(1);
+    // The card must NOT claim success when nothing landed.
+    expect(cardEl.classList.contains('proposal-applied')).toBe(false);
+    expect(cardEl.classList.contains('proposal-warning')).toBe(true);
+    const statusText = cardEl.querySelector('.proposal-card-status').textContent;
+    expect(statusText).toContain('Nothing applied');
+    expect(statusText).toContain('no longer matches');
+    expect(view._msg.addCitationPills).not.toHaveBeenCalled();
+  });
+
+  test('document edit card warns when the staged edits already match the document', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => ({ amendmentsApplied: 0, commentsInserted: 0, errors: [] })),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({ runDocumentSkill: jest.fn(async () => staged) });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('please polish the whole document');
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(cardEl.classList.contains('proposal-warning')).toBe(true);
+    expect(cardEl.querySelector('.proposal-card-status').textContent)
+      .toContain('already match the document');
+  });
+
+  test('document edit card reports skipped sections alongside successful applies', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => ({
+        amendmentsApplied: 1,
+        commentsInserted: 0,
+        errors: ['Chunk c1: original content no longer matches the staged range'],
+      })),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({ runDocumentSkill: jest.fn(async () => staged) });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('please polish the whole document');
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(cardEl.classList.contains('proposal-applied')).toBe(true);
+    expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('1 section(s) skipped'));
+  });
+
+  test('format card warns when no formatting targets matched', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      applyFormatProposal: jest.fn(async () => ({ applied: false, appliedRanges: 0, insertedParagraphs: 0 })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'some selected text',
+    });
+
+    await conv.submit('把这段话加粗并标红');
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(cardEl.classList.contains('proposal-applied')).toBe(false);
+    expect(cardEl.classList.contains('proposal-warning')).toBe(true);
+    expect(cardEl.querySelector('.proposal-card-status').textContent)
+      .toContain('no formatting targets matched');
+  });
+
   test('selection edit card shows an inline diff of the rewrite', async () => {
     const appState = makeAppState();
     const view = makeView();

@@ -364,10 +364,22 @@ export function createConversation(deps) {
                 input.setProcessing(true);
                 try {
                     const applicationResult = await outcome.apply(selectedChunkIds);
+                    const applyErrors = applicationResult.errors || [];
+                    for (const applyError of applyErrors) log(`Apply: ${applyError}`, 'warning');
+                    if (applicationResult.amendmentsApplied === 0) {
+                        // Honest terminal state: settling on "Applied" would be
+                        // a lie when nothing (or only comments) landed.
+                        card.markWarning(applyErrors.length
+                            ? `Nothing applied: ${applyErrors[0]}`
+                            : 'Nothing applied — the staged edits already match the document.');
+                        msg.setStatus('');
+                        return;
+                    }
                     card.markApplied();
                     msg.setStatus(
                         `Done: ${applicationResult.amendmentsApplied} amendment(s), ` +
-                        `${applicationResult.commentsInserted} comment(s) across ${outcome.chunks.length} section(s).`
+                        `${applicationResult.commentsInserted} comment(s) across ${outcome.chunks.length} section(s).` +
+                        (applyErrors.length ? ` ${applyErrors.length} section(s) skipped — see activity log.` : '')
                     );
                     msg.addCitationPills(outcome.chunks.map(chunkCitation), (searchText) => {
                         actions.revealTextSnippet(turnDeps, searchText);
@@ -529,8 +541,12 @@ export function createConversation(deps) {
                 onApply: async (selectedIds) => {
                     try {
                         const ops = proposal.ops.filter((_, index) => selectedIds.includes(index));
-                        await actions.applyFormatProposal(turnDeps, { ...proposal, ops });
-                        card.markApplied();
+                        const fmtResult = await actions.applyFormatProposal(turnDeps, { ...proposal, ops });
+                        if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0) {
+                            card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
+                        } else {
+                            card.markApplied();
+                        }
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
                         card.markError(error.message);
