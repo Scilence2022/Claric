@@ -82,6 +82,8 @@ function makeActions(overrides = {}) {
       instruction: 'x', generatedText: 'new content', model: 'm',
     })),
     applyDocumentAppend: jest.fn(async () => ({ paragraphsAppended: 1, chars: 11 })),
+    prepareEmptyParagraphCleanup: jest.fn(async () => ({ emptyCount: 3 })),
+    applyEmptyParagraphCleanup: jest.fn(async () => ({ deleted: 3 })),
     prepareFormatProposal: jest.fn(async () => ({
       instruction: 'x', scope: 'selection', ops: [{ font: { bold: true } }], model: 'm',
     })),
@@ -309,6 +311,32 @@ describe('routeTurn', () => {
     const turn = routeTurn('润色这段话', { hasSelection: true, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
   });
+
+  test('empty-paragraph cleanup routes to cleanup (ZH)', () => {
+    const turn = routeTurn('删除多余的空段落', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.CLEANUP);
+    expect(turn.instruction).toBe('删除多余的空段落');
+  });
+
+  test('empty-paragraph cleanup routes to cleanup (EN)', () => {
+    const turn = routeTurn('delete all empty paragraphs', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.CLEANUP);
+  });
+
+  test('cleanup intent is document scope even with a selection', () => {
+    const turn = routeTurn('清除文档里多余的空行', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.CLEANUP);
+  });
+
+  test('question lead beats cleanup intent (ZH "为什么有多余的空段落？")', () => {
+    const turn = routeTurn('为什么有多余的空段落？', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('cleanup + edit hits two families -> compound', () => {
+    const turn = routeTurn('删除多余的空段落，然后润色全文', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+  });
 });
 
 describe('createConversation.submit', () => {
@@ -390,6 +418,92 @@ describe('createConversation.submit', () => {
     expect(view._msg.attachProposal).not.toHaveBeenCalled();
     expect(view._msg.setStatus).toHaveBeenCalledWith('The model returned no content to append.');
     expect(actions.applyDocumentAppend).not.toHaveBeenCalled();
+  });
+
+  test('cleanup intent stages an empty-paragraph deletion proposal (no direct delete)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('删除多余的空段落');
+
+    expect(actions.prepareEmptyParagraphCleanup).toHaveBeenCalledTimes(1);
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    // Staged: nothing deleted before the user clicks Apply.
+    expect(actions.applyEmptyParagraphCleanup).not.toHaveBeenCalled();
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+
+    // Clicking "Apply as tracked changes" deletes the empty paragraphs.
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(actions.applyEmptyParagraphCleanup).toHaveBeenCalledTimes(1);
+  });
+
+  test('cleanup turn with no empty paragraphs shows a status instead of a card', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareEmptyParagraphCleanup: jest.fn(async () => ({ emptyCount: 0 })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('删除多余的空段落');
+
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith('No empty paragraphs found.');
+    expect(actions.applyEmptyParagraphCleanup).not.toHaveBeenCalled();
+  });
+
+  test('cleanup apply that deleted nothing settles into a warning state', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareEmptyParagraphCleanup: jest.fn(async () => ({ emptyCount: 2 })),
+      applyEmptyParagraphCleanup: jest.fn(async () => ({ deleted: 0 })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('删除多余的空段落');
+
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(cardEl.classList.contains('proposal-warning')).toBe(true);
+  });
+
+  test('planned edit task that is really an empty-paragraph cleanup routes to the cleanup pipeline', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({
+        tasks: [
+          { type: 'edit', instruction: '删除文档中多余的空段落' },
+          { type: 'edit', instruction: '深度润色修改' },
+        ],
+        model: 'm',
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('删除多余的空段落，然后润色全文');
+
+    expect(actions.prepareEmptyParagraphCleanup).toHaveBeenCalledTimes(1);
+    expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
   });
 
   test('question with a selection runs Q&A with the selection as context', async () => {

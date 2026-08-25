@@ -472,6 +472,106 @@ export async function applyDocumentAppend(deps, proposal) {
 }
 
 /**
+ * Collects the body paragraphs that are safe to delete as redundant empty
+ * paragraphs: whitespace-only text, not the body's final paragraph (Word
+ * requires a trailing paragraph mark), not inside a table cell, and carrying
+ * no inline pictures (an image lives in an otherwise "empty" paragraph —
+ * deleting it would destroy the image).
+ *
+ * @param {Word.RequestContext} context - An open Word.run context
+ * @returns {Promise<{ paragraphs: Word.ParagraphCollection, indexes: number[] }>}
+ *   Indexes into the collection's items.
+ */
+async function _collectEmptyParagraphs(context) {
+    const paragraphs = context.document.body.paragraphs;
+    paragraphs.load('items');
+    await context.sync();
+
+    const items = paragraphs.items;
+    for (const para of items) {
+        para.load('text');
+        const tableCheck = para.parentTableOrNullObject;
+        tableCheck.load('isNullObject');
+        const pictures = para.inlinePictures;
+        pictures.load('items');
+    }
+    await context.sync();
+
+    const lastIndex = items.length - 1;
+    const indexes = [];
+    items.forEach((para, index) => {
+        const isEmpty = (para.text || '').trim() === '';
+        const isLast = index === lastIndex;
+        const inTable = para.parentTableOrNullObject && !para.parentTableOrNullObject.isNullObject;
+        const hasPicture = para.inlinePictures && para.inlinePictures.items.length > 0;
+        if (isEmpty && !isLast && !inTable && !hasPicture) {
+            indexes.push(index);
+        }
+    });
+    return { paragraphs, indexes };
+}
+
+/**
+ * Scans the document for deletable empty paragraphs — the prepare half of the
+ * staged empty-paragraph cleanup flow. No LLM is involved: blank paragraphs
+ * are invisible to the document parser and excluded from text-pipeline
+ * alignment, so only a deterministic Word.js scan can serve this instruction.
+ * The result is staged in a proposal card and deleted by
+ * applyEmptyParagraphCleanup.
+ *
+ * @param {object} deps - { appState, log }
+ * @returns {Promise<{ emptyCount: number }>}
+ */
+export async function prepareEmptyParagraphCleanup(deps) {
+    const { log } = deps;
+    log('Scanning for empty paragraphs...', 'info');
+    const { indexes } = await Word.run((context) => _collectEmptyParagraphs(context));
+    log(`Found ${indexes.length} empty paragraph(s).`, 'info');
+    return { emptyCount: indexes.length };
+}
+
+/**
+ * Applies the staged empty-paragraph cleanup. Re-scans at apply time (the
+ * document may have changed since staging — honest feedback reports the
+ * actual deletions) and deletes the empty paragraphs as tracked changes per
+ * config.trackChangesEnabled.
+ *
+ * @param {object} deps - { appState, log }
+ * @returns {Promise<{ deleted: number }>}
+ */
+export async function applyEmptyParagraphCleanup(deps) {
+    const { appState, log } = deps;
+    let deleted = 0;
+    await Word.run(async (context) => {
+        const { paragraphs, indexes } = await _collectEmptyParagraphs(context);
+        if (indexes.length === 0) {
+            return;
+        }
+        if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = appState.config.trackChangesEnabled
+                ? Word.ChangeTrackingMode.trackAll
+                : Word.ChangeTrackingMode.off;
+        }
+        try {
+            // Delete in reverse document order via object references held
+            // from the same context; index shifts can't affect later deletes.
+            for (let i = indexes.length - 1; i >= 0; i--) {
+                paragraphs.items[indexes[i]].delete();
+            }
+            deleted = indexes.length;
+            await context.sync();
+        } finally {
+            if (Word.ChangeTrackingMode) {
+                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                await context.sync();
+            }
+        }
+    });
+    log(`Deleted ${deleted} empty paragraph(s).`, 'success');
+    return { deleted };
+}
+
+/**
  * Decomposes a compound instruction into ordered pipeline tasks — the
  * planning step of a compound turn ("增加标题，并深度润色修改" →
  * [insert title, edit document]). The document text is NOT sent: the

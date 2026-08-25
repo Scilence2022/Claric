@@ -1,8 +1,10 @@
 # Claric — your redlining scribe for Word
 
-AI-powered Microsoft Word add-in that applies word-level tracked changes using
-a structure-aware diff strategy — plus document summarization with comment
-extraction and tracked changes analysis.
+AI-powered Microsoft Word add-in with a chat-driven UI: it applies word-level
+tracked changes using a structure-aware diff strategy, rewrites and restyles
+documents through staged proposal cards, designs and inserts illustrations, and
+decomposes compound instructions with a task planner — plus document
+summarization with comment extraction and tracked changes analysis.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=SusffH8eT-Y">
@@ -129,12 +131,12 @@ extraction and tracked changes analysis.
 **Scope-Aware Turn Routing**
 - `/skill args` runs the skill's pipeline (amendment / comment / summary / chat)
 - Free text + non-empty selection → amendment pipeline with the text as the edit instruction
-- Free text without selection → document Q&A answered in chat (streaming when the backend supports SSE)
+- Free text without selection → routed by intent (edit / format / append / illustration / compound task plan / document Q&A — see below)
 - `selection-first` skills run on the selection when one exists, otherwise on the whole document
 
 **Staged Edit Proposals + Citations**
 - Selection-scope edits render a proposal card (before/after char counts, Apply as tracked changes / Reject) — nothing is written until Apply
-- Document-scope runs apply directly with per-chunk progress + ETA, then show citation pills per section; clicking a pill jumps to that section in the document
+- Document-scope runs stream per-chunk progress + ETA, then show citation pills per section; clicking a pill jumps to that section in the document
 - Chat answers stream token-by-token via OpenAI-compatible SSE (`stream: true`), with automatic fallback to non-streaming
 
 **Settings Slide-Over**
@@ -142,6 +144,53 @@ extraction and tracked changes analysis.
 - Prompt management (per-category CRUD + activation + comment instructions) lives in the slide-over
 - Model pill under the input bar shows the active provider:model and opens settings on click
 - Activity log collapsed into a slim drawer; the document-mutating verification script button was removed from the UI
+
+### Unreleased (on `main` since v0.5.0)
+
+**Task Planner + Intent Routing**
+- Free-text instructions are classified by intent regexes (English + Chinese): edit, format, append, illustration; question leads always win and go to Q&A
+- Compound instructions ("add a title, then polish the whole text") are decomposed by an LLM task planner into up to 6 ordered tasks across six pipeline types (`insert`, `format`, `edit`, `append`, `illustration`, `qa`), each staging its own proposal card
+- Ambiguous instructions with no intent keyword are routed through the planner for classification instead of defaulting to Q&A; planning failure falls back gracefully
+- Free-text edit instructions without a selection run the whole-document amendment pipeline with the text as the edit instruction
+
+**Staged Proposals Everywhere + Per-Change Review**
+- Document-scope amendments are gated behind a proposal card — nothing is written until Apply
+- Every change in a card gets a checkbox, an inline del/ins diff preview (diff-match-patch semantic cleanup), and a "§" locate button that selects the source text in the document
+- Apply writes only the checked changes ("Applied X of Y"); Reject discards and cleans up bookmarks
+- Honest apply feedback: sections whose staged content no longer matches are skipped and reported; cards that landed nothing settle into a warning state instead of claiming success
+- Amendments identical to the original (LLM echo) are never counted or proposed
+
+**Formatting Pipeline (format ops)**
+- Natural-language formatting instructions ("make this Heading 2", "center all headings", "加粗") are planned by the LLM into a strict JSON op allowlist: font (bold, italic, underline, highlight, color, size, …), paragraph (style, alignment, spacing, indentation, …), targeted by substring match, paragraph style, or whole scope
+- Insert ops add short structural elements — e.g. "增加文章标题" composes a title, inserts it at the document start, and styles it with the built-in Title style
+- Applied as tracked changes (Formatted revisions); existing text is never rewritten — rewrite-only instructions yield no ops
+
+**Illustration Pipeline**
+- "设计插图并插入" asks the LLM for a self-contained SVG, sanitizes it with DOMPurify (SVG profile, no scripts/`foreignObject`), rasterizes to PNG via an offscreen canvas, and inserts it as a centered inline picture (≤450 pt wide)
+- Position heuristic: header/题图/头图 → document start, otherwise end; staged with an image preview in the proposal card
+
+**Doc-Append Route**
+- "继续写 / append to the document" drafts new content against the full document context and stages an append-to-end proposal; Apply inserts paragraphs at the document end as tracked changes
+
+**Empty-Paragraph Cleanup (deterministic)**
+- "删除多余的空段落 / delete empty paragraphs" routes to a Word.js scan — no LLM, because the parser never sees blank paragraphs and the text pipelines structurally cannot serve this instruction
+- The scan excludes the body's final paragraph, table-cell paragraphs, and paragraphs holding inline pictures (an illustration lives in an otherwise "empty" paragraph)
+- Staged as a proposal card; Apply deletes the paragraphs as tracked changes, reporting the actual deletions
+
+**Model Activity + Work Log**
+- Every turn shows a collapsible work log (pipeline steps, auto-collapses to "Worked for Ns · M steps") and a live "Model activity" region streaming reasoning (dimmed) and output tokens per section
+- Model activity auto-scrolls while pinned to the bottom; scrolling up disengages, scrolling back down (or re-expanding) re-engages
+- Streaming uses an idle timeout — the clock resets on every received chunk, so long active generations survive and only genuinely stalled streams abort
+- Live selection preview chip above the input bar; the current selection is injected into Q&A prompts as focused context
+
+**Reliability Hardening**
+- Staged chunk ranges are re-anchored before applying: if an earlier card (e.g. an inserted title) shifted the document, the amendment targets only the staged content window instead of deleting drifted paragraphs
+- Blank paragraphs are excluded from anchoring and paragraph alignment (the parser skips them, `range.paragraphs` doesn't)
+- Word-diff layer hardened: caller-owned change-tracking mode with finally-restore, occurrence-ordered sentence diffs, Nth-occurrence token resolution
+- MiniMax provider presets (international + China sites)
+
+**Testing**
+- 708 unit tests across 29 suites (Jest), including conversation routing, task planner, format ops, illustration, proposal card, re-anchoring, and streaming idle-timeout coverage
 
 ## Setup
 
@@ -169,7 +218,7 @@ Both methods require HTTPS certificates trusted by the machine running Word.
 
 ```bash
 git clone https://github.com/Scilence2022/Claric.git
-cd word-ai-redliner
+cd Claric
 ```
 
 2. **Create HTTPS certificates** (see [Create HTTPS Certificates](#create-https-certificates))
@@ -239,7 +288,7 @@ docker compose up -d
 
 ```bash
 git clone https://github.com/Scilence2022/Claric.git
-cd word-ai-redliner
+cd Claric
 ```
 
 2. **Install dependencies**
@@ -467,11 +516,10 @@ those overrides persist in localStorage.
 
 ## Docker Image
 
-Pre-built images are available on GitHub Container Registry:
+Build the production image locally:
 
 ```bash
-docker pull ghcr.io/yuch85/word-ai-redliner:0.3.0
-docker pull ghcr.io/yuch85/word-ai-redliner:latest
+docker build -t claric .
 ```
 
 The image is a three-stage build on `node:22-alpine`: runtime layers contain
@@ -487,7 +535,7 @@ See `ARCHITECTURE.md` for details.
 ## Testing
 
 ```bash
-npm test          # 514 tests across 22 suites
+npm test          # 699 tests across 29 suites
 npm run lint      # ESLint (flat config)
 npm run build     # webpack production build
 npm run verify    # lint + test + build (same as CI)
@@ -498,18 +546,31 @@ Test suites cover:
 - `prompt-persistence.spec.js` — localStorage round-trip, migration, edge cases
 - `prompt-composition.spec.js` — composeMessages, composeSummaryMessages, placeholder replacement, output rules
 - `comment-extractor.spec.js` — extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges (OOXML parsing)
+- `comments-on-range.spec.js` — extractCommentsOnRange
 - `document-generator.spec.js` — buildSummaryHtml (markdown conversion, table borders, escaping), createSummaryDocument (Word API)
 - `comment-queue.spec.js` — CommentQueue state management, bookmark naming
-- `llm-client.spec.js` — sendPrompt, stripThinkTags, stripMarkdown, testConnection
+- `llm-client.spec.js` — sendPrompt, sendMessages, stripThinkTags, stripMarkdown, testConnection
+- `llm-stream.spec.js` — sendMessagesStream SSE parsing, reasoning demux, [DONE] terminator, non-SSE fallback, abort, idle timeout
 - `document-parser.spec.js` — parseDocument, paragraph extraction, heading detection, style mapping
 - `document-chunker.spec.js` — chunkDocument, heading-based splitting, overlap, token limits
 - `context-extractor.spec.js` — extractContext, definitions, abbreviations, outline generation
-- `orchestrator.spec.js` — processChunksParallel, concurrency, cancellation, merged mode parsing
-- `reassembler.spec.js` — paragraph alignment, line ending normalization, content validation
+- `orchestrator.spec.js` — processChunksParallel, concurrency, cancellation, merged mode parsing, streaming tokens
+- `reassembler.spec.js` — paragraph alignment, line ending normalization, content validation, staged-range re-anchoring, blank-paragraph handling
 - `response-parser.spec.js` — parseDelimitedResponse, fallback classification
+- `format-ops.spec.js` — parseFormatOps allowlist sanitizing, insert ops, describeFormatOp
+- `illustration.spec.js` — parseIllustration, SVG sanitizing, dimensions, position heuristic
+- `task-planner.spec.js` — parsePlan caps/truncation, buildPlanPrompt
+- `providers.spec.js` — provider preset catalog, MiniMax pair, default config
+- `char-diff.spec.js` — CJK detection, computeCharEdits, applyCharDiffStrategy
+- `word-diff.spec.js` — word/sentence diff modes, sliceSearchPieces
 - `skills.spec.js` — built-in skill registry, resolveSkill parsing, custom skill registration
-- `conversation.spec.js` — chat turn routing (skill vs selection edit vs document Q&A), concurrency guard, cancel
-- `llm-stream.spec.js` — sendPromptStream SSE parsing, [DONE] terminator, non-SSE fallback, abort
+- `conversation.spec.js` — chat turn routing (skill / selection edit / doc edit / format / append / illustration / compound / Q&A), staged proposals, selective apply, honest warnings, concurrency guard, cancel
+- `proposal-card.spec.js` — per-change checkboxes, inline diff, locate, selective apply, warning/error states
+- `chat-view.spec.js` — model activity auto-scroll follow/disengage behavior
+- `config-persistence.spec.js` — normalizeConfig validation and legacy migration
+- `selection-with-comments.spec.js` — comment anchor splicing into selection OOXML
+- `generate-manifest.spec.js` — manifest generation from template + .env
+- `panel-actions.spec.js` — legacy frozen enums
 
 ## Acknowledgments
 

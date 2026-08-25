@@ -2,10 +2,22 @@
 
 ## Overview
 
-Claric is a Microsoft Word add-in that provides two core workflows:
+Claric is a Microsoft Word add-in built around a chat-driven taskpane. Free-text
+instructions are routed by intent to one of six pipelines:
 
-1. **AI Redlining** — select text, send to LLM with a prompt, apply the response as word-level tracked changes
-2. **Document Summary** — extract comments, document text, and tracked changes, send to LLM, generate a formatted Word document
+1. **AI Redlining (edit)** — select text or address the whole document, send to LLM with a prompt, apply the response as word-level tracked changes
+2. **Formatting (format/insert)** — LLM-planned style/font/paragraph ops, plus short structural inserts (e.g. an article title), applied as tracked changes
+3. **Append** — generate new content against the document context and stage an append-to-end proposal
+4. **Illustration** — LLM-designed SVG, sanitized and rasterized, inserted as an inline picture
+5. **Cleanup** — deterministically scan for redundant empty paragraphs (no LLM) and delete them as tracked changes
+6. **Document Summary** — extract comments, document text, and tracked changes, send to LLM, generate a formatted Word document
+7. **Q&A (qa)** — answer questions about the document in chat, streaming
+
+Compound instructions are decomposed by an LLM task planner into ordered tasks
+across these pipelines (the planner has no `cleanup` task type — a planned
+task whose instruction is a cleanup is intercepted and routed to the
+deterministic pipeline). Every document mutation is staged as a proposal card —
+nothing is written until the user applies it.
 
 The add-in runs as an Office.js taskpane, served over HTTPS via webpack dev server (development) or a static Node.js server (Docker/production).
 
@@ -17,56 +29,124 @@ src/
     commands.js
     commands.html
   lib/                         # Core modules
-    llm-client.js              # LLM API client (OpenAI-compatible; honors
-                               #   per-provider apiPath prefixes)
-    providers.js               # Provider catalog: presets for Ollama, vLLM,
-                               #   DeepSeek, Zhipu GLM, Moonshot Kimi, Custom
+    llm-client.js              # OpenAI-compatible LLM client: non-streaming
+                               #   (sendMessages/sendPrompt) + SSE streaming
+                               #   (sendMessagesStream) with think-tag demux,
+                               #   reasoning_content support, non-SSE fallback,
+                               #   and idle-timeout (resets per chunk)
+    providers.js               # Provider catalog: Ollama, vLLM, DeepSeek,
+                               #   Zhipu GLM, Moonshot Kimi, MiniMax (intl + CN),
+                               #   Custom
     prompt-manager.js          # 4-category prompt CRUD, activation, composition
     comment-extractor.js       # Comment extraction, document text extraction,
                                #   tracked changes OOXML parsing, token estimation
     document-generator.js      # Summary document creation (markdown→HTML→Word)
     comment-queue.js           # Async comment queue with bookmark persistence
     comment-request.js         # Comment request data model
-    structure-model.js         # Paragraph block model for diff strategies
+    document-parser.js         # Office.js traversal → ParsedParagraph[] with
+                               #   heading levels, list info, table membership
+    document-chunker.js        # Token-budgeted chunking with heading boundaries,
+                               #   table atomicity, overlap context
+    context-extractor.js       # Definitions/abbreviations/outline extraction,
+                               #   per-chunk filtered context prefix
+    orchestrator.js            # Worker-pool parallel LLM dispatch with
+                               #   progress/ETA, cancellation, merged-mode
+                               #   parsing, per-chunk token streaming
+    reassembler.js             # Bookmarks chunk ranges; applies results as
+                               #   tracked changes (paragraph-level LCS +
+                               #   similarity alignment, blank-paragraph-safe);
+                               #   re-anchors drifted staged ranges at apply time
+    response-parser.js         # ===AMENDMENT===/===COMMENT=== splitting,
+                               #   fallback classification prompt
+    format-ops.js              # NL→JSON formatting/insert ops: prompt builder,
+                               #   strict allowlist parser, op describer
+    illustration.js            # SVG illustration prompt/parse/sanitize
+                               #   (DOMPurify SVG profile)/dimensions/position
+    task-planner.js            # Compound-instruction decomposition prompt +
+                               #   plan parser (6 task types, caps)
+    selection-with-comments.js # Splices comment anchors into selection OOXML
+    panel-actions.js           # Legacy frozen enums (kept for tests)
+    structure-model.js         # Legacy ParagraphBlock token-map model
+    word-diff/                 # Diff strategies, vendored from
+                               #   office-word-diff (Apache-2.0, see
+                               #   LICENSE/NOTICE) + project hardening
+      index.js                 #   Facade re-exporting strategies + computeDiff
+      token-map.js             #   Word→Range mapping, preserves char formatting
+      sentence-diff.js         #   Sentence-granularity fallback
+      block-replace.js         #   Full-range replacement (last resort)
+      diff-wordmode.js         #   Word-level diff computation
+      char-diff.js             #   Project-original CJK char-level strategy
   scripts/
     verify-word-api.js         # Word API version verification utility
   taskpane/                    # Chat-driven main UI
     taskpane.html              # Chat layout: header, message list, input bar,
-                               #   settings slide-over
+                               #   selection preview, settings slide-over
     taskpane.js                # Bootstrap only: module wiring, Office.onReady,
-                               #   WordApi capability detection
-    taskpane.css               # Chat styles (messages, proposal cards, pills)
+                               #   WordApi capability detection, selection watch
+    taskpane.css               # Chat styles (messages, proposal cards, pills,
+                               #   work log, model activity, warning states)
     app-state.js               # Shared state: config, PromptManager, processing
-                               #   flags, normalizeConfig
+                               #   flags, normalizeConfig, debounce
     skills.js                  # Skill registry: 6 built-ins + custom prompts
                                #   exposed as slash commands
-    conversation.js            # Turn routing: skill / selection edit / doc Q&A,
+    conversation.js            # Turn routing (intent regexes + task planner),
+                               #   per-pipeline turn runners, proposal staging,
                                #   concurrency guard, cancel
     word-actions.js            # Document/LLM pipelines with explicit args:
-                               #   selection edits (prepare/apply split for
-                               #   proposal cards), doc-scope chunked runs,
-                               #   summary, chat Q&A
+                               #   selection/append/format/illustration
+                               #   prepare+apply pairs, gated doc-scope runs,
+                               #   planner, Q&A, summary, selection watch,
+                               #   reveal/locate
     ui/
-      chat-view.js             # Message rendering, streaming text, progress
+      chat-view.js             # Message rendering, streaming text, per-turn
+                               #   work log, model activity (auto-scroll),
+                               #   progress bar, citation pills
       input-bar.js             # Textarea, skill picker popup, send/cancel,
-                               #   model pill
+                               #   model pill, selection preview chip
       welcome.js               # Welcome empty state with skill chips
       settings-view.js         # Settings slide-over + prompt management
-      proposal-card.js         # Staged edit proposal card (Apply/Reject)
+      proposal-card.js         # Staged proposal card: per-change checkboxes,
+                               #   locate button, selective apply, terminal
+                               #   states (applied/rejected/warning/error)
+      diff-view.js             # Inline <del>/<ins> text diff element
+                               #   (diff-match-patch semantic cleanup)
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (514 tests, 22 suites)
+tests/                         # Jest unit tests (699 tests, 29 suites)
+  conversation.spec.js         # Turn routing (all intent families + compound +
+                               #   ambiguous), staging, selective apply, warnings
+  reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
+                               #   paragraphs, line endings, validation
+  llm-stream.spec.js           # SSE parsing, reasoning demux, fallback, abort,
+                               #   idle timeout
+  llm-client.spec.js           # Non-streaming client, stripping helpers
+  proposal-card.spec.js        # Items/checkboxes/locate/selective apply/states
+  chat-view.spec.js            # Model activity auto-scroll
+  format-ops.spec.js           # Op parsing/sanitizing, insert ops, descriptions
+  illustration.spec.js         # SVG parse/sanitize/dimensions/position
+  task-planner.spec.js         # Plan parsing, caps, prompt contract
+  orchestrator.spec.js         # Parallel dispatch, cancellation, streaming
+  document-parser.spec.js      # Heading detection, paragraph extraction
+  document-chunker.spec.js     # Chunking constraints
+  context-extractor.spec.js    # Definitions/abbreviations/outline
+  response-parser.spec.js      # Delimited response parsing
   prompt-state.spec.js         # PromptManager CRUD, activation, summary category
-  prompt-persistence.spec.js   # localStorage round-trip, migration, edge cases
-  prompt-composition.spec.js   # composeMessages, composeSummaryMessages, placeholders
-  comment-extractor.spec.js    # Comments, structured extraction, OOXML tracked changes
-  document-generator.spec.js   # HTML building, markdown conversion, table borders
-  comment-queue.spec.js        # Queue state management, bookmark naming
-  llm-client.spec.js           # sendPrompt, stripThinkTags, testConnection
-  skills.spec.js               # Skill registry, resolveSkill parsing, custom skills
-  conversation.spec.js         # Turn routing, concurrency guard, cancel
-  llm-stream.spec.js           # sendPromptStream SSE parsing and fallback
+  prompt-persistence.spec.js   # localStorage round-trip, migration
+  prompt-composition.spec.js   # composeMessages, placeholders, output rules
+  comment-extractor.spec.js    # Comments, structured extraction, OOXML revisions
+  comments-on-range.spec.js    # extractCommentsOnRange
+  comment-queue.spec.js        # Queue state, bookmark naming
+  document-generator.spec.js   # HTML building, markdown conversion, sanitizing
+  config-persistence.spec.js   # normalizeConfig validation/migration
+  providers.spec.js            # Provider preset catalog
+  skills.spec.js               # Skill registry, resolveSkill
+  char-diff.spec.js            # CJK char-level diff
+  word-diff.spec.js            # Word/sentence diff modes
+  selection-with-comments.spec.js # Comment anchor splicing
+  generate-manifest.spec.js    # Manifest generation
+  panel-actions.spec.js        # Legacy enums
+  __mocks__/                   # Jest style mock
 
 scripts/
   generate-manifest.cjs        # Builds manifest.xml from template + .env
@@ -74,10 +154,44 @@ scripts/
                                #   XML escaping)
   docker-server.cjs            # Hardened production static file server:
                                #   /healthz, traversal + crash protection,
-                               #   graceful shutdown, access logging
+                               #   graceful shutdown, access logging, LLM proxy
 
-assets/                        # Add-in icons (16/32/80px)
+assets/                        # Add-in icons (16/32/64/80px)
 ```
+
+## Turn Routing
+
+`routeTurn(text, {hasSelection, skills, allowCompound})` in `conversation.js` is
+a pure function, evaluated in this exact order:
+
+1. Empty input → no turn.
+2. `/skill args` match → the skill's pipeline (chat/context → Q&A, summary →
+   summary doc, comment → selection or document comment, amendment → selection
+   edit or document edit).
+3. `countIntentFamilies(text) >= 2` → COMPOUND: the task planner
+   (`planDocumentTasks`) decomposes the instruction into ordered tasks
+   (`insert` / `format` / `edit` / `append` / `illustration` / `qa`), and each
+   task is dispatched to its pipeline in user-stated order. Planning failure
+   re-routes with compound disabled.
+4. Illustration intent (`ILLUSTRATION_INTENT_RE`) → ILLUSTRATION.
+5. Append intent (`APPEND_INTENT_RE`) → DOC_APPEND.
+6. Format intent (`FORMAT_INTENT_RE`) → FORMAT (selection scope when a
+   selection exists, else document scope).
+7. Cleanup intent (`CLEANUP_INTENT_RE`, "删除多余的空段落" / "delete empty
+   paragraphs") → CLEANUP — always document scope, deterministic (no LLM:
+   the parser never sees blank paragraphs, so the text pipelines structurally
+   cannot serve this).
+8. Selection present → question lead means Q&A with the selection as focused
+   context; otherwise SELECTION_EDIT.
+9. Edit intent (`EDIT_INTENT_RE`, EN + ZH verbs; update/enrich verbs require a
+   document-ish object) → DOC_EDIT (whole-document amendment).
+10. Question lead (`QUESTION_LEAD_RE`) → DOC_QA (never planner-mediated).
+11. Zero intent hits and not a question → COMPOUND, where the planner
+    classifies the ambiguous instruction; falls back to DOC_QA on failure.
+
+Planned tasks are mapped to turns by `turnForTask`; a planned `edit` task
+whose instruction matches the cleanup intent is intercepted there and routed
+to CLEANUP instead of the text pipelines.
 
 ## Runtime Flows
 
@@ -85,13 +199,62 @@ assets/                        # Add-in icons (16/32/80px)
 
 ```
 User selects text → types an instruction (or /copy-edit) in the chat input
-  → conversation.js routes the turn (skill / selection edit / doc Q&A)
+  → conversation.js routes the turn (SELECTION_EDIT)
   → word-actions.js reads the selection via Word.run()
   → promptManager.composeMessages(category, selection, templateOverride) builds prompt
-  → llmClient.sendPrompt(config, prompt) calls LLM
-  → chat shows a proposal card (Apply as tracked changes / Reject)
+  → llmClient streams the LLM response (tokens shown in Model activity)
+  → chat shows a proposal card with an inline diff of the change
   → on Apply: the word-diff layer applies the response as tracked changes
   → Word shows insertions/deletions with track changes enabled
+```
+
+Document-scope edits (skill or free-text edit intent without selection) run the
+chunked pipeline (parse → context → chunk → parallel dispatch) but are **gated**:
+results are staged as a "Proposed edits to N section(s)" card with one checkbox
+per amended chunk. Bookmarks persist until Apply (tracked changes, selective by
+chunk) or Reject (discard + cleanup). Staged ranges are re-anchored at apply
+time, so inserting content via another card first (e.g. a title) never causes
+the amendment to delete drifted paragraphs.
+
+### Format Flow
+
+```
+"make all headings centered" / "增加文章标题"
+  → FORMAT turn → prepareFormatProposal()
+  → LLM returns a JSON op array (font/paragraph/insert ops, strict allowlist)
+  → proposal card lists one checkbox per op (with locate link for match ops)
+  → on Apply: ops set Word.js font/paragraph properties or insert styled
+    paragraphs, recorded as tracked (Formatted) revisions
+```
+
+### Append Flow
+
+```
+"继续写..." → DOC_APPEND turn → prepareDocumentAppend()
+  → LLM drafts content against the full document (+ selection as focus)
+  → "Proposed content to append at the document end" card
+  → on Apply: paragraphs inserted at body end as tracked changes
+```
+
+### Illustration Flow
+
+```
+"设计插图并插入" → ILLUSTRATION turn → prepareIllustrationProposal()
+  → LLM returns one self-contained SVG
+  → sanitizeSvg() (DOMPurify SVG profile) → card with image preview
+  → on Apply: SVG rasterized to PNG (offscreen canvas), inserted as a
+    centered inline picture ≤450pt wide at document start (题图/头图) or end
+```
+
+### Cleanup Flow
+
+```
+"删除多余的空段落" → CLEANUP turn → prepareEmptyParagraphCleanup()
+  → Word.run scan of body.paragraphs: whitespace-only text, excluding the
+    final paragraph, table-cell paragraphs, and paragraphs holding inline
+    pictures → "Delete N empty paragraph(s)" proposal card
+  → on Apply: re-scan at apply time and delete the empty paragraphs
+    (reverse order, tracked per config); zero deletions → honest warning
 ```
 
 ### Summary Flow (Document Summary)
@@ -109,6 +272,16 @@ User runs "/summarize-contract"
   → New document opens with formatted content
 ```
 
+### Q&A Flow
+
+```
+Question → DOC_QA → answerQuestion()
+  → prompt = context prompt + optional chat-skill template + question
+    + --- SELECTED TEXT --- (when a selection exists)
+    + --- DOCUMENT --- (full text at configured extraction richness)
+  → sendPromptStream with 300s idle timeout; tokens stream into the message
+```
+
 ## Core Components
 
 ### Prompt Manager (`src/lib/prompt-manager.js`)
@@ -119,6 +292,13 @@ Key methods:
 - `getActiveMode()` — returns `'summary'` | `'amendment'` | `'comment'` | `'both'` | `'none'`
 - `composeMessages(category, selection)` — builds `[{role, content}]` for amendment/comment
 - `composeSummaryMessages(comments, opts)` — builds messages with `{comments}`, `{whole document}`, `{tracked changes}` placeholder replacement
+
+### LLM Client (`src/lib/llm-client.js`)
+
+- `sendMessages(config, messages, log, signal, timeoutMs)` — non-streaming, fixed total timeout (default 120s), WebView2-safe manual AbortController bridging
+- `sendMessagesStream(config, messages, {onContent, onReasoning}, log, signal, timeoutMs)` — SSE streaming; parses `content` and `reasoning_content` deltas; `createStreamDemux` splits inline `<think>` blocks across token boundaries; falls back to non-SSE JSON delivered as one delta; **idle timeout** re-arms on response headers and every chunk, so only a stalled stream trips `TimeoutError`; returns `{content, reasoning}`
+- `sendPrompt` / `sendPromptStream` — single-string wrappers
+- Helpers: `stripThinkTags`, `stripMarkdown`, `stripChunkDelimiters`, `testConnection`
 
 ### Comment Extractor (`src/lib/comment-extractor.js`)
 
@@ -135,6 +315,36 @@ OOXML tracked changes pipeline:
 5. Process `w:moveFrom`/`w:moveTo` as move operations
 6. Skip `w:ins`/`w:del` inside `w:trPr` (table row markers)
 7. Extract paragraph context for each change
+
+### Reassembler (`src/lib/reassembler.js`)
+
+- `bookmarkChunkRanges()` — hidden `_wdp…` bookmarks persist chunk ranges across LLM processing time
+- `applyChunkResults()` — aligns LLM output to original paragraphs (LCS on exact matches, then greedy similarity matching at 0.4 threshold; CJK uses bigram similarity; blank paragraphs excluded) and applies keep/delete/insert ops in reverse document order as tracked changes; comments are inserted in a separate later phase with tracking off (avoids `AccessDenied` on ranges with pending revisions)
+- Re-anchoring: `_reanchorChunkRange()` narrows a drifted staged range to the contiguous window holding the staged paragraphs (`_findAnchorWindow` over stored original texts); if contiguity is lost, the chunk is **skipped** with an error entry rather than falling back to the raw range
+- Truncation guard rejects LLM output under 30% of the original chunk length
+- Returns `{ amendmentsApplied, commentsInserted, noChangeCount, errors }` for honest UI feedback
+
+### Format Ops (`src/lib/format-ops.js`)
+
+- `buildFormatPrompt(instruction, scopeText, scope)` — asks the LLM for a JSON op array; rewrite-only instructions must yield `[]`
+- `parseFormatOps(raw, log)` — strict allowlist sanitizing: font payload (bold, italic, strikeThrough, doubleStrikeThrough, superscript, subscript, allCaps, smallCaps, underline, highlightColor, name, color, size), paragraph payload (style/styleBuiltIn, alignment, lineSpacing, spaceBefore/After, leftIndent/rightIndent, firstLineIndent), `insert` (`text` ≤ 2000 chars, `position: start|end`); targets via `match` substring (≤255 chars), `paragraphStyle`, or whole scope
+- `describeFormatOp(op)` — human-readable label for the proposal card
+
+### Illustration (`src/lib/illustration.js`)
+
+- `buildIllustrationPrompt()` — demands one self-contained SVG (no scripts/handlers/`foreignObject`)
+- `parseIllustration()` — fence stripping, 256KB cap
+- `sanitizeSvg()` — DOMPurify with SVG + SVG-filters profiles
+- `svgDimensions()` / `ensureSvgDimensions()` — width/height from viewBox or 1200×800 default (needed for rasterization)
+- `illustrationPositionFromInstruction()` — 题图/头图/开头/top/header → document start, else end
+- Applied via `_svgToPngBase64()` (offscreen canvas, 1600px wide) + `insertInlinePictureFromBase64`, centered, scaled to ≤450pt width
+
+### Task Planner (`src/lib/task-planner.js`)
+
+- `TASK_TYPES = ['insert','format','edit','append','illustration','qa']`, `MAX_TASKS = 6`, per-task instruction cap 500 chars
+- `buildPlanPrompt(instruction, hasSelection)` — also used to classify ambiguous single instructions
+- `parsePlan(raw, log)` — validated `Array<{type, instruction}> | null`
+- `conversation.js` maps tasks to turns (`turnForTask`); `insert` tasks always run at document scope
 
 ### Document Generator (`src/lib/document-generator.js`)
 
@@ -164,12 +374,14 @@ Local modifications on top of upstream (kept intentionally small):
 ### Taskpane (`src/taskpane/`)
 
 Chat-driven UI split into focused modules:
-- `taskpane.js` — bootstrap only (module wiring, Office.onReady, WordApi detection)
+- `taskpane.js` — bootstrap only (module wiring, Office.onReady, WordApi detection, selection watch wiring)
 - `app-state.js` — shared config/state; `normalizeConfig` field-by-field validation
-- `conversation.js` — turn routing: slash skill → pipeline, free text + selection → staged edit, free text → document Q&A; concurrency guard + AbortController cancel
+- `conversation.js` — turn routing (see "Turn Routing" above) and per-pipeline turn runners; every `log()` line is teed into the message's work log; concurrency guard + AbortController cancel
 - `skills.js` — skill registry: six built-ins plus PromptManager prompts as custom slash commands
-- `word-actions.js` — the pipelines (selection prepare/apply split, doc-scope chunked runs, summary, chat Q&A) with explicit args instead of DOM/active-prompt reads
-- `ui/*` — chat view, input bar with skill picker and send/cancel morph, welcome chips, settings slide-over, proposal card, status bar
+- `word-actions.js` — the pipelines (selection/append/format/illustration/cleanup prepare+apply pairs, gated doc-scope runs, planner, Q&A, summary) with explicit args instead of DOM/active-prompt reads
+- `ui/chat-view.js` — message list, streaming body, per-turn work log (auto-collapse to "Worked for Ns · M steps"), model activity region (reasoning dimmed, per-section split, pin-to-bottom auto-scroll that disengages when the user scrolls up), progress bar with ETA, citation pills
+- `ui/proposal-card.js` — staged proposals: per-change checkbox list with inline diffs and locate buttons, selective apply ("Applied X of Y"), terminal applied/rejected/warning/error states, optional image preview (illustration)
+- `ui/diff-view.js` — display-only `<del>/<ins>` inline diff via diff-match-patch `diff_cleanupSemantic`
 - Settings auto-save on every input change (no Save button), unchanged localStorage keys
 - WordApi version detection and feature gating (1.4 for comments)
 
@@ -197,7 +409,7 @@ of crashing the add-in.
 ### Runtime (localStorage)
 
 All user settings persist in `localStorage` under the `wordAI.config` key:
-- `backend` — provider id (`'ollama'`, `'vllm'`, `'deepseek'`, `'glm'`, `'kimi'`, `'custom'`)
+- `backend` — provider id (`'ollama'`, `'vllm'`, `'deepseek'`, `'glm'`, `'kimi'`, `'minimax'`, `'minimax-cn'`, `'custom'`)
 - `providers.{id}.url` — endpoint URL (same-origin proxy path by default)
 - `providers.{id}.apiKey` — optional API key
 - `providers.{id}.model` — model id (free-text with refreshable suggestions)
@@ -212,7 +424,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 514 tests, 22 suites, ~2s
+npm test          # 708 tests, 29 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + build (what CI runs)
@@ -231,17 +443,17 @@ runs as the non-root `node` user and serves static files via
 405 for non-GET, `/healthz` endpoint, graceful SIGTERM shutdown).
 
 ```bash
-docker build -t claric:0.3.0 .
+docker build -t claric .
 docker compose up -d
 ```
 
 The manifest is regenerated inside the container at startup from
 `HOST`/`PORT`/`PROTOCOL`; a stable add-in GUID is persisted (pin with
-`ADDIN_GUID`). The server also proxies `/ollama` and `/vllm` to the
-upstreams configured via `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET`
-(host.docker.internal from a container), keeping LLM traffic same-origin
-so the add-in's default backend URLs work without mixed-content or CORS
-configuration.
+`ADDIN_GUID`). The server also proxies `/ollama`, `/vllm`, `/deepseek`,
+`/glm`, `/kimi`, `/minimax`, `/minimax-cn` to the upstreams configured via
+the corresponding `*_PROXY_TARGET` variables (host.docker.internal from a
+container for local LLMs), keeping LLM traffic same-origin so the add-in's
+default backend URLs work without mixed-content or CORS configuration.
 
 ## Licensing
 
