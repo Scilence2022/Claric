@@ -647,6 +647,10 @@
   <a href="#diff" data-section="diff">Diff Engine</a>
   <a href="#prompts" data-section="prompts">Prompts</a>
   <a href="#summary" data-section="summary">Summary</a>
+  <a href="#routing" data-section="routing">Chat &amp; Routing</a>
+  <a href="#proposals" data-section="proposals">Proposals</a>
+  <a href="#format" data-section="format">Format Ops</a>
+  <a href="#illustration" data-section="illustration">Illustrations</a>
   <a href="#dataflow" data-section="dataflow">Data Flow</a>
 </nav>
 
@@ -672,7 +676,11 @@
       <li><a href="#diff" data-section="diff">Diff Engine</a></li>
       <li><a href="#prompts" data-section="prompts">Prompts</a></li>
       <li><a href="#summary" data-section="summary">Summary</a></li>
-      <li><a href="https://github.com/yuch85/word-ai-redliner">GitHub</a></li>
+      <li><a href="#routing" data-section="routing">Routing</a></li>
+      <li><a href="#proposals" data-section="proposals">Proposals</a></li>
+      <li><a href="#format" data-section="format">Format Ops</a></li>
+      <li><a href="#illustration" data-section="illustration">Illustrations</a></li>
+      <li><a href="https://github.com/Scilence2022/Claric">GitHub</a></li>
     </ul>
   </div>
 </nav>
@@ -685,13 +693,13 @@
   <div class="hero-blob hero-blob-3"></div>
   <div class="hero-inner">
     <div class="hero-text">
-      <h1>Word AI <span class="title-caps">Redliner</span></h1>
-      <p class="subtitle">AI-powered Microsoft Word add-in that applies LLM-suggested edits as native tracked changes. A structure-aware diff strategy bridges the gap between Word's object model and LLM text processing.</p>
+      <h1>Claric <span class="title-caps">for Word</span></h1>
+      <p class="subtitle">AI-powered Microsoft Word add-in that turns natural-language instructions into native tracked changes. A chat UI routes each request to the right pipeline&mdash;redlining, formatting, illustration, append, summary, or Q&amp;A&mdash;and stages every mutation as a reviewable proposal card. A structure-aware diff strategy bridges the gap between Word's object model and LLM text processing.</p>
       <div class="hero-tags">
         <span class="hero-tag">Office.js</span>
         <span class="hero-tag">Tracked Changes</span>
-        <span class="hero-tag">Local LLM</span>
-        <span class="hero-tag">vLLM / Ollama</span>
+        <span class="hero-tag">OpenAI-compatible LLMs</span>
+        <span class="hero-tag">vLLM / Ollama / DeepSeek / GLM / Kimi / MiniMax</span>
         <span class="hero-tag">OOXML</span>
       </div>
     </div>
@@ -829,7 +837,7 @@
     </div>
     <p class="caption">Figure 1: High-level system architecture. The IR pipeline sits between the Word API and the LLM backends.</p>
 
-    <p>The add-in runs as an Office.js taskpane inside Word's WebView2 container. Two LLM backends are supported via OpenAI-compatible <code>/v1/chat/completions</code> endpoints: a local vLLM instance (Qwen 3.5-35B-A3B) and Ollama. Webpack dev server proxies API requests from the browser sandbox to the local LLM servers.</p>
+    <p>The add-in runs as an Office.js taskpane inside Word's WebView2 container. Any OpenAI-compatible <code>/chat/completions</code> backend can be plugged in via provider presets: local vLLM and Ollama instances, plus hosted DeepSeek, Zhipu GLM, Moonshot Kimi, and MiniMax (international and China sites). The webpack dev server and the production container proxy each provider under a same-origin path (<code>/vllm</code>, <code>/ollama</code>, <code>/deepseek</code>, <code>/glm</code>, <code>/kimi</code>, <code>/minimax</code>, <code>/minimax-cn</code>), so the browser sandbox never hits CORS or mixed-content issues and API keys go only to the configured endpoint.</p>
   </section>
 
   <!-- 3. Intermediate Representation -->
@@ -1251,9 +1259,173 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     <p>LLM markdown output is converted to HTML via <code>marked.parse()</code>, with inline table border styles injected (Word's <code>insertHtml</code> renders borderless tables by default). The HTML is inserted into a new document created via <code>context.application.createDocument()</code>.</p>
   </section>
 
-  <!-- 11. Data Flow Summary -->
-  <section class="section reveal" id="dataflow">
+  <!-- 11. Chat UI & Turn Routing -->
+  <section class="section reveal" id="routing">
     <div class="section-number">Section 11</div>
+    <h2>Chat UI &amp; Turn Routing</h2>
+    <p>The taskpane is a chat interface: every user message becomes a <strong>turn</strong>, and a pure routing function (<code>routeTurn</code> in <code>conversation.js</code>) decides which pipeline handles it. Routing never guesses silently&mdash;document mutations always end in a staged proposal card.</p>
+
+    <div class="pipeline-steps">
+      <div class="pipeline-step">
+        <div class="step-icon">1</div>
+        <h4>Classify</h4>
+        <p>Intent regexes, EN + ZH</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">2</div>
+        <h4>Plan</h4>
+        <p>LLM task planner (compound)</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">3</div>
+        <h4>Stage</h4>
+        <p>Proposal card per pipeline</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">4</div>
+        <h4>Apply</h4>
+        <p>Tracked changes on approval</p>
+      </div>
+    </div>
+
+    <h3>Intent families</h3>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intent</th><th>Example (EN / ZH)</th><th>Pipeline</th></tr></thead>
+      <tbody>
+        <tr><td>Edit</td><td>&ldquo;polish this document&rdquo; / &ldquo;润色全文&rdquo;</td><td>Selection edit, or whole-document chunked amendment</td></tr>
+        <tr><td>Format</td><td>&ldquo;center all headings&rdquo; / &ldquo;加粗这段&rdquo;</td><td>Format ops (selection scope when one exists)</td></tr>
+        <tr><td>Cleanup</td><td>&ldquo;delete empty paragraphs&rdquo; / &ldquo;删除多余的空段落&rdquo;</td><td>Deterministic Word.js scan + tracked deletion (no LLM)</td></tr>
+        <tr><td>Insert</td><td>&ldquo;add an article title&rdquo; / &ldquo;增加文章标题&rdquo;</td><td>Format pipeline, insert op at document scope</td></tr>
+        <tr><td>Append</td><td>&ldquo;continue writing&rdquo; / &ldquo;续写&rdquo;</td><td>Draft content, stage append-to-end proposal</td></tr>
+        <tr><td>Illustration</td><td>&ldquo;design and insert an illustration&rdquo; / &ldquo;设计插图并插入&rdquo;</td><td>SVG illustration pipeline</td></tr>
+        <tr><td>Question</td><td>&ldquo;what does clause 4 say?&rdquo; / &ldquo;为什么&hellip;&rdquo;</td><td>Document Q&amp;A, streamed in chat (question leads always win)</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>The task planner</h3>
+    <p>Instructions that span two or more intent families (&ldquo;增加标题，然后全文润色修改&rdquo;) route to an LLM <strong>task planner</strong> (<code>task-planner.js</code>). The planner decomposes the request into at most 6 ordered tasks drawn from six types&mdash;<code>insert</code>, <code>format</code>, <code>edit</code>, <code>append</code>, <code>illustration</code>, <code>qa</code>&mdash;each with a self-contained instruction. The tasks execute in user-stated order, one proposal card per pipeline, so a title insertion and a full-text polish can be reviewed and applied independently.</p>
+    <p>The planner doubles as a <strong>classifier of last resort</strong>: an instruction that hits no intent regex and isn't a question (&ldquo;帮我把这个故事写得更好&rdquo;) is sent to the planner to pick the right pipeline instead of falling through to Q&amp;A. If planning fails, routing degrades gracefully to single-intent matching or Q&amp;A.</p>
+
+    <h3>Live feedback</h3>
+    <ul>
+      <li><strong>Work log</strong> &mdash; every pipeline log line streams into a collapsible per-message region, auto-collapsing to &ldquo;Worked for Ns &middot; M steps&rdquo; at turn end.</li>
+      <li><strong>Model activity</strong> &mdash; streamed reasoning (dimmed) and output tokens, split into sections per chunk/pipeline. The region auto-scrolls while pinned to the bottom; scrolling up disengages follow, scrolling back re-engages.</li>
+      <li><strong>Idle-timeout streaming</strong> &mdash; <code>sendMessagesStream</code> re-arms its timeout on every received chunk, so long active generations (large SVGs, big rewrites) survive while genuinely stalled streams abort.</li>
+      <li><strong>Selection preview</strong> &mdash; a live chip above the input bar mirrors the current Word selection, which is also injected into Q&amp;A prompts as focused context.</li>
+    </ul>
+  </section>
+
+  <!-- 12. Staged Proposals -->
+  <section class="section reveal" id="proposals">
+    <div class="section-number">Section 12</div>
+    <h2>Staged Proposals &amp; Per-Change Review</h2>
+    <p>Every document mutation&mdash;selection edits, document-scope amendments, format ops, appends, illustrations&mdash;is staged as a proposal card. Nothing is written to the document until the user clicks <strong>Apply as tracked changes</strong>; <strong>Reject</strong> discards the stage and cleans up bookmarks.</p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
+          <path d="M15 24l6 6 12-12" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <h4>Selective apply</h4>
+        <p>One checkbox per change; Apply writes only the checked ones (&ldquo;Applied X of Y&rdquo;)</p>
+      </div>
+      <div class="feature-card">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1.5"/>
+          <path d="M12 18h10M12 30h10" stroke="var(--error)" stroke-width="2" stroke-linecap="round"/>
+          <path d="M26 18h10M26 30h10" stroke="var(--success)" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <h4>Inline diff</h4>
+        <p>diff-match-patch semantic <code>&lt;del&gt;</code>/<code>&lt;ins&gt;</code> preview per change</p>
+      </div>
+      <div class="feature-card">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="var(--success-light)" stroke="var(--success)" stroke-width="1.5"/>
+          <circle cx="21" cy="21" r="8" stroke="var(--success)" stroke-width="2" fill="none"/>
+          <path d="M27 27l8 8" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+        <h4>Locate</h4>
+        <p>&ldquo;&sect;&rdquo; button selects the source text in the document</p>
+      </div>
+      <div class="feature-card">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="4" width="40" height="40" rx="8" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="1.5"/>
+          <path d="M24 14v12" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="24" cy="33" r="2" fill="#f59e0b"/>
+        </svg>
+        <h4>Honest states</h4>
+        <p>Skipped sections are reported; a card that landed nothing settles into a warning, not success</p>
+      </div>
+    </div>
+
+    <h3>Re-anchoring staged ranges</h3>
+    <p>A document-scope proposal may be staged long before it is applied&mdash;and other cards (e.g. an inserted title) can shift the document in between. Before applying, the reassembler <strong>re-anchors</strong> each chunk's bookmarked range: it compares the range's current paragraph texts with the staged originals and narrows the range to the contiguous window that still holds the staged content. If contiguity is lost, the chunk is skipped with a recorded error&mdash;never silently applied to drifted paragraphs.</p>
+
+    <blockquote><strong>No-change filtering:</strong> chunks whose LLM output is identical to the original (an echo) are filtered out before staging, and the reassembler double-checks at apply time. An empty result discards the proposal with &ldquo;The model proposed no changes&rdquo; instead of a hollow card.</blockquote>
+  </section>
+
+  <!-- 13. Format Ops -->
+  <section class="section reveal" id="format">
+    <div class="section-number">Section 13</div>
+    <h2>Formatting &amp; Insert Ops</h2>
+    <p>Formatting instructions are planned by the LLM into a JSON op array, parsed against a strict allowlist (<code>format-ops.js</code>), staged as a proposal card with one checkbox per op, and applied through Word.js font/paragraph APIs as tracked <em>Formatted</em> revisions. Existing text is never rewritten&mdash;an instruction that only asks for rewrites yields an empty op array by contract.</p>
+
+    <div class="code-label">Format op schema (allowlisted)</div>
+    <pre><code>{
+  match: "substring to locate",   // &le;255 chars; or paragraphStyle, or whole scope
+  font: { bold, italic, underline, highlightColor, color: "#RRGGBB",
+          size, name, strikeThrough, superscript, subscript, allCaps, smallCaps },
+  paragraph: { styleBuiltIn, style, alignment, lineSpacing,
+               spaceBefore, spaceAfter, leftIndent, rightIndent, firstLineIndent },
+  insert: { text: "&le;2000 chars", position: "start" | "end" }
+}</code></pre>
+
+    <p><strong>Insert ops</strong> cover short structural elements. &ldquo;增加文章标题&rdquo; makes the LLM compose a title from the document, position it at the start, and style it with the built-in <code>Title</code> style&mdash;applied as tracked insertions, reviewable like any other change.</p>
+  </section>
+
+  <!-- 14. Illustration Pipeline -->
+  <section class="section reveal" id="illustration">
+    <div class="section-number">Section 14</div>
+    <h2>The Illustration Pipeline</h2>
+    <p>&ldquo;设计插图并插入&rdquo; asks the LLM for one self-contained SVG illustrating the document, then walks it through a safety and conversion gauntlet before it reaches the page:</p>
+
+    <div class="pipeline-steps">
+      <div class="pipeline-step">
+        <div class="step-icon">1</div>
+        <h4>Design</h4>
+        <p>LLM returns one SVG</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">2</div>
+        <h4>Sanitize</h4>
+        <p>DOMPurify SVG profile</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">3</div>
+        <h4>Rasterize</h4>
+        <p>Offscreen canvas &rarr; PNG</p>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-icon">4</div>
+        <h4>Insert</h4>
+        <p>Centered inline picture</p>
+      </div>
+    </div>
+
+    <ul>
+      <li>The prompt contract forbids scripts, event handlers, and <code>foreignObject</code>; <code>sanitizeSvg()</code> enforces it with DOMPurify's SVG + SVG-filters profiles, and parsing is capped at 256KB.</li>
+      <li>Dimensions come from the SVG's <code>viewBox</code> (1200&times;800 default) so the raster is always well-formed; the offscreen canvas renders at 1600px wide.</li>
+      <li>Word's <code>insertInlinePictureFromBase64</code> rejects SVG, so the illustration is inserted as a PNG, centered, scaled to at most 450pt wide, with a best-effort alt-text description&mdash;tracked as a revision when track changes is on.</li>
+      <li>A position heuristic reads the instruction: header/题图/头图 &rarr; document start, otherwise document end. The proposal card shows an image preview before anything is inserted.</li>
+    </ul>
+  </section>
+
+  <!-- 15. Data Flow Summary -->
+  <section class="section reveal" id="dataflow">
+    <div class="section-number">Section 15</div>
     <h2>Data Flow Summary</h2>
 
     <div class="diagram-container">
@@ -1296,7 +1468,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
         </defs>
       </svg>
     </div>
-    <p class="caption">Figure 4: Complete data flow through the IR pipeline.</p>
+    <p class="caption">Figure 4: Complete data flow through the IR pipeline. Since the chat UI, all results land in a staged proposal card first&mdash;tracked changes are written only when the user applies the card (see Section 12).</p>
   </section>
 
 </main>
@@ -1304,8 +1476,8 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
 <!-- ── Footer ── -->
 <footer class="footer">
   <p><strong>Claric</strong> &mdash; MIT License</p>
-  <p>Diff engine: vendored word-diff layer based on <a href="https://github.com/yuch85/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: vLLM (Qwen 3.5-35B-A3B), Ollama</p>
-  <p style="margin-top: 0.75rem;"><a href="https://github.com/yuch85/word-ai-redliner">View on GitHub</a></p>
+  <p>Diff engine: vendored word-diff layer based on <a href="https://github.com/yuch85/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: any OpenAI-compatible endpoint &mdash; vLLM, Ollama, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax</p>
+  <p style="margin-top: 0.75rem;"><a href="https://github.com/Scilence2022/Claric">View on GitHub</a></p>
 </footer>
 
 <!-- ── Back to top ── -->
