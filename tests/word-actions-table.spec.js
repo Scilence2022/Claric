@@ -56,7 +56,11 @@ function makeDeps(platform = 'PC') {
         providers: { mock: { url: '', apiKey: '', model: 'mock-model', apiPath: '' } },
         trackChangesEnabled: true,
       },
-      promptManager: { getActivePrompt: () => null },
+      promptManager: {
+        getActivePrompt: () => null,
+        composeMessages: jest.fn((selectionText) => [{ role: 'user', content: selectionText }]),
+        composeMergedMessages: jest.fn((selectionText) => [{ role: 'user', content: selectionText }]),
+      },
       platform,
       supportsComments: false,
     },
@@ -347,5 +351,187 @@ describe('applySelectionAmendment (table route)', () => {
     setWordRun(context);
     await expect(applySelectionAmendment(makeDeps('PC'), proposal))
       .rejects.toThrow(/Table changed/);
+  });
+});
+
+// --- Mixed selection (paragraphs + table) route ---
+
+/**
+ * Word.run mock for a selection that overlaps a table without being inside
+ * it: caption + one cell + a blank spacer + note. parentTableOrNullObject on
+ * the selection itself is null; per-paragraph parents mark cell membership.
+ */
+function makeMixedPrepareContext() {
+  const paras = [
+    { text: 'Caption A', inTable: false },
+    { text: 'Cell A1', inTable: true },
+    { text: '', inTable: false }, // blank spacer — must be filtered out
+    { text: 'Note', inTable: false },
+  ].map(({ text, inTable }) => ({
+    text,
+    parentTableOrNullObject: { isNullObject: !inTable, load: jest.fn() },
+    load: jest.fn(),
+  }));
+  const selection = {
+    parentTableOrNullObject: { isNullObject: true, load: jest.fn() },
+    parentTableCellOrNullObject: { isNullObject: true, load: jest.fn() },
+    paragraphs: { items: paras, load: jest.fn() },
+  };
+  return {
+    document: { getSelection: () => selection },
+    sync: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
+/**
+ * Word.run mock for the mixed apply phase. Each paragraph mock records
+ * content-range text loads, deletes and insertParagraph calls; the context
+ * records every changeTrackingMode assignment.
+ */
+function makeMixedApplyContext(spec = [
+  { text: 'Caption A', inTable: false },
+  { text: 'Cell A1', inTable: true },
+  { text: 'Note', inTable: false },
+]) {
+  const calls = [];
+  const trackingModes = [];
+  const paraRanges = [];
+
+  const paras = spec.map(({ text, inTable }, i) => {
+    const paraRange = {
+      text,
+      load: jest.fn(),
+      insertText: jest.fn((t, loc) => calls.push(`paraText:${i}:${loc}:${t}`)),
+    };
+    paraRanges.push(paraRange);
+    return {
+      text,
+      parentTableOrNullObject: { isNullObject: !inTable, load: jest.fn() },
+      getRange: jest.fn(() => paraRange),
+      delete: jest.fn(() => calls.push(`delete:${i}`)),
+      insertParagraph: jest.fn((t, loc) => calls.push(`insertPara:${i}:${loc}:${t}`)),
+      load: jest.fn(),
+    };
+  });
+
+  const selection = {
+    paragraphs: { items: paras, load: jest.fn() },
+  };
+  const context = {
+    document: { getSelection: () => selection },
+    sync: jest.fn().mockResolvedValue(undefined),
+  };
+  let mode = null;
+  Object.defineProperty(context.document, 'changeTrackingMode', {
+    get: () => mode,
+    set: (v) => { mode = v; trackingModes.push(v); },
+  });
+
+  return { context, calls, trackingModes, paras, paraRanges };
+}
+
+const mixedProposal = (amendedText) => ({
+  selectionText: 'Caption A\nCell A1\nNote',
+  amendedText,
+  commentText: null,
+  mixedTable: true,
+});
+
+describe('prepareSelectionAmendment (mixed table route)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('uses per-paragraph text, flags the proposal, and appends the table note', async () => {
+    setWordRun(makeMixedPrepareContext());
+    sendPrompt.mockResolvedValue('Caption A\nCell A1 edited\nNote');
+
+    const proposal = await prepareSelectionAmendment(makeDeps(), { promptTemplate: 'Fix {selection}' });
+
+    // Prompt carries non-blank paragraphs one per line, never selection.text
+    const promptText = sendPrompt.mock.calls[0][1];
+    expect(promptText).toContain('Caption A\nCell A1\nNote');
+    expect(promptText).toContain('NOTE: The selection contains a Word table');
+
+    expect(proposal.selectionText).toBe('Caption A\nCell A1\nNote');
+    expect(proposal.mixedTable).toBe(true);
+    expect(proposal.amendedText).toBe('Caption A\nCell A1 edited\nNote');
+  });
+
+  test('pure text selections do not take the mixed route', async () => {
+    const context = {
+      document: {
+        getSelection: () => ({
+          text: 'Just text',
+          load: jest.fn(),
+          parentTableOrNullObject: { isNullObject: true, load: jest.fn() },
+          parentTableCellOrNullObject: { isNullObject: true, load: jest.fn() },
+          paragraphs: {
+            items: [
+              { text: 'Just text', parentTableOrNullObject: { isNullObject: true, load: jest.fn() }, load: jest.fn() },
+            ],
+            load: jest.fn(),
+          },
+        }),
+      },
+      sync: jest.fn().mockResolvedValue(undefined),
+    };
+    setWordRun(context);
+    sendPrompt.mockResolvedValue('Just text edited');
+
+    const proposal = await prepareSelectionAmendment(makeDeps(), { promptTemplate: 'Fix' });
+    expect(proposal.mixedTable).toBeUndefined();
+  });
+});
+
+describe('applySelectionAmendment (mixed table route)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('keep edits diff paragraph content ranges; tracking wraps the writes', async () => {
+    const { context, trackingModes } = makeMixedApplyContext();
+    setWordRun(context);
+    await applySelectionAmendment(makeDeps('PC'), mixedProposal('Caption A\nCell A1 edited\nNote'));
+
+    // Only the cell paragraph changed: one granular diff against its content
+    // range, tracked at document level (strategy receives trackChanges:false).
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+    expect(applyTokenMapStrategy.mock.calls[0][2]).toBe('Cell A1');
+    expect(applyTokenMapStrategy.mock.calls[0][3]).toBe('Cell A1 edited');
+    expect(applyTokenMapStrategy.mock.calls[0][5]).toEqual({ trackChanges: false });
+    expect(trackingModes).toEqual(['TrackAll', 'Off']);
+  });
+
+  test('deletes/inserts anchored inside the table are skipped, outside are applied', async () => {
+    const { context, calls, paras } = makeMixedApplyContext();
+    setWordRun(context);
+    const deps = makeDeps('PC');
+    await applySelectionAmendment(deps, mixedProposal('New closing line'));
+
+    // Table cell paragraph is never deleted or used as an insert anchor.
+    expect(paras[1].delete).not.toHaveBeenCalled();
+    expect(paras[1].insertParagraph).not.toHaveBeenCalled();
+    expect(paras[0].insertParagraph).toHaveBeenCalledWith('New closing line', 'After');
+    expect(calls).toContain('insertPara:0:After:New closing line');
+
+    const logged = deps.log.mock.calls.map((c) => `${c[1]}:${c[0]}`).join('\n');
+    expect(logged).toMatch(/inside a table/);
+  });
+
+  test('truncated model output is refused', async () => {
+    const { context } = makeMixedApplyContext();
+    setWordRun(context);
+    await expect(applySelectionAmendment(makeDeps('PC'), mixedProposal('Cap')))
+      .rejects.toThrow(/truncated/);
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+  });
+
+  test('identical output applies nothing', async () => {
+    const { context, trackingModes } = makeMixedApplyContext();
+    setWordRun(context);
+    const deps = makeDeps('PC');
+    await applySelectionAmendment(deps, mixedProposal('Caption A\nCell A1\nNote'));
+
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+    expect(trackingModes).toEqual([]);
+    const logged = deps.log.mock.calls.map((c) => `${c[1]}:${c[0]}`).join('\n');
+    expect(logged).toMatch(/No differences found/);
   });
 });

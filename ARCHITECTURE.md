@@ -118,7 +118,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (789 tests, 34 suites)
+tests/                         # Jest unit tests (795 tests, 34 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -128,7 +128,9 @@ tests/                         # Jest unit tests (789 tests, 34 suites)
                                #   row-op ordering
   platform.spec.js             # Host detection, tracked-row-op support mapping
   word-actions-table.spec.js   # Table selection route: prepare/apply ordering,
-                               #   desktop/web row-tracking split, stale guards
+                               #   desktop/web row-tracking split, stale guards;
+                               #   mixed paragraph+table route: per-paragraph
+                               #   text, table guards, truncation refusal
   llm-stream.spec.js           # SSE parsing, reasoning demux, fallback, abort,
                                #   idle timeout
   llm-client.spec.js           # Non-streaming client, stripping helpers
@@ -228,6 +230,18 @@ revised per cell with the granular diff strategies (tracked natively), then
 row ops (`TableRow.insertRows`/`delete`) run in descending row order. Only
 Word desktop records row insert/delete as tracked revisions — on Word for
 the web the structure phase runs untracked with a warning (lib/platform.js).
+
+**Mixed selections** (paragraphs plus table content, e.g. caption + table +
+note — the selection overlaps a table without being inside it) take a third
+route: readMixedTableSelection detects paragraphs whose parentTable is
+non-null and switches the flat flow to paragraph granularity. The prompt
+sends one line per paragraph/cell with an explicit "never merge, split,
+reorder, or drop lines" rule; on Apply, the reassembler's paragraph alignment
+maps lines back onto paragraphs with table guards (delete/insert ops never
+touch table paragraphs, in-cell edits diff the paragraph content range).
+There is deliberately no whole-selection replacement fallback — on a mixed
+selection that fallback destroys the table, so alignment failures (e.g.
+truncated output) surface on the card instead.
 
 Document-scope edits (skill or free-text edit intent without selection) run the
 chunked pipeline (parse → context → chunk → parallel dispatch) but are **gated**:

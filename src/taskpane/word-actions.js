@@ -33,7 +33,7 @@ import { parseDocument } from '../lib/document-parser.js';
 import { chunkDocument } from '../lib/document-chunker.js';
 import { extractContext } from '../lib/context-extractor.js';
 import { processChunksParallel } from '../lib/orchestrator.js';
-import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks } from '../lib/reassembler.js';
+import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
 import { buildFormatPrompt, parseFormatOps } from '../lib/format-ops.js';
 import {
     buildIllustrationPrompt, parseIllustration, sanitizeSvg,
@@ -213,6 +213,61 @@ export async function readSelectionTableRegion(deps) {
 }
 
 /**
+ * Detects a MIXED selection: not contained in a table (readSelectionTableRegion
+ * covers that case) but overlapping one — e.g. a caption paragraph, the whole
+ * table, and the note paragraph below it. The flat range-diff strategies
+ * would destroy the table (whole-selection replacement leaks cell marks), so
+ * such selections switch to paragraph-granular handling: the prompt text and
+ * the apply-time alignment both work on whole paragraphs (one line per
+ * paragraph/cell), and table paragraphs are guarded against structural ops.
+ *
+ * Paragraph granularity means a partial selection of a boundary paragraph
+ * acts on the whole paragraph — the resulting redlines are individually
+ * rejectable, which is the safe trade-off against table corruption.
+ *
+ * @param {object} deps - { appState, log }
+ * @returns {Promise<null | {selectionText: string, paraCount: number, tableParaCount: number}>}
+ *   selectionText is the non-blank paragraph texts joined with '\n'.
+ */
+export async function readMixedTableSelection(deps) {
+    const { log } = deps;
+    let mixed = null;
+    await Word.run(async (context) => {
+        const selection = context.document.getSelection();
+        const table = selection.parentTableOrNullObject;
+        table.load('isNullObject');
+        await context.sync();
+        // Inside a table (single cell or multi-cell region): other routes own it.
+        if (!table.isNullObject) return;
+
+        const paragraphs = selection.paragraphs;
+        paragraphs.load('items');
+        await context.sync();
+        if (paragraphs.items.length === 0) return;
+
+        for (const para of paragraphs.items) para.load('text');
+        const tableChecks = paragraphs.items.map((p) => {
+            const t = p.parentTableOrNullObject;
+            t.load('isNullObject');
+            return t;
+        });
+        await context.sync();
+
+        const tableParaCount = tableChecks.filter((t) => !t.isNullObject).length;
+        if (tableParaCount === 0) return;
+
+        const texts = paragraphs.items
+            .map((p) => p.text)
+            .filter((t) => t && t.trim() !== '');
+        mixed = { selectionText: texts.join('\n'), paraCount: paragraphs.items.length, tableParaCount };
+    });
+    if (mixed) {
+        log(`Mixed selection: ${mixed.paraCount} paragraph(s), ${mixed.tableParaCount} inside table(s) — paragraph-granular mode`, 'info');
+    }
+    return mixed;
+}
+
+/**
  * Returns whether the document currently has a non-collapsed selection.
  * Resolves to false when the Word API is unavailable.
  *
@@ -327,7 +382,12 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
         });
     }
 
-    const { selectionText } = await readSelectionText(deps);
+    // Mixed selections (paragraphs + table content) keep the flat prompt but
+    // switch to paragraph-granular text, so apply-time alignment can map
+    // lines back onto paragraphs without touching table structure.
+    const mixed = await readMixedTableSelection(deps);
+
+    const { selectionText } = mixed ? { selectionText: mixed.selectionText } : await readSelectionText(deps);
     log(`Processing selection (${selectionText.length} chars) via ${backendConfig.model}...`, 'info');
 
     const merged = !!(commentInstructions && commentInstructions.trim());
@@ -337,6 +397,12 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
 
     if (messages.length === 0) {
         throw new Error('No prompt composed — check the skill template');
+    }
+
+    if (mixed) {
+        // One line per paragraph/cell: the guarded alignment at apply time
+        // maps lines back onto paragraphs, so the model must not fuse them.
+        messages[messages.length - 1].content += '\n\nNOTE: The selection contains a Word table; each cell appears as its own line. Keep every line present and in the same order, edit text in place, and never merge, split, reorder, or drop lines.';
     }
 
     const promptText = _flattenMessages(messages);
@@ -351,6 +417,7 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
             amendedText: stripMarkdown(rawResponse, log),
             commentText: null,
             model: backendConfig.model,
+            ...(mixed ? { mixedTable: true } : {}),
         };
     }
 
@@ -379,6 +446,7 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
         amendedText: parsed.amendment ? stripMarkdown(parsed.amendment, log) : null,
         commentText: parsed.comment || null,
         model: backendConfig.model,
+        ...(mixed ? { mixedTable: true } : {}),
     };
 }
 
@@ -482,6 +550,15 @@ export async function applySelectionAmendment(deps, proposal) {
     }
 
     if (amendedText) {
+        if (proposal.mixedTable) {
+            // Mixed paragraph+table selection: guarded paragraph alignment.
+            // The flat strategies' whole-selection fallback would destroy the
+            // table, so this path has NO such fallback by design.
+            log('Applying changes (paragraph-granular, table-guarded)...', 'info');
+            const applied = await _applyMixedTableAmendment(deps, proposal);
+            log(applied ? 'Changes applied successfully' : 'No differences found — nothing applied',
+                applied ? 'success' : 'info');
+        } else {
         log('Applying changes...', 'info');
         const trackChanges = !!appState.config.trackChangesEnabled;
         await Word.run(async (context) => {
@@ -527,6 +604,7 @@ export async function applySelectionAmendment(deps, proposal) {
             }
         });
         log('Changes applied successfully', 'success');
+        }
     }
 
     if (commentText && appState.supportsComments) {
@@ -708,6 +786,155 @@ async function _patchCell(context, table, cellPatch, log) {
     whole.insertText(newLines.join(' '), Word.InsertLocation.replace);
     await context.sync();
     return true;
+}
+
+/**
+ * Applies an amendment for a mixed paragraph+table selection. Works at
+ * paragraph granularity — the same LCS/similarity alignment the document
+ * pipeline uses (reassembler._alignParagraphs), with the same table guards:
+ * insert/delete ops never touch table paragraphs, and in-cell keep edits go
+ * through the granular diff strategies.
+ *
+ * Deliberately NO whole-selection replacement fallback: on a mixed selection
+ * that fallback is the failure mode this path exists to prevent. Alignment
+ * failures (e.g. truncated model output) propagate to the proposal card
+ * instead.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} proposal - Result of prepareSelectionAmendment (mixed route)
+ * @returns {Promise<boolean>} True when at least one op was written
+ * @private
+ */
+async function _applyMixedTableAmendment(deps, proposal) {
+    const { appState, log } = deps;
+    const { amendedText } = proposal;
+    const trackChangesEnabled = !!appState.config.trackChangesEnabled;
+    let applied = false;
+
+    await Word.run(async (context) => {
+        const selection = context.document.getSelection();
+        const paragraphs = selection.paragraphs;
+        paragraphs.load('items');
+        await context.sync();
+
+        const allParaItems = paragraphs.items;
+        if (allParaItems.length === 0) throw new Error('No paragraphs found in the selection');
+
+        for (const para of allParaItems) para.load('text');
+        const tableChecks = allParaItems.map((p) => {
+            const t = p.parentTableOrNullObject;
+            t.load('isNullObject');
+            return t;
+        });
+        await context.sync();
+
+        // Blank paragraphs stay out of the alignment, mirroring the
+        // reassembler (the amendment text cannot represent them).
+        const paraItems = [];
+        const inTable = [];
+        allParaItems.forEach((p, i) => {
+            if (p.text && p.text.trim() !== '') {
+                paraItems.push(p);
+                inTable.push(!tableChecks[i].isNullObject);
+            }
+        });
+        if (paraItems.length === 0) {
+            log('Mixed apply: selection contains only blank paragraphs, nothing to amend');
+            return;
+        }
+
+        const origTexts = paraItems.map((p) => p.text);
+        const amendedLines = _normalizeLineEndings(amendedText).split('\n');
+        while (amendedLines.length > 0 && amendedLines[amendedLines.length - 1].trim() === '') amendedLines.pop();
+        while (amendedLines.length > 0 && amendedLines[0].trim() === '') amendedLines.shift();
+
+        // Truncation guard (same 30% rule as the document pipeline).
+        const origTotalChars = origTexts.reduce((sum, t) => sum + t.length, 0);
+        const amendedTotalChars = amendedLines.reduce((sum, t) => sum + t.length, 0);
+        if (origTotalChars > 0 && amendedTotalChars < origTotalChars * 0.3) {
+            throw new Error(`LLM output appears truncated (${amendedTotalChars} chars vs ${origTotalChars} original) — refusing to apply`);
+        }
+
+        if (origTexts.length === amendedLines.length &&
+            origTexts.every((t, i) => t.trim() === amendedLines[i].trim())) {
+            return; // no changes
+        }
+
+        const alignment = _alignParagraphs(origTexts, amendedLines);
+
+        if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = trackChangesEnabled
+                ? Word.ChangeTrackingMode.trackAll
+                : Word.ChangeTrackingMode.off;
+        }
+
+        try {
+            // Reverse document order so ops never invalidate later indexes.
+            for (const op of [...alignment].reverse()) {
+                if (op.type === 'keep') {
+                    const origText = origTexts[op.origIdx];
+                    const newText = amendedLines[op.newIdx];
+                    if (origText.trim() === newText.trim()) continue;
+
+                    const paraRange = paraItems[op.origIdx].getRange(Word.RangeLocation.content);
+                    paraRange.load('text');
+                    await context.sync();
+                    try {
+                        const diffOptions = { trackChanges: false };
+                        if (hasCjk(paraRange.text) || hasCjk(newText)) {
+                            await applyCharDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
+                        } else {
+                            await applyTokenMapStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
+                        }
+                    } catch (diffErr) {
+                        // Content-range replacement loses run formatting but is
+                        // structurally safe even inside a cell (the cell mark
+                        // is outside the content range).
+                        log(`Para ${op.origIdx}: granular diff failed (${diffErr.message}), using paragraph text replacement`, 'warning');
+                        paraRange.insertText(newText.trim(), Word.InsertLocation.replace);
+                        await context.sync();
+                    }
+                    applied = true;
+                } else if (op.type === 'delete') {
+                    if (inTable[op.origIdx]) {
+                        log(`Para ${op.origIdx}: skipping delete — paragraph is inside a table`, 'warning');
+                        continue;
+                    }
+                    paraItems[op.origIdx].delete();
+                    applied = true;
+                } else if (op.type === 'insert') {
+                    const insertText = amendedLines[op.newIdx].trim();
+                    if (!insertText) continue;
+                    let anchorOrigIdx = -1;
+                    const opIndex = alignment.indexOf(op);
+                    for (let k = opIndex - 1; k >= 0; k--) {
+                        if (alignment[k].origIdx !== undefined) {
+                            anchorOrigIdx = alignment[k].origIdx;
+                            break;
+                        }
+                    }
+                    if (anchorOrigIdx >= 0 && inTable[anchorOrigIdx]) {
+                        log(`Skipping insert after para ${anchorOrigIdx} — anchor is inside a table`, 'warning');
+                        continue;
+                    }
+                    if (anchorOrigIdx >= 0) {
+                        paraItems[anchorOrigIdx].insertParagraph(insertText, Word.InsertLocation.after);
+                    } else {
+                        paraItems[0].insertParagraph(insertText, Word.InsertLocation.before);
+                    }
+                    applied = true;
+                }
+            }
+            await context.sync();
+        } finally {
+            if (Word.ChangeTrackingMode) {
+                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                await context.sync();
+            }
+        }
+    });
+
+    return applied;
 }
 
 /**
