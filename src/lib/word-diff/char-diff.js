@@ -70,10 +70,13 @@ const MAX_OPS = 200;
  * @param {string} originalText - Expected current text of the range
  * @param {string} newText - Desired text
  * @param {function} [log] - Logging callback
+ * @param {object} [options]
+ * @param {boolean} [options.trackChanges=true] - When false the strategy does
+ *   NOT touch the document's changeTrackingMode; the caller owns it.
  * @returns {Promise<{strategy: string, insertions: number, deletions: number, replacements: number}>}
  * @throws {Error} On cursor/document divergence or excessive op count
  */
-export async function applyCharDiffStrategy(context, range, originalText, newText, log = () => {}) {
+export async function applyCharDiffStrategy(context, range, originalText, newText, log = () => {}, options = {}) {
     const ops = computeCharEdits(originalText, newText).filter(([, text]) => text.length > 0);
     if (ops.length > MAX_OPS) {
         throw new Error(`char-diff: ${ops.length} ops exceeds safety cap (${MAX_OPS})`);
@@ -114,11 +117,11 @@ export async function applyCharDiffStrategy(context, range, originalText, newTex
     for (const [op, text] of ops) {
         if (op === 0) {
             flushHunk();
-            const match = await _locateAt(context, cursor, scopeEnd, text, 'equal', log);
+            const match = await _locateAt(context, cursor, scopeEnd, text, 'equal');
             cursor = match.getRange(Word.RangeLocation.end).expandTo(scopeEnd);
             lastEqualMatch = match;
         } else if (op === -1) {
-            const match = await _locateAt(context, cursor, scopeEnd, text, 'delete', log);
+            const match = await _locateAt(context, cursor, scopeEnd, text, 'delete');
             pendingDels.push(match);
             cursor = match.getRange(Word.RangeLocation.end).expandTo(scopeEnd);
         } else {
@@ -127,31 +130,36 @@ export async function applyCharDiffStrategy(context, range, originalText, newTex
     }
     flushHunk();
 
-    // Phase 2: execute in reverse document order as tracked changes.
-    if (Word.ChangeTrackingMode) {
+    // Phase 2: execute in reverse document order. When this strategy owns
+    // tracking, force trackAll and ALWAYS restore off afterwards — even when
+    // an edit throws mid-plan, so a failure never leaks tracking state.
+    const trackChanges = options.trackChanges !== false;
+    if (trackChanges && Word.ChangeTrackingMode) {
         context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
     }
 
     let insertions = 0;
     let deletions = 0;
     let replacements = 0;
-    for (const item of plan.slice().reverse()) {
-        if (item.type === 'delete') {
-            item.range.delete();
-            deletions++;
-        } else if (item.type === 'replace') {
-            item.range.insertText(item.text, Word.InsertLocation.replace);
-            replacements++;
-        } else {
-            item.anchor.insertText(item.text, item.location);
-            insertions++;
+    try {
+        for (const item of plan.slice().reverse()) {
+            if (item.type === 'delete') {
+                item.range.delete();
+                deletions++;
+            } else if (item.type === 'replace') {
+                item.range.insertText(item.text, Word.InsertLocation.replace);
+                replacements++;
+            } else {
+                item.anchor.insertText(item.text, item.location);
+                insertions++;
+            }
         }
-    }
-    await context.sync();
-
-    if (Word.ChangeTrackingMode) {
-        context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
         await context.sync();
+    } finally {
+        if (trackChanges && Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+            await context.sync();
+        }
     }
 
     log(`Char-level diff applied (${insertions} insertions, ${deletions} deletions, ${replacements} replacements)`, 'info');
@@ -175,33 +183,43 @@ function _unionRanges(ranges) {
 const SEARCH_PIECE_MAX = 200;
 
 /**
+ * Splits text into ≤ SEARCH_PIECE_MAX-char search pieces. A piece boundary
+ * never falls between a surrogate pair: a lone surrogate half in a search
+ * string cannot match and would break the locate step for emoji / astral
+ * characters sitting exactly on the boundary.
+ *
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function sliceSearchPieces(text) {
+    const pieces = [];
+    let offset = 0;
+    while (offset < text.length) {
+        let end = Math.min(offset + SEARCH_PIECE_MAX, text.length);
+        if (end < text.length) {
+            const code = text.charCodeAt(end - 1);
+            if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+        }
+        pieces.push(text.slice(offset, end));
+        offset = end;
+    }
+    return pieces;
+}
+
+/**
  * Locates expectedText starting at the cursor and returns the match range.
  *
  * The located range is walked in ≤ SEARCH_PIECE_MAX-char pieces because Word
  * rejects search strings longer than 255 chars. Each piece search starts from
  * the tail after the previous piece (built via getRange(End).expandTo), so
- * the first match is always the ordered next one.
- *
- * The cursor's .text is checked as a best-effort drift warning only: ranges
- * derived from a selection occasionally report '' in Word, and the ordered
- * search below still enforces op sequence. A genuine miss (search finds
- * nothing) still throws so callers can fall back to a coarser strategy.
+ * the first match is always the ordered next one; a genuine miss throws so
+ * callers can fall back to a coarser strategy.
  * @private
  */
-async function _locateAt(context, cursor, scopeEnd, expectedText, kind, log) {
-    try {
-        cursor.load('text');
-        await context.sync();
-        if (cursor.text && !cursor.text.startsWith(expectedText)) {
-            log(`char-diff: cursor drifted before ${kind} "${_preview(expectedText)}" (found "${_preview(cursor.text)}"); continuing with ordered search`, 'warning');
-        }
-    } catch (_verifyErr) {
-        // Verification is best-effort; ordered search below is authoritative.
-    }
+async function _locateAt(context, cursor, scopeEnd, expectedText, kind) {
     let union = null;
     let pieceCursor = cursor;
-    for (let offset = 0; offset < expectedText.length; offset += SEARCH_PIECE_MAX) {
-        const piece = expectedText.slice(offset, offset + SEARCH_PIECE_MAX);
+    for (const piece of sliceSearchPieces(expectedText)) {
         const matches = pieceCursor.search(piece, { matchCase: true, matchWholeWord: false });
         matches.load('items');
         await context.sync();

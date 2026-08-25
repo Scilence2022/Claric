@@ -17,9 +17,9 @@
 import DiffMatchPatch from './diff-wordmode.js';
 
 export { applyTokenMapStrategy } from './token-map.js';
-export { applySentenceDiffStrategy } from './sentence-diff.js';
+export { applySentenceDiffStrategy, diff_sentenceMode } from './sentence-diff.js';
 export { applyBlockReplaceStrategy } from './block-replace.js';
-export { hasCjk, computeCharEdits, applyCharDiffStrategy } from './char-diff.js';
+export { hasCjk, computeCharEdits, applyCharDiffStrategy, sliceSearchPieces } from './char-diff.js';
 
 /**
  * Computes a word-level diff between two strings. No Office.js context

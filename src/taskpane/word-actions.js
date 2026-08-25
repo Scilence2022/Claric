@@ -310,29 +310,47 @@ export async function applySelectionAmendment(deps, proposal) {
 
     if (amendedText) {
         log('Applying changes...', 'info');
+        const trackChanges = !!appState.config.trackChangesEnabled;
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
+            // Baseline mode per config; the strategies manage tracking from
+            // here (and always restore off when they enabled it).
             if (Word.ChangeTrackingMode) {
-                context.document.changeTrackingMode = appState.config.trackChangesEnabled
+                context.document.changeTrackingMode = trackChanges
                     ? Word.ChangeTrackingMode.trackAll
                     : Word.ChangeTrackingMode.off;
             }
             try {
+                const strategyOptions = { trackChanges };
                 if (appState.config.lineDiffEnabled) {
-                    await applySentenceDiffStrategy(context, selection, selectionText, amendedText, log);
+                    await applySentenceDiffStrategy(context, selection, selectionText, amendedText, log, strategyOptions);
                 } else if (hasCjk(selectionText) || hasCjk(amendedText)) {
                     // CJK text has no word boundaries for the token map — use
                     // char-level diff so e.g. a one-comma edit stays minimal.
-                    await applyCharDiffStrategy(context, selection, selectionText, amendedText, log);
+                    await applyCharDiffStrategy(context, selection, selectionText, amendedText, log, strategyOptions);
                 } else {
-                    await applyTokenMapStrategy(context, selection, selectionText, amendedText, log);
+                    await applyTokenMapStrategy(context, selection, selectionText, amendedText, log, strategyOptions);
                 }
             } catch (diffErr) {
-                // Last resort: replace the whole selection text (tracked).
-                // Loses edit granularity but never leaves a failed apply.
+                // Last resort: replace the whole selection text. Loses edit
+                // granularity but never leaves a failed apply. A failed
+                // strategy may have left tracking in any state, so re-assert
+                // the config mode first — an untracked write here would
+                // silently bypass the redline.
                 log(`Granular diff failed (${diffErr.message}), using whole-selection replacement`, 'warning');
+                if (Word.ChangeTrackingMode) {
+                    context.document.changeTrackingMode = trackChanges
+                        ? Word.ChangeTrackingMode.trackAll
+                        : Word.ChangeTrackingMode.off;
+                }
                 selection.insertText(amendedText, Word.InsertLocation.replace);
                 await context.sync();
+            } finally {
+                // Comments and later turns must not inherit tracking state.
+                if (Word.ChangeTrackingMode) {
+                    context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                    await context.sync();
+                }
             }
         });
         log('Changes applied successfully', 'success');
