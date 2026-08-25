@@ -1,4 +1,4 @@
-# Word AI Redliner
+# Claric — your redlining scribe for Word
 
 AI-powered Microsoft Word add-in that applies word-level tracked changes using
 a structure-aware diff strategy — plus document summarization with comment
@@ -6,7 +6,7 @@ extraction and tracked changes analysis.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=SusffH8eT-Y">
-    <img src="docs/word-ai-redliner.gif" alt="Word AI Redliner demo" />
+    <img src="docs/word-ai-redliner.gif" alt="Claric — Word add-in demo" />
   </a>
 </p>
 
@@ -393,7 +393,7 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 3. Copy the `manifest.xml` into that folder. The file lives on the server:
    `https://<HOST>:<HOST_PORT>/manifest.xml` (save it from a browser).
 4. Fully quit Word (⌘Q) and reopen it -- loaded only at launch.
-5. Go to the **Home** tab → **Add-ins** → select **Word AI Redliner**.
+5. Go to the **Home** tab → **Add-ins** → select **Claric**.
 6. Trust the certificate in Keychain if prompted.
 
 ---
@@ -509,7 +509,7 @@ Test suites cover:
 
 ## Acknowledgments
 
-Word AI Redliner's formatting-preserving reassembly draws on insights from several
+Claric's formatting-preserving reassembly draws on insights from several
 excellent open-source projects in the document editing space. We are grateful to
 their authors for sharing their work:
 

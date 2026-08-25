@@ -1,5 +1,5 @@
 /**
- * Production static file server for the Word AI Redliner add-in.
+ * Production static file server for the Claric Word add-in.
  *
  * Serves the webpack build output (dist/) plus the generated manifest.xml
  * over HTTPS (default) or HTTP (PROTOCOL=http) for local testing, and

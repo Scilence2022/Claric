@@ -1,4 +1,4 @@
-# Project: Word AI Redliner
+# Project: Claric — your redlining scribe for Word
 
 AI-powered Microsoft Word add-in for tracked changes, document summarization, and comment analysis.
 
@@ -13,7 +13,7 @@ AI-powered Microsoft Word add-in for tracked changes, document summarization, an
 
 ## Architecture
 
-- Office.js Word add-in (runs in WebView2)
+- Office.js Word add-in (Claric, runs in WebView2)
 - Chat-driven taskpane: `src/taskpane/` split into `app-state.js`, `skills.js`, `conversation.js`, `word-actions.js`, and `ui/*`; `taskpane.js` is bootstrap only
 - LLM backends: vLLM (Qwen3.5-35B-A3B) on port 8026, Ollama on port 11434
 - Webpack dev server proxies `/vllm` → localhost:8026, `/ollama` → localhost:11434

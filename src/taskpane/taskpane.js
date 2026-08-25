@@ -127,7 +127,7 @@ function initialize() {
     // Auto-test connection and load models
     testConnectionUI();
 
-    addLog('Word AI Redliner initialized.', 'info');
+    addLog('Claric initialized.', 'info');
     input.focus();
 }
 
@@ -148,7 +148,7 @@ function updateModelPill() {
 /** Shows a short about message in the chat. */
 function showAbout() {
     chatView.addSystemNote(
-        'Word AI Redliner — AI-assisted contract review inside Word.\n' +
+        'Claric — your redlining scribe for Word.\n' +
         'Type "/" for skills (/copy-edit, /check-doc, /flag-issues, /summarize-contract, ...), ' +
         'select text and type an instruction to edit it as tracked changes, or just ask a question about the document.'
     );
