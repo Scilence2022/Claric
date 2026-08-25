@@ -285,6 +285,10 @@ function _alignParagraphs(origParas, newParas) {
  * 5. Deletes removed paragraphs
  * 6. Inserts new paragraphs after their predecessor
  *
+ * Blank (empty) paragraphs are excluded from the alignment and left
+ * untouched — the newline-joined amendment text cannot represent them,
+ * so aligning them would mark every blank line as LLM-deleted.
+ *
  * Falls back to range-level diff strategies if paragraph-level operations fail.
  *
  * @param {Word.RequestContext} context - The Word request context
@@ -303,16 +307,25 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   rangeParagraphs.load('items');
   await context.sync();
 
-  const paraItems = rangeParagraphs.items;
-  if (paraItems.length === 0) {
+  const allParaItems = rangeParagraphs.items;
+  if (allParaItems.length === 0) {
     throw new Error('No paragraphs found in range');
   }
 
   // Load text for each paragraph
-  for (const para of paraItems) {
+  for (const para of allParaItems) {
     para.load('text');
   }
   await context.sync();
+
+  // Blank spacer paragraphs never enter the alignment: the amendment text
+  // (newline-joined paragraphs) cannot represent them, so aligning them
+  // would mark every blank line as LLM-deleted. Leave them untouched.
+  const paraItems = allParaItems.filter((p) => p.text && p.text.trim() !== '');
+  if (paraItems.length === 0) {
+    log('Paragraph-level: range contains only blank paragraphs, nothing to amend');
+    return false;
+  }
 
   const origTexts = paraItems.map((p) => p.text);
   const amendedLines = _normalizeLineEndings(amendedText).split('\n');
@@ -538,6 +551,9 @@ function _storedParagraphTexts(result, chunkOriginals) {
  * amendment never deletes absorbed content (e.g. a title inserted by another
  * proposal card).
  *
+ * Empty (blank) paragraphs are ignored: the parser skips them, so the stored
+ * sequence never contains them, while range.paragraphs includes them.
+ *
  * @param {Word.RequestContext} context
  * @param {Word.Range} range - The bookmarked chunk range
  * @param {string[]} storedTexts - Paragraph texts captured at staging time
@@ -563,20 +579,32 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
   }
   await context.sync();
 
-  const currentTexts = paraItems.map((p) => p.text);
+  // Compare on the non-empty paragraphs only: blank spacer paragraphs are
+  // absent from the staged sequence but present in the live range.
+  const nonEmptyIdx = [];
+  const currentTexts = [];
+  paraItems.forEach((para, i) => {
+    if (para.text && para.text.trim() !== '') {
+      nonEmptyIdx.push(i);
+      currentTexts.push(para.text);
+    }
+  });
+
   const window = _findAnchorWindow(currentTexts, storedTexts);
   if (!window) return null;
 
-  if (window.start === 0 && window.end === currentTexts.length) {
+  const startItemIdx = nonEmptyIdx[window.start];
+  const endItemIdx = nonEmptyIdx[window.end - 1];
+  if (startItemIdx === 0 && endItemIdx === paraItems.length - 1) {
     return range; // No drift: original content still spans the whole range
   }
 
   log(
-    `Range drifted since staging; narrowed to paragraphs ${window.start + 1}-${window.end} of ${currentTexts.length}`,
+    `Range drifted since staging; narrowed to paragraphs ${startItemIdx + 1}-${endItemIdx + 1} of ${paraItems.length}`,
     'info'
   );
-  const startRange = paraItems[window.start].getRange('Start');
-  const endRange = paraItems[window.end - 1].getRange('End');
+  const startRange = paraItems[startItemIdx].getRange('Start');
+  const endRange = paraItems[endItemIdx].getRange('End');
   const narrowed = startRange.expandTo(endRange);
   narrowed.load('text');
   await context.sync();

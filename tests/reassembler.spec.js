@@ -1023,4 +1023,87 @@ describe('applyChunkResults re-anchoring', () => {
       expect(item.delete).not.toHaveBeenCalled();
     }
   });
+
+  test('blank paragraphs are ignored by anchoring and never deleted (title + blank lines)', async () => {
+    // The exact user scenario: the range absorbed a tracked-inserted title
+    // AND the document has blank spacer paragraphs (which the parser skips,
+    // so the staged sequence never contains them).
+    const mock = createParagraphAwareMockRun(['A New Title', 'Para one text.', '', 'Para two text.', '']);
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Para one text.', 'Para two text.'], 0, 1);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(1);
+    // Title and both blank paragraphs must survive untouched.
+    expect(mock.items[0].delete).not.toHaveBeenCalled();
+    expect(mock.items[2].delete).not.toHaveBeenCalled();
+    expect(mock.items[4].delete).not.toHaveBeenCalled();
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+    expect(applyTokenMapStrategy.mock.calls[0][2]).toBe('Para two text.');
+  });
+
+  test('blank paragraphs are preserved even without drift', async () => {
+    const mock = createParagraphAwareMockRun(['Para one text.', '', 'Para two text.']);
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Para one text.', 'Para two text.'], 0, 1);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(1);
+    expect(mock.items[1].delete).not.toHaveBeenCalled();
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+  });
+
+  test('all-blank range: nothing to amend, no changes counted', async () => {
+    const mock = createParagraphAwareMockRun(['', '']);
+    global.Word.run = mock.wordRun;
+
+    // Chunk without paragraphs: no stored texts -> no anchoring, straight
+    // to the paragraph-level path, which finds only blanks.
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'some new text',
+        chunk: { id: 'chunk-0', startIndex: 0, endIndex: 1 },
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(0);
+    expect(outcome.noChangeCount).toBe(1);
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+  });
 });
