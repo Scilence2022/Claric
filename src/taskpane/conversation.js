@@ -6,6 +6,7 @@
  * Routing rules (routeTurn — pure, testable):
  *   - "/skill args"            -> skill turn (pipeline depends on skill.category)
  *   - free text + append intent -> generate content, stage an append-to-end proposal
+ *   - free text + format intent -> staged formatting ops (font/paragraph, no text change)
  *   - free text + selection    -> selection edit (user text is the edit instruction)
  *   - free text + edit intent  -> document amendment run (staged proposal)
  *   - free text, otherwise     -> document Q&A (answer in chat)
@@ -27,6 +28,7 @@ export const TURN_TYPE = Object.freeze({
     SELECTION_EDIT: 'selection-edit',
     DOC_EDIT: 'doc-edit',
     DOC_APPEND: 'doc-append',
+    FORMAT: 'format',
     DOC_QA: 'doc-qa',
 });
 
@@ -89,13 +91,34 @@ export function looksLikeAppendIntent(text) {
 }
 
 /**
+ * Format-intent markers: the user wants formatting/styling changes (bold,
+ * color, heading, alignment, ...) WITHOUT altering the text content. These
+ * route to the format pipeline (JSON formatting ops), not the text-diff
+ * amendment pipelines. Chinese substrings cover 加粗/标红/居中-style
+ * phrasings; English terms are word-boundary matched.
+ */
+const FORMAT_INTENT_RE = /样式|格式|加粗|粗体|斜体|下划线|高亮|标红|字体|字号|颜色|居中|对齐|缩进|标题\s*[1-9一二三]?|设为标题|设置为标题|\bbold\b|\bitalic|underline|highlight|font\b|\bcolor\b|\bcenter(ed)?\b|\balign|indent|heading\s*[1-9]|format(ting)?\b/i;
+
+/**
+ * True when free text asks for formatting/styling changes only. Questions
+ * stay Q&A even when they mention formatting ("如何修改样式？").
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeFormatIntent(text) {
+    if (looksLikeQuestion(text)) return false;
+    return FORMAT_INTENT_RE.test(text);
+}
+
+/**
  * Routes raw chat input to a turn descriptor. Pure function.
  *
  * @param {string} text - Raw chat input
  * @param {object} ctx
  * @param {boolean} ctx.hasSelection - Whether the document has a non-empty selection
  * @param {Array<object>} ctx.skills - Available skills (from listSkills)
- * @returns {{ type: string, skill?: object, args?: string, instruction?: string, question?: string } | null}
+ * @returns {{ type: string, skill?: object, args?: string, instruction?: string, question?: string, scope?: string } | null}
  *   Null for empty input.
  */
 export function routeTurn(text, { hasSelection, skills } = {}) {
@@ -110,6 +133,11 @@ export function routeTurn(text, { hasSelection, skills } = {}) {
     // asked for new content in the document, not a rewrite of existing text.
     if (looksLikeAppendIntent(trimmed)) {
         return { type: TURN_TYPE.DOC_APPEND, instruction: trimmed };
+    }
+    // Format intent wins over the selection/edit branches too: formatting ops
+    // never rewrite text, so they must not enter the text-diff pipelines.
+    if (looksLikeFormatIntent(trimmed)) {
+        return { type: TURN_TYPE.FORMAT, instruction: trimmed, scope: hasSelection ? 'selection' : 'document' };
     }
     if (hasSelection) {
         // Selection + a question is a question ABOUT the selection (answered
@@ -380,6 +408,55 @@ export function createConversation(deps) {
     }
 
     /**
+     * Runs a format turn: the LLM emits JSON formatting ops against the
+     * selection or document scope, staged in a proposal card. Apply writes
+     * font/paragraph changes via Word.js (tracked when track-changes is on);
+     * the text content is never touched by this pipeline.
+     */
+    async function runFormatTurn(turn, msg, turnDeps, selectionText) {
+        appState.isProcessing = true;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Planning formatting changes...');
+            const proposal = await actions.prepareFormatProposal(turnDeps, {
+                instruction: turn.instruction,
+                scope: turn.scope,
+                selectionText,
+                onToken: (t) => msg.appendModelToken({ id: 'format' }, 'content', t),
+                onReasoning: (t) => msg.appendModelToken({ id: 'format' }, 'reasoning', t),
+            });
+            if (!proposal.ops || proposal.ops.length === 0) {
+                msg.setStatus('The model proposed no formatting changes.');
+                return;
+            }
+            msg.setStatus('');
+            const card = createProposalCard({
+                title: `Proposed formatting changes (${turn.scope} scope)`,
+                countsText: `${proposal.ops.length} formatting op(s)`,
+                comment: null,
+                onApply: async () => {
+                    try {
+                        await actions.applyFormatProposal(turnDeps, proposal);
+                        card.markApplied();
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Proposal rejected by user.', 'info');
+                },
+            });
+            msg.attachProposal(card.el);
+        } catch (error) {
+            msg.markError(error.message);
+        } finally {
+            appState.isProcessing = false;
+            input.setProcessing(false);
+        }
+    }
+
+    /**
      * Runs a selection-scope comment turn (fire-and-forget comment pipeline).
      */
     async function runSelectionCommentTurn(skill, args, msg, turnDeps) {
@@ -533,6 +610,8 @@ export function createConversation(deps) {
                 await runSelectionEditTurn(turn.instruction, msg, turnDeps);
             } else if (turn.type === TURN_TYPE.DOC_APPEND) {
                 await runAppendTurn(turn.instruction, msg, turnDeps, selectionText);
+            } else if (turn.type === TURN_TYPE.FORMAT) {
+                await runFormatTurn(turn, msg, turnDeps, selectionText);
             } else if (turn.type === TURN_TYPE.DOC_EDIT) {
                 // Free-text edit instruction without a selection: run the
                 // whole-document amendment pipeline with the user's text as

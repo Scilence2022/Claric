@@ -14,14 +14,16 @@
  *
  * @param {object} args
  * @param {string} args.title - Card heading
- * @param {number} args.beforeChars - Character count of the original selection
- * @param {number} args.afterChars - Character count of the proposed rewrite
+ * @param {number} [args.beforeChars] - Character count of the original selection
+ * @param {number} [args.afterChars] - Character count of the proposed rewrite
+ * @param {string} [args.countsText] - Overrides the "before → after chars" line
+ *   (for non-text proposals such as formatting ops)
  * @param {string} [args.comment] - Optional comment text (merged mode)
  * @param {function()} args.onApply - Async apply callback
  * @param {function()} [args.onReject] - Reject callback
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markError: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, comment, onApply, onReject }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, comment, onApply, onReject }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -32,7 +34,7 @@ export function createProposalCard({ title, beforeChars, afterChars, comment, on
     titleEl.textContent = title;
     const counts = document.createElement('span');
     counts.className = 'proposal-card-counts';
-    counts.textContent = `${beforeChars} → ${afterChars} chars`;
+    counts.textContent = countsText || `${beforeChars} → ${afterChars} chars`;
     head.appendChild(titleEl);
     head.appendChild(counts);
     el.appendChild(head);

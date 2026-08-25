@@ -32,6 +32,7 @@ import { chunkDocument } from '../lib/document-chunker.js';
 import { extractContext } from '../lib/context-extractor.js';
 import { processChunksParallel } from '../lib/orchestrator.js';
 import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks } from '../lib/reassembler.js';
+import { buildFormatPrompt, parseFormatOps } from '../lib/format-ops.js';
 import { getActiveBackendConfig } from './app-state.js';
 
 /**
@@ -445,6 +446,192 @@ export async function applyDocumentAppend(deps, proposal) {
     });
     log(`Appended ${paragraphs.length} paragraph(s) to the document end.`, 'success');
     return { paragraphsAppended: paragraphs.length, chars: text.length };
+}
+
+/**
+ * Plans formatting changes from a natural-language instruction — the prepare
+ * half of the staged format flow. The model returns a JSON op array (see
+ * format-ops.js); the ops are validated there and staged in a proposal card,
+ * written by applyFormatProposal only when the user applies.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} args
+ * @param {string} args.instruction - The user's formatting instruction
+ * @param {string} args.scope - 'selection' | 'document'
+ * @param {string} [args.selectionText] - Current selection text (selection scope)
+ * @param {function} [args.onToken] - Called with each streamed content token
+ * @param {function} [args.onReasoning] - Called with each streamed thinking token
+ * @returns {Promise<{ instruction: string, scope: string, ops: Array<object>, model: string }>}
+ */
+export async function prepareFormatProposal(deps, { instruction, scope = 'selection', selectionText, onToken, onReasoning } = {}) {
+    const { appState, log } = deps;
+
+    let scopeText = '';
+    if (scope === 'selection') {
+        scopeText = (selectionText && selectionText.trim())
+            || (await readSelectionText(deps)).selectionText;
+    } else {
+        const richness = (appState.config.docExtraction || {}).richness || 'structured';
+        log('Extracting document text for context...', 'info');
+        scopeText = await extractDocumentStructured({ richness });
+    }
+
+    const prompt = buildFormatPrompt(instruction, scopeText, scope);
+    const backendConfig = getActiveBackendConfig(appState);
+    log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
+    const rawResponse = (onToken || onReasoning)
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
+        : await sendPrompt(backendConfig, prompt, log);
+
+    const ops = parseFormatOps(rawResponse, log);
+    log(`Parsed ${ops.length} formatting op(s) from the model response.`, 'info');
+    return { instruction, scope, ops, model: backendConfig.model };
+}
+
+/**
+ * Applies a prepared format proposal. Each op's targets are resolved inside
+ * the scope range (whole scope, substring matches, or paragraphs of a given
+ * built-in style), then font/paragraph properties are set with change
+ * tracking per config (Word records them as Formatted revisions).
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} proposal - Result of prepareFormatProposal
+ * @returns {Promise<{ applied: boolean }>}
+ */
+export async function applyFormatProposal(deps, proposal) {
+    const { appState, log } = deps;
+    const { ops, scope } = proposal || {};
+    if (!Array.isArray(ops) || ops.length === 0) {
+        throw new Error('No formatting ops to apply.');
+    }
+
+    await Word.run(async (context) => {
+        if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = appState.config.trackChangesEnabled
+                ? Word.ChangeTrackingMode.trackAll
+                : Word.ChangeTrackingMode.off;
+        }
+        const scopeRange = scope === 'document'
+            ? context.document.body
+            : context.document.getSelection();
+
+        let applied = 0;
+        for (const op of ops) {
+            const targets = await _resolveFormatTargets(context, scopeRange, op);
+            if (targets.length === 0) {
+                log(`Format op found no target (${op.match || op.paragraphStyle || 'scope'})`, 'warning');
+                continue;
+            }
+            for (const target of targets) {
+                if (op.font) _applyFontOps(target.font, op.font, log);
+                if (op.paragraph) {
+                    const paragraphs = target.paragraphs;
+                    paragraphs.load('items');
+                    await context.sync();
+                    for (const paragraph of paragraphs.items) {
+                        _applyParagraphOps(paragraph, op.paragraph, log);
+                    }
+                }
+                applied++;
+            }
+            await context.sync();
+        }
+
+        if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+            await context.sync();
+        }
+        log(`Applied formatting to ${applied} range(s) across ${ops.length} op(s).`, 'success');
+    });
+    return { applied: true };
+}
+
+/**
+ * Resolves an op's target ranges: explicit substring matches, paragraphs of
+ * a built-in style, or the whole scope when neither selector is given.
+ * @private
+ */
+async function _resolveFormatTargets(context, scopeRange, op) {
+    if (op.match) {
+        // Word search strings are capped at 255 chars.
+        const results = scopeRange.search(op.match.slice(0, 255), { matchCase: true, matchWholeWord: false });
+        results.load('items');
+        await context.sync();
+        return results.items;
+    }
+    if (op.paragraphStyle) {
+        const paragraphs = scopeRange.paragraphs;
+        paragraphs.load('items/style');
+        await context.sync();
+        const enumValue = _enumValue(Word.Style, op.paragraphStyle);
+        const wanted = String(op.paragraphStyle).toLowerCase();
+        return paragraphs.items
+            .filter((p) => (p.style || '').toLowerCase() === wanted
+                || (enumValue && p.style === enumValue))
+            .map((p) => p.getRange());
+    }
+    return [scopeRange];
+}
+
+/**
+ * Case-insensitive Word enum lookup (e.g. 'heading1' -> Word.Style.heading1,
+ * 'dark blue' -> Word.HighlightColor.darkBlue). Returns undefined on miss.
+ * @private
+ */
+function _enumValue(enumObj, name) {
+    if (!enumObj || name === undefined || name === null) return undefined;
+    const wanted = String(name).replace(/[\s_-]+/g, '').toLowerCase();
+    const key = Object.keys(enumObj).find((k) => k.toLowerCase() === wanted);
+    return key ? enumObj[key] : undefined;
+}
+
+/**
+ * Applies validated font ops to a Word.Font object. Unknown/invalid enum
+ * values are skipped with a warning rather than failing the batch.
+ * @private
+ */
+function _applyFontOps(font, ops, log) {
+    for (const [key, value] of Object.entries(ops)) {
+        try {
+            if (key === 'underline') {
+                const v = _enumValue(Word.UnderlineType, value);
+                if (v === undefined) log(`Format ops: unknown underline "${value}"`, 'warning');
+                else font.underline = v;
+            } else if (key === 'highlightColor') {
+                const v = _enumValue(Word.HighlightColor, value);
+                if (v === undefined) log(`Format ops: unknown highlight color "${value}"`, 'warning');
+                else font.highlightColor = v;
+            } else {
+                font[key] = value;
+            }
+        } catch (e) {
+            log(`Format ops: font.${key} failed (${e.message})`, 'warning');
+        }
+    }
+}
+
+/**
+ * Applies validated paragraph ops to a Word.Paragraph object.
+ * @private
+ */
+function _applyParagraphOps(paragraph, ops, log) {
+    for (const [key, value] of Object.entries(ops)) {
+        try {
+            if (key === 'styleBuiltIn') {
+                const v = _enumValue(Word.Style, value);
+                if (v === undefined) log(`Format ops: unknown built-in style "${value}"`, 'warning');
+                else paragraph.styleBuiltIn = v;
+            } else if (key === 'alignment') {
+                const v = _enumValue(Word.Alignment, value);
+                if (v === undefined) log(`Format ops: unknown alignment "${value}"`, 'warning');
+                else paragraph.alignment = v;
+            } else {
+                paragraph[key] = value;
+            }
+        } catch (e) {
+            log(`Format ops: paragraph.${key} failed (${e.message})`, 'warning');
+        }
+    }
 }
 
 /**
