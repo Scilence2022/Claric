@@ -82,6 +82,10 @@ function makeActions(overrides = {}) {
       instruction: 'x', generatedText: 'new content', model: 'm',
     })),
     applyDocumentAppend: jest.fn(async () => ({ paragraphsAppended: 1, chars: 11 })),
+    prepareFormatProposal: jest.fn(async () => ({
+      instruction: 'x', scope: 'selection', ops: [{ font: { bold: true } }], model: 'm',
+    })),
+    applyFormatProposal: jest.fn(async () => ({ applied: 1, warnings: [] })),
     revealTextSnippet: jest.fn(async () => true),
     ...overrides,
   };
@@ -173,6 +177,35 @@ describe('routeTurn', () => {
   test('edit intent without append keywords still routes to document edit', () => {
     const turn = routeTurn('润色全文', { hasSelection: false, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.DOC_EDIT);
+  });
+
+  test('format intent with a selection routes to format (selection scope, ZH)', () => {
+    const turn = routeTurn('把这段话加粗并标红', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.FORMAT);
+    expect(turn.instruction).toBe('把这段话加粗并标红');
+    expect(turn.scope).toBe('selection');
+  });
+
+  test('format intent without a selection routes to format (document scope, ZH)', () => {
+    const turn = routeTurn('把所有标题设为居中', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.FORMAT);
+    expect(turn.scope).toBe('document');
+  });
+
+  test('format intent routes to format (EN)', () => {
+    const turn = routeTurn('make this bold and set it to Heading 2', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.FORMAT);
+    expect(turn.scope).toBe('selection');
+  });
+
+  test('question lead beats format intent ("如何修改样式？")', () => {
+    const turn = routeTurn('如何修改样式？', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('non-format instruction with a selection still routes to selection edit', () => {
+    const turn = routeTurn('润色这段话', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
   });
 });
 
@@ -491,6 +524,51 @@ describe('createConversation.submit', () => {
 
     expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('boom'));
     expect(appState.isProcessingSummary).toBe(false);
+  });
+
+  test('format intent stages a format proposal (no direct write, apply on click)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'some selected text',
+    });
+
+    await conv.submit('把这段话加粗并标红');
+
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal.mock.calls[0][1].instruction).toBe('把这段话加粗并标红');
+    expect(actions.prepareFormatProposal.mock.calls[0][1].scope).toBe('selection');
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    // Staged: nothing written to the document before the user clicks Apply.
+    expect(actions.applyFormatProposal).not.toHaveBeenCalled();
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+
+    // Clicking "Apply as tracked changes" applies the formatting ops.
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(actions.applyFormatProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test('format turn with no parsed ops shows a status instead of a card', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareFormatProposal: jest.fn(async () => ({ instruction: 'x', scope: 'document', ops: [], model: 'm' })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('把所有标题设为居中');
+
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith('The model proposed no formatting changes.');
+    expect(actions.applyFormatProposal).not.toHaveBeenCalled();
   });
 });
 
