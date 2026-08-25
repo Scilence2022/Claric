@@ -78,6 +78,10 @@ function makeActions(overrides = {}) {
     })),
     runSummarySkill: jest.fn(async () => ({ chars: 10, commentCount: 0 })),
     answerQuestion: jest.fn(async () => 'the answer'),
+    prepareDocumentAppend: jest.fn(async () => ({
+      instruction: 'x', generatedText: 'new content', model: 'm',
+    })),
+    applyDocumentAppend: jest.fn(async () => ({ paragraphsAppended: 1, chars: 11 })),
     revealTextSnippet: jest.fn(async () => true),
     ...overrides,
   };
@@ -144,6 +148,32 @@ describe('routeTurn', () => {
     expect(routeTurn('   ', { hasSelection: false, skills: BUILTIN_SKILLS })).toBeNull();
     expect(routeTurn('', { hasSelection: true, skills: BUILTIN_SKILLS })).toBeNull();
   });
+
+  test('append intent without selection routes to doc-append (ZH)', () => {
+    const turn = routeTurn('继续丰富内容，并追加到文档末尾', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_APPEND);
+    expect(turn.instruction).toBe('继续丰富内容，并追加到文档末尾');
+  });
+
+  test('append intent without selection routes to doc-append (EN)', () => {
+    const turn = routeTurn('append a closing paragraph to the document', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_APPEND);
+  });
+
+  test('append intent wins over a selection', () => {
+    const turn = routeTurn('续写这段并追加到文档末尾', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_APPEND);
+  });
+
+  test('question lead beats append intent (ZH "如何续写")', () => {
+    const turn = routeTurn('如何续写这篇文章?', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('edit intent without append keywords still routes to document edit', () => {
+    const turn = routeTurn('润色全文', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_EDIT);
+  });
 });
 
 describe('createConversation.submit', () => {
@@ -182,6 +212,49 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
     expect(actions.answerQuestion.mock.calls[0][1].question).toBe('what is this document about?');
     expect(view._msg.setText).toHaveBeenCalledWith('the answer');
+  });
+
+  test('append intent stages an append proposal (no direct write)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('继续丰富内容，并追加到文档末尾');
+
+    expect(actions.prepareDocumentAppend).toHaveBeenCalledTimes(1);
+    expect(actions.prepareDocumentAppend.mock.calls[0][1].instruction).toBe('继续丰富内容，并追加到文档末尾');
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    // Staged: nothing written to the document before the user clicks Apply.
+    expect(actions.applyDocumentAppend).not.toHaveBeenCalled();
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+
+    // Clicking "Apply as tracked changes" writes the generated content.
+    const cardEl = view._msg.attachProposal.mock.calls[0][0];
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(actions.applyDocumentAppend).toHaveBeenCalledTimes(1);
+  });
+
+  test('append turn with empty model output shows a status instead of a card', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareDocumentAppend: jest.fn(async () => ({ instruction: 'x', generatedText: '', model: 'm' })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('追加一段结尾到文档末尾');
+
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith('The model returned no content to append.');
+    expect(actions.applyDocumentAppend).not.toHaveBeenCalled();
   });
 
   test('question with a selection runs Q&A with the selection as context', async () => {
