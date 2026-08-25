@@ -145,6 +145,15 @@ export function createAssistantMessage() {
     modelEl.appendChild(modelToggle);
     modelEl.appendChild(modelBody);
 
+    // Auto-scroll: the region follows the stream while the user stays near
+    // the bottom; scrolling up (to read earlier output) disengages the
+    // follow until they scroll back down.
+    let modelStickToBottom = true;
+    modelBody.addEventListener('scroll', () => {
+        modelStickToBottom =
+            modelBody.scrollHeight - modelBody.scrollTop - modelBody.clientHeight < 40;
+    });
+
     const statusEl = document.createElement('div');
     statusEl.className = 'msg-status';
     statusEl.style.display = 'none';
@@ -195,6 +204,12 @@ export function createAssistantMessage() {
         const expanding = modelBody.style.display === 'none';
         modelBody.style.display = expanding ? '' : 'none';
         modelToggle.setAttribute('aria-expanded', String(expanding));
+        if (expanding) {
+            // Re-opening the region shows the latest output and re-engages
+            // the stream-follow.
+            modelStickToBottom = true;
+            modelBody.scrollTop = modelBody.scrollHeight;
+        }
         _renderModelToggle();
     });
 
@@ -312,7 +327,12 @@ export function createAssistantMessage() {
                 target = section.contentEl;
             }
             target.textContent += token;
-            if (!modelCollapsed) _scrollToBottom();
+            if (!modelCollapsed) {
+                if (modelStickToBottom) {
+                    modelBody.scrollTop = modelBody.scrollHeight;
+                }
+                _scrollToBottom();
+            }
         },
         /** Collapses the model activity region to a one-line summary. */
         collapseModelOutput() {
