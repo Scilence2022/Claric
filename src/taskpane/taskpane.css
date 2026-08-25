@@ -85,7 +85,7 @@ body {
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
-    flex: 0 0 auto;
+    flex: 1 1 auto;
 }
 
 .icon-btn {
@@ -108,7 +108,7 @@ body {
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
-    margin-right: var(--spacing-xs);
+    margin-left: auto;
 }
 
 .status-indicator {
