@@ -1,0 +1,19 @@
+office-word-diff
+Copyright the office-word-diff authors (https://github.com/yuch85)
+
+The files diff-wordmode.js, token-map.js, sentence-diff.js, block-replace.js
+and the computeDiff function in index.js were vendored from:
+
+  https://github.com/yuch85/office-word-diff
+  commit 81315f2fae23ba8cf9f40c13bdfd17d0e444d137
+
+licensed under the Apache License, Version 2.0 (see LICENSE in this
+directory). They were vendored so this project can co-evolve the
+diff-application layer (e.g. the CJK char-level strategy in char-diff.js)
+with the rest of the codebase, independent of upstream availability and
+licensing changes.
+
+Modifications relative to upstream: files renamed to kebab-case, import
+paths adjusted to the local directory, and the unused exports
+(OfficeWordDiff class, applyWordDiff, getDiffStats, logger utilities) were
+not vendored. char-diff.js is original code of this project.

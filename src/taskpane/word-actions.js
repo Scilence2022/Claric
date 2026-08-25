@@ -19,8 +19,8 @@
  * @module word-actions
  */
 
-import { applyTokenMapStrategy, applySentenceDiffStrategy } from 'office-word-diff';
-import { hasCjk, applyCharDiffStrategy } from '../lib/char-diff.js';
+import { applyTokenMapStrategy, applySentenceDiffStrategy } from '../lib/word-diff/index.js';
+import { hasCjk, applyCharDiffStrategy } from '../lib/word-diff/char-diff.js';
 import { sendPrompt, sendPromptStream, stripMarkdown } from '../lib/llm-client.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';

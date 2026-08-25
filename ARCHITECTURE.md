@@ -90,7 +90,7 @@ User selects text → types an instruction (or /copy-edit) in the chat input
   → promptManager.composeMessages(category, selection, templateOverride) builds prompt
   → llmClient.sendPrompt(config, prompt) calls LLM
   → chat shows a proposal card (Apply as tracked changes / Reject)
-  → on Apply: office-word-diff applies the response as tracked changes
+  → on Apply: the word-diff layer applies the response as tracked changes
   → Word shows insertions/deletions with track changes enabled
 ```
 
@@ -141,12 +141,13 @@ OOXML tracked changes pipeline:
 - `buildSummaryHtml(summaryText, comments, title)` — converts LLM markdown to HTML via `marked.parse()`, adds inline table border styles for Word rendering, builds annex with numbered source comments
 - `createSummaryDocument(html, title, log)` — creates new Word document via `context.application.createDocument()`, inserts HTML into `newDoc.body`, opens document
 
-### Diff Engine (`office-word-diff` npm package)
+### Diff Engine (`src/lib/word-diff/` — vendored from office-word-diff, Apache-2.0)
 
 Cascading strategy for applying LLM-suggested text changes:
-1. **Token Map** — maps individual words to `Word.Range` objects, preserves character-level formatting
-2. **Sentence Diff** — tokenizes by sentence boundaries, handles structural changes
-3. **Block Replace** — complete replacement fallback
+1. **Char Diff** — character-level edits for CJK text (project-original, `char-diff.js`)
+2. **Token Map** — maps individual words to `Word.Range` objects, preserves character-level formatting
+3. **Sentence Diff** — tokenizes by sentence boundaries, handles structural changes
+4. **Block Replace** — complete replacement fallback
 
 ### Taskpane (`src/taskpane/`)
 
@@ -233,4 +234,4 @@ configuration.
 ## Licensing
 
 - **MIT License** — Word add-in codebase
-- **Apache 2.0 License** — `office-word-diff` library (npm dependency)
+- **Apache 2.0 License** — diff strategies vendored from `office-word-diff` (`src/lib/word-diff/`, see `LICENSE`/`NOTICE` there)

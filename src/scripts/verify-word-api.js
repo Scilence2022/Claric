@@ -1,4 +1,4 @@
-import { applySentenceDiffStrategy, computeDiff } from 'office-word-diff';
+import { applySentenceDiffStrategy, computeDiff } from '../lib/word-diff/index.js';
 
 export async function runAllVerifications(logCallback) {
     const log = logCallback || console.log;

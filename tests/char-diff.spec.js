@@ -7,7 +7,7 @@
  * edit produces exactly one insertion and no deletions.
  */
 
-const { hasCjk, computeCharEdits, applyCharDiffStrategy } = require('../src/lib/char-diff.js');
+const { hasCjk, computeCharEdits, applyCharDiffStrategy } = require('../src/lib/word-diff/char-diff.js');
 
 describe('hasCjk', () => {
   test('detects Chinese, Japanese kana, Korean hangul', () => {
