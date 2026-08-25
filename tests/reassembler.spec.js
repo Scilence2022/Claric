@@ -695,6 +695,27 @@ describe('_alignParagraphs', () => {
     expect(ops[1].type).toBe('insert');
   });
 
+  test('CJK paragraph with a one-comma edit: matched as keep (bigram similarity)', () => {
+    // CJK text has no whitespace, so word-overlap similarity is always 0;
+    // without the bigram path this aligned as delete+insert (whole-paragraph
+    // redline) instead of a keep with char-level edits inside.
+    const orig = ['但有一个女孩选择不备份自己与母亲的回忆。'];
+    const amended = ['但有一个女孩，选择不备份自己与母亲的回忆。'];
+    const ops = _alignParagraphs(orig, amended);
+
+    expect(ops).toEqual([{ type: 'keep', origIdx: 0, newIdx: 0 }]);
+  });
+
+  test('CJK paragraph that is genuinely rewritten: still delete+insert', () => {
+    const orig = ['今天天气很好，我们一起去公园散步。'];
+    const amended = ['他最喜欢在深夜写代码，旁边放着一杯咖啡。'];
+    const ops = _alignParagraphs(orig, amended);
+
+    expect(ops).toHaveLength(2);
+    expect(ops[0].type).toBe('delete');
+    expect(ops[1].type).toBe('insert');
+  });
+
   test('handles empty arrays', () => {
     expect(_alignParagraphs([], [])).toEqual([]);
     expect(_alignParagraphs(['a'], [])).toEqual([{ type: 'delete', origIdx: 0 }]);

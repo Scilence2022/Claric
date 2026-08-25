@@ -666,6 +666,44 @@ body {
     font-size: var(--font-size-lg);
 }
 
+.settings-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.settings-tabs {
+    display: flex;
+    gap: var(--spacing-xs);
+    padding: 0 var(--spacing-md);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.settings-tab {
+    border: none;
+    background: none;
+    padding: var(--spacing-sm);
+    font-family: var(--font-family);
+    font-size: var(--font-size-base);
+    color: var(--secondary-text);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+}
+
+.settings-tab:hover {
+    color: var(--primary-text);
+}
+
+.settings-tab.active {
+    color: var(--primary-text);
+    font-weight: 600;
+    border-bottom-color: var(--accent-color);
+}
+
+.settings-page[hidden] {
+    display: none;
+}
+
 .settings-body {
     flex: 1 1 auto;
     overflow-y: auto;
@@ -738,6 +776,54 @@ textarea.form-control {
 
 .model-input-row .form-control {
     flex: 1 1 auto;
+}
+
+.model-combobox {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.model-dropdown {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--primary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    box-shadow: var(--shadow-lg);
+    z-index: 40;
+}
+
+.model-dropdown[hidden] {
+    display: none;
+}
+
+.model-dropdown-item {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.model-dropdown-item:hover {
+    background: var(--secondary-bg);
+}
+
+.model-dropdown-item.current {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.model-dropdown-empty {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
 }
 
 .btn {

@@ -78,6 +78,12 @@ function _normalizeLineEndings(text) {
  * Computes word-level similarity between two strings as a ratio (0-1).
  * Uses the number of shared words divided by the max word count.
  *
+ * CJK text has no whitespace word boundaries — a whole paragraph is a single
+ * "word", so word overlap is always 0 for an edited CJK paragraph and the
+ * alignment would treat every polished paragraph as delete+insert (a
+ * whole-paragraph redline). CJK input uses a character-bigram Dice
+ * coefficient instead.
+ *
  * @param {string} a - First string
  * @param {string} b - Second string
  * @returns {number} Similarity ratio from 0.0 to 1.0
@@ -89,6 +95,10 @@ function _similarity(a, b) {
   if (ta === tb) return 1.0;
   if (!ta || !tb) return 0.0;
 
+  if (hasCjk(ta) || hasCjk(tb)) {
+    return _bigramSimilarity(ta, tb);
+  }
+
   const wordsA = ta.split(/\s+/);
   const wordsB = tb.split(/\s+/);
   const setA = new Set(wordsA);
@@ -97,6 +107,34 @@ function _similarity(a, b) {
     if (setA.has(w)) shared++;
   }
   return shared / Math.max(wordsA.length, wordsB.length);
+}
+
+/**
+ * Character-bigram Dice coefficient with multiset semantics:
+ * 2 * |shared bigrams| / (|bigrams(a)| + |bigrams(b)|).
+ *
+ * @param {string} a - First string (already trimmed)
+ * @param {string} b - Second string (already trimmed)
+ * @returns {number} Similarity ratio from 0.0 to 1.0
+ * @private
+ */
+function _bigramSimilarity(a, b) {
+  if (a.length < 2 || b.length < 2) return a === b ? 1.0 : 0.0;
+  const bigrams = new Map();
+  for (let i = 0; i < a.length - 1; i++) {
+    const bg = a.slice(i, i + 2);
+    bigrams.set(bg, (bigrams.get(bg) || 0) + 1);
+  }
+  let shared = 0;
+  for (let i = 0; i < b.length - 1; i++) {
+    const bg = b.slice(i, i + 2);
+    const count = bigrams.get(bg) || 0;
+    if (count > 0) {
+      shared++;
+      bigrams.set(bg, count - 1);
+    }
+  }
+  return (2 * shared) / (a.length - 1 + b.length - 1);
 }
 
 /**
@@ -349,7 +387,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         } catch (_diffErr) {
           // If word-level diff fails, fall back to full paragraph text replacement.
           // This loses run-level formatting but preserves paragraph-level properties.
-          log(`Para ${op.origIdx}: word-level diff failed, using text replacement`, 'warning');
+          log(`Para ${op.origIdx}: word-level diff failed (${_diffErr.message}), using text replacement`, 'warning');
           paraRange.insertText(newText.trim(), Word.InsertLocation.replace);
           await context.sync();
         }
