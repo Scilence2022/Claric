@@ -16,7 +16,7 @@
  * @param {function()} deps.onCancel - Called when the morphed Cancel button is clicked
  * @param {function(): Array<object>} deps.getSkills - Returns the current skill list
  * @param {function()} deps.onOpenSettings - Opens the settings slide-over
- * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), updateModelPill: function(string) }}
+ * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), updateModelPill: function(string), setSelectionPreview: function(string) }}
  */
 export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) {
     const textarea = document.getElementById('chatInput');
@@ -165,6 +165,23 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) 
         /** Updates the model pill label ("Provider: model"). */
         updateModelPill(text) {
             modelPill.textContent = text;
+        },
+        /**
+         * Shows/hides the live selection preview above the input.
+         * Pass the current selection text, or ''/null to hide.
+         */
+        setSelectionPreview(text) {
+            const preview = document.getElementById('selectionPreview');
+            const previewText = document.getElementById('selectionPreviewText');
+            if (!preview || !previewText) return;
+            const trimmed = (text || '').trim();
+            if (!trimmed) {
+                preview.setAttribute('hidden', '');
+                return;
+            }
+            previewText.textContent = trimmed;
+            previewText.title = trimmed;
+            preview.removeAttribute('hidden');
         },
     };
 }

@@ -683,4 +683,58 @@ describe('processChunksParallel', () => {
       expect(results[0].amendment).toBe('Single amended');
     });
   });
+
+  describe('streaming (onChunkToken)', () => {
+    test('uses sendMessagesStreamFn and streams content/reasoning per chunk', async () => {
+      const chunks = [
+        mockChunk('chunk-0', 'chunk-text-0 Party', 0, 2),
+        mockChunk('chunk-1', 'chunk-text-1 Party', 3, 5),
+      ];
+      const tokens = [];
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        onChunkToken: (info, kind, token) => tokens.push({ info, kind, token }),
+        sendMessagesFn: jest.fn(async () => {
+          throw new Error('non-streaming path should not be used when onChunkToken is set');
+        }),
+        sendMessagesStreamFn: async (config, messages, handlers) => {
+          handlers.onContent('amended');
+          handlers.onReasoning('thinking');
+          return { content: 'amended', reasoning: 'thinking' };
+        },
+        formatContextPrefixFn: () => '',
+      });
+
+      expect(results).toHaveLength(2);
+      expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+      expect(results[0].amendment).toBe('amended');
+      expect(results[0].reasoning).toBe('thinking');
+      // Each chunk emitted both channels with its own chunkInfo
+      for (const idx of [0, 1]) {
+        expect(tokens).toContainEqual({ info: { id: `chunk-${idx}`, index: idx }, kind: 'content', token: 'amended' });
+        expect(tokens).toContainEqual({ info: { id: `chunk-${idx}`, index: idx }, kind: 'reasoning', token: 'thinking' });
+      }
+    });
+
+    test('results carry no reasoning when the model does not emit any', async () => {
+      const chunks = [mockChunk('chunk-0', 'chunk-text-0 Party', 0, 2)];
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        onChunkToken: () => {},
+        sendMessagesStreamFn: async () => ({ content: 'out', reasoning: '' }),
+        formatContextPrefixFn: () => '',
+      });
+
+      expect(results[0].amendment).toBe('out');
+      expect(results[0].reasoning).toBeNull();
+    });
+  });
 });

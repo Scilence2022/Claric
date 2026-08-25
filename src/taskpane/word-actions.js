@@ -158,6 +158,74 @@ export async function hasNonEmptySelection() {
 }
 
 /**
+ * Reads the current selection as plain text (no comment enrichment).
+ * Returns '' when the selection is empty or the Word API is unavailable.
+ * Used for the live selection preview and for QA-turn context.
+ *
+ * @returns {Promise<string>}
+ */
+export async function readSelectionSnippet() {
+    try {
+        let text = '';
+        await Word.run(async (context) => {
+            const selection = context.document.getSelection();
+            selection.load('text');
+            await context.sync();
+            text = selection.text || '';
+        });
+        return text;
+    } catch (_err) {
+        return '';
+    }
+}
+
+/**
+ * Watches the Word selection and invokes callback with the current selected
+ * plain text ('' when nothing is selected). Events are debounced so a drag
+ * selection fires one Word.run at the end.
+ *
+ * @param {function(string)} callback - Receives the selection text
+ * @param {object} [opts]
+ * @param {number} [opts.debounceMs=200] - Trailing debounce for change events
+ * @returns {function()} Unsubscribe function
+ */
+export function watchSelection(callback, { debounceMs = 200 } = {}) {
+    if (typeof Office === 'undefined' || !Office.context || !Office.context.document
+        || !Office.EventType || !Office.EventType.DocumentSelectionChanged) {
+        return () => {};
+    }
+
+    let timer = null;
+    const onChange = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(async () => {
+            timer = null;
+            callback(await readSelectionSnippet());
+        }, debounceMs);
+    };
+
+    Office.context.document.addHandlerAsync(
+        Office.EventType.DocumentSelectionChanged,
+        onChange,
+        () => {} // registration failure is non-fatal: the preview just stays static
+    );
+
+    // Emit the initial state (the user may have selected text before opening the pane)
+    onChange();
+
+    return () => {
+        if (timer) clearTimeout(timer);
+        try {
+            Office.context.document.removeHandlerAsync(
+                Office.EventType.DocumentSelectionChanged,
+                { handler: onChange },
+                () => {}
+            );
+        } catch (_err) { /* best-effort cleanup */ }
+    };
+}
+
+/**
  * Runs the selection-scope amendment LLM call WITHOUT applying the result.
  * The returned proposal is staged in the chat UI; applySelectionAmendment
  * writes it to the document.
@@ -166,9 +234,11 @@ export async function hasNonEmptySelection() {
  * @param {object} args
  * @param {string} args.promptTemplate - Amendment instruction/template ({selection} placeholder supported)
  * @param {string} [args.commentInstructions] - When non-empty, merged amendment + comment mode
+ * @param {function} [args.onToken] - Called with each streamed content token
+ * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @returns {Promise<{ selectionText: string, amendedText: string|null, commentText: string|null, model: string }>}
  */
-export async function prepareSelectionAmendment(deps, { promptTemplate, commentInstructions } = {}) {
+export async function prepareSelectionAmendment(deps, { promptTemplate, commentInstructions, onToken, onReasoning } = {}) {
     const { appState, log } = deps;
     const { selectionText } = await readSelectionText(deps);
     const backendConfig = getActiveBackendConfig(appState);
@@ -183,7 +253,10 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
         throw new Error('No prompt composed — check the skill template');
     }
 
-    const rawResponse = await sendPrompt(backendConfig, _flattenMessages(messages), log);
+    const promptText = _flattenMessages(messages);
+    const rawResponse = (onToken || onReasoning)
+        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log)
+        : await sendPrompt(backendConfig, promptText, log);
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     if (!merged) {
@@ -310,13 +383,15 @@ export async function fireSelectionComment(deps, { promptTemplate } = {}) {
  * @param {string} args.promptTemplate - Explicit template for the pipeline
  * @param {string} [args.commentInstructions] - Merged-mode comment instructions
  * @param {function} [args.onProgress] - Progress callback from the orchestrator
+ * @param {function} [args.onChunkToken] - Live per-chunk token callback
+ *   (chunkInfo, kind, token); kind is 'content' or 'reasoning'
  * @param {boolean} [args.gateApply=false] - When true, stop after the LLM
  *   processing phase and return an apply/discard continuation instead of
  *   writing to the document (used to stage a proposal card for amendments).
  * @returns {Promise<{ results: Array, applicationResult?: object, chunks: Array, cancelled?: boolean,
  *   staged?: boolean, apply?: Function, discard?: Function, failedCount?: number, cancelledCount?: number }>}
  */
-export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, gateApply = false } = {}) {
+export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, onChunkToken, gateApply = false } = {}) {
     const { appState, log, logWithRetry } = deps;
     const signal = appState.processDocController ? appState.processDocController.signal : undefined;
     const promptShim = makePromptShim(appState.promptManager, category, promptTemplate);
@@ -347,6 +422,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         documentContext: documentContext,
         log,
         onProgress,
+        onChunkToken,
         signal,
         concurrency,
         timeoutMs: 300000,
@@ -493,8 +569,10 @@ export async function retryFailedChunks(deps, { failedResults, bookmarkMap, back
  * @param {object} args
  * @param {string} args.promptTemplate - Summary template; supports {comments},
  *   {whole document}, {tracked changes} placeholders
+ * @param {function} [args.onToken] - Called with each streamed content token
+ * @param {function} [args.onReasoning] - Called with each streamed thinking token
  */
-export async function runSummarySkill(deps, { promptTemplate } = {}) {
+export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoning } = {}) {
     const { appState, log } = deps;
 
     log('Extracting document comments...', 'info');
@@ -561,7 +639,10 @@ export async function runSummarySkill(deps, { promptTemplate } = {}) {
 
     const backendConfig = getActiveBackendConfig(appState);
     log(`Sending summary request [${backendConfig.model}]...`, 'info');
-    const llmResponse = await sendPrompt(backendConfig, _flattenMessages(messages), log);
+    const promptText = _flattenMessages(messages);
+    const llmResponse = (onToken || onReasoning)
+        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log)
+        : await sendPrompt(backendConfig, promptText, log);
     log(`Summary received (${llmResponse.length} chars). Creating document...`, 'info');
 
     let docTitle = 'Document Summary';
@@ -593,12 +674,15 @@ export async function runSummarySkill(deps, { promptTemplate } = {}) {
  * @param {object} args
  * @param {string} args.question - The user's question
  * @param {string} [args.skillTemplate] - Persona/instruction template from a chat skill
+ * @param {string} [args.selectionText] - Currently selected text, added as a
+ *   focused excerpt before the full document context
  * @param {function} [args.onToken] - Called with each streamed token
+ * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @param {function} [args.onStatus] - Called with stage updates ("Reading the document...", "Waiting for model...")
  * @param {AbortSignal} [args.signal] - Cancellation signal
  * @returns {Promise<string>} The full answer text
  */
-export async function answerQuestion(deps, { question, skillTemplate, onToken, onStatus, signal } = {}) {
+export async function answerQuestion(deps, { question, skillTemplate, selectionText, onToken, onReasoning, onStatus, signal } = {}) {
     const { appState, log } = deps;
 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
@@ -614,14 +698,18 @@ export async function answerQuestion(deps, { question, skillTemplate, onToken, o
     if (skillTemplate) {
         prompt += skillTemplate + '\n\n';
     }
-    prompt += question + '\n\n--- DOCUMENT ---\n' + documentText;
+    prompt += question;
+    if (selectionText && selectionText.trim()) {
+        prompt += '\n\n--- SELECTED TEXT (the user is asking about this excerpt) ---\n' + selectionText.trim();
+    }
+    prompt += '\n\n--- DOCUMENT ---\n' + documentText;
 
     const backendConfig = getActiveBackendConfig(appState);
     log(`Asking [${backendConfig.model}]...`, 'info');
     if (onStatus) onStatus(`Waiting for ${backendConfig.model}...`);
     // Long documents + slow backends can exceed the 120s client default;
     // chat answers get 5 minutes (the doc pipeline uses the same per-chunk).
-    return sendPromptStream(backendConfig, prompt, onToken, log, signal, 300000);
+    return sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal, 300000);
 }
 
 /**
