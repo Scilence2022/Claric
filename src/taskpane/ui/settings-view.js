@@ -31,6 +31,10 @@ export function initSettings({ onConfigChanged } = {}) {
 
     document.getElementById('settingsBtn').addEventListener('click', openSettings);
     document.getElementById('settingsCloseBtn').addEventListener('click', closeSettings);
+    document.getElementById('settingsSaveBtn').addEventListener('click', saveSettings);
+    for (const tab of document.querySelectorAll('.settings-tab')) {
+        tab.addEventListener('click', () => switchSettingsTab(tab.dataset.tab));
+    }
     document.getElementById('settingsOverlay').addEventListener('click', (e) => {
         if (e.target.id === 'settingsOverlay') closeSettings();
     });
@@ -51,11 +55,28 @@ export function initSettings({ onConfigChanged } = {}) {
 
     document.getElementById('backendSelect').addEventListener('change', handleBackendSwitch);
 
-    // Auto-save settings on every change (no Save button needed).
-    // Free-text inputs (URL, API key) are debounced so a burst of keystrokes
-    // does not fire a save + connection probe per character.
+    // Auto-save settings on every change. Free-text inputs (URL, API key) are
+    // debounced so a burst of keystrokes does not fire a save + connection
+    // probe per character. The header Save button is an explicit affordance
+    // for the same saveSettings path.
     const debouncedSaveSettings = debounce(saveSettings, 400);
-    document.getElementById('modelSelect').addEventListener('input', saveSettings);
+    const modelInput = document.getElementById('modelSelect');
+    modelInput.addEventListener('input', saveSettings);
+    // Model combobox: clicking/focusing shows the full list, typing filters.
+    modelInput.addEventListener('input', () => renderModelDropdown(modelInput.value));
+    modelInput.addEventListener('focus', openModelDropdown);
+    modelInput.addEventListener('click', openModelDropdown);
+    modelInput.addEventListener('blur', () => {
+        // Item clicks use mousedown + preventDefault, so blur only means the
+        // user genuinely left the field; close on the next tick.
+        setTimeout(closeModelDropdown, 150);
+    });
+    modelInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !document.getElementById('modelDropdown').hidden) {
+            e.stopPropagation(); // close the dropdown, not the settings panel
+            closeModelDropdown();
+        }
+    });
     document.getElementById('refreshModelsBtn').addEventListener('click', () => {
         addLog('Refreshing model list...', 'info');
         testConnectionUI();
@@ -111,7 +132,24 @@ export function openSettings() {
 
 /** Closes the settings slide-over. */
 export function closeSettings() {
+    closeModelDropdown();
     document.getElementById('settingsOverlay').setAttribute('hidden', '');
+}
+
+/**
+ * Activates a settings tab ("general" or "prompts") and shows its page.
+ *
+ * @param {string} name - The tab's data-tab value
+ */
+function switchSettingsTab(name) {
+    for (const tab of document.querySelectorAll('.settings-tab')) {
+        const active = tab.dataset.tab === name;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', String(active));
+    }
+    for (const page of document.querySelectorAll('.settings-page')) {
+        page.toggleAttribute('hidden', page.id !== `settingsPage${capitalize(name)}`);
+    }
 }
 
 /**
@@ -165,7 +203,7 @@ export function updateUIFromConfig() {
     document.getElementById('trackChangesCheckbox').checked = config.trackChangesEnabled;
     document.getElementById('lineDiffCheckbox').checked = config.lineDiffEnabled;
 
-    // Model field stays editable (datalist) for every provider; typed or
+    // Model field stays editable (combobox) for every provider; typed or
     // selected values are saved as-is and the list refreshes on demand.
     modelSelect.value = backendConfig.model || '';
     modelSelect.placeholder = backendConfig.model || 'Type a model name or refresh the list';
@@ -247,32 +285,100 @@ export async function testConnectionUI() {
 }
 
 /**
- * Populates the model suggestion list from the provider's models endpoint.
- * The field is a text input backed by a <datalist>: refresh replaces the
- * suggestions without touching the current value.
+ * Populates the model combobox from the provider's models endpoint.
+ * The field is a text input backed by a custom dropdown: clicking or focusing
+ * the input shows the full list, typing filters it, and free-text model ids
+ * remain valid (Enter/typing saves as-is). Refresh replaces the suggestions
+ * without touching the current value.
  *
  * @param {Array<{id: string}>} models - OpenAI-format model objects
  */
 function populateModels(models) {
-    const datalist = document.getElementById('modelList');
-    if (!datalist) return;
-
-    datalist.innerHTML = '';
     const current = getActiveBackendConfig(appState).model;
     const ids = new Set(models.map(m => m.id));
 
+    _availableModels = models.map(m => m.id);
     // Prepend the configured model so it stays selectable even if the
     // provider no longer lists it.
     if (current && !ids.has(current)) {
-        const currentOption = document.createElement('option');
-        currentOption.value = current;
-        datalist.appendChild(currentOption);
+        _availableModels.unshift(current);
     }
-    for (const model of models) {
-        const option = document.createElement('option');
-        option.value = model.id;
-        datalist.appendChild(option);
+
+    const dropdown = document.getElementById('modelDropdown');
+    if (dropdown && !dropdown.hidden) {
+        renderModelDropdown(document.getElementById('modelSelect').value);
     }
+}
+
+/** Model ids from the last successful refresh, plus the configured model. */
+let _availableModels = [];
+
+/**
+ * Renders the model dropdown items, filtered by the given substring
+ * (case-insensitive). An empty filter renders the full list.
+ *
+ * @param {string} [filter]
+ */
+function renderModelDropdown(filter = '') {
+    const dropdown = document.getElementById('modelDropdown');
+    if (!dropdown) return;
+
+    const query = (filter || '').trim().toLowerCase();
+    const current = getActiveBackendConfig(appState).model;
+    const matches = query
+        ? _availableModels.filter((id) => id.toLowerCase().includes(query))
+        : _availableModels;
+
+    dropdown.innerHTML = '';
+    if (matches.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'model-dropdown-empty';
+        empty.textContent = _availableModels.length
+            ? 'No matching models'
+            : 'No models loaded — click Refresh';
+        dropdown.appendChild(empty);
+        return;
+    }
+    for (const id of matches) {
+        const item = document.createElement('div');
+        item.className = 'model-dropdown-item' + (id === current ? ' current' : '');
+        item.setAttribute('role', 'option');
+        item.textContent = id;
+        // mousedown + preventDefault keeps focus in the input (no blur) so
+        // the click reliably selects instead of being swallowed by blur.
+        item.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            selectModel(id);
+        });
+        dropdown.appendChild(item);
+    }
+}
+
+/** Opens the model dropdown showing the full (unfiltered) list. */
+function openModelDropdown() {
+    renderModelDropdown('');
+    const dropdown = document.getElementById('modelDropdown');
+    dropdown.hidden = false;
+    document.getElementById('modelSelect').setAttribute('aria-expanded', 'true');
+}
+
+/** Closes the model dropdown. */
+function closeModelDropdown() {
+    const dropdown = document.getElementById('modelDropdown');
+    if (!dropdown) return;
+    dropdown.hidden = true;
+    document.getElementById('modelSelect').setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * Picks a model from the dropdown: sets the input value, saves, closes.
+ *
+ * @param {string} id - The model id
+ */
+function selectModel(id) {
+    document.getElementById('modelSelect').value = id;
+    closeModelDropdown();
+    saveSettings();
 }
 
 // ============================================================================

@@ -66,9 +66,17 @@
             <aside class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
                 <div class="settings-header">
                     <h2>Settings</h2>
-                    <button id="settingsCloseBtn" class="icon-btn" title="Close settings" aria-label="Close settings">&times;</button>
+                    <div class="settings-header-actions">
+                        <button id="settingsSaveBtn" class="btn btn-compact">Save</button>
+                        <button id="settingsCloseBtn" class="icon-btn" title="Close settings" aria-label="Close settings">&times;</button>
+                    </div>
+                </div>
+                <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+                    <button id="settingsTabGeneral" class="settings-tab active" role="tab" aria-selected="true" data-tab="general">General</button>
+                    <button id="settingsTabPrompts" class="settings-tab" role="tab" aria-selected="false" data-tab="prompts">Prompts</button>
                 </div>
                 <div class="settings-body">
+                    <div id="settingsPageGeneral" class="settings-page" role="tabpanel" aria-labelledby="settingsTabGeneral">
                     <p class="settings-section-label">LLM Backend</p>
                     <div class="form-group">
                         <label for="backendSelect">LLM Backend:</label>
@@ -86,9 +94,12 @@
                     <div class="form-group">
                         <label for="modelSelect">Model:</label>
                         <div class="model-input-row">
-                            <input type="text" id="modelSelect" class="form-control" list="modelList"
-                                   placeholder="Type a model name or refresh the list" autocomplete="off">
-                            <datalist id="modelList"></datalist>
+                            <div class="model-combobox">
+                                <input type="text" id="modelSelect" class="form-control"
+                                       placeholder="Type a model name or refresh the list" autocomplete="off"
+                                       role="combobox" aria-expanded="false" aria-controls="modelDropdown">
+                                <div id="modelDropdown" class="model-dropdown" role="listbox" hidden></div>
+                            </div>
                             <button type="button" id="refreshModelsBtn" class="btn btn-compact"
                                     title="Refresh the model list from the provider">Refresh</button>
                         </div>
@@ -156,8 +167,9 @@
                             <option value="5">Every 5 paragraphs</option>
                         </select>
                     </div>
+                    </div><!-- /settingsPageGeneral -->
 
-                    <hr class="settings-divider">
+                    <div id="settingsPagePrompts" class="settings-page" role="tabpanel" aria-labelledby="settingsTabPrompts" hidden>
                     <p class="settings-section-label">Prompt Management</p>
                     <p class="help-text">Saved prompts also appear as slash commands in the chat input. The active Context prompt is prepended to every request.</p>
 
@@ -238,6 +250,7 @@
                             <button id="resetPromptBtn-summary" class="btn btn-compact">Clear</button>
                         </div>
                     </div>
+                    </div><!-- /settingsPagePrompts -->
                 </div>
             </aside>
         </div>

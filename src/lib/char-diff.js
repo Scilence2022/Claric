@@ -162,9 +162,19 @@ function _unionRanges(ranges) {
     return union;
 }
 
+/** Word's Find/Replace search string is limited to 255 characters, so runs
+ *  longer than this are located piece by piece and unioned into one range. */
+const SEARCH_PIECE_MAX = 200;
+
 /**
  * Verifies the cursor's remaining text starts with expectedText and returns
  * the located match range. Throws on divergence.
+ *
+ * The startsWith check covers the whole expectedText up front (pure JS, no
+ * length limit); the located range is then walked in ≤ SEARCH_PIECE_MAX-char
+ * pieces because Word rejects search strings longer than 255 chars. Each
+ * piece is guaranteed to sit exactly at the piece cursor, so the first match
+ * is always the right one.
  * @private
  */
 async function _locateAt(context, cursor, expectedText, kind) {
@@ -175,13 +185,21 @@ async function _locateAt(context, cursor, expectedText, kind) {
             `char-diff: expected ${kind} "${_preview(expectedText)}" at cursor, found "${_preview(cursor.text)}"`
         );
     }
-    const matches = cursor.search(expectedText, { matchCase: true, matchWholeWord: false });
-    matches.load('items');
-    await context.sync();
-    if (!matches.items.length) {
-        throw new Error(`char-diff: ${kind} text not found in document: "${_preview(expectedText)}"`);
+    let union = null;
+    let pieceCursor = cursor;
+    for (let offset = 0; offset < expectedText.length; offset += SEARCH_PIECE_MAX) {
+        const piece = expectedText.slice(offset, offset + SEARCH_PIECE_MAX);
+        const matches = pieceCursor.search(piece, { matchCase: true, matchWholeWord: false });
+        matches.load('items');
+        await context.sync();
+        if (!matches.items.length) {
+            throw new Error(`char-diff: ${kind} text not found in document: "${_preview(piece)}"`);
+        }
+        const match = matches.items[0];
+        union = union ? union.expandTo(match) : match;
+        pieceCursor = match.getRange(Word.RangeLocation.after);
     }
-    return matches.items[0];
+    return union;
 }
 
 /** @private */

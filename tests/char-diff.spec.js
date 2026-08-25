@@ -55,7 +55,7 @@ describe('computeCharEdits', () => {
  * and executes edits in reverse document order (phase 2), so stored offsets
  * stay valid for the physical mock too.
  */
-function makeWordWorld(originalText) {
+function makeWordWorld(originalText, { searchLimit } = {}) {
   let docText = originalText;
   const applied = [];
 
@@ -64,6 +64,11 @@ function makeWordWorld(originalText) {
       get text() { return docText.slice(start); },
       load() {},
       search(needle) {
+        // Word rejects search strings longer than 255 chars with
+        // SearchStringInvalid; simulate that when a limit is given.
+        if (searchLimit && needle.length > searchLimit) {
+          throw new Error('SearchStringInvalid');
+        }
         const idx = docText.indexOf(needle, start);
         return { items: idx === -1 ? [] : [makeMatch(idx, needle)], load() {} };
       },
@@ -205,5 +210,20 @@ describe('applyCharDiffStrategy', () => {
     await expect(
       applyCharDiffStrategy(world.context, world.range, '完全不同的原文', '新文本', jest.fn())
     ).rejects.toThrow(/char-diff/);
+  });
+
+  test('long paragraphs with runs beyond Word\'s 255-char search limit still apply minimal edits', async () => {
+    // 600-char paragraph: every equal run around the edit exceeds the search limit.
+    const left = '左'.repeat(300);
+    const right = '右'.repeat(299);
+    const original = `${left}，${right}。`;
+    const amended = `${left}、${right}。`;
+    const world = makeWordWorld(original, { searchLimit: 255 });
+
+    const result = await applyCharDiffStrategy(world.context, world.range, original, amended, jest.fn());
+
+    expect(result.replacements).toBe(1);
+    expect(world.applied).toEqual([{ type: 'replace', from: '，', to: '、' }]);
+    expect(world.docText).toBe(amended);
   });
 });
