@@ -264,7 +264,26 @@ function buildRequestConfig(config) {
  * @returns {Promise<string>} The LLM response text with think tags stripped
  * @throws {Error} On non-ok HTTP response or network failure
  */
-export async function sendPrompt(config, promptText, log) {
+/**
+ * Sends a single-string prompt to the LLM backend as a one-message
+ * user-role chat completion. Kept for callers that need the legacy
+ * shim shape; new code should prefer {@link sendMessages}.
+ *
+ * Abort/timeout wiring mirrors sendMessages (WebView2-safe, no
+ * AbortSignal.any): the optional external signal aborts the local
+ * controller, which aborts the fetch. Aborts from timeout and from the
+ * external signal are reported with distinct error names.
+ *
+ * @param {Object} config - { url, apiKey, model }
+ * @param {string} promptText - User-role prompt body
+ * @param {function} [log] - Optional logging callback (message, type)
+ * @param {AbortSignal} [signal] - Optional abort signal for cancellation
+ * @param {number} [timeoutMs=120000] - Per-request timeout in ms
+ * @returns {Promise<string>} Cleaned LLM response text
+ * @throws {DOMException} AbortError on user cancellation via signal
+ * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
+ */
+export async function sendPrompt(config, promptText, log, signal, timeoutMs = 120000) {
   const { url, headers } = buildRequestConfig(config);
 
   const body = JSON.stringify({
@@ -273,15 +292,29 @@ export async function sendPrompt(config, promptText, log) {
     stream: false,
   });
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  const localController = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    localController.abort();
+  }, timeoutMs);
+
+  let onExternalAbort;
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+    onExternalAbort = () => localController.abort();
+    signal.addEventListener('abort', onExternalAbort);
+  }
 
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers,
       body,
-      signal: controller.signal,
+      signal: localController.signal,
     });
 
     if (!response.ok) {
@@ -291,8 +324,18 @@ export async function sendPrompt(config, promptText, log) {
     const data = await response.json();
     const rawText = data.choices?.[0]?.message?.content ?? '';
     return stripThinkTags(rawText, log);
+  } catch (err) {
+    if (timedOut && err.name === 'AbortError') {
+      const timeoutErr = new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      timeoutErr.name = 'TimeoutError';
+      throw timeoutErr;
+    }
+    throw err;
   } finally {
     clearTimeout(timeoutId);
+    if (signal && onExternalAbort) {
+      signal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }
 

@@ -1231,19 +1231,91 @@ describe('createConversation.newChat', () => {
 });
 
 describe('createConversation.cancel', () => {
-  test('aborts the document and chat controllers', () => {
+  test('aborts the document and chat controllers and releases the UI immediately', () => {
+    const docController = new AbortController();
+    const chatController = new AbortController();
     const appState = makeAppState({
-      processDocController: new AbortController(),
-      chatController: new AbortController(),
+      processDocController: docController,
+      chatController,
     });
+    const input = makeInput();
     const conv = createConversation({
-      appState, view: makeView(), input: makeInput(), log: jest.fn(), actions: makeActions(),
+      appState, view: makeView(), input, log: jest.fn(), actions: makeActions(),
     });
 
     conv.cancel();
 
-    expect(appState.processDocController.signal.aborted).toBe(true);
-    expect(appState.chatController.signal.aborted).toBe(true);
+    // The captured controller reference retains its (now aborted) signal so
+    // the assertion still proves cancellation propagated to the LLM layer.
+    expect(docController.signal.aborted).toBe(true);
+    expect(chatController.signal.aborted).toBe(true);
+    // Cancel also frees the UI immediately so the user can interact again
+    // without waiting for the in-flight fetch to settle. The orphan promise
+    // guards its own finally on controller identity (see runDocumentTurn).
+    expect(appState.processDocController).toBeNull();
+    expect(appState.isProcessingDoc).toBe(false);
+    expect(input.setProcessing).toHaveBeenCalledWith(false);
+  });
+
+  test('is a no-op when no controllers are active', () => {
+    const appState = makeAppState();
+    const input = makeInput();
+    const conv = createConversation({
+      appState, view: makeView(), input, log: jest.fn(), actions: makeActions(),
+    });
+
+    conv.cancel();
+
+    expect(appState.processDocController).toBeNull();
+    expect(appState.isProcessingDoc).toBe(false);
+    expect(input.setProcessing).not.toHaveBeenCalled();
+  });
+
+  test('orphan settle after cancel does not clobber a follow-up turn', async () => {
+    // A slow runDocumentSkill whose promise resolves AFTER cancel() — the
+    // gating in runDocumentTurn's finally must keep that promise's finally
+    // from releasing the new turn's state.
+    let resolveSkill;
+    const skillPromise = new Promise((resolve) => { resolveSkill = resolve; });
+    const appState = makeAppState();
+    const view = makeView();
+    const input = makeInput();
+    const actions = makeActions({
+      runDocumentSkill: jest.fn(async () => skillPromise),
+    });
+    const conv = createConversation({
+      appState, view, input, log: jest.fn(), actions,
+    });
+
+    // Kick off a document-scope turn (free-text DOC_EDIT intent → runDocumentTurn).
+    const inFlight = conv.submit('please polish the document');
+
+    // Wait a microtask so runDocumentTurn has set its controller, then cancel.
+    await Promise.resolve();
+    expect(appState.processDocController).not.toBeNull();
+    const orphanedController = appState.processDocController;
+
+    conv.cancel();
+    expect(appState.processDocController).toBeNull();
+    expect(appState.isProcessingDoc).toBe(false);
+    expect(input.setProcessing).toHaveBeenLastCalledWith(false);
+
+    // Simulate a follow-up turn that re-acquires the document flags.
+    appState.isProcessingDoc = true;
+    appState.processDocController = new AbortController();
+    input.setProcessing(true);
+
+    // Now let the orphan's runDocumentSkill resolve. Its finally must NOT
+    // touch the new turn's flags.
+    resolveSkill({ results: [], applicationResult: { amendmentsApplied: 0, commentsInserted: 0 }, chunks: [], cancelled: true });
+    await inFlight;
+
+    expect(appState.processDocController).not.toBe(orphanedController);
+    expect(appState.processDocController).not.toBeNull();
+    expect(appState.isProcessingDoc).toBe(true);
+    // setProcessing was last called with true by the follow-up; the orphan
+    // must not have flipped it back to false.
+    expect(input.setProcessing).toHaveBeenLastCalledWith(true);
   });
 });
 
