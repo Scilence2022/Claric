@@ -79,6 +79,8 @@ function getEnv() {
     MINIMAX_PROXY_TARGET: process.env.MINIMAX_PROXY_TARGET || 'https://api.minimax.io',
     MINIMAX_CN_PROXY_PATH: process.env.MINIMAX_CN_PROXY_PATH || '',
     MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
+    CUSTOM_PROXY_PATH: process.env.CUSTOM_PROXY_PATH || '',
+    CUSTOM_PROXY_TARGET: process.env.CUSTOM_PROXY_TARGET || '',
     LLM_PROXY_TIMEOUT_MS: parseInt(process.env.LLM_PROXY_TIMEOUT_MS || String(DEFAULT_LLM_PROXY_TIMEOUT_MS), 10)
   };
 }
@@ -187,6 +189,7 @@ function buildProxyRoutes(env) {
     ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET'],
     ['MINIMAX_PROXY_PATH', 'MINIMAX_PROXY_TARGET'],
     ['MINIMAX_CN_PROXY_PATH', 'MINIMAX_CN_PROXY_TARGET'],
+    ['CUSTOM_PROXY_PATH', 'CUSTOM_PROXY_TARGET'],
   ];
 
   for (const [pathKey, targetKey] of backends) {
