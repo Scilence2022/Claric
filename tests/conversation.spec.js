@@ -1454,6 +1454,80 @@ describe('createConversation.cancel', () => {
     // must not have flipped it back to false.
     expect(input.setProcessing).toHaveBeenLastCalledWith(true);
   });
+
+  test('stop aborts an in-flight selection-edit LLM call and releases the UI', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const input = makeInput();
+    const actions = makeActions({
+      prepareSelectionAmendment: jest.fn((deps, args) => new Promise((_resolve, reject) => {
+        args.signal.addEventListener('abort', () =>
+          reject(new DOMException('The operation was aborted.', 'AbortError')));
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input, log: jest.fn(), actions,
+      getSelectionText: async () => 'some selected text',
+    });
+
+    const inFlight = conv.submit('make it formal');
+    await Promise.resolve();
+    await Promise.resolve();
+    const controller = appState.chatController;
+    expect(controller).not.toBeNull();
+
+    conv.cancel();
+    expect(controller.signal.aborted).toBe(true);
+
+    await inFlight;
+    expect(view._msg.setStatus).toHaveBeenCalledWith('Cancelled.');
+    expect(view._msg.markError).not.toHaveBeenCalled();
+    // No proposal card from a cancelled draft.
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(appState.isProcessing).toBe(false);
+    expect(appState.chatController).toBeNull();
+    expect(input.setProcessing).toHaveBeenLastCalledWith(false);
+  });
+
+  test('stop during a compound turn aborts the current task and skips the rest', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const input = makeInput();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({
+        tasks: [
+          { type: 'format', instruction: '增加标题' },
+          { type: 'format', instruction: '居中全文' },
+        ],
+        model: 'm',
+      })),
+      // Task one hangs until its signal aborts — as a real stream would.
+      prepareFormatProposal: jest.fn((deps, args) => new Promise((_resolve, reject) => {
+        args.signal.addEventListener('abort', () =>
+          reject(new DOMException('The operation was aborted.', 'AbortError')));
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input, log: jest.fn(), actions,
+      getSelectionText: async () => '',
+    });
+
+    const inFlight = conv.submit('增加标题，并深度润色修改');
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(appState.chatController).not.toBeNull();
+
+    conv.cancel();
+    await inFlight;
+
+    // Task one started (and was aborted); task two never started.
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(view._msg.setStatus).toHaveBeenCalledWith('Cancelled.');
+    expect(appState.isProcessing).toBe(false);
+    expect(appState.chatController).toBeNull();
+    expect(input.setProcessing).toHaveBeenLastCalledWith(false);
+  });
 });
 
 describe('chunkCitation', () => {

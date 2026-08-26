@@ -146,6 +146,52 @@ export function formatTableMarkdown(values, { maxTokens = DEFAULT_TABLE_MAX_TOKE
 }
 
 /**
+ * Max characters of the cursor paragraph rendered into context. Long
+ * paragraphs are clipped — the section heading plus a prefix is enough
+ * for the model to know where the user is.
+ */
+const CURSOR_PARA_MAX_CHARS = 300;
+
+/**
+ * Max characters of the nearest-heading text rendered into context.
+ */
+const HEADING_MAX_CHARS = 120;
+
+/**
+ * Formats cursor-location context: where the user's caret sits when no
+ * text is selected, so document-scope answers can account for it.
+ *
+ * Renders the nearest preceding heading (when known) and the cursor's
+ * own paragraph (clipped). Returns '' when neither is available — an
+ * empty paragraph with no findable heading carries no location signal.
+ *
+ * @param {object} [location]
+ * @param {string} [location.paragraphText] - Paragraph the caret is in
+ * @param {string} [location.headingText] - Nearest preceding heading text
+ * @param {number} [location.headingLevel] - Heading level (1–9); 0 = unknown
+ * @param {boolean} [location.inTable] - Caret is inside a table cell
+ * @returns {string}
+ */
+export function formatCursorContext({ paragraphText, headingText, headingLevel = 0, inTable = false } = {}) {
+    const para = String(paragraphText || '').replace(/\r/g, '').trim();
+    const heading = String(headingText || '').replace(/\r/g, '').trim();
+    if (!para && !heading) return '';
+
+    const lines = [];
+    if (heading) {
+        const level = headingLevel > 0 ? ` (heading level ${headingLevel})` : '';
+        lines.push(`Nearest section: "${heading.slice(0, HEADING_MAX_CHARS)}"${level}`);
+    }
+    if (para) {
+        lines.push(`Cursor paragraph: "${para.slice(0, CURSOR_PARA_MAX_CHARS)}"`);
+    }
+    if (inTable) {
+        lines.push('The cursor is inside a table cell.');
+    }
+    return lines.join('\n');
+}
+
+/**
  * Formats a mixed paragraph+table selection as document-ordered context.
  *
  * Non-table paragraphs keep their text (one per line, blanks dropped —
