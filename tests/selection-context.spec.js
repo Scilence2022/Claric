@@ -12,6 +12,7 @@
 const {
     formatTableMarkdown,
     formatMixedContext,
+    formatCursorContext,
 } = require('../src/lib/selection-context.js');
 
 describe('formatTableMarkdown', () => {
@@ -161,5 +162,54 @@ describe('formatMixedContext', () => {
     it('returns empty string for empty parts', () => {
         expect(formatMixedContext([])).toBe('');
         expect(formatMixedContext(null)).toBe('');
+    });
+});
+
+describe('formatCursorContext', () => {
+    it('renders heading and cursor paragraph', () => {
+        const out = formatCursorContext({
+            paragraphText: 'Payment shall be made within 30 days.',
+            headingText: '3.2 Payment Terms',
+            headingLevel: 2,
+        });
+        expect(out).toBe(
+            'Nearest section: "3.2 Payment Terms" (heading level 2)\n' +
+            'Cursor paragraph: "Payment shall be made within 30 days."'
+        );
+    });
+
+    it('renders heading-only when the caret sits in an empty paragraph', () => {
+        const out = formatCursorContext({ paragraphText: '', headingText: 'Intro', headingLevel: 1 });
+        expect(out).toBe('Nearest section: "Intro" (heading level 1)');
+    });
+
+    it('renders paragraph-only when no heading was found', () => {
+        const out = formatCursorContext({ paragraphText: 'standalone text' });
+        expect(out).toBe('Cursor paragraph: "standalone text"');
+    });
+
+    it('returns empty string when neither paragraph nor heading is available', () => {
+        expect(formatCursorContext({})).toBe('');
+        expect(formatCursorContext()).toBe('');
+        expect(formatCursorContext({ paragraphText: '   ', headingText: '' })).toBe('');
+    });
+
+    it('clips a long cursor paragraph at 300 chars and heading at 120 chars', () => {
+        const para = 'x'.repeat(400);
+        const heading = 'h'.repeat(200);
+        const out = formatCursorContext({ paragraphText: para, headingText: heading, headingLevel: 1 });
+        expect(out).toContain(`"${'h'.repeat(120)}"`);
+        expect(out).toContain(`"${'x'.repeat(300)}"`);
+        expect(out).not.toContain('x'.repeat(301));
+    });
+
+    it('notes when the caret is inside a table cell', () => {
+        const out = formatCursorContext({ paragraphText: 'cell text', inTable: true });
+        expect(out).toContain('The cursor is inside a table cell.');
+    });
+
+    it('normalizes CR in paragraph text', () => {
+        const out = formatCursorContext({ paragraphText: 'a\r\nb' });
+        expect(out).toContain('a\nb');
     });
 });

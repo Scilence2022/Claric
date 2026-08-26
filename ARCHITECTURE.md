@@ -76,7 +76,8 @@ src/
     selection-with-comments.js # Splices comment anchors into selection OOXML
     selection-context.js       # Pure formatters: table selections → LLM-ready
                                #   markdown grids (budget-aware row/col
-                               #   truncation), mixed paragraph+table blocks
+                               #   truncation), mixed paragraph+table blocks,
+                               #   cursor-location context
     sanitize.js                # Shared lazy DOMPurify factory (used by
                                #   document-generator and illustration)
     vendor/
@@ -175,7 +176,8 @@ tests/                         # Jest unit tests (901 tests, 37 suites)
   word-diff.spec.js            # Word/sentence diff modes
   selection-with-comments.spec.js # Comment anchor splicing
   selection-context.spec.js   # Table→markdown formatting, truncation notes,
-                               #   mixed paragraph+table interleaving
+                               #   mixed paragraph+table interleaving,
+                               #   cursor-location formatting
   generate-manifest.spec.js    # Manifest generation
   __mocks__/                   # Jest style mock
 
@@ -455,7 +457,7 @@ Local modifications on top of upstream (kept intentionally small):
 Chat-driven UI split into focused modules:
 - `taskpane.js` — bootstrap only (module wiring, Office.onReady, WordApi detection, selection watch wiring)
 - `app-state.js` — shared config/state; `normalizeConfig` field-by-field validation
-- `conversation.js` — turn routing (see "Turn Routing" above) and per-pipeline turn runners; every `log()` line is teed into the message's work log; concurrency guard + AbortController cancel
+- `conversation.js` — turn routing (see "Turn Routing" above) and per-pipeline turn runners; every `log()` line is teed into the message's work log; concurrency guard + AbortController cancel (every LLM-bearing turn wires `chatController`; compound turns thread one shared controller into their sub-tasks so a single cancel stops the whole chain)
 - `skills.js` — skill registry: six built-ins plus PromptManager prompts as custom slash commands
 - `word-actions.js` — the pipelines (selection/append/format/illustration/cleanup prepare+apply pairs, gated doc-scope runs, planner, Q&A, summary) with explicit args instead of DOM/active-prompt reads
 - `ui/chat-view.js` — message list, streaming body, per-turn work log (auto-collapse to "Worked for Ns · M steps"), model activity region (reasoning dimmed, per-section split, pin-to-bottom auto-scroll that disengages when the user scrolls up), progress bar with ETA, citation pills

@@ -531,8 +531,10 @@ export function createConversation(deps) {
     /**
      * Runs a selection-scope amendment turn and stages the proposal card.
      */
-    async function runSelectionEditTurn(promptTemplate, msg, turnDeps) {
+    async function runSelectionEditTurn(promptTemplate, msg, turnDeps, turnController) {
+        const myController = turnController || new AbortController();
         appState.isProcessing = true;
+        appState.chatController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus('Drafting edit...');
@@ -540,6 +542,7 @@ export function createConversation(deps) {
             const proposal = await actions.prepareSelectionAmendment(turnDeps, {
                 promptTemplate,
                 commentInstructions,
+                signal: myController.signal,
                 onToken: (t) => msg.appendModelToken({ id: 'selection' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'selection' }, 'reasoning', t),
             });
@@ -617,9 +620,16 @@ export function createConversation(deps) {
                 items: items || [],
             });
         } catch (error) {
-            msg.markError(error.message);
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else {
+                msg.markError(error.message);
+            }
         } finally {
             appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
             input.setProcessing(false);
         }
     }
@@ -629,14 +639,17 @@ export function createConversation(deps) {
      * context, staged in a proposal card. Apply inserts it at the document
      * end as tracked changes; nothing is written before that.
      */
-    async function runAppendTurn(instruction, msg, turnDeps, selectionText) {
+    async function runAppendTurn(instruction, msg, turnDeps, selectionText, turnController) {
+        const myController = turnController || new AbortController();
         appState.isProcessing = true;
+        appState.chatController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus('Drafting content to append...');
             const proposal = await actions.prepareDocumentAppend(turnDeps, {
                 instruction,
                 selectionText,
+                signal: myController.signal,
                 onToken: (t) => msg.appendModelToken({ id: 'append' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'append' }, 'reasoning', t),
             });
@@ -670,9 +683,16 @@ export function createConversation(deps) {
                 items: [],
             });
         } catch (error) {
-            msg.markError(error.message);
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else {
+                msg.markError(error.message);
+            }
         } finally {
             appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
             input.setProcessing(false);
         }
     }
@@ -684,8 +704,10 @@ export function createConversation(deps) {
      * Word.js (tracked when track-changes is on); existing text content is
      * never rewritten by this pipeline.
      */
-    async function runFormatTurn(turn, msg, turnDeps, selectionText) {
+    async function runFormatTurn(turn, msg, turnDeps, selectionText, turnController) {
+        const myController = turnController || new AbortController();
         appState.isProcessing = true;
+        appState.chatController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus('Planning document changes...');
@@ -693,6 +715,7 @@ export function createConversation(deps) {
                 instruction: turn.instruction,
                 scope: turn.scope,
                 selectionText,
+                signal: myController.signal,
                 onToken: (t) => msg.appendModelToken({ id: 'format' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'format' }, 'reasoning', t),
             });
@@ -741,9 +764,16 @@ export function createConversation(deps) {
                 })),
             });
         } catch (error) {
-            msg.markError(error.message);
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else {
+                msg.markError(error.message);
+            }
         } finally {
             appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
             input.setProcessing(false);
         }
     }
@@ -757,17 +787,20 @@ export function createConversation(deps) {
      * with a read-only grid preview; Apply inserts the table via Word.js
      * (tracked only where the host records structural revisions).
      */
-    async function runTableTurn(turn, msg, turnDeps) {
+    async function runTableTurn(turn, msg, turnDeps, turnController) {
         if (appState.supportsTables === false) {
             msg.markError('This Word host does not support the table APIs (WordApi 1.3). Update Word to create tables.');
             return;
         }
+        const myController = turnController || new AbortController();
         appState.isProcessing = true;
+        appState.chatController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus('Drafting table...');
             const proposal = await actions.prepareTableProposal(turnDeps, {
                 instruction: turn.instruction,
+                signal: myController.signal,
                 onToken: (t) => msg.appendModelToken({ id: 'table' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'table' }, 'reasoning', t),
             });
@@ -816,9 +849,16 @@ export function createConversation(deps) {
                 items: [],
             });
         } catch (error) {
-            msg.markError(error.message);
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else {
+                msg.markError(error.message);
+            }
         } finally {
             appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
             input.setProcessing(false);
         }
     }
@@ -829,13 +869,16 @@ export function createConversation(deps) {
      * image preview. Apply rasterizes it to PNG and inserts it into the
      * document via Word.js (tracked when track-changes is on).
      */
-    async function runIllustrationTurn(turn, msg, turnDeps) {
+    async function runIllustrationTurn(turn, msg, turnDeps, turnController) {
+        const myController = turnController || new AbortController();
         appState.isProcessing = true;
+        appState.chatController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus('Designing illustration...');
             const proposal = await actions.prepareIllustrationProposal(turnDeps, {
                 instruction: turn.instruction,
+                signal: myController.signal,
                 onToken: (t) => msg.appendModelToken({ id: 'illustration' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'illustration' }, 'reasoning', t),
             });
@@ -870,9 +913,16 @@ export function createConversation(deps) {
                 items: [],
             });
         } catch (error) {
-            msg.markError(error.message);
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else {
+                msg.markError(error.message);
+            }
         } finally {
             appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
             input.setProcessing(false);
         }
     }
@@ -951,13 +1001,16 @@ export function createConversation(deps) {
     /**
      * Runs the summary pipeline (result opens as a new document).
      */
-    async function runSummaryTurn(skill, args, msg, turnDeps) {
+    async function runSummaryTurn(skill, args, msg, turnDeps, turnController) {
+        const myController = turnController || new AbortController();
         appState.isProcessingSummary = true;
+        appState.chatController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus('Generating summary document...');
             const result = await actions.runSummarySkill(turnDeps, {
                 promptTemplate: withArgs(skill.defaultTemplate, args),
+                signal: myController.signal,
                 onToken: (t) => {
                     msg.setStatus('');
                     msg.appendText(t);
@@ -966,9 +1019,16 @@ export function createConversation(deps) {
             });
             msg.setStatus(`Summary document created (${result.chars} chars${result.commentCount ? `, ${result.commentCount} comment(s) included` : ''}).`);
         } catch (error) {
-            msg.markError(error.message);
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else {
+                msg.markError(error.message);
+            }
         } finally {
             appState.isProcessingSummary = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
             input.setProcessing(false);
         }
     }
@@ -978,9 +1038,10 @@ export function createConversation(deps) {
      * selectionText (when non-empty) is added to the prompt as a focused
      * excerpt alongside the full document context.
      */
-    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText) {
+    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, turnController) {
+        const myController = turnController || new AbortController();
         appState.isProcessing = true;
-        appState.chatController = new AbortController();
+        appState.chatController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus('Reading the document...');
@@ -988,7 +1049,7 @@ export function createConversation(deps) {
                 question,
                 skillTemplate,
                 selectionText,
-                signal: appState.chatController.signal,
+                signal: myController.signal,
                 onStatus: (s) => msg.setStatus(s),
                 onToken: (token) => {
                     msg.setStatus('');
@@ -1006,7 +1067,9 @@ export function createConversation(deps) {
             }
         } finally {
             appState.isProcessing = false;
-            appState.chatController = null;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
             input.setProcessing(false);
         }
     }
@@ -1014,15 +1077,15 @@ export function createConversation(deps) {
     /**
      * Dispatches a skill turn by category and resolved scope.
      */
-    async function runSkillTurn(skill, args, hasSelection, msg, turnDeps, selectionText) {
+    async function runSkillTurn(skill, args, hasSelection, msg, turnDeps, selectionText, turnController) {
         switch (skill.category) {
             case 'chat':
             case 'context':
                 // Custom context prompts act as chat personas.
-                await runQaTurn(args || skill.description, skill.defaultTemplate, msg, turnDeps, selectionText);
+                await runQaTurn(args || skill.description, skill.defaultTemplate, msg, turnDeps, selectionText, turnController);
                 break;
             case 'summary':
-                await runSummaryTurn(skill, args, msg, turnDeps);
+                await runSummaryTurn(skill, args, msg, turnDeps, turnController);
                 break;
             case 'comment':
                 if (skill.scope === 'selection-first' && hasSelection) {
@@ -1091,14 +1154,19 @@ export function createConversation(deps) {
      * back to single-intent routing of the whole instruction (the
      * pre-planner behavior).
      */
-    async function runCompoundTurn(turn, msg, turnDeps, selectionText) {
+    async function runCompoundTurn(turn, msg, turnDeps, selectionText, turnController) {
+        // One shared controller for the whole compound turn: cancel() aborts
+        // the in-flight sub-task AND stops the remaining planned tasks.
+        const myController = turnController || new AbortController();
         appState.isProcessing = true;
+        appState.chatController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus('Planning tasks...');
             const plan = await actions.planDocumentTasks(turnDeps, {
                 instruction: turn.instruction,
                 hasSelection: !!selectionText,
+                signal: myController.signal,
                 onToken: (t) => msg.appendModelToken({ id: 'plan' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'plan' }, 'reasoning', t),
             });
@@ -1118,38 +1186,53 @@ export function createConversation(deps) {
                 // compound turn's busy flag between tasks.
                 appState.isProcessing = true;
                 input.setProcessing(true);
-                await dispatchTurn(turnForTask(task, !!selectionText), msg, turnDeps, selectionText);
+                await dispatchTurn(turnForTask(task, !!selectionText), msg, turnDeps, selectionText, myController);
+                // A cancelled task ends the whole compound turn — the
+                // remaining tasks must not start.
+                if (myController.signal.aborted) {
+                    log(`Compound turn cancelled — skipping ${plan.tasks.length - i - 1} remaining task(s).`, 'warning');
+                    break;
+                }
             }
             msg.setStatus('');
         } catch (error) {
-            msg.markError(error.message);
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else {
+                msg.markError(error.message);
+            }
         } finally {
             appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
             input.setProcessing(false);
         }
     }
 
     /**
      * Dispatches one routed turn to its pipeline runner. Shared by submit
-     * (single turns) and runCompoundTurn (one call per planned task).
+     * (single turns) and runCompoundTurn (one call per planned task); the
+     * optional turnController lets a compound turn share its AbortController
+     * with every sub-task, so one cancel stops the whole chain.
      */
-    async function dispatchTurn(turn, msg, turnDeps, selectionText) {
+    async function dispatchTurn(turn, msg, turnDeps, selectionText, turnController) {
         if (turn.type === TURN_TYPE.SKILL) {
-            await runSkillTurn(turn.skill, turn.args, !!selectionText, msg, turnDeps, selectionText);
+            await runSkillTurn(turn.skill, turn.args, !!selectionText, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
-            await runSelectionEditTurn(turn.instruction, msg, turnDeps);
+            await runSelectionEditTurn(turn.instruction, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.DOC_APPEND) {
-            await runAppendTurn(turn.instruction, msg, turnDeps, selectionText);
+            await runAppendTurn(turn.instruction, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.ILLUSTRATION) {
-            await runIllustrationTurn(turn, msg, turnDeps);
+            await runIllustrationTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.TABLE) {
-            await runTableTurn(turn, msg, turnDeps);
+            await runTableTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.FORMAT) {
-            await runFormatTurn(turn, msg, turnDeps, selectionText);
+            await runFormatTurn(turn, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.CLEANUP) {
             await runCleanupTurn(msg, turnDeps);
         } else if (turn.type === TURN_TYPE.COMPOUND) {
-            await runCompoundTurn(turn, msg, turnDeps, selectionText);
+            await runCompoundTurn(turn, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.DOC_EDIT) {
             // Free-text edit instruction without a selection: run the
             // whole-document amendment pipeline with the user's text as
@@ -1159,7 +1242,7 @@ export function createConversation(deps) {
                 defaultTemplate: turn.instruction,
             }, undefined, msg, turnDeps);
         } else {
-            await runQaTurn(turn.question, null, msg, turnDeps, selectionText);
+            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, turnController);
         }
     }
 
@@ -1216,27 +1299,33 @@ export function createConversation(deps) {
     }
 
     /**
-     * Cancels the in-flight run (document pipeline or chat stream).
+     * Cancels the in-flight run (any chat turn or the document pipeline).
      *
-     * The document-scope UI flags are released immediately so the user can
-     * interact with the input and any pending proposal card without waiting
-     * for the in-flight fetches to settle. The AbortController still fires,
-     * so all active stream/non-stream LLM calls honour cancellation; the
-     * background promise continues running but its `finally` is gated on
-     * controller identity and becomes a no-op once cancel() has cleared
-     * state, leaving any follow-up turn unaffected.
+     * Both flags/controllers cover all turn types: the document-scope UI
+     * flags are released immediately so the user can interact with the
+     * input and any pending proposal card without waiting for the
+     * in-flight fetches to settle; chat turns (QA, selection edit, append,
+     * format, table, illustration, summary, compound planning/sub-tasks)
+     * share one AbortController in chatController — aborting it makes the
+     * active fetch reject, and each runner's finally releases its own UI
+     * state when the rejection lands. Compound turns thread the same
+     * controller into every sub-task, so one cancel stops the whole
+     * chain instead of just the current task.
      */
     function cancel() {
+        let aborted = false;
         if (appState.processDocController) {
             appState.processDocController.abort();
             appState.processDocController = null;
             appState.isProcessingDoc = false;
             input.setProcessing(false);
+            aborted = true;
         }
         if (appState.chatController) {
             appState.chatController.abort();
+            aborted = true;
         }
-        log('Cancelled.', 'warning');
+        if (aborted) log('Cancelled.', 'warning');
     }
 
     /**

@@ -31,7 +31,7 @@ import { supportsTrackedRowOps } from '../lib/platform.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
-import { formatTableMarkdown, formatMixedContext } from '../lib/selection-context.js';
+import { formatTableMarkdown, formatMixedContext, formatCursorContext } from '../lib/selection-context.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
 import { parseDelimitedResponse, buildFallbackClassificationPrompt } from '../lib/response-parser.js';
 import { parseDocument } from '../lib/document-parser.js';
@@ -431,6 +431,95 @@ export async function readSelectionTableContext(deps) {
 }
 
 /**
+ * Cap on the backward paragraph walk when hunting the nearest preceding
+ * heading. Bounds the queued proxy chain (one sync) so a pathological
+ * document cannot turn a cursor read into a full-body scan.
+ */
+const CURSOR_HEADING_WALK_LIMIT = 120;
+
+/**
+ * Reads the CURSOR location as prompt context — used when no text is
+ * selected, so document-scope answers know where the user is working.
+ *
+ * Returns null unless the selection is collapsed (a bare caret): a real
+ * selection belongs to the selection-context paths instead. Context is
+ * the caret's paragraph (clipped) plus the nearest preceding heading,
+ * found by a bounded getPreviousOrNullObject chain queued in ONE sync.
+ * When the caret itself sits in a heading paragraph, that heading wins
+ * (it is the section being read/edited, not the one before it).
+ *
+ * Any failure resolves to null — QA proceeds without location context.
+ *
+ * @param {object} deps - { log }
+ * @returns {Promise<null | {kind: 'cursor', contextText: string}>}
+ */
+export async function readCursorContext(deps) {
+    const { log } = deps;
+    let result = null;
+    try {
+        await Word.run(async (context) => {
+            const selection = context.document.getSelection();
+            selection.load('text');
+            await context.sync();
+            if (selection.text && selection.text.trim()) return; // real selection
+
+            const paragraphs = selection.paragraphs;
+            paragraphs.load('items');
+            await context.sync();
+            const cursorPara = paragraphs.items[0];
+            if (!cursorPara) return;
+
+            cursorPara.load('text,styleBuiltIn');
+            const table = cursorPara.parentTableOrNullObject;
+            table.load('isNullObject');
+
+            // Bounded walk-back chain for the nearest preceding heading:
+            // proxy getPreviousOrNullObject calls queue up and all resolve
+            // in the single sync below.
+            const chain = [];
+            let node = cursorPara.getPreviousOrNullObject();
+            for (let i = 0; i < CURSOR_HEADING_WALK_LIMIT && node; i++) {
+                node.load('isNullObject,text,styleBuiltIn');
+                chain.push(node);
+                node = node.getPreviousOrNullObject();
+            }
+            await context.sync();
+
+            const headingOf = (p) => {
+                const match = /^Heading([1-9])$/.exec(p.styleBuiltIn || '');
+                return match ? { text: (p.text || '').trim(), level: Number(match[1]) } : null;
+            };
+
+            // Caret in a heading: that heading IS the current section.
+            let heading = headingOf(cursorPara);
+            if (!heading) {
+                for (const p of chain) {
+                    if (p.isNullObject) break; // walked off the body start
+                    heading = headingOf(p);
+                    if (heading) break;
+                }
+            }
+
+            const contextText = formatCursorContext({
+                paragraphText: cursorPara.text,
+                headingText: heading ? heading.text : '',
+                headingLevel: heading ? heading.level : 0,
+                inTable: !table.isNullObject,
+            });
+            if (contextText) {
+                log(`Cursor context: ${heading ? `section "${heading.text.slice(0, 40)}"` : 'no heading found'}` +
+                    `${!table.isNullObject ? ' (in table)' : ''}`, 'info');
+                result = { kind: 'cursor', contextText };
+            }
+        });
+    } catch (err) {
+        if (log) log(`Cursor context read failed (${err.message}).`, 'warning');
+        result = null;
+    }
+    return result;
+}
+
+/**
  * Returns whether the document currently has a non-collapsed selection.
  * Resolves to false when the Word API is unavailable.
  *
@@ -530,9 +619,10 @@ export function watchSelection(callback, { debounceMs = 200 } = {}) {
  * @param {string} [args.commentInstructions] - When non-empty, merged amendment + comment mode
  * @param {function} [args.onToken] - Called with each streamed content token
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
+ * @param {AbortSignal} [args.signal] - Cancellation signal (stop button)
  * @returns {Promise<{ selectionText: string, amendedText: string|null, commentText: string|null, model: string }>}
  */
-export async function prepareSelectionAmendment(deps, { promptTemplate, commentInstructions, onToken, onReasoning } = {}) {
+export async function prepareSelectionAmendment(deps, { promptTemplate, commentInstructions, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
     const backendConfig = getActiveBackendConfig(appState);
 
@@ -541,7 +631,7 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
     const tableRegion = await readSelectionTableRegion(deps);
     if (tableRegion) {
         return _prepareTableAmendment(deps, {
-            tableRegion, promptTemplate, commentInstructions, backendConfig, onToken, onReasoning,
+            tableRegion, promptTemplate, commentInstructions, backendConfig, onToken, onReasoning, signal,
         });
     }
 
@@ -570,8 +660,8 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
 
     const promptText = _flattenMessages(messages);
     const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log)
-        : await sendPrompt(backendConfig, promptText, log);
+        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log, signal)
+        : await sendPrompt(backendConfig, promptText, log, signal);
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     if (!merged) {
@@ -592,13 +682,16 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
         log('Response missing delimiters, attempting to classify...', 'info');
         const fallbackMessages = buildFallbackClassificationPrompt(rawResponse, selectionText);
         try {
-            const fallbackResponse = await sendPrompt(backendConfig, _flattenMessages(fallbackMessages), log);
+            const fallbackResponse = await sendPrompt(backendConfig, _flattenMessages(fallbackMessages), log, signal);
             parsed = parseDelimitedResponse(fallbackResponse);
             if (parsed.amendment === null) {
                 log('Could not split response into amendment and comment', 'warning');
                 parsed = { amendment: rawResponse.trim(), comment: null, raw: rawResponse };
             }
         } catch (fallbackError) {
+            // A user cancel must propagate, not stage a proposal from
+            // partial output (the catch below would swallow it).
+            if (fallbackError.name === 'AbortError') throw fallbackError;
             log(`Fallback classification failed: ${fallbackError.message}`, 'warning');
             parsed = { amendment: rawResponse.trim(), comment: null, raw: rawResponse };
         }
@@ -625,10 +718,11 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
  * @param {string} args.promptTemplate - The amendment instruction/template
  * @param {string} [args.commentInstructions] - Ignored for table selections
  * @param {object} args.backendConfig - Active provider config
+ * @param {AbortSignal} [args.signal] - Cancellation signal (stop button)
  * @returns {Promise<object>} Proposal with tablePatch + tableItems
  * @private
  */
-async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, commentInstructions, backendConfig, onToken, onReasoning }) {
+async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, commentInstructions, backendConfig, onToken, onReasoning, signal }) {
     const { appState, log } = deps;
     const { rowCount, colCount, cells } = tableRegion;
     log(`Processing table selection (${cells.length} cells) via ${backendConfig.model}...`, 'info');
@@ -651,8 +745,8 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
 
     const promptText = _flattenMessages(messages);
     const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log)
-        : await sendPrompt(backendConfig, promptText, log);
+        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log, signal)
+        : await sendPrompt(backendConfig, promptText, log, signal);
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     // Full-table grid for no-op detection, per-cell "before" text, and
@@ -1173,7 +1267,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @returns {Promise<{ instruction: string, generatedText: string, model: string }>}
  */
-export async function prepareDocumentAppend(deps, { instruction, selectionText, onToken, onReasoning } = {}) {
+export async function prepareDocumentAppend(deps, { instruction, selectionText, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
@@ -1198,8 +1292,8 @@ export async function prepareDocumentAppend(deps, { instruction, selectionText, 
     const backendConfig = getActiveBackendConfig(appState);
     log(`Drafting content to append [${backendConfig.model}]...`, 'info');
     const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
-        : await sendPrompt(backendConfig, prompt, log);
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
+        : await sendPrompt(backendConfig, prompt, log, signal);
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     return {
@@ -1275,7 +1369,7 @@ const TABLE_CONTENT_HINT_RE = /填充|填写|填入|内容|数据|资料|根据|
  * @returns {Promise<{ instruction: string, spec: object, model: string|null,
  *   warnings: string[] }>} `model` is null on the deterministic empty-table path
  */
-export async function prepareTableProposal(deps, { instruction, onToken, onReasoning } = {}) {
+export async function prepareTableProposal(deps, { instruction, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
     const text = String(instruction || '').trim();
     if (!text) {
@@ -1317,8 +1411,8 @@ export async function prepareTableProposal(deps, { instruction, onToken, onReaso
     const backendConfig = getActiveBackendConfig(appState);
     log(`Generating table content [${backendConfig.model}]...`, 'info');
     const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
-        : await sendPrompt(backendConfig, prompt, log);
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
+        : await sendPrompt(backendConfig, prompt, log, signal);
 
     const parsed = parseTableCreationResponse(rawResponse);
     if (!parsed.spec) {
@@ -1548,15 +1642,15 @@ export async function applyEmptyParagraphCleanup(deps) {
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @returns {Promise<{ tasks: Array<{ type: string, instruction: string }> | null, model: string }>}
  */
-export async function planDocumentTasks(deps, { instruction, hasSelection = false, onToken, onReasoning } = {}) {
+export async function planDocumentTasks(deps, { instruction, hasSelection = false, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
 
     const prompt = buildPlanPrompt(instruction, hasSelection);
     const backendConfig = getActiveBackendConfig(appState);
     log(`Planning tasks [${backendConfig.model}]...`, 'info');
     const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
-        : await sendPrompt(backendConfig, prompt, log);
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
+        : await sendPrompt(backendConfig, prompt, log, signal);
 
     const tasks = parsePlan(rawResponse, log);
     if (tasks) log(`Planned ${tasks.length} task(s): ${tasks.map((t) => t.type).join(' → ')}`, 'success');
@@ -1578,7 +1672,7 @@ export async function planDocumentTasks(deps, { instruction, hasSelection = fals
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @returns {Promise<{ instruction: string, scope: string, ops: Array<object>, model: string }>}
  */
-export async function prepareFormatProposal(deps, { instruction, scope = 'selection', selectionText, onToken, onReasoning } = {}) {
+export async function prepareFormatProposal(deps, { instruction, scope = 'selection', selectionText, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
 
     let scopeText = '';
@@ -1595,8 +1689,8 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
     const backendConfig = getActiveBackendConfig(appState);
     log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
     const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
-        : await sendPrompt(backendConfig, prompt, log);
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
+        : await sendPrompt(backendConfig, prompt, log, signal);
 
     const ops = parseFormatOps(rawResponse, log);
     log(`Parsed ${ops.length} formatting op(s) from the model response.`, 'info');
@@ -1799,7 +1893,7 @@ const MAX_ILLUSTRATION_WIDTH_PT = 450;
  * @returns {Promise<{ instruction: string, svg: string|null, position: string, model: string }>}
  *   svg is null when the model returned nothing usable.
  */
-export async function prepareIllustrationProposal(deps, { instruction, onToken, onReasoning } = {}) {
+export async function prepareIllustrationProposal(deps, { instruction, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
@@ -1810,8 +1904,8 @@ export async function prepareIllustrationProposal(deps, { instruction, onToken, 
     const backendConfig = getActiveBackendConfig(appState);
     log(`Designing illustration [${backendConfig.model}]...`, 'info');
     const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
-        : await sendPrompt(backendConfig, prompt, log);
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
+        : await sendPrompt(backendConfig, prompt, log, signal);
 
     const parsed = parseIllustration(rawResponse, log);
     const svg = parsed ? ensureSvgDimensions(sanitizeSvg(parsed.svg)) : null;
@@ -2146,7 +2240,7 @@ export async function retryFailedChunks(deps, { failedResults, bookmarkMap, back
  * @param {function} [args.onToken] - Called with each streamed content token
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  */
-export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoning } = {}) {
+export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
 
     log('Extracting document comments...', 'info');
@@ -2215,8 +2309,8 @@ export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoni
     log(`Sending summary request [${backendConfig.model}]...`, 'info');
     const promptText = _flattenMessages(messages);
     const llmResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log)
-        : await sendPrompt(backendConfig, promptText, log);
+        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log, signal)
+        : await sendPrompt(backendConfig, promptText, log, signal);
     log(`Summary received (${llmResponse.length} chars). Creating document...`, 'info');
 
     let docTitle = 'Document Summary';
@@ -2249,7 +2343,8 @@ export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoni
  * @param {string} args.question - The user's question
  * @param {string} [args.skillTemplate] - Persona/instruction template from a chat skill
  * @param {string} [args.selectionText] - Currently selected text, added as a
- *   focused excerpt before the full document context
+ *   focused excerpt before the full document context; when EMPTY, the cursor
+ *   location (caret paragraph + nearest heading) is injected instead
  * @param {function} [args.onToken] - Called with each streamed token
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @param {function} [args.onStatus] - Called with stage updates ("Reading the document...", "Waiting for model...")
@@ -2285,6 +2380,14 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
             prompt += `\n\n--- ${label} ---\n` + tableContext.contextText;
         } else {
             prompt += '\n\n--- SELECTED TEXT (the user is asking about this excerpt) ---\n' + selectionText.trim();
+        }
+    } else {
+        // Bare caret: inject where the user is working so document-scope
+        // answers can weight the current section (no tool-call path exists;
+        // all context is injected before the request).
+        const cursorContext = await readCursorContext(deps);
+        if (cursorContext) {
+            prompt += '\n\n--- CURSOR LOCATION (where the user is in the document) ---\n' + cursorContext.contextText;
         }
     }
     prompt += '\n\n--- DOCUMENT ---\n' + documentText;
