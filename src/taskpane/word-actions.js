@@ -43,6 +43,7 @@ import { buildFormatPrompt, parseFormatOps } from '../lib/format-ops.js';
 import {
     buildIllustrationPrompt, parseIllustration, sanitizeSvg,
     ensureSvgDimensions, svgDimensions, illustrationPositionFromInstruction,
+    illustrationPositionLabel,
 } from '../lib/illustration.js';
 import { buildPlanPrompt, parsePlan } from '../lib/task-planner.js';
 import { getActiveBackendConfig } from './app-state.js';
@@ -1890,7 +1891,8 @@ const MAX_ILLUSTRATION_WIDTH_PT = 450;
  * @param {string} args.instruction - The user's illustration instruction
  * @param {function} [args.onToken] - Called with each streamed content token
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
- * @returns {Promise<{ instruction: string, svg: string|null, position: string, model: string }>}
+ * @returns {Promise<{ instruction: string, svg: string|null, position: string,
+ *   positionLabel: string, model: string }>}
  *   svg is null when the model returned nothing usable.
  */
 export async function prepareIllustrationProposal(deps, { instruction, onToken, onReasoning, signal } = {}) {
@@ -1910,10 +1912,12 @@ export async function prepareIllustrationProposal(deps, { instruction, onToken, 
     const parsed = parseIllustration(rawResponse, log);
     const svg = parsed ? ensureSvgDimensions(sanitizeSvg(parsed.svg)) : null;
     if (svg) log(`Illustration SVG received (${(svg.length / 1024).toFixed(1)} KB).`, 'success');
+    const position = illustrationPositionFromInstruction(instruction);
     return {
         instruction: (instruction || '').trim(),
         svg,
-        position: illustrationPositionFromInstruction(instruction),
+        position,
+        positionLabel: illustrationPositionLabel(position),
         model: backendConfig.model,
     };
 }
@@ -1921,8 +1925,13 @@ export async function prepareIllustrationProposal(deps, { instruction, onToken, 
 /**
  * Applies a prepared illustration proposal: rasterizes the sanitized SVG to
  * PNG (Word's insertInlinePictureFromBase64 takes PNG/JPEG/GIF/BMP base64,
- * not SVG) and inserts it as a centered inline picture in its own paragraph
- * at the document start or end, as a tracked change per config.
+ * not SVG) and inserts it, as a tracked change per config:
+ * - start/end: a centered inline picture in its own paragraph at the
+ *   document start or end;
+ * - cursor: INLINE at the caret — the insertion point is read at apply
+ *   time (the document keeps its selection while focus is in the taskpane),
+ *   anchored to the selection end so a non-collapsed selection never has
+ *   its text replaced.
  *
  * @param {object} deps - { appState, log }
  * @param {object} proposal - Result of prepareIllustrationProposal
@@ -1935,7 +1944,9 @@ export async function applyIllustrationProposal(deps, proposal) {
         throw new Error('No illustration to apply — the model returned no usable SVG.');
     }
     const { base64, width, height } = await _svgToPngBase64(svg);
-    const atStart = proposal.position === 'start';
+    const position = proposal.position === 'start' || proposal.position === 'cursor'
+        ? proposal.position
+        : 'end';
 
     await Word.run(async (context) => {
         if (Word.ChangeTrackingMode) {
@@ -1943,32 +1954,44 @@ export async function applyIllustrationProposal(deps, proposal) {
                 ? Word.ChangeTrackingMode.trackAll
                 : Word.ChangeTrackingMode.off;
         }
-        const body = context.document.body;
-        const location = atStart ? Word.InsertLocation.start : Word.InsertLocation.end;
-        // A dedicated paragraph keeps the image standalone and centerable.
-        const paragraph = body.insertParagraph('', location);
-        const picture = paragraph.getRange(Word.RangeLocation.start)
-            .insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
-        paragraph.alignment = Word.Alignment.centered;
-        picture.load('width,height');
-        await context.sync();
-        // Inline picture dimensions are points; scale oversized images down
-        // to the content width, keeping the aspect ratio.
-        if (picture.width > MAX_ILLUSTRATION_WIDTH_PT) {
-            picture.height = picture.height * (MAX_ILLUSTRATION_WIDTH_PT / picture.width);
-            picture.width = MAX_ILLUSTRATION_WIDTH_PT;
-        }
         try {
-            picture.altTextDescription = (proposal.instruction || 'Illustration').slice(0, 200);
-        } catch (_e) {
-            // Alt text is best-effort (not critical for the insertion).
-        }
-        await context.sync();
-        if (Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+            let picture;
+            if (position === 'cursor') {
+                // Zero-width range at the selection end: inserting at its
+                // start puts the picture right after the selected text —
+                // exactly at a collapsed caret, and never over a selection.
+                const insertionPoint = context.document.getSelection()
+                    .getRange(Word.RangeLocation.end);
+                picture = insertionPoint.insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
+            } else {
+                const location = position === 'start' ? Word.InsertLocation.start : Word.InsertLocation.end;
+                // A dedicated paragraph keeps the image standalone and centerable.
+                const paragraph = context.document.body.insertParagraph('', location);
+                picture = paragraph.getRange(Word.RangeLocation.start)
+                    .insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
+                paragraph.alignment = Word.Alignment.centered;
+            }
+            picture.load('width,height');
             await context.sync();
+            // Inline picture dimensions are points; scale oversized images down
+            // to the content width, keeping the aspect ratio.
+            if (picture.width > MAX_ILLUSTRATION_WIDTH_PT) {
+                picture.height = picture.height * (MAX_ILLUSTRATION_WIDTH_PT / picture.width);
+                picture.width = MAX_ILLUSTRATION_WIDTH_PT;
+            }
+            try {
+                picture.altTextDescription = (proposal.instruction || 'Illustration').slice(0, 200);
+            } catch (_e) {
+                // Alt text is best-effort (not critical for the insertion).
+            }
+            await context.sync();
+        } finally {
+            if (Word.ChangeTrackingMode) {
+                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                await context.sync();
+            }
         }
-        log(`Inserted illustration at the document ${atStart ? 'start' : 'end'} (${width}x${height}px PNG).`, 'success');
+        log(`Inserted illustration at ${illustrationPositionLabel(position)} (${width}x${height}px PNG).`, 'success');
     });
     return { inserted: true };
 }

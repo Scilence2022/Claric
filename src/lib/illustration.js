@@ -146,13 +146,36 @@ export function ensureSvgDimensions(svg) {
 
 /**
  * Picks the insertion position from the instruction's own wording:
+ * cursor-anchored phrasings (光标/此处/当前位置...) insert at the caret;
  * hero-image phrasings (题图/头图/开头...) land at the document start;
- * everything else appends at the end.
+ * everything else appends at the end. Cursor wins over start/end when
+ * both match — it is the explicit anchor ("在光标处插一张题图" means the
+ * caret, not the document top).
+ *
+ * The position resolves to an anchor at APPLY time: 'cursor' reads the
+ * selection when the user clicks Apply (Word keeps the document selection
+ * while focus is in the taskpane), so the image lands where the caret
+ * actually is, not where it was when the request was typed.
  *
  * @param {string} text - Trimmed chat input
- * @returns {'start' | 'end'}
+ * @returns {'start' | 'end' | 'cursor'}
  */
 export function illustrationPositionFromInstruction(text) {
+    const CURSOR_RE = /光标|当前(?:插入)?位置|此处|这里|\b(?:cursor|caret)\b|\bcurrent position\b|\binsertion point\b|\bhere\b/i;
+    if (CURSOR_RE.test(text || '')) return 'cursor';
     const START_RE = /开头|顶部|文首|卷首|扉页|题图|头图|标题下|\btop\b|\bheader\b|\bbeginning\b/i;
     return START_RE.test(text || '') ? 'start' : 'end';
+}
+
+/**
+ * Human-readable label for an illustration position, for proposal-card
+ * strings ("SVG 8.5 KB → PNG at the cursor").
+ *
+ * @param {'start' | 'end' | 'cursor'} position
+ * @returns {string}
+ */
+export function illustrationPositionLabel(position) {
+    if (position === 'start') return 'document start';
+    if (position === 'cursor') return 'the cursor';
+    return 'document end';
 }

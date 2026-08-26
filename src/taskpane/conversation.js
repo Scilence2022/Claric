@@ -887,9 +887,10 @@ export function createConversation(deps) {
                 return;
             }
             msg.setStatus('');
+            const positionLabel = proposal.positionLabel || `document ${proposal.position}`;
             const card = createProposalCard({
                 title: 'Proposed illustration',
-                countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at document ${proposal.position}`,
+                countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
                 previewSrc: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(proposal.svg)))}`,
                 comment: null,
                 onApply: async () => {
@@ -908,7 +909,7 @@ export function createConversation(deps) {
             msg.attachProposal(card, {
                 title: 'Proposed illustration',
                 state: 'pending',
-                countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at document ${proposal.position}`,
+                countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
                 previewSrc: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(proposal.svg)))}`,
                 items: [],
             });

@@ -10,6 +10,7 @@
 const {
   buildIllustrationPrompt, parseIllustration, sanitizeSvg,
   svgDimensions, ensureSvgDimensions, illustrationPositionFromInstruction,
+  illustrationPositionLabel,
 } = require('../src/lib/illustration.js');
 
 const SIMPLE_SVG = '<svg width="1200" height="800" viewBox="0 0 1200 800"><rect width="1200" height="800" fill="#123"/></svg>';
@@ -118,6 +119,32 @@ describe('illustrationPositionFromInstruction', () => {
   test('everything else appends at the end', () => {
     expect(illustrationPositionFromInstruction('设计并增加SVG插图')).toBe('end');
     expect(illustrationPositionFromInstruction('insert an illustration')).toBe('end');
+  });
+
+  test('cursor-anchored phrasings insert at the caret (ZH + EN)', () => {
+    expect(illustrationPositionFromInstruction('设计一张简单的图片，然后在光标处插入')).toBe('cursor');
+    expect(illustrationPositionFromInstruction('在当前位置插入一张插图')).toBe('cursor');
+    expect(illustrationPositionFromInstruction('在此处配一张图')).toBe('cursor');
+    expect(illustrationPositionFromInstruction('insert a picture at the cursor')).toBe('cursor');
+    expect(illustrationPositionFromInstruction('add an image here')).toBe('cursor');
+  });
+
+  test('cursor wins over start when both match', () => {
+    expect(illustrationPositionFromInstruction('在光标处插入一张题图')).toBe('cursor');
+  });
+
+  test('words merely containing "here"/cursor letters do not match', () => {
+    expect(illustrationPositionFromInstruction('设计一张别具匠心的图')).toBe('end');
+    expect(illustrationPositionFromInstruction('nowhere to insert')).toBe('end');
+  });
+});
+
+describe('illustrationPositionLabel', () => {
+  test('maps positions to human-readable labels', () => {
+    expect(illustrationPositionLabel('start')).toBe('document start');
+    expect(illustrationPositionLabel('end')).toBe('document end');
+    expect(illustrationPositionLabel('cursor')).toBe('the cursor');
+    expect(illustrationPositionLabel(undefined)).toBe('document end');
   });
 });
 
