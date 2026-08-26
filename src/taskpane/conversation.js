@@ -335,8 +335,9 @@ export function createConversation(deps) {
      */
     async function runDocumentTurn(skill, args, msg, turnDeps) {
         const gated = skill.category === 'amendment';
+        const myController = new AbortController();
         appState.isProcessingDoc = true;
-        appState.processDocController = new AbortController();
+        appState.processDocController = myController;
         input.setProcessing(true);
         try {
             msg.setStatus(`Processing document (${skill.name})...`);
@@ -345,6 +346,7 @@ export function createConversation(deps) {
                 category: skill.category,
                 promptTemplate: withArgs(skill.defaultTemplate, args),
                 commentInstructions,
+                signal: myController.signal,
                 onProgress: (p) => msg.showProgress(p),
                 onChunkToken: (info, kind, token) => msg.appendModelToken(info, kind, token),
                 gateApply: gated,
@@ -376,9 +378,15 @@ export function createConversation(deps) {
                 msg.markError(`Document processing failed: ${error.message}`);
             }
         } finally {
-            appState.isProcessingDoc = false;
-            appState.processDocController = null;
-            input.setProcessing(false);
+            // Only release state if we're still the active turn: cancel()
+            // may have already nulled the controller to free the UI, and an
+            // already-cancelled orphan whose background work settles late
+            // must NOT clobber a follow-up turn's processing flags.
+            if (appState.processDocController === myController) {
+                appState.isProcessingDoc = false;
+                appState.processDocController = null;
+                input.setProcessing(false);
+            }
         }
     }
 
@@ -1093,15 +1101,26 @@ export function createConversation(deps) {
 
     /**
      * Cancels the in-flight run (document pipeline or chat stream).
+     *
+     * The document-scope UI flags are released immediately so the user can
+     * interact with the input and any pending proposal card without waiting
+     * for the in-flight fetches to settle. The AbortController still fires,
+     * so all active stream/non-stream LLM calls honour cancellation; the
+     * background promise continues running but its `finally` is gated on
+     * controller identity and becomes a no-op once cancel() has cleared
+     * state, leaving any follow-up turn unaffected.
      */
     function cancel() {
         if (appState.processDocController) {
             appState.processDocController.abort();
-            log('Cancelling document processing...', 'warning');
+            appState.processDocController = null;
+            appState.isProcessingDoc = false;
+            input.setProcessing(false);
         }
         if (appState.chatController) {
             appState.chatController.abort();
         }
+        log('Cancelled.', 'warning');
     }
 
     /**
