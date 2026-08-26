@@ -188,6 +188,7 @@ function _alignParagraphs(origParas, newParas) {
 
   // Phase 2: Fill gaps between anchors with similarity-based matching.
   // Process each gap (segment between consecutive anchors) independently.
+  /** @type {Array<{type: 'keep'|'delete'|'insert', origIdx?: number, newIdx?: number}>} */
   const ops = [];
   const SIMILARITY_THRESHOLD = 0.4;
 

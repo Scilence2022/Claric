@@ -2,12 +2,12 @@
  * Vendored from office-word-diff (Apache-2.0) — see LICENSE and NOTICE in
  * this directory. Implements the word-mode diff method from Google's
  * diff-match-patch library, extending the prototype safely (without editing
- * node_modules).
+ * the vendored copy in src/lib/vendor).
  *
  * @module lib/word-diff/diff-wordmode
  */
 
-import DiffMatchPatch from 'diff-match-patch';
+import DiffMatchPatch from '../vendor/diff-match-patch.js';
 
 DiffMatchPatch.prototype.diff_linesToWords_ = function (a, b) {
     function c(a) {
@@ -35,7 +35,7 @@ DiffMatchPatch.prototype.diff_linesToWords_ = function (a, b) {
 };
 
 DiffMatchPatch.prototype.diff_wordMode = function (text1, text2) {
-    const dmp = this;
+    const dmp = /** @type {any} */ (this); // prototype extension below is outside the vendored lib's type surface
     const a = dmp.diff_linesToWords_(text1, text2);
     const wordText1 = a.chars1;
     const wordText2 = a.chars2;

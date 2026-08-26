@@ -397,7 +397,7 @@ export async function extractCommentsOnRange(context, selectionRange) {
             }))
             // Defensive sort — research Anti-Pattern: don't trust replies.items order.
             // Microsoft does not guarantee chronological emission; sort ascending here.
-            .sort((a, b) => new Date(a.creationDate) - new Date(b.creationDate));
+            .sort((a, b) => new Date(a.creationDate).getTime() - new Date(b.creationDate).getTime());
 
         return {
             id: s.comment.id,

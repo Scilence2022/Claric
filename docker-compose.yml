@@ -5,12 +5,14 @@
 # manifest volume mount is needed (a stale mounted manifest would silently
 # override the env-based one).
 #
-# The production server does NOT proxy LLM traffic. Configure the add-in's
-# Endpoint URL (Settings) to an absolute URL reachable from the client,
-# e.g. https://llm-host:8026.
+# The production server does NOT proxy LLM traffic unless a provider's
+# *_PROXY_PATH env var is explicitly set (they default to empty = disabled).
+# Otherwise configure the add-in's Endpoint URL (Settings) to an absolute URL
+# reachable from the client, e.g. https://llm-host:8026.
 services:
   claric:
-    image: ghcr.io/yuch85/word-ai-redliner:0.4.0  # rename the GHCR repo to match Claric, then update this tag
+    # The tag tracks the package.json version (currently 0.5.0).
+    image: ghcr.io/yuch85/claric:0.5.0
     build: . # fallback to a local build when the registry image is absent
     ports:
       - "${HOST_PORT:-3000}:3000"

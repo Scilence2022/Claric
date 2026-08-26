@@ -1,3 +1,6 @@
+// Test environment strategy: 'node' by default. Specs that need a DOM
+// either declare `@jest-environment jsdom` in a docblock (6 specs) or
+// construct JSDOM manually via `new JSDOM(...)` (3 specs).
 module.exports = {
   testEnvironment: 'node',
   transform: {
@@ -14,7 +17,7 @@ module.exports = {
   moduleFileExtensions: ['js'],
   testMatch: ['**/tests/**/*.spec.js'],
   collectCoverageFrom: [
-    'src/lib/**/*.js'
+    'src/**/*.js'
   ],
   coverageDirectory: 'coverage',
   verbose: true

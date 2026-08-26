@@ -90,6 +90,9 @@ CRITICAL OUTPUT RULES (table mode):
  *   rowOps are pre-sorted into application order via planRowOpOrder.
  * @throws {Error} When no parseable JSON object is present
  */
+// @ts-expect-error - the `= {}` default is a defensive fallback; the only caller
+// (word-actions.js) always passes the full shape. Removing it would change the
+// graceful-degradation behavior for missing bounds.
 export function parseTablePatchResponse(raw, { rowCount, colCount, originals } = {}) {
     const warnings = [];
     const parsed = _extractJson(raw);

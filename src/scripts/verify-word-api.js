@@ -1,3 +1,17 @@
+/**
+ * Standalone manual Word API diagnostic.
+ *
+ * Not wired into build, test, or webpack — nothing imports
+ * `runAllVerifications`; it requires the Word runtime (`Word.run`) and is
+ * meant to be triggered by hand inside Word when probing API behavior.
+ *
+ * Note: the two-pass token-map logic below (~Pass 1 / Pass 2 in
+ * verifyTokenMapStrategy) deliberately mirrors src/lib/word-diff/token-map.js
+ * (applyTokenMapStrategy). The duplication is intentional — this script is a
+ * self-contained diagnostic, so it must not import the evolving word-diff
+ * internals.
+ */
+
 import { applySentenceDiffStrategy, computeDiff } from '../lib/word-diff/index.js';
 
 export async function runAllVerifications(logCallback) {

@@ -71,8 +71,12 @@ src/
     platform.js                # Office host detection; which hosts record
                                #   table row insert/delete as tracked revisions
     selection-with-comments.js # Splices comment anchors into selection OOXML
-    panel-actions.js           # Legacy frozen enums (kept for tests)
-    structure-model.js         # Legacy ParagraphBlock token-map model
+    sanitize.js                # Shared lazy DOMPurify factory (used by
+                               #   document-generator and illustration)
+    vendor/
+      diff-match-patch.js      # Pinned verbatim copy of diff-match-patch
+                               #   1.0.5 (Apache-2.0; upstream abandoned),
+                               #   typed via sibling .d.ts
     word-diff/                 # Diff strategies, vendored from
                                #   office-word-diff (Apache-2.0, see
                                #   LICENSE/NOTICE) + project hardening
@@ -159,7 +163,6 @@ tests/                         # Jest unit tests (798 tests, 34 suites)
   word-diff.spec.js            # Word/sentence diff modes
   selection-with-comments.spec.js # Comment anchor splicing
   generate-manifest.spec.js    # Manifest generation
-  panel-actions.spec.js        # Legacy enums
   __mocks__/                   # Jest style mock
 
 scripts/
@@ -168,7 +171,11 @@ scripts/
                                #   XML escaping)
   docker-server.cjs            # Hardened production static file server:
                                #   /healthz, traversal + crash protection,
-                               #   graceful shutdown, access logging, LLM proxy
+                               #   graceful shutdown, access logging,
+                               #   opt-in LLM proxy (off by default)
+  dev-e2e-middlewares.cjs      # Dev-only E2E/coding-agent endpoints,
+                               #   registered by webpack dev server only when
+                               #   ENABLE_DEV_ENDPOINTS=true
 
 assets/                        # Add-in icons (16/32/64/80px)
 ```
@@ -471,7 +478,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 npm test          # 708 tests, 29 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
-npm run verify    # lint + test + build (what CI runs)
+npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)
 ```
 
 Tests run in node or jsdom environments (per-spec `@jest-environment`

@@ -1,7 +1,7 @@
 {
   "name": "claric",
   "version": "0.5.0",
-  "description": "Claric \u2014 your redlining scribe for Microsoft Word. AI-powered tracked changes, summarization, and comment analysis.",
+  "description": "Claric — your redlining scribe for Microsoft Word. AI-powered tracked changes, summarization, and comment analysis.",
   "private": true,
   "scripts": {
     "start": "webpack serve --mode development",
@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "test": "jest",
     "manifest": "node scripts/generate-manifest.cjs",
-    "verify": "npm run lint && npm test && npm run build"
+    "typecheck": "tsc",
+    "verify": "npm run lint && npm test && npm run typecheck && npm run build"
   },
   "type": "module",
   "keywords": [
@@ -26,7 +27,6 @@
   "author": "Lifu Song",
   "license": "MIT",
   "dependencies": {
-    "diff-match-patch": "^1.0.5",
     "dompurify": "^3.4.14",
     "dotenv": "^17.2.3",
     "marked": "^17.0.4"
@@ -34,9 +34,10 @@
   "devDependencies": {
     "@babel/core": "^7.28.5",
     "@babel/preset-env": "^7.28.5",
+    "@types/node": "^26.3.0",
     "@types/office-js": "^1.0.0",
     "babel-jest": "^30.2.0",
-    "copy-webpack-plugin": "^11.0.0",
+    "copy-webpack-plugin": "^14.0.0",
     "css-loader": "^6.8.1",
     "eslint": "^9.39.5",
     "globals": "^16.5.0",
@@ -45,9 +46,10 @@
     "jest-environment-jsdom": "^30.3.0",
     "jsdom": "^25.0.1",
     "style-loader": "^3.3.3",
+    "typescript": "^5.9.3",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4",
-    "webpack-dev-server": "^4.15.1"
+    "webpack-dev-server": "^5.2.6"
   },
   "repository": {
     "type": "git",

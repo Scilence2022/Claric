@@ -100,9 +100,10 @@ export function diff_sentenceMode(text1, text2) {
         .join('');
 
     const diffs = dmp.diff_main(encode(sentences1), encode(sentences2), false);
+    // Deliberately reuses dmp's private charsToLines to decode the sentence-encoded sequences.
     dmp.diff_charsToLines_(diffs, sentenceArray);
 
-    return diffs;
+    return /** @type {Array<[number, string]>} */ (diffs);
 }
 
 /**

@@ -52,7 +52,8 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
 
     try {
         // Run diff_wordMode
-        const dmp = new DiffMatchPatch();
+        // (prototype extension from diff-wordmode.js — outside the vendored lib's type surface)
+        const dmp = /** @type {any} */ (new DiffMatchPatch());
         const diffs = dmp.diff_wordMode(originalText, newText);
 
         // --- Build Refined Token Map (Batched) ---
@@ -62,6 +63,7 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
         coarseRanges.load('items/text');
         await context.sync();
 
+        /** @type {Array<{text: string, range: Word.Range, index?: number}>} */
         const fineTokens = [];
         const dmpRegex = /(\w+|[^\w\s]+|\s+)/g;
         const searchProxies = [];

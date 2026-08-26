@@ -1,0 +1,17 @@
+{
+  "//": "Incremental type safety (Q3): JSDoc-checked JS, no emit. Scoped to the pure-logic layer (src/lib) which is Word/DOM-free; widen 'include' as more layers become clean. Run: npm run typecheck",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "es2022",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": ["es2022", "dom"],
+    "types": ["office-js", "node"],
+    "skipLibCheck": true,
+    "strict": false
+  },
+  "include": ["src/lib/**/*.js"],
+  "exclude": ["src/lib/vendor/**"]
+}

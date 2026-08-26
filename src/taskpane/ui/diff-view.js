@@ -9,7 +9,7 @@
  * @module ui/diff-view
  */
 
-import DiffMatchPatch from 'diff-match-patch';
+import DiffMatchPatch from '../../lib/vendor/diff-match-patch.js';
 
 const dmp = new DiffMatchPatch();
 

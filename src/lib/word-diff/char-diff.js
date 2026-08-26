@@ -14,7 +14,7 @@
  * @module char-diff
  */
 
-import DiffMatchPatch from 'diff-match-patch';
+import DiffMatchPatch from '../vendor/diff-match-patch.js';
 
 /** Matches CJK ideographs, hiragana/katakana, and hangul. */
 const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/;
@@ -41,7 +41,7 @@ export function computeCharEdits(originalText, newText) {
     const dmp = new DiffMatchPatch();
     const diffs = dmp.diff_main(originalText || '', newText || '');
     dmp.diff_cleanupMerge(diffs);
-    return diffs;
+    return /** @type {Array<[number, string]>} */ (diffs);
 }
 
 /** Safety cap: more ops than this means the texts diverged too much for

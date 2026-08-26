@@ -5,24 +5,28 @@
  * over HTTPS (default) or HTTP (PROTOCOL=http) for local testing, and
  * optionally proxies LLM API traffic on the same origin (/ollama, /vllm).
  *
+ * LLM proxy routes are DISABLED BY DEFAULT in production: every
+ * *_PROXY_PATH defaults to empty, and a provider's proxy is enabled only
+ * by explicitly setting its *_PROXY_PATH env var (empty = disabled).
+ *
  * Environment variables:
  *   PORT                  - listen port (default 3000)
  *   PROTOCOL              - 'https' (default) or 'http'
  *   SSL_CERT_FILE         - cert path, relative to project root or absolute
  *   SSL_KEY_FILE          - key path, relative to project root or absolute
- *   OLLAMA_PROXY_PATH     - proxy path for Ollama (default /ollama; empty disables)
+ *   OLLAMA_PROXY_PATH     - proxy path for Ollama (default empty = disabled; set to e.g. /ollama to enable)
  *   OLLAMA_PROXY_TARGET   - upstream Ollama base URL (default http://localhost:11434)
- *   VLLM_PROXY_PATH       - proxy path for vLLM (default /vllm; empty disables)
+ *   VLLM_PROXY_PATH       - proxy path for vLLM (default empty = disabled; set to e.g. /vllm to enable)
  *   VLLM_PROXY_TARGET     - upstream vLLM base URL (default http://localhost:8026)
- *   DEEPSEEK_PROXY_PATH   - proxy path for DeepSeek (default /deepseek; empty disables)
+ *   DEEPSEEK_PROXY_PATH   - proxy path for DeepSeek (default empty = disabled; set to e.g. /deepseek to enable)
  *   DEEPSEEK_PROXY_TARGET - upstream DeepSeek API origin (https://api.deepseek.com)
- *   GLM_PROXY_PATH        - proxy path for Zhipu GLM (default /glm; empty disables)
+ *   GLM_PROXY_PATH        - proxy path for Zhipu GLM (default empty = disabled; set to e.g. /glm to enable)
  *   GLM_PROXY_TARGET      - upstream GLM API origin (https://open.bigmodel.cn)
- *   KIMI_PROXY_PATH       - proxy path for Moonshot Kimi (default /kimi; empty disables)
+ *   KIMI_PROXY_PATH       - proxy path for Moonshot Kimi (default empty = disabled; set to e.g. /kimi to enable)
  *   KIMI_PROXY_TARGET     - upstream Kimi API origin (https://api.moonshot.cn)
- *   MINIMAX_PROXY_PATH    - proxy path for MiniMax international (default /minimax; empty disables)
+ *   MINIMAX_PROXY_PATH    - proxy path for MiniMax international (default empty = disabled; set to e.g. /minimax to enable)
  *   MINIMAX_PROXY_TARGET  - upstream MiniMax API origin (https://api.minimax.io)
- *   MINIMAX_CN_PROXY_PATH - proxy path for MiniMax China (default /minimax-cn; empty disables)
+ *   MINIMAX_CN_PROXY_PATH - proxy path for MiniMax China (default empty = disabled; set to e.g. /minimax-cn to enable)
  *   MINIMAX_CN_PROXY_TARGET - upstream MiniMax CN API origin (https://api.minimaxi.com)
  *   LLM_PROXY_TIMEOUT_MS  - upstream request timeout (default 300000 = 5 min)
  *
@@ -41,6 +45,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const { generateManifest } = require('./generate-manifest.cjs');
+const { DEFAULT_LLM_PROXY_TIMEOUT_MS } = require('./llm-constants.cjs');
 
 const rootDir = path.resolve(__dirname, '..');
 const distDir = path.join(rootDir, 'dist');
@@ -50,7 +55,6 @@ const manifestPath = path.join(rootDir, 'manifest.xml');
 // a bounded window instead of the 2-minute node default.
 const REQUEST_TIMEOUT_MS = 60000;
 const SHUTDOWN_TIMEOUT_MS = 10000;
-const DEFAULT_LLM_PROXY_TIMEOUT_MS = 300000;
 
 // LLM proxy routes, built once in startServer from environment variables.
 let PROXY_ROUTES = [];
@@ -61,19 +65,19 @@ function getEnv() {
     PROTOCOL: process.env.PROTOCOL || 'https',
     SSL_CERT_FILE: process.env.SSL_CERT_FILE || 'server.pem',
     SSL_KEY_FILE: process.env.SSL_KEY_FILE || 'server-key.pem',
-    OLLAMA_PROXY_PATH: process.env.OLLAMA_PROXY_PATH || '/ollama',
+    OLLAMA_PROXY_PATH: process.env.OLLAMA_PROXY_PATH || '',
     OLLAMA_PROXY_TARGET: process.env.OLLAMA_PROXY_TARGET || 'http://localhost:11434',
-    VLLM_PROXY_PATH: process.env.VLLM_PROXY_PATH || '/vllm',
+    VLLM_PROXY_PATH: process.env.VLLM_PROXY_PATH || '',
     VLLM_PROXY_TARGET: process.env.VLLM_PROXY_TARGET || 'http://localhost:8026',
-    DEEPSEEK_PROXY_PATH: process.env.DEEPSEEK_PROXY_PATH || '/deepseek',
+    DEEPSEEK_PROXY_PATH: process.env.DEEPSEEK_PROXY_PATH || '',
     DEEPSEEK_PROXY_TARGET: process.env.DEEPSEEK_PROXY_TARGET || 'https://api.deepseek.com',
-    GLM_PROXY_PATH: process.env.GLM_PROXY_PATH || '/glm',
+    GLM_PROXY_PATH: process.env.GLM_PROXY_PATH || '',
     GLM_PROXY_TARGET: process.env.GLM_PROXY_TARGET || 'https://open.bigmodel.cn',
-    KIMI_PROXY_PATH: process.env.KIMI_PROXY_PATH || '/kimi',
+    KIMI_PROXY_PATH: process.env.KIMI_PROXY_PATH || '',
     KIMI_PROXY_TARGET: process.env.KIMI_PROXY_TARGET || 'https://api.moonshot.cn',
-    MINIMAX_PROXY_PATH: process.env.MINIMAX_PROXY_PATH || '/minimax',
+    MINIMAX_PROXY_PATH: process.env.MINIMAX_PROXY_PATH || '',
     MINIMAX_PROXY_TARGET: process.env.MINIMAX_PROXY_TARGET || 'https://api.minimax.io',
-    MINIMAX_CN_PROXY_PATH: process.env.MINIMAX_CN_PROXY_PATH || '/minimax-cn',
+    MINIMAX_CN_PROXY_PATH: process.env.MINIMAX_CN_PROXY_PATH || '',
     MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
     LLM_PROXY_TIMEOUT_MS: parseInt(process.env.LLM_PROXY_TIMEOUT_MS || String(DEFAULT_LLM_PROXY_TIMEOUT_MS), 10)
   };

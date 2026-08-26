@@ -1,21 +1,14 @@
 /**
- * Wave 0 RED specs for src/lib/selection-with-comments.js : formatSelectionWithComments
+ * Specs for src/lib/selection-with-comments.js : formatSelectionWithComments
  * (Phase 05.2-R2 — splicer behavior).
  *
- * RED-state strategy: src/lib/selection-with-comments.js does not exist yet.
- * A bare top-level require would throw at file-load and Jest would report a
- * single "MODULE_NOT_FOUND" instead of 8 failing it() blocks. We wrap the
- * require in a try/catch and capture the error to a module-level `loadError`.
- * Each it() asserts `loadError` is null as its first check — so the failures
- * surface as 8 distinct RED specs (one per splicer behavior). Plan 03 lands
- * the module and turns these GREEN.
- *
- * STYLE.md "No Silent Failures": the captured error is logged once via
- * console.error with module-tagged context (see top-of-file try/catch).
+ * Covers the OOXML splicer: how comment anchors overlapping the selection are
+ * rendered as annotation envelopes — fully inside, head/tail/both truncated,
+ * nested ranges, resolved status, tracked changes, and no-comments passthrough.
  *
  * 7 OOXML fixtures inlined as JS template strings per RESEARCH.md
- * § OOXML Fixture Sketches (lines 706–786) and VALIDATION.md § Wave 0
- * Requirements — fixtures readable next to assertions, no separate .xml files.
+ * § OOXML Fixture Sketches (lines 706–786) — fixtures readable next to
+ * assertions, no separate .xml files.
  */
 
 const { JSDOM } = require('jsdom');
@@ -25,20 +18,7 @@ if (typeof globalThis.DOMParser === 'undefined') {
     globalThis.DOMParser = dom.window.DOMParser;
 }
 
-// ---------------------------------------------------------------------------
-// Module-load guard. RED until Plan 03 ships src/lib/selection-with-comments.js.
-// ---------------------------------------------------------------------------
-
-let formatSelectionWithComments;
-let loadError = null;
-try {
-      ({ formatSelectionWithComments } = require('../src/lib/selection-with-comments.js'));
-} catch (err) {
-    loadError = err;
-    // STYLE.md No Silent Failures: log once with context so RED-state output is
-    // diagnosable. Plan 03 turns this GREEN by creating the module.
-    console.error('selection-with-comments.spec.js: module not yet implemented', { err: err && err.message });
-}
+const { formatSelectionWithComments } = require('../src/lib/selection-with-comments.js');
 
 // ---------------------------------------------------------------------------
 // OOXML namespace constants (mirror src/lib/comment-extractor.js:16-17)
@@ -138,9 +118,9 @@ const FIXTURE_7_NO_COMMENTS = wrapPackage(
 );
 
 // ---------------------------------------------------------------------------
-// Annotation-token enum (STYLE.md "No Magic Strings"). Plan 03 production code
-// will export the canonical strings; for Wave 0 RED state these mirror the
-// expected vocabulary — Plan 03 syncs spec to imported export at GREEN time.
+// Annotation-token enum (STYLE.md "No Magic Strings"). The module keeps its
+// canonical strings private (only formatSelectionWithComments is exported),
+// so the spec mirrors the expected vocabulary here.
 // ---------------------------------------------------------------------------
 
 const ANNOTATION_TOKENS = Object.freeze({
@@ -188,7 +168,6 @@ function makeThread({
 
 describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     it('fully inside: single-comment fully-inside renders annotation at correct offsets', () => {
-        expect(loadError).toBeNull();
         const thread = makeThread({
             id: 'c0',
             content: 'Reviewer note',
@@ -211,7 +190,6 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     });
 
     it('head outside: start marker absent — renders truncation marker at start of annotation', () => {
-        expect(loadError).toBeNull();
         const thread = makeThread({
             id: 'c0',
             content: 'spans before selection',
@@ -226,7 +204,6 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     });
 
     it('tail outside: end marker absent — renders truncation marker at end of annotation', () => {
-        expect(loadError).toBeNull();
         const thread = makeThread({
             id: 'c0',
             content: 'spans past selection',
@@ -241,7 +218,6 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     });
 
     it('both outside: selection inside comment range — wraps entire selection in annotation envelope', () => {
-        expect(loadError).toBeNull();
         // commentRange.compareLocationWith(selectionRange) returns 'Contains'
         // when the comment range fully contains the selection (research §
         // RELATION_TO_CASE table; verified against learn.microsoft.com/word.locationrelation).
@@ -260,7 +236,6 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     });
 
     it('no comments passthrough: returns plain text identical to selection', () => {
-        expect(loadError).toBeNull();
         const result = formatSelectionWithComments(FIXTURE_7_NO_COMMENTS, []);
 
         expect(typeof result).toBe('string');
@@ -272,7 +247,6 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     });
 
     it('nested ranges: comment B inside comment A anchor renders both annotations correctly', () => {
-        expect(loadError).toBeNull();
         const outer = makeThread({
             id: 'c0',
             content: 'outer comment',
@@ -300,7 +274,6 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     });
 
     it('mixed status: resolved thread carries (resolved) marker; open thread does not', () => {
-        expect(loadError).toBeNull();
         // Plan 01 SUMMARY § Next Phase Readiness recommended tightening this
         // assertion away from a positional-distance heuristic (which couldn't
         // distinguish two co-anchored threads on a single w:id pair) toward
@@ -347,7 +320,6 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     });
 
     it('tracked changes: comment markers inside <w:ins> still anchor correctly', () => {
-        expect(loadError).toBeNull();
         const thread = makeThread({
             id: 'c0',
             content: 'comment on inserted text',

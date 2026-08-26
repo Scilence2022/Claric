@@ -364,13 +364,30 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | Manifest not generated | Ensure `.env` exists before running `npm start`; with Docker, fetch it from `https://<HOST>:<HOST_PORT>/manifest.xml` |
 | Firewall issues | Allow inbound TCP 3000 (or your `HOST_PORT`) on the server |
 | LLM connection fails in production | Check `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET` in `.env` and that the upstream is running; the container reaches the host via `host.docker.internal` |
-| Container restarts repeatedly | Check `docker logs` -- missing SSL cert files or a broken build exit with a clear message |
+| New `*_PROXY_PATH` in `.env` does not take effect after `docker compose restart` | `restart` keeps the original env-file resolution. Run `docker compose down && docker compose up -d` to re-parse `.env` (no image rebuild needed) |
+| LLM proxy routes log only `/ollama` and `/vllm` (or none) when you expected more | Provider proxy routes are **disabled by default** in production; only paths explicitly set in `.env` are wired. Add `DEEPSEEK_PROXY_PATH=/deepseek` etc. and recreate the container (`down` + `up -d`) |
+| `curl https://localhost:<PORT>` fails with SSL "wrong version number" or no response | Another local server is bound to that port (e.g. a Next.js dev server on `:3000`). Pick a free port via `HOST_PORT` in `.env` (e.g. `3001`) and re-run `up -d`. The container still listens internally on `3000` |
+| Browser/Word refuses the cert with a hostname mismatch | The `server.pem` must cover the hostname Word connects with. Regenerate with `mkcert <your-host-or-ip>` and copy to `server.pem`/`server-key.pem` (SAN must include the host) |
+| `docker compose build` fails on `npm ci` in the builder stage | Usually a transient npm registry hiccup while pulling 800+ packages. Re-run `docker compose build --no-cache` once; if it persists, check `package-lock.json` vs `package.json` consistency |
+
+### Deployment footnotes
+
+- **Editing `.env` requires a full recreate, not a restart.** Docker Compose resolves `env_file` at container creation and caches the result; `restart` reuses the cached config. Always use `docker compose down && docker compose up -d` after editing `.env`. The image is not rebuilt, only the container is recreated.
+- **`HOST_PORT` vs `PORT`.** The container always binds `PORT=3000` internally. `HOST_PORT` is the host-side port published by compose. Pick `HOST_PORT` carefully to avoid collisions with other local services (Next.js, dev servers, etc.).
+- **LLM proxy default behavior changed in 0.5.0.** All `*_PROXY_PATH` env vars now default to empty (= disabled). To re-enable a provider, set both `*_PROXY_PATH` and (if non-default) `*_PROXY_TARGET` in `.env`.
+- **API keys live client-side, not in `.env`.** Cloud provider keys (DeepSeek / GLM / Kimi / MiniMax) are entered in the add-in's Settings UI and stored in localStorage. The server-side proxy only forwards requests; it does not read or inject keys.
+- **Rebuild strategy.** If the diff is `src/**` + tests + docs only → `docker compose build` (incremental, ~seconds). If `package.json`, `package-lock.json`, `webpack.config.cjs`, or `Dockerfile` changed → `docker compose build --no-cache` (~minutes).
 
 ---
 
 ## Environment Variables
 
 ### All deployments
+
+> LLM proxy paths (`*_PROXY_PATH`) are **disabled by default in production**
+> (`scripts/docker-server.cjs`): set a path explicitly (e.g. `/ollama`) to
+> enable that provider's route. The defaults below apply to the webpack dev
+> server, where they are enabled for local development.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -380,19 +397,19 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | `SSL_CERT_FILE` | `server.pem` | Path to SSL certificate |
 | `SSL_KEY_FILE` | `server-key.pem` | Path to SSL private key |
 | `ADDIN_GUID` | *(generated)* | Stable add-in identity; auto-generated and persisted to `.manifest-guid` on first manifest generation. Pin it in Docker so container recreation keeps the identity. |
-| `OLLAMA_PROXY_PATH` | `/ollama` | Proxy path for the Ollama backend (empty disables) |
+| `OLLAMA_PROXY_PATH` | *(disabled)* / `/ollama` (dev) | Proxy path for the Ollama backend (empty disables) |
 | `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama base URL (`http://host.docker.internal:11434` in Docker) |
-| `VLLM_PROXY_PATH` | `/vllm` | Proxy path for the vLLM backend (empty disables) |
+| `VLLM_PROXY_PATH` | *(disabled)* / `/vllm` (dev) | Proxy path for the vLLM backend (empty disables) |
 | `VLLM_PROXY_TARGET` | `http://localhost:8026` | Upstream vLLM base URL (`http://host.docker.internal:8026` in Docker) |
-| `DEEPSEEK_PROXY_PATH` | `/deepseek` | Proxy path for DeepSeek (empty disables) |
+| `DEEPSEEK_PROXY_PATH` | *(disabled)* / `/deepseek` (dev) | Proxy path for DeepSeek (empty disables) |
 | `DEEPSEEK_PROXY_TARGET` | `https://api.deepseek.com` | Upstream DeepSeek API origin |
-| `GLM_PROXY_PATH` | `/glm` | Proxy path for Zhipu GLM (empty disables) |
+| `GLM_PROXY_PATH` | *(disabled)* / `/glm` (dev) | Proxy path for Zhipu GLM (empty disables) |
 | `GLM_PROXY_TARGET` | `https://open.bigmodel.cn` | Upstream Zhipu GLM API origin |
-| `KIMI_PROXY_PATH` | `/kimi` | Proxy path for Moonshot Kimi (empty disables) |
+| `KIMI_PROXY_PATH` | *(disabled)* / `/kimi` (dev) | Proxy path for Moonshot Kimi (empty disables) |
 | `KIMI_PROXY_TARGET` | `https://api.moonshot.cn` | Upstream Moonshot Kimi API origin |
-| `MINIMAX_PROXY_PATH` | `/minimax` | Proxy path for MiniMax international (empty disables) |
+| `MINIMAX_PROXY_PATH` | *(disabled)* / `/minimax` (dev) | Proxy path for MiniMax international (empty disables) |
 | `MINIMAX_PROXY_TARGET` | `https://api.minimax.io` | Upstream MiniMax API origin |
-| `MINIMAX_CN_PROXY_PATH` | `/minimax-cn` | Proxy path for MiniMax China (empty disables) |
+| `MINIMAX_CN_PROXY_PATH` | *(disabled)* / `/minimax-cn` (dev) | Proxy path for MiniMax China (empty disables) |
 | `MINIMAX_CN_PROXY_TARGET` | `https://api.minimaxi.com` | Upstream MiniMax China API origin |
 | `LLM_PROXY_TIMEOUT_MS` | `300000` | Proxy upstream timeout in ms |
 
@@ -400,7 +417,10 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEV_SERVER_HOST` | `0.0.0.0` | Host to bind webpack dev server |
+| `DEV_SERVER_HOST` | `127.0.0.1` | Host to bind webpack dev server (`0.0.0.0` exposes it to the network) |
+| `DEV_SERVER_PORT` | `3000` | Port for webpack dev server |
+| `ENABLE_DEV_ENDPOINTS` | *(off)* | Set `true` to register the dev-only E2E/coding-agent endpoints (`/log`, `/api/e2e-loop/*`, `/api/test-cases`, `/api/prompts`) — they write files and use wildcard CORS; see `scripts/dev-e2e-middlewares.cjs` |
+| `LLM_PROXY_TLS_VERIFY` | `true` | Set `false` only for a local LLM backend with a self-signed certificate |
 | `DEV_SERVER_PORT` | `3000` | Port for webpack dev server |
 | `OLLAMA_PROXY_PATH` | `/ollama` | Local proxy path for LLM requests |
 | `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama server URL |
@@ -478,7 +498,6 @@ Test suites cover:
 - `config-persistence.spec.js` — normalizeConfig validation and legacy migration
 - `selection-with-comments.spec.js` — comment anchor splicing into selection OOXML
 - `generate-manifest.spec.js` — manifest generation from template + .env
-- `panel-actions.spec.js` — legacy frozen enums
 
 ## Acknowledgments
 

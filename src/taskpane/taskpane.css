@@ -758,6 +758,13 @@ body {
 
 .send-btn.cancel-mode {
     background: var(--error-color);
+    /* Smaller rounded-square stop button (■ glyph), not the full-size circle */
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    font-size: 10px;
+    line-height: 1;
+    align-self: flex-end;
 }
 
 .model-pill {
