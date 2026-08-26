@@ -23,6 +23,10 @@ import { applyTokenMapStrategy, applySentenceDiffStrategy } from '../lib/word-di
 import { hasCjk, applyCharDiffStrategy } from '../lib/word-diff/char-diff.js';
 import { sendPrompt, sendPromptStream, stripMarkdown } from '../lib/llm-client.js';
 import { buildTableUserPrompt, parseTablePatchResponse } from '../lib/table-patch.js';
+import {
+    inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
+    validateTableCreationSpec,
+} from '../lib/table-ops.js';
 import { supportsTrackedRowOps } from '../lib/platform.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
@@ -161,8 +165,11 @@ export async function readSelectionText(deps) {
  *
  * @param {object} deps - { appState, log }
  * @returns {Promise<null | {rowCount: number, colCount: number,
- *   cells: Array<{row: number, col: number, text: string}>}>}
- *   Row/col in cells are 1-based absolute table coordinates.
+ *   bounds: {startRow: number, endRow: number, startCol: number, endCol: number},
+ *   cells: Array<{row: number, col: number, text: string}>,
+ *   values: string[][]}>}
+ *   Row/col in cells and bounds are 1-based absolute table coordinates;
+ *   values is the full-table matrix (0-based) for no-op/staleness checks.
  */
 export async function readSelectionTableRegion(deps) {
     const { log } = deps;
@@ -180,19 +187,25 @@ export async function readSelectionTableRegion(deps) {
 
         const startCell = selection.getRange(Word.RangeLocation.start).parentTableCellOrNullObject;
         const endCell = selection.getRange(Word.RangeLocation.end).parentTableCellOrNullObject;
-        startCell.load('isNullObject,rowIndex,columnIndex');
-        endCell.load('isNullObject,rowIndex,columnIndex');
-        table.load('rowCount,values');
+        // Office.js exposes the column coordinate as `cellIndex` (there is no
+        // `columnIndex` on TableCell) — the wrong property silently reads
+        // undefined and collapses the region to a single column.
+        startCell.load('isNullObject,rowIndex,cellIndex');
+        endCell.load('isNullObject,rowIndex,cellIndex');
+        table.load('rowCount,values,isUniform');
         await context.sync();
 
         if (startCell.isNullObject || endCell.isNullObject) {
             throw new Error('Could not locate the selected cells — re-select the table region.');
         }
+        if (table.isUniform === false) {
+            throw new Error('The table has merged cells; table edits are only supported on uniform (non-merged) tables.');
+        }
 
         const startRow = Math.min(startCell.rowIndex, endCell.rowIndex);
         const endRow = Math.max(startCell.rowIndex, endCell.rowIndex);
-        const startCol = Math.min(startCell.columnIndex, endCell.columnIndex);
-        const endCol = Math.max(startCell.columnIndex, endCell.columnIndex);
+        const startCol = Math.min(startCell.cellIndex, endCell.cellIndex);
+        const endCol = Math.max(startCell.cellIndex, endCell.cellIndex);
 
         const values = table.values || [];
         const colCount = values[0] ? values[0].length : 0;
@@ -202,7 +215,13 @@ export async function readSelectionTableRegion(deps) {
                 cells.push({ row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' });
             }
         }
-        region = { rowCount: table.rowCount, colCount, cells };
+        region = {
+            rowCount: table.rowCount,
+            colCount,
+            bounds: { startRow: startRow + 1, endRow: endRow + 1, startCol: startCol + 1, endCol: endCol + 1 },
+            cells,
+            values,
+        };
     });
     if (region) {
         const first = region.cells[0];
@@ -492,11 +511,29 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
         : await sendPrompt(backendConfig, promptText, log);
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
-    // Full-table grid for no-op detection and per-cell "before" text.
-    const originals = Array.from({ length: rowCount }, () => Array(colCount).fill(''));
-    for (const c of cells) originals[c.row - 1][c.col - 1] = c.text;
+    // Full-table grid for no-op detection, per-cell "before" text, and
+    // apply-time staleness checks. The extraction already loaded the whole
+    // matrix; using it directly keeps coordinates honest for cells outside
+    // the covered region too.
+    const originals = Array.isArray(tableRegion.values) && tableRegion.values.length
+        ? tableRegion.values
+        : Array.from({ length: rowCount }, () => Array(colCount).fill(''));
+    if (!tableRegion.values) {
+        for (const c of cells) originals[c.row - 1][c.col - 1] = c.text;
+    }
 
-    const patch = parseTablePatchResponse(rawResponse, { rowCount, colCount, originals });
+    // Restrict the model's patch to the selected rectangle. Structural row
+    // ops are allowed only for full-width selections: inserting/deleting a
+    // row rewrites cells the user never selected otherwise.
+    const bounds = tableRegion.bounds || {
+        startRow: 1, endRow: rowCount, startCol: 1, endCol: colCount,
+    };
+    const allowedBounds = {
+        ...bounds,
+        allowRowOps: bounds.startCol === 1 && bounds.endCol === colCount,
+    };
+
+    const patch = parseTablePatchResponse(rawResponse, { rowCount, colCount, originals, allowedBounds });
     for (const warning of patch.warnings) log(`Table patch: ${warning}`, 'warning');
 
     const tableItems = [
@@ -526,7 +563,10 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
         amendedText: null,
         commentText: null,
         model: backendConfig.model,
-        tablePatch: { rowCount, colCount, cells: patch.cells, rowOps: patch.rowOps },
+        tablePatch: {
+            rowCount, colCount, cells: patch.cells, rowOps: patch.rowOps,
+            bounds, originals,
+        },
         tableItems,
     };
 }
@@ -537,6 +577,9 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
  *
  * @param {object} deps - { appState, log }
  * @param {object} proposal - Result of prepareSelectionAmendment
+ * @returns {Promise<object|undefined>} Table patches resolve to
+ *   { cellsApplied, cellsSkipped, rowOpsApplied, warnings }; other routes
+ *   resolve undefined.
  */
 export async function applySelectionAmendment(deps, proposal) {
     const { appState, log } = deps;
@@ -545,8 +588,7 @@ export async function applySelectionAmendment(deps, proposal) {
     // Table route: per-cell tracked revisions plus row-level structure ops.
     // Table proposals never carry a comment (merged mode is skipped).
     if (proposal.tablePatch) {
-        await _applyTablePatch(deps, proposal);
-        return;
+        return _applyTablePatch(deps, proposal);
     }
 
     if (amendedText) {
@@ -640,6 +682,9 @@ export async function applySelectionAmendment(deps, proposal) {
  *
  * @param {object} deps - { appState, log }
  * @param {object} proposal - Result of prepareSelectionAmendment (table route)
+ * @returns {Promise<{cellsApplied: number, cellsSkipped: number,
+ *   rowOpsApplied: number, warnings: string[]}>} Actual application counts —
+ *   the caller settles the card honestly instead of assuming success.
  * @private
  */
 async function _applyTablePatch(deps, proposal) {
@@ -647,9 +692,12 @@ async function _applyTablePatch(deps, proposal) {
     const { tablePatch } = proposal;
     const trackChanges = !!appState.config.trackChangesEnabled;
     const rowTracking = trackChanges && supportsTrackedRowOps(appState.platform);
+    const warnings = [];
 
     if (tablePatch.rowOps.length > 0 && trackChanges && !rowTracking) {
-        log(`Row insertions/deletions cannot be tracked as revisions on this host (${appState.platform}) — applying them directly. Cell text edits are still tracked.`, 'warning');
+        const warning = `Row insertions/deletions cannot be tracked as revisions on this host (${appState.platform}) — applied directly.`;
+        warnings.push(warning);
+        log(`${warning} Cell text edits are still tracked.`, 'warning');
     }
 
     log('Applying table patch...', 'info');
@@ -660,13 +708,42 @@ async function _applyTablePatch(deps, proposal) {
     await Word.run(async (context) => {
         const selection = context.document.getSelection();
         const table = selection.parentTableOrNullObject;
-        table.load('isNullObject,rowCount');
+        table.load('isNullObject,rowCount,values,isUniform');
         await context.sync();
         if (table.isNullObject) {
             throw new Error('The selection is no longer inside the table — re-select the region and apply again.');
         }
+        if (table.isUniform === false) {
+            throw new Error('The table now has merged cells — draft a new edit on the current table.');
+        }
         if (table.rowCount !== tablePatch.rowCount) {
             throw new Error(`Table changed since this proposal was drafted (${tablePatch.rowCount} → ${table.rowCount} rows). Draft a new edit instead.`);
+        }
+
+        // Staleness guard: the patch's coordinates were bound to the table as
+        // it was at prepare time. If a touched cell (or a row referenced by a
+        // structure op) no longer holds its original text, the proposal is
+        // stale — applying it would silently overwrite the user's newer edit.
+        const currentValues = table.values || [];
+        const originals = tablePatch.originals || [];
+        const stale = [];
+        for (const cellPatch of tablePatch.cells) {
+            const before = (originals[cellPatch.row - 1] || [])[cellPatch.col - 1] || '';
+            const now = (currentValues[cellPatch.row - 1] || [])[cellPatch.col - 1];
+            if (now === undefined || now.trim() !== before.trim()) {
+                stale.push(`R${cellPatch.row}C${cellPatch.col}`);
+            }
+        }
+        for (const op of tablePatch.rowOps) {
+            const beforeRow = (originals[op.row - 1] || []).join('').trim();
+            const nowRow = (currentValues[op.row - 1] || []).join('').trim();
+            if (beforeRow !== nowRow) stale.push(`row ${op.row}`);
+        }
+        if (stale.length > 0) {
+            throw new Error(
+                `The table changed since this proposal was drafted (${stale.slice(0, 3).join(', ')}` +
+                `${stale.length > 3 ? ', …' : ''}). Draft a new edit instead.`
+            );
         }
 
         try {
@@ -720,6 +797,7 @@ async function _applyTablePatch(deps, proposal) {
 
     log(`Table patch applied: ${cellsApplied} cell(s) revised, ${rowOpsApplied} row op(s)` +
         (cellsSkipped ? `, ${cellsSkipped} cell(s) already up to date` : ''), 'success');
+    return { cellsApplied, cellsSkipped, rowOpsApplied, warnings };
 }
 
 /**
@@ -1024,6 +1102,185 @@ export async function applyDocumentAppend(deps, proposal) {
     });
     log(`Appended ${paragraphs.length} paragraph(s) to the document end.`, 'success');
     return { paragraphsAppended: paragraphs.length, chars: text.length };
+}
+
+/**
+ * Instruction wording that implies the model must invent cell content rather
+ * than just size an empty grid. Chinese verbs/nouns plus common English ones.
+ */
+const TABLE_CONTENT_HINT_RE = /填充|填写|填入|内容|数据|资料|根据|依据|基于|\b(?:fill|content|data|populate|based on)\b/i;
+
+/**
+ * Drafts a table creation proposal — the prepare half of the staged table
+ * flow (see lib/table-ops.js for the creation protocol).
+ *
+ * Two paths:
+ * - Explicit dimensions with no content request ("插入一个三行三列的表格")
+ *   resolve deterministically to an empty grid — no model round-trip, so the
+ *   result cannot be derailed by a hallucinating model.
+ * - Anything else (content hints like 填充/数据, or no dimensions at all) goes
+ *   to the model with the strict JSON contract. When dimensions were inferred,
+ *   they are restated as a hard constraint and the model's output is checked
+ *   against them; a mismatch rejects the whole proposal.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} args
+ * @param {string} args.instruction - The user's table creation request
+ * @param {function} [args.onToken] - Called with each streamed content token
+ * @param {function} [args.onReasoning] - Called with each streamed thinking token
+ * @returns {Promise<{ instruction: string, spec: object, model: string|null,
+ *   warnings: string[] }>} `model` is null on the deterministic empty-table path
+ */
+export async function prepareTableProposal(deps, { instruction, onToken, onReasoning } = {}) {
+    const { appState, log } = deps;
+    const text = String(instruction || '').trim();
+    if (!text) {
+        throw new Error('No table instruction given.');
+    }
+
+    const inferred = inferTableCreationSpec(text);
+    if (inferred && !TABLE_CONTENT_HINT_RE.test(text)) {
+        const rowCount = inferred.rows.length;
+        const columnCount = inferred.rows[0].length;
+        log(`Table request has explicit dimensions (${rowCount}×${columnCount}) — drafting an empty table without the model.`, 'info');
+        return { instruction: text, spec: inferred, model: null, warnings: [] };
+    }
+
+    // Content-bearing or dimensionless request: the model fills the grid.
+    // Selection text is the preferred context; fall back to the document.
+    let scopeText = (await readSelectionSnippet()).trim();
+    if (!scopeText) {
+        const richness = (appState.config.docExtraction || {}).richness || 'structured';
+        log('Extracting document text for context...', 'info');
+        scopeText = await extractDocumentStructured({ richness });
+    }
+
+    let promptInstruction = text;
+    let expectedDimensions = null;
+    if (inferred) {
+        expectedDimensions = { rowCount: inferred.rows.length, columnCount: inferred.rows[0].length };
+        promptInstruction =
+            `The table MUST have exactly ${expectedDimensions.rowCount} rows and ` +
+            `${expectedDimensions.columnCount} columns. ${text}`;
+    }
+
+    const prompt = buildTableCreationPrompt(promptInstruction, scopeText);
+    const backendConfig = getActiveBackendConfig(appState);
+    log(`Generating table content [${backendConfig.model}]...`, 'info');
+    const rawResponse = (onToken || onReasoning)
+        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log)
+        : await sendPrompt(backendConfig, prompt, log);
+
+    const parsed = parseTableCreationResponse(rawResponse);
+    if (!parsed.spec) {
+        const first = parsed.errors[0];
+        throw new Error(
+            `表格内容生成失败（${first ? first.message : '模型未返回有效的表格 JSON'}）。` +
+            '建议：在指令中明确行数和列数（如"三行三列"），或简化单元格内容后重试。'
+        );
+    }
+    for (const warning of parsed.warnings) {
+        log(`Table creation: ${warning.message}`, 'warning');
+    }
+
+    if (expectedDimensions) {
+        const { rowCount, columnCount } = expectedDimensions;
+        const actual = { rowCount: parsed.spec.rows.length, columnCount: parsed.spec.rows[0].length };
+        if (actual.rowCount !== rowCount || actual.columnCount !== columnCount) {
+            throw new Error(
+                `模型返回了 ${actual.rowCount}×${actual.columnCount} 的表格，与要求的 ${rowCount}×${columnCount} 不符。` +
+                '请重试，或改用不要求生成内容的建表指令（如"插入一个三行三列的表格"）。'
+            );
+        }
+    }
+
+    return {
+        instruction: text,
+        spec: parsed.spec,
+        model: backendConfig.model,
+        warnings: parsed.warnings.map((w) => w.message),
+    };
+}
+
+/**
+ * Applies a prepared table creation proposal: inserts one native Word table at
+ * the spec's position (document start/end, or before/after the selection).
+ *
+ * Tracking: a table insertion is recorded as a revision only on hosts with
+ * structural-revision support (see lib/platform.js). Elsewhere the insert runs
+ * untracked with a warning rather than risking a half-tracked table. Tracking
+ * state is always restored to off afterwards.
+ *
+ * @param {object} deps - { appState, log }
+ * @param {object} proposal - Result of prepareTableProposal
+ * @returns {Promise<{ inserted: boolean, rowCount: number, columnCount: number,
+ *   tracked: boolean, warnings: string[] }>}
+ */
+export async function applyTableProposal(deps, proposal) {
+    const { appState, log } = deps;
+    // Re-validate at apply time: the proposal may have round-tripped through
+    // session persistence, so its spec is treated as untrusted input again.
+    const validation = validateTableCreationSpec(proposal && proposal.spec);
+    if (!validation.spec) {
+        const first = validation.errors[0];
+        throw new Error(`表格提案无效，无法应用（${first ? first.message : 'unknown error'}）。请重新起草表格。`);
+    }
+    const spec = validation.spec;
+    const rowCount = spec.rows.length;
+    const columnCount = spec.rows[0].length;
+    const warnings = validation.warnings.map((w) => w.message);
+
+    const trackChanges = !!appState.config.trackChangesEnabled;
+    const canTrackInsert = trackChanges && supportsTrackedRowOps(appState.platform);
+    if (trackChanges && !canTrackInsert) {
+        const warning = `Table insertion cannot be tracked as a revision on this host (${appState.platform}) — applied directly.`;
+        warnings.push(warning);
+        log(warning, 'warning');
+    }
+
+    await Word.run(async (context) => {
+        const trackingApiAvailable = !!Word.ChangeTrackingMode;
+        if (trackingApiAvailable) {
+            context.document.changeTrackingMode = canTrackInsert
+                ? Word.ChangeTrackingMode.trackAll
+                : Word.ChangeTrackingMode.off;
+        } else if (trackChanges) {
+            warnings.push('Change tracking is unavailable on this host — the table was inserted directly.');
+        }
+
+        try {
+            let table;
+            if (spec.position === 'start' || spec.position === 'end') {
+                table = context.document.body.insertTable(
+                    rowCount, columnCount, Word.InsertLocation[spec.position], spec.rows
+                );
+            } else {
+                // before/after anchor on the current selection.
+                table = context.document.getSelection().insertTable(
+                    rowCount, columnCount, Word.InsertLocation[spec.position], spec.rows
+                );
+            }
+            if (Word.BuiltInStyleName && Word.BuiltInStyleName.tableGrid !== undefined) {
+                table.styleBuiltIn = Word.BuiltInStyleName.tableGrid;
+            }
+            if (spec.headerRowCount > 0) {
+                table.headerRowCount = spec.headerRowCount;
+            }
+            if (spec.autoFit && typeof table.autoFitWindow === 'function') {
+                table.autoFitWindow();
+            }
+            await context.sync();
+        } finally {
+            // Later turns must not inherit tracking state.
+            if (trackingApiAvailable) {
+                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                await context.sync();
+            }
+        }
+    });
+
+    log(`Inserted a ${rowCount}×${columnCount} table (${spec.position}).`, 'success');
+    return { inserted: true, rowCount, columnCount, tracked: canTrackInsert, warnings };
 }
 
 /**

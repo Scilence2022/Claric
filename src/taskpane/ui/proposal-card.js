@@ -16,6 +16,163 @@
 
 import { buildTextDiffElement } from './diff-view.js';
 
+const TABLE_PREVIEW_MAX_ROWS = 30;
+const TABLE_PREVIEW_MAX_COLUMNS = 20;
+const TABLE_PREVIEW_MAX_CELL_CHARS = 400;
+const TABLE_PREVIEW_MAX_META_CHARS = 80;
+
+function _isPlainObject(value) {
+    if (!value || typeof value !== 'object') return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+
+function _boundedText(value, maxLength) {
+    if (typeof value !== 'string') return null;
+    return value.slice(0, maxLength);
+}
+
+/**
+ * Normalizes the serializable table-preview contract for both live and saved
+ * cards. The result contains no references to caller-owned rows or cells.
+ *
+ * @param {object} preview
+ * @returns {object|null}
+ */
+export function sanitizeTablePreview(preview) {
+    if (!_isPlainObject(preview) || !Array.isArray(preview.rows)) return null;
+
+    let wasTruncated = preview.truncated === true;
+    const sourceRows = preview.rows;
+    if (sourceRows.length > TABLE_PREVIEW_MAX_ROWS) wasTruncated = true;
+
+    const rows = [];
+    for (let rowIndex = 0; rowIndex < Math.min(sourceRows.length, TABLE_PREVIEW_MAX_ROWS); rowIndex++) {
+        const sourceRow = sourceRows[rowIndex];
+        if (!Array.isArray(sourceRow)) {
+            wasTruncated = true;
+            rows.push([]);
+            continue;
+        }
+        if (sourceRow.length > TABLE_PREVIEW_MAX_COLUMNS) wasTruncated = true;
+        const row = [];
+        for (let colIndex = 0; colIndex < Math.min(sourceRow.length, TABLE_PREVIEW_MAX_COLUMNS); colIndex++) {
+            const cell = sourceRow[colIndex];
+            if (cell === null || cell === undefined) {
+                row.push('');
+            } else if (typeof cell === 'string') {
+                if (cell.length > TABLE_PREVIEW_MAX_CELL_CHARS) wasTruncated = true;
+                row.push(cell.slice(0, TABLE_PREVIEW_MAX_CELL_CHARS));
+            } else {
+                wasTruncated = true;
+                row.push(typeof cell === 'number' || typeof cell === 'boolean' ? String(cell) : '');
+            }
+        }
+        rows.push(row);
+    }
+
+    const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+    for (const row of rows) {
+        while (row.length < columnCount) row.push('');
+    }
+
+    let headerRowCount = 0;
+    if (typeof preview.headerRowCount === 'number' && Number.isFinite(preview.headerRowCount)) {
+        headerRowCount = Math.floor(preview.headerRowCount);
+        if (headerRowCount < 0 || headerRowCount !== preview.headerRowCount) wasTruncated = true;
+        headerRowCount = Math.max(0, headerRowCount);
+    } else if (preview.headerRowCount !== undefined && preview.headerRowCount !== null) {
+        wasTruncated = true;
+    }
+    if (headerRowCount > rows.length) {
+        headerRowCount = rows.length;
+        wasTruncated = true;
+    }
+
+    const style = _boundedText(preview.style, TABLE_PREVIEW_MAX_META_CHARS);
+    const position = _boundedText(preview.position, TABLE_PREVIEW_MAX_META_CHARS);
+    if (preview.style !== undefined && style === null) wasTruncated = true;
+    if (preview.position !== undefined && position === null) wasTruncated = true;
+    if (typeof preview.style === 'string' && preview.style.length > TABLE_PREVIEW_MAX_META_CHARS) wasTruncated = true;
+    if (typeof preview.position === 'string' && preview.position.length > TABLE_PREVIEW_MAX_META_CHARS) wasTruncated = true;
+
+    const normalized = { rows, headerRowCount };
+    if (style !== null) normalized.style = style;
+    if (position !== null) normalized.position = position;
+    if (wasTruncated) normalized.truncated = true;
+    return normalized;
+}
+
+/**
+ * Builds a compact, read-only table preview using DOM nodes only.
+ *
+ * @param {object} preview
+ * @returns {HTMLElement|null}
+ */
+export function renderTablePreview(preview) {
+    const normalized = sanitizeTablePreview(preview);
+    if (!normalized) return null;
+
+    const rowCount = normalized.rows.length;
+    const columnCount = normalized.rows.reduce((max, row) => Math.max(max, row.length), 0);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'proposal-card-table-preview';
+
+    const metadata = document.createElement('div');
+    metadata.className = 'proposal-card-table-meta';
+    const metadataParts = [
+        `Dimensions: ${rowCount} × ${columnCount} (rows × columns)`,
+        normalized.headerRowCount
+            ? `Header: ${normalized.headerRowCount} ${normalized.headerRowCount === 1 ? 'row' : 'rows'}`
+            : 'Header: none',
+    ];
+    if (normalized.style) metadataParts.push(`Style: ${normalized.style}`);
+    if (normalized.position) metadataParts.push(`Position: ${normalized.position}`);
+    if (normalized.truncated) metadataParts.push('Preview truncated');
+    metadata.textContent = metadataParts.join(' · ');
+    wrapper.appendChild(metadata);
+
+    const scroll = document.createElement('div');
+    scroll.className = 'proposal-card-table-scroll';
+    scroll.setAttribute('role', 'region');
+    scroll.setAttribute('aria-label', 'Table proposal preview');
+    scroll.setAttribute('tabindex', '0');
+
+    const table = document.createElement('table');
+    table.className = 'proposal-card-table';
+    const caption = document.createElement('caption');
+    caption.className = 'proposal-card-table-caption';
+    caption.textContent = 'Table proposal preview';
+    table.appendChild(caption);
+
+    const thead = document.createElement('thead');
+    const tbody = document.createElement('tbody');
+    normalized.rows.forEach((row, rowIndex) => {
+        const tr = document.createElement('tr');
+        const cellTag = rowIndex < normalized.headerRowCount ? 'th' : 'td';
+        row.forEach((cell) => {
+            const cellEl = document.createElement(cellTag);
+            cellEl.textContent = cell;
+            if (cellTag === 'th') cellEl.setAttribute('scope', 'col');
+            if (!cell) cellEl.setAttribute('aria-label', 'Empty cell');
+            tr.appendChild(cellEl);
+        });
+        (rowIndex < normalized.headerRowCount ? thead : tbody).appendChild(tr);
+    });
+    if (thead.childElementCount) table.appendChild(thead);
+    if (tbody.childElementCount) table.appendChild(tbody);
+    scroll.appendChild(table);
+    wrapper.appendChild(scroll);
+
+    if (rowCount === 0 || columnCount === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'proposal-card-table-empty';
+        empty.textContent = 'No table cells in preview.';
+        wrapper.appendChild(empty);
+    }
+    return wrapper;
+}
+
 /**
  * Creates a proposal card.
  *
@@ -27,6 +184,9 @@ import { buildTextDiffElement } from './diff-view.js';
  *   (for non-text proposals such as formatting ops)
  * @param {string} [args.previewSrc] - Optional image data-URL preview shown
  *   under the heading (illustration proposals)
+ * @param {object} [args.tablePreview] - Optional read-only table preview:
+ *   { rows: string[][], headerRowCount?: number, style?: string,
+ *     position?: string, truncated?: boolean }
  * @param {Array<object>} [args.items] - Optional change list. Each item:
  *   { id: string|number, label: string, before?: string, after?: string,
  *     searchText?: string }. before+after render an inline diff; searchText
@@ -39,7 +199,7 @@ import { buildTextDiffElement } from './diff-view.js';
  * @param {function()} [args.onReject] - Reject callback
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, items, onLocate, comment, onApply, onReject }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, tablePreview, items, onLocate, comment, onApply, onReject }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -62,6 +222,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         img.src = previewSrc;
         el.appendChild(img);
     }
+
+    const tablePreviewEl = renderTablePreview(tablePreview);
+    if (tablePreviewEl) el.appendChild(tablePreviewEl);
 
     if (comment) {
         const commentEl = document.createElement('div');
@@ -164,12 +327,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         await onApply(selectedIds());
     });
 
-    rejectBtn.addEventListener('click', () => {
-        settle('Rejected — no changes were made.', 'proposal-rejected');
-        if (onReject) onReject();
-    });
-
-    return {
+    const api = {
         el,
         /** Terminal state after a successful apply. */
         markApplied() {
@@ -198,4 +356,14 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             el.classList.add('proposal-error');
         },
     };
+
+    // Reject must go through the public markRejected(): chat-view wraps that
+    // method to sync the proposal's history metadata; calling settle()
+    // directly would leave saved sessions stuck at "pending".
+    rejectBtn.addEventListener('click', () => {
+        api.markRejected();
+        if (onReject) onReject();
+    });
+
+    return api;
 }

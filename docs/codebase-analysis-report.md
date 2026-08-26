@@ -4,6 +4,14 @@
 **Scope:** Full-repository review of the Claric Microsoft Word add-in
 **Status:** Analysis complete (static review). Verification commands (lint/test/build/audit) could not be executed in this environment — see [§2 Methodology](#2-methodology-and-caveats).
 
+> **Historical snapshot.** The P0–P3 items below were implemented after this
+> report was written (see PRs #42/#43 and the table-creation feature). Where
+> the report and the current tree disagree — e.g. `diff-match-patch` is now
+> vendored under `src/lib/vendor/`, the dev/test endpoints live in
+> `scripts/dev-e2e-middlewares.cjs`, and the rename to "Claric" is complete —
+> the tree wins. The report is kept as the analysis record, not as a living
+> document.
+
 ---
 
 ## 1. Executive Summary

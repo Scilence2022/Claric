@@ -28,6 +28,15 @@ export const ROW_OP = Object.freeze({
     INSERT_BEFORE: 'insertBefore',
 });
 
+/** Hard limits for untrusted model output accepted by the patch parser. */
+export const TABLE_PATCH_LIMITS = Object.freeze({
+    MAX_RESPONSE_CHARS: 256 * 1024,
+    MAX_CELL_ENTRIES: 512,
+    MAX_ROW_OPS: 128,
+    MAX_CELL_TEXT_CHARS: 16 * 1024,
+    MAX_TOTAL_TEXT_CHARS: 128 * 1024,
+});
+
 /**
  * Formats covered cells as the coordinate listing embedded in the prompt.
  * One line per cell: `[R{row}C{col}] {text}` (1-based absolute coordinates).
@@ -71,18 +80,22 @@ CRITICAL OUTPUT RULES (table mode):
  * Parses and validates the LLM's table-patch JSON.
  *
  * Lenient about transport noise (markdown fences, trailing commas) but strict
- * about semantics: out-of-bounds coordinates and malformed ops are dropped
- * with warnings rather than applied. Cell entries whose text matches the
- * current cell (ignoring surrounding whitespace) are dropped as no-ops so
- * they cannot create meaningless whitespace-only revisions.
+ * about semantics: out-of-scope coordinates, malformed operations, conflicts,
+ * and content beyond the protocol limits are dropped with explicit warnings.
+ * Cell entries whose text matches the current cell (ignoring surrounding
+ * whitespace) are dropped as no-ops.
  *
  * @param {string} raw - Raw LLM response
- * @param {object} shape
- * @param {number} shape.rowCount - Total table rows (bounds for row coords)
- * @param {number} shape.colCount - Total table columns (bounds for col coords
- *   and insert-values length)
+ * @param {object} [shape]
+ * @param {number} [shape.rowCount] - Total table rows (bounds for row coords);
+ *   omit to reject the patch as undimensioned
+ * @param {number} [shape.colCount] - Total table columns (bounds for col coords
+ *   and insert-values length); omit to reject the patch as undimensioned
  * @param {string[][]} [shape.originals] - Current cell texts (0-based [r][c])
  *   for no-op detection; omit to keep every parsed cell entry
+ * @param {{startRow: number, endRow: number, startCol: number, endCol: number,
+ *   allowRowOps?: boolean}} [shape.allowedBounds] - Optional selection scope.
+ *   Structural changes additionally require allowRowOps=true and full width.
  * @returns {{cells: Array<{row: number, col: number, text: string}>,
  *   rowOps: Array<{op: string, row: number, values?: string[]}>,
  *   warnings: string[]}}
@@ -90,17 +103,41 @@ CRITICAL OUTPUT RULES (table mode):
  *   rowOps are pre-sorted into application order via planRowOpOrder.
  * @throws {Error} When no parseable JSON object is present
  */
-// @ts-expect-error - the `= {}` default is a defensive fallback; the only caller
-// (word-actions.js) always passes the full shape. Removing it would change the
-// graceful-degradation behavior for missing bounds.
-export function parseTablePatchResponse(raw, { rowCount, colCount, originals } = {}) {
+export function parseTablePatchResponse(raw, shape = {}) {
     const warnings = [];
-    const parsed = _extractJson(raw);
+    const rawText = String(raw || '');
+    if (rawText.length > TABLE_PATCH_LIMITS.MAX_RESPONSE_CHARS) {
+        warnings.push(`Table patch response exceeds the ${TABLE_PATCH_LIMITS.MAX_RESPONSE_CHARS}-character limit (got ${rawText.length}) — entire patch ignored`);
+        return { cells: [], rowOps: [], warnings };
+    }
 
-    const cells = _parseCells(parsed.cells, { rowCount, colCount, originals, warnings });
-    const rowOps = planRowOpOrder(_parseRowOps(parsed.rowOps, { rowCount, colCount, warnings }));
+    const parsed = _extractJson(rawText);
+    if (Object.prototype.hasOwnProperty.call(parsed, 'colOps')) {
+        warnings.push('Unsupported "colOps" field — ignored');
+    }
 
-    return { cells, rowOps, warnings };
+    const rowCount = _asInt(shape && shape.rowCount);
+    const colCount = _asInt(shape && shape.colCount);
+    if (!rowCount || rowCount < 1 || !colCount || colCount < 1) {
+        warnings.push('Invalid table dimensions — entire patch ignored');
+        return { cells: [], rowOps: [], warnings };
+    }
+
+    const boundsResult = _normalizeAllowedBounds(shape && shape.allowedBounds, rowCount, colCount, warnings);
+    if (!boundsResult.valid) {
+        return { cells: [], rowOps: [], warnings };
+    }
+
+    const originals = shape && shape.originals;
+    const cells = _parseCells(parsed.cells, {
+        rowCount, colCount, originals, allowedBounds: boundsResult.bounds, warnings,
+    });
+    const rowOps = planRowOpOrder(_parseRowOps(parsed.rowOps, {
+        rowCount, colCount, allowedBounds: boundsResult.bounds, warnings,
+    }));
+    const limited = _applyTotalTextLimit(cells, rowOps, warnings);
+
+    return { cells: limited.cells, rowOps: limited.rowOps, warnings };
 }
 
 /**
@@ -148,14 +185,49 @@ function _extractJson(raw) {
 }
 
 /** @private */
-function _parseCells(rawCells, { rowCount, colCount, originals, warnings }) {
+function _normalizeAllowedBounds(rawBounds, rowCount, colCount, warnings) {
+    if (rawBounds === undefined) return { valid: true, bounds: null };
+    if (!rawBounds || typeof rawBounds !== 'object' || Array.isArray(rawBounds)) {
+        warnings.push('Invalid "allowedBounds" — entire patch ignored');
+        return { valid: false, bounds: null };
+    }
+
+    const startRow = _asInt(rawBounds.startRow);
+    const endRow = _asInt(rawBounds.endRow);
+    const startCol = _asInt(rawBounds.startCol);
+    const endCol = _asInt(rawBounds.endCol);
+    if (!startRow || !endRow || !startCol || !endCol
+        || startRow < 1 || endRow > rowCount || startRow > endRow
+        || startCol < 1 || endCol > colCount || startCol > endCol) {
+        warnings.push('Invalid "allowedBounds" coordinates — entire patch ignored');
+        return { valid: false, bounds: null };
+    }
+
+    return {
+        valid: true,
+        bounds: {
+            startRow, endRow, startCol, endCol,
+            allowRowOps: rawBounds.allowRowOps === true,
+        },
+    };
+}
+
+/** @private */
+function _parseCells(rawCells, { rowCount, colCount, originals, allowedBounds, warnings }) {
     if (rawCells === undefined || rawCells === null) return [];
     if (!Array.isArray(rawCells)) {
         warnings.push('"cells" is not an array — ignored');
         return [];
     }
+    if (rawCells.length > TABLE_PATCH_LIMITS.MAX_CELL_ENTRIES) {
+        warnings.push(`"cells" contains ${rawCells.length} entries; limit is ${TABLE_PATCH_LIMITS.MAX_CELL_ENTRIES} — all cell entries ignored`);
+        return [];
+    }
 
     const byKey = new Map();
+    const seenTextByKey = new Map();
+    const conflictedKeys = new Set();
+    const duplicateWarnings = new Set();
     for (const entry of rawCells) {
         const row = _asInt(entry && entry.row);
         const col = _asInt(entry && entry.col);
@@ -163,36 +235,75 @@ function _parseCells(rawCells, { rowCount, colCount, originals, warnings }) {
             warnings.push(`Cell coordinate out of bounds (row=${entry && entry.row}, col=${entry && entry.col}) — dropped`);
             continue;
         }
-        const text = _asText(entry.text);
+        if (allowedBounds && (row < allowedBounds.startRow || row > allowedBounds.endRow
+            || col < allowedBounds.startCol || col > allowedBounds.endCol)) {
+            warnings.push(`Cell R${row}C${col} is outside allowedBounds — dropped`);
+            continue;
+        }
+
+        const text = _asText(entry && entry.text);
         if (text === null) {
             warnings.push(`Cell R${row}C${col} has no usable "text" — dropped`);
             continue;
         }
+
         const key = `${row},${col}`;
-        if (byKey.has(key)) {
-            warnings.push(`Duplicate entry for R${row}C${col} — last one wins`);
+        if (conflictedKeys.has(key)) continue;
+        if (seenTextByKey.has(key)) {
+            if (seenTextByKey.get(key) !== text) {
+                byKey.delete(key);
+                conflictedKeys.add(key);
+                warnings.push(`Conflicting duplicate cell entries for R${row}C${col} — all dropped`);
+            } else if (!duplicateWarnings.has(key)) {
+                duplicateWarnings.add(key);
+                warnings.push(`Duplicate identical cell entry for R${row}C${col} — coalesced`);
+            }
+            continue;
+        }
+        seenTextByKey.set(key, text);
+
+        if (text.length > TABLE_PATCH_LIMITS.MAX_CELL_TEXT_CHARS) {
+            warnings.push(`Cell R${row}C${col} text exceeds the ${TABLE_PATCH_LIMITS.MAX_CELL_TEXT_CHARS}-character per-cell limit — dropped`);
+            continue;
         }
         byKey.set(key, { row, col, text });
     }
 
-    const cells = [...byKey.values()].sort((a, b) => (a.row - b.row) || (a.col - b.col));
-
-    if (!originals) return cells;
-    return cells.filter((c) => {
-        const original = (originals[c.row - 1] && originals[c.row - 1][c.col - 1]) || '';
-        return original.trim() !== c.text.trim();
-    });
+    let cells = [...byKey.values()].sort((a, b) => (a.row - b.row) || (a.col - b.col));
+    if (Array.isArray(originals)) {
+        cells = cells.filter((cell) => {
+            const sourceRow = originals[cell.row - 1];
+            const original = _asText(Array.isArray(sourceRow) ? sourceRow[cell.col - 1] : '') ?? '';
+            return original.trim() !== cell.text.trim();
+        });
+    }
+    return cells;
 }
 
 /** @private */
-function _parseRowOps(rawOps, { rowCount, colCount, warnings }) {
+function _parseRowOps(rawOps, { rowCount, colCount, allowedBounds, warnings }) {
     if (rawOps === undefined || rawOps === null) return [];
     if (!Array.isArray(rawOps)) {
         warnings.push('"rowOps" is not an array — ignored');
         return [];
     }
+    if (rawOps.length > TABLE_PATCH_LIMITS.MAX_ROW_OPS) {
+        warnings.push(`"rowOps" contains ${rawOps.length} entries; limit is ${TABLE_PATCH_LIMITS.MAX_ROW_OPS} — all row operations ignored`);
+        return [];
+    }
+    if (rawOps.length === 0) return [];
+    if (allowedBounds && !allowedBounds.allowRowOps) {
+        warnings.push('Row operations are not allowed by allowedBounds — all rowOps ignored');
+        return [];
+    }
+    if (allowedBounds && (allowedBounds.startCol !== 1 || allowedBounds.endCol !== colCount)) {
+        warnings.push('Row operations require a full-width allowedBounds selection — all rowOps ignored');
+        return [];
+    }
 
-    const ops = [];
+    const bySlot = new Map();
+    const conflictedSlots = new Set();
+    const duplicateWarnings = new Set();
     const validOps = [ROW_OP.DELETE, ROW_OP.INSERT_AFTER, ROW_OP.INSERT_BEFORE];
     for (const entry of rawOps) {
         const op = entry && entry.op;
@@ -205,29 +316,106 @@ function _parseRowOps(rawOps, { rowCount, colCount, warnings }) {
             warnings.push(`Row op "${op}" has out-of-bounds row=${entry && entry.row} — dropped`);
             continue;
         }
-        if (op === ROW_OP.DELETE) {
-            ops.push({ op, row });
+        if (allowedBounds && (row < allowedBounds.startRow || row > allowedBounds.endRow)) {
+            warnings.push(`Row op "${op}" at row ${row} is outside allowedBounds — dropped`);
             continue;
         }
-        const values = _asRowValues(entry.values, colCount, row, warnings);
-        if (values === null) continue;
-        ops.push({ op, row, values });
+
+        let candidate;
+        if (op === ROW_OP.DELETE) {
+            candidate = { op, row };
+        } else {
+            const values = _asRowValues(entry && entry.values, colCount, op, row, warnings);
+            if (values === null) continue;
+            candidate = { op, row, values };
+        }
+
+        const slot = `${op}:${row}`;
+        if (conflictedSlots.has(slot)) continue;
+        const existing = bySlot.get(slot);
+        if (!existing) {
+            bySlot.set(slot, candidate);
+        } else if (_sameRowOp(existing, candidate)) {
+            if (!duplicateWarnings.has(slot)) {
+                duplicateWarnings.add(slot);
+                warnings.push(`Duplicate identical row op "${op}" at row ${row} — coalesced`);
+            }
+        } else {
+            bySlot.delete(slot);
+            conflictedSlots.add(slot);
+            warnings.push(`Conflicting duplicate row op "${op}" at row ${row} — all variants dropped`);
+        }
+    }
+
+    const ops = [...bySlot.values()];
+    const deletedRows = new Set(ops.filter((op) => op.op === ROW_OP.DELETE).map((op) => op.row));
+    if (deletedRows.size === rowCount) {
+        warnings.push('Row operations attempt to delete all existing rows — all rowOps ignored');
+        return [];
     }
     return ops;
 }
 
 /** @private */
-function _asRowValues(rawValues, colCount, row, warnings) {
+function _asRowValues(rawValues, colCount, op, row, warnings) {
     if (!Array.isArray(rawValues)) {
-        warnings.push(`Row op at row ${row} has no "values" array — dropped`);
+        warnings.push(`Row op "${op}" at row ${row} has no "values" array — dropped`);
         return null;
     }
-    const values = rawValues.slice(0, colCount).map((v) => _asText(v) ?? '');
-    if (rawValues.length > colCount) {
-        warnings.push(`Row op at row ${row} has ${rawValues.length} values; table has ${colCount} columns — truncated`);
+    if (rawValues.length !== colCount) {
+        warnings.push(`Row op "${op}" at row ${row} has ${rawValues.length} values; exactly ${colCount} required — dropped`);
+        return null;
     }
-    while (values.length < colCount) values.push('');
+
+    const values = [];
+    for (let index = 0; index < rawValues.length; index++) {
+        const text = _asText(rawValues[index]);
+        if (text === null) {
+            warnings.push(`Row op "${op}" at row ${row} value ${index + 1} has no usable text — dropped`);
+            return null;
+        }
+        if (text.length > TABLE_PATCH_LIMITS.MAX_CELL_TEXT_CHARS) {
+            warnings.push(`Row op "${op}" at row ${row} value ${index + 1} exceeds the ${TABLE_PATCH_LIMITS.MAX_CELL_TEXT_CHARS}-character per-cell limit — dropped`);
+            return null;
+        }
+        values.push(text);
+    }
     return values;
+}
+
+/** @private */
+function _sameRowOp(a, b) {
+    if (a.op !== b.op || a.row !== b.row) return false;
+    if (a.op === ROW_OP.DELETE) return true;
+    return a.values.length === b.values.length && a.values.every((value, index) => value === b.values[index]);
+}
+
+/** @private */
+function _applyTotalTextLimit(cells, rowOps, warnings) {
+    let total = 0;
+    const keptCells = [];
+    for (const cell of cells) {
+        if (total + cell.text.length > TABLE_PATCH_LIMITS.MAX_TOTAL_TEXT_CHARS) {
+            warnings.push(`Cell R${cell.row}C${cell.col} would exceed the ${TABLE_PATCH_LIMITS.MAX_TOTAL_TEXT_CHARS}-character total text limit — dropped`);
+            continue;
+        }
+        total += cell.text.length;
+        keptCells.push(cell);
+    }
+
+    const keptRowOps = [];
+    for (const op of rowOps) {
+        const textLength = op.op === ROW_OP.DELETE
+            ? 0
+            : op.values.reduce((sum, value) => sum + value.length, 0);
+        if (total + textLength > TABLE_PATCH_LIMITS.MAX_TOTAL_TEXT_CHARS) {
+            warnings.push(`Row op "${op.op}" at row ${op.row} would exceed the ${TABLE_PATCH_LIMITS.MAX_TOTAL_TEXT_CHARS}-character total text limit — dropped`);
+            continue;
+        }
+        total += textLength;
+        keptRowOps.push(op);
+    }
+    return { cells: keptCells, rowOps: keptRowOps };
 }
 
 /** @private */

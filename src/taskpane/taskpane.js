@@ -107,6 +107,13 @@ function initialize() {
         onTurnCommitted: persistCurrentSession,
     });
 
+    // Proposal cards settle after their turn has already been finalized
+    // (Apply/Reject clicks), so late state changes must re-persist the
+    // session or history would keep them at "pending" forever.
+    chatView.setProposalStateChangeHandler(() => {
+        persistCurrentSession(chatView.getCurrentSession());
+    });
+
     // Settings slide-over (provider settings + prompt management)
     initSettings({ onConfigChanged: updateModelPill });
 
@@ -155,9 +162,15 @@ function initialize() {
     // comment-category turns report the requirement instead of failing).
     if (typeof Office !== 'undefined' && Office.context && Office.context.requirements) {
         appState.supportsComments = Office.context.requirements.isSetSupported('WordApi', '1.4');
+        // WordApi 1.3 covers table creation (Body/Range.insertTable, table
+        // style/headerRowCount); table turns degrade gracefully without it.
+        appState.supportsTables = Office.context.requirements.isSetSupported('WordApi', '1.3');
     }
     if (!appState.supportsComments) {
         addLog('Comment features unavailable (requires Word API 1.4)', 'info');
+    }
+    if (!appState.supportsTables) {
+        addLog('Table creation unavailable (requires Word API 1.3)', 'info');
     }
 
     // Detect the host platform (PC/Mac/OfficeOnline/...) — table row-level

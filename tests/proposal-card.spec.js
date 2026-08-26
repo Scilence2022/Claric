@@ -7,7 +7,7 @@
  * only the checked ids.
  */
 
-const { createProposalCard } = require('../src/taskpane/ui/proposal-card.js');
+const { createProposalCard, renderTablePreview, sanitizeTablePreview } = require('../src/taskpane/ui/proposal-card.js');
 
 function makeItems() {
   return [
@@ -133,5 +133,72 @@ describe('createProposalCard', () => {
     expect(status.style.display).not.toBe('none');
     expect(card.el.querySelector('.btn-primary').disabled).toBe(true);
     expect(card.el.querySelector('.btn-secondary').disabled).toBe(true);
+  });
+
+  test('reject click settles through the public markRejected API', () => {
+    const card = makeCard();
+    const spy = jest.spyOn(card, 'markRejected');
+    card.el.querySelector('.btn-secondary').click();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(card.el.classList.contains('proposal-rejected')).toBe(true);
+    expect(card.el.querySelector('.proposal-card-status').textContent)
+      .toBe('Rejected — no changes were made.');
+  });
+});
+
+describe('table preview', () => {
+  const preview = {
+    rows: [['Name', 'Value'], ['Alpha', '1']],
+    headerRowCount: 1,
+    style: 'tableGrid',
+    position: 'end',
+  };
+
+  test('createProposalCard renders a read-only matrix with header semantics', () => {
+    const card = makeCard({ tablePreview: preview });
+    const table = card.el.querySelector('.proposal-card-table');
+    expect(table).not.toBeNull();
+    expect(table.querySelectorAll('thead th')).toHaveLength(2);
+    expect(table.querySelectorAll('tbody td')).toHaveLength(2);
+    expect(table.querySelector('thead th').getAttribute('scope')).toBe('col');
+    expect(card.el.querySelector('.proposal-card-table-meta').textContent)
+      .toContain('Dimensions: 2 × 2');
+  });
+
+  test('cell text is assigned via textContent (markup cannot inject)', () => {
+    const card = makeCard({
+      tablePreview: { rows: [['<img src=x onerror=alert(1)>']], headerRowCount: 0 },
+    });
+    const cell = card.el.querySelector('.proposal-card-table td');
+    expect(cell.textContent).toBe('<img src=x onerror=alert(1)>');
+    expect(card.el.querySelector('.proposal-card-table img')).toBeNull();
+  });
+
+  test('createProposalCard without tablePreview renders no preview block', () => {
+    const card = makeCard();
+    expect(card.el.querySelector('.proposal-card-table-preview')).toBeNull();
+  });
+
+  test('sanitizeTablePreview normalizes ragged/oversized/invalid input', () => {
+    expect(sanitizeTablePreview(null)).toBeNull();
+    expect(sanitizeTablePreview({ rows: 'nope' })).toBeNull();
+
+    const normalized = sanitizeTablePreview({
+      rows: [['a', 'b'], ['c'], null],
+      headerRowCount: 5,
+      style: 'x'.repeat(200),
+      position: 42,
+    });
+    expect(normalized.rows).toEqual([['a', 'b'], ['c', ''], ['', '']]);
+    expect(normalized.headerRowCount).toBe(3);
+    expect(normalized.style).toHaveLength(80);
+    expect(normalized).not.toHaveProperty('position');
+    expect(normalized.truncated).toBe(true);
+  });
+
+  test('renderTablePreview marks empty input without throwing', () => {
+    const el = renderTablePreview({ rows: [], headerRowCount: 0 });
+    expect(el.querySelector('.proposal-card-table-empty').textContent)
+      .toBe('No table cells in preview.');
   });
 });

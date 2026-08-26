@@ -24,7 +24,7 @@
  */
 
 /** Pipeline task types the planner may emit (allowlist for parsePlan). */
-const TASK_TYPES = ['insert', 'format', 'edit', 'append', 'illustration', 'qa'];
+const TASK_TYPES = ['insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa'];
 
 /** A compound instruction decomposes into at most this many tasks. */
 const MAX_TASKS = 6;
@@ -51,11 +51,13 @@ export function buildPlanPrompt(instruction, hasSelection) {
         'alignment, spacing, indentation) without rewriting it.\n' +
         '- "edit": rewrite, polish, or otherwise change the CONTENT of existing text.\n' +
         '- "append": generate NEW long-form content appended at the document end.\n' +
+        '- "table": create a NEW native Word table (with or without generated cell content). Editing the ' +
+        'content of an EXISTING table stays on "edit".\n' +
         '- "illustration": design and insert an illustration (SVG artwork).\n' +
         '- "qa": answer a question in chat (no document change).\n\n' +
         'OUTPUT CONTRACT (strict):\n' +
         '- Output ONLY a JSON array. No markdown, no code fences, no explanations, no commentary.\n' +
-        '- Each item: { "type": "insert|format|edit|append|illustration|qa", "instruction": "self-contained ' +
+        '- Each item: { "type": "insert|format|edit|append|table|illustration|qa", "instruction": "self-contained ' +
         'sub-instruction in the user\'s language" }.\n' +
         '- One task per distinct request, in the user\'s original order; each instruction must stand alone ' +
         '(include needed context, e.g. which paragraph to edit).\n' +

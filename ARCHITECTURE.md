@@ -64,10 +64,13 @@ src/
     illustration.js            # SVG illustration prompt/parse/sanitize
                                #   (DOMPurify SVG profile)/dimensions/position
     task-planner.js            # Compound-instruction decomposition prompt +
-                               #   plan parser (6 task types, caps)
+                               #   plan parser (7 task types, caps)
     table-patch.js             # Coordinate patch protocol for multi-cell
                                #   table selections: prompt builder, JSON
                                #   patch parser/validator, row-op ordering
+    table-ops.js               # Table creation protocol: EN/ZH dimension
+                               #   inference (empty-grid fast path), creation
+                               #   prompt builder, strict spec parser/validator
     platform.js                # Office host detection; which hosts record
                                #   table row insert/delete as tracked revisions
     selection-with-comments.js # Splices comment anchors into selection OOXML
@@ -103,7 +106,7 @@ src/
                                #   per-pipeline turn runners, proposal staging,
                                #   concurrency guard, cancel
     word-actions.js            # Document/LLM pipelines with explicit args:
-                               #   selection/append/format/illustration
+                               #   selection/append/format/table/illustration
                                #   prepare+apply pairs, gated doc-scope runs,
                                #   planner, Q&A, summary, selection watch,
                                #   reveal/locate
@@ -116,26 +119,32 @@ src/
       welcome.js               # Welcome empty state with skill chips
       settings-view.js         # Settings slide-over + prompt management
       proposal-card.js         # Staged proposal card: per-change checkboxes,
-                               #   locate button, selective apply, terminal
-                               #   states (applied/rejected/warning/error)
+                               #   locate button, image/table previews,
+                               #   selective apply, terminal states
+                               #   (applied/rejected/warning/error)
       diff-view.js             # Inline <del>/<ins> text diff element
                                #   (diff-match-patch semantic cleanup)
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (798 tests, 34 suites)
+tests/                         # Jest unit tests (901 tests, 37 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
                                #   paragraphs, line endings, table-paragraph
                                #   guards, validation
   table-patch.spec.js          # Table patch prompt, JSON parsing/validation,
-                               #   row-op ordering
+                               #   bounds enforcement, row-op ordering
+  table-ops.spec.js            # Table creation: dimension inference (EN/ZH),
+                               #   prompt builder, spec parsing/limits
   platform.spec.js             # Host detection, tracked-row-op support mapping
   word-actions-table.spec.js   # Table selection route: prepare/apply ordering,
                                #   desktop/web row-tracking split, stale guards;
                                #   mixed paragraph+table route: per-paragraph
                                #   text, table guards, truncation refusal
+  word-actions-table-create.spec.js # Table creation route: empty-grid fast
+                               #   path, constrained content generation,
+                               #   insert positions, platform tracking split
   llm-stream.spec.js           # SSE parsing, reasoning demux, fallback, abort,
                                #   idle timeout
   llm-client.spec.js           # Non-streaming client, stripping helpers
@@ -238,6 +247,20 @@ revised per cell with the granular diff strategies (tracked natively), then
 row ops (`TableRow.insertRows`/`delete`) run in descending row order. Only
 Word desktop records row insert/delete as tracked revisions — on Word for
 the web the structure phase runs untracked with a warning (lib/platform.js).
+
+**Table creation:** a "insert a 3×3 table …" instruction routes to its own
+pipeline (TURN_TYPE.TABLE). Explicit dimensions without content wording are
+inferred by lib/table-ops.js into an empty-grid spec deterministically — no
+LLM call. Content-bearing or dimensionless requests go to the model with a
+strict JSON contract (rectangular plain-text matrix, size limits); when the
+instruction stated dimensions, they are restated as a hard constraint and
+the model's grid is rejected wholesale on mismatch. The card shows a
+read-only grid preview; Apply re-validates the spec (proposals may have
+round-tripped through session persistence) and inserts one native table via
+`Body.insertTable` (start/end) or `Range.insertTable` on the selection
+(before/after), then sets grid style, headerRowCount, and AutoFit. The same
+platform split as row ops applies: the insertion is tracked only on Word
+desktop, elsewhere it lands untracked with a warning.
 
 **Mixed selections** (paragraphs plus table content, e.g. caption + table +
 note — the selection overlaps a table without being inside it) take a third

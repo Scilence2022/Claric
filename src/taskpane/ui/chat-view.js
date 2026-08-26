@@ -19,6 +19,7 @@
  */
 
 import { buildTextDiffElement } from './diff-view.js';
+import { renderTablePreview, sanitizeTablePreview } from './proposal-card.js';
 
 let _messagesEl = null;
 let _welcomeEl = null;
@@ -28,6 +29,40 @@ let _currentSessionTitle = null;
 let _currentSessionCreatedAt = null;
 let _currentSessionUpdatedAt = null;
 let _currentSessionMessages = [];
+
+// Fired when a proposal settles AFTER its message was finalized, so the
+// bootstrap can re-persist the session (Apply/Reject arrive after the turn's
+// finally block has already snapshotted the message).
+let _proposalStateHandler = null;
+
+/**
+ * Registers the late proposal-state callback. The bootstrap wires this to
+ * session persistence; tests can reset it with null.
+ *
+ * @param {function()|null} handler
+ */
+export function setProposalStateChangeHandler(handler) {
+    _proposalStateHandler = typeof handler === 'function' ? handler : null;
+}
+
+/** Serializes one tracked proposal meta into its history shape. @private */
+function _proposalRecordFromMeta(p) {
+    return {
+        title: p.title,
+        state: p.state || 'pending',
+        detail: p.detail,
+        countsText: p.countsText,
+        previewSrc: p.previewSrc || null,
+        tablePreview: sanitizeTablePreview(p.tablePreview),
+        items: Array.isArray(p.items) ? p.items.map((it) => ({
+            id: it.id,
+            label: it.label,
+            before: it.before,
+            after: it.after,
+            searchText: it.searchText,
+        })) : [],
+    };
+}
 
 /**
  * Captures the chat containers. Called once at startup.
@@ -248,31 +283,42 @@ function _normalizeMessage(m) {
 
 /**
  * Wraps a proposal card so its terminal-state methods also update the meta
- * object that the chat-view tracks for history serialization.
+ * object that the chat-view tracks for history serialization. onStateChange
+ * fires after every wrapped state change so a message that was already
+ * finalized can re-sync its history record.
  * @private
  */
-function _wrapProposalCard(card, meta) {
+function _wrapProposalCard(card, meta, onStateChange) {
+    const notify = typeof onStateChange === 'function' ? onStateChange : () => {};
     const origApplied = card.markApplied;
     const origRejected = card.markRejected;
     const origWarning = card.markWarning;
     const origError = card.markError;
     card.markApplied = function () {
         meta.state = 'applied';
-        return origApplied.call(card);
+        const result = origApplied.call(card);
+        notify();
+        return result;
     };
     card.markRejected = function () {
         meta.state = 'rejected';
-        return origRejected.call(card);
+        const result = origRejected.call(card);
+        notify();
+        return result;
     };
     card.markWarning = function (msg) {
         meta.state = 'warning';
         if (msg) meta.detail = String(msg);
-        return origWarning.call(card, msg);
+        const result = origWarning.call(card, msg);
+        notify();
+        return result;
     };
     card.markError = function (msg) {
         meta.state = 'error';
         if (msg) meta.detail = String(msg);
-        return origError.call(card, msg);
+        const result = origError.call(card, msg);
+        notify();
+        return result;
     };
 }
 
@@ -346,6 +392,7 @@ function _renderHistoricalAssistant(m) {
  * @param {string} [p.detail] - extra status text for warning/error
  * @param {string} [p.countsText]
  * @param {string} [p.previewSrc]
+ * @param {object} [p.tablePreview] - Sanitized read-only table preview data
  * @param {Array<object>} [p.items] - { label, before?, after?, searchText? }
  * @returns {HTMLElement|null}
  */
@@ -379,6 +426,9 @@ export function renderStaticProposalCard(p) {
         img.src = p.previewSrc;
         el.appendChild(img);
     }
+
+    const tablePreviewEl = renderTablePreview(p.tablePreview);
+    if (tablePreviewEl) el.appendChild(tablePreviewEl);
 
     if (Array.isArray(p.items) && p.items.length) {
         const list = document.createElement('div');
@@ -519,6 +569,26 @@ export function createAssistantMessage() {
     let lastError = null;
     const trackedProposals = [];
     let finalized = false;
+    let finalizedRecord = null;
+
+    /**
+     * Re-syncs the finalized history record when a proposal settles late
+     * (Apply/Reject arrive after finalizeForHistory), then notifies the
+     * bootstrap so the session is re-persisted.
+     */
+    function _syncFinalizedProposals() {
+        if (!finalizedRecord) return;
+        finalizedRecord.proposals = trackedProposals.map(_proposalRecordFromMeta);
+        finalizedRecord.ts = new Date().toISOString();
+        _currentSessionUpdatedAt = finalizedRecord.ts;
+        if (_proposalStateHandler) {
+            try {
+                _proposalStateHandler();
+            } catch (_err) {
+                // Persistence errors must never break the live card.
+            }
+        }
+    }
 
     if (_currentSessionId === null) {
         _currentSessionId = _generateSessionId();
@@ -674,7 +744,7 @@ export function createAssistantMessage() {
         },
         attachProposal(card, meta) {
             if (meta) {
-                _wrapProposalCard(card, meta);
+                _wrapProposalCard(card, meta, _syncFinalizedProposals);
                 trackedProposals.push(meta);
             }
             extrasEl.appendChild(card.el);
@@ -714,7 +784,7 @@ export function createAssistantMessage() {
             finalized = true;
             _currentSessionUpdatedAt = new Date().toISOString();
             const now = new Date().toISOString();
-            const record = {
+            finalizedRecord = {
                 id: _generateMessageId(),
                 role: 'assistant',
                 text: streamed || '',
@@ -725,23 +795,10 @@ export function createAssistantMessage() {
                     : null,
                 model: modelSections.size > 0 ? { sections: modelSections.size } : null,
                 citations: [],
-                proposals: trackedProposals.map((p) => ({
-                    title: p.title,
-                    state: p.state || 'pending',
-                    detail: p.detail,
-                    countsText: p.countsText,
-                    previewSrc: p.previewSrc || null,
-                    items: Array.isArray(p.items) ? p.items.map((it) => ({
-                        id: it.id,
-                        label: it.label,
-                        before: it.before,
-                        after: it.after,
-                        searchText: it.searchText,
-                    })) : [],
-                })),
+                proposals: trackedProposals.map(_proposalRecordFromMeta),
                 ts: now,
             };
-            _currentSessionMessages.push(record);
+            _currentSessionMessages.push(finalizedRecord);
         },
     };
 }

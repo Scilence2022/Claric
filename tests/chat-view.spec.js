@@ -275,3 +275,86 @@ describe('renderHistory / setCurrentSession', () => {
   });
 });
 
+describe('proposal state persistence', () => {
+  const { createProposalCard } = require('../src/taskpane/ui/proposal-card.js');
+  const { setProposalStateChangeHandler, renderStaticProposalCard } = require('../src/taskpane/ui/chat-view.js');
+
+  function attachCard(msg, meta) {
+    const card = createProposalCard({
+      title: meta.title,
+      onApply: jest.fn(async () => {}),
+      onReject: jest.fn(),
+    });
+    msg.attachProposal(card, meta);
+    return card;
+  }
+
+  beforeEach(() => {
+    setupDom();
+    clearSessionMessages();
+    setProposalStateChangeHandler(null);
+  });
+  afterEach(() => setProposalStateChangeHandler(null));
+
+  test('reject click flows through markRejected so meta leaves "pending"', () => {
+    const msg = createAssistantMessage();
+    const meta = { title: 'Proposed table', state: 'pending', countsText: '', items: [] };
+    const card = attachCard(msg, meta);
+    card.el.querySelector('.btn-secondary').click();
+    expect(meta.state).toBe('rejected');
+  });
+
+  test('late settle after finalizeForHistory re-syncs the record and notifies', () => {
+    const msg = createAssistantMessage();
+    const meta = { title: 'Proposed table', state: 'pending', countsText: '', items: [] };
+    const card = attachCard(msg, meta);
+    msg.finalizeForHistory();
+
+    // The pre-settle snapshot is pending; the click arrives afterwards.
+    expect(getCurrentSession().messages[0].proposals[0].state).toBe('pending');
+
+    const onStateChange = jest.fn();
+    setProposalStateChangeHandler(onStateChange);
+    card.markApplied();
+
+    const record = getCurrentSession().messages[0];
+    expect(record.proposals[0].state).toBe('applied');
+    expect(onStateChange).toHaveBeenCalledTimes(1);
+  });
+
+  test('markError also syncs and can be superseded by a later apply', () => {
+    const msg = createAssistantMessage();
+    const meta = { title: 't', state: 'pending', countsText: '', items: [] };
+    const card = attachCard(msg, meta);
+    msg.finalizeForHistory();
+
+    card.markError('boom');
+    expect(getCurrentSession().messages[0].proposals[0].state).toBe('error');
+    card.markWarning('nothing applied');
+    expect(getCurrentSession().messages[0].proposals[0].state).toBe('warning');
+    expect(getCurrentSession().messages[0].proposals[0].detail).toBe('nothing applied');
+  });
+
+  test('tablePreview is serialized into history and rendered by the static card', () => {
+    const msg = createAssistantMessage();
+    const meta = {
+      title: 'Proposed table',
+      state: 'pending',
+      countsText: '3 × 3 table',
+      items: [],
+      tablePreview: { rows: [['<b>x</b>', '']], headerRowCount: 1, style: 'tableGrid' },
+    };
+    attachCard(msg, meta);
+    msg.finalizeForHistory();
+
+    const saved = getCurrentSession().messages[0].proposals[0];
+    expect(saved.tablePreview.rows).toEqual([['<b>x</b>', '']]);
+    expect(saved.tablePreview.headerRowCount).toBe(1);
+
+    const staticCard = renderStaticProposalCard(saved);
+    const cell = staticCard.querySelector('.proposal-card-table th');
+    expect(cell.textContent).toBe('<b>x</b>');
+    expect(staticCard.querySelector('.proposal-card-table b')).toBeNull();
+  });
+});
+

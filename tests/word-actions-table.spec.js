@@ -74,6 +74,7 @@ function makePrepareContext() {
     isNullObject: false,
     rowCount: 3,
     values: TABLE_VALUES,
+    isUniform: true,
     load: jest.fn(),
   };
   const selection = {
@@ -81,8 +82,8 @@ function makePrepareContext() {
     parentTableCellOrNullObject: { isNullObject: true, load: jest.fn() },
     getRange: jest.fn((loc) => ({
       parentTableCellOrNullObject: loc === 'Start'
-        ? { isNullObject: false, rowIndex: 0, columnIndex: 0, load: jest.fn() }
-        : { isNullObject: false, rowIndex: 2, columnIndex: 1, load: jest.fn() },
+        ? { isNullObject: false, rowIndex: 0, cellIndex: 0, load: jest.fn() }
+        : { isNullObject: false, rowIndex: 2, cellIndex: 1, load: jest.fn() },
     })),
   };
   return {
@@ -128,6 +129,8 @@ function makeApplyContext({ tableRowCount = 3 } = {}) {
   const table = {
     isNullObject: false,
     rowCount: tableRowCount,
+    values: TABLE_VALUES,
+    isUniform: true,
     load: jest.fn(),
     getCell: jest.fn((r, c) => cells[`${r},${c}`]),
   };
@@ -275,6 +278,8 @@ describe('applySelectionAmendment (table route)', () => {
         { op: 'delete', row: 3 },
         { op: 'insertAfter', row: 1, values: ['n1', 'n2'] },
       ],
+      bounds: { startRow: 1, endRow: 3, startCol: 1, endCol: 2 },
+      originals: TABLE_VALUES,
     },
     tableItems: [],
   };

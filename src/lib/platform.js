@@ -40,13 +40,15 @@ export function getHostPlatform(officeObj) {
 
 /**
  * Whether the host records table row insertions/deletions as tracked
- * changes. Only Word desktop does; the web and mobile hosts apply row
- * structure edits without revision marks, so callers must warn instead of
- * promising redlines.
+ * changes. Only Word desktop (PC/Mac) does; web, mobile, and Universal
+ * hosts apply row structure edits without revision marks, so callers must
+ * warn instead of promising redlines. Unknown/Universal fail closed:
+ * silently untracked structural edits are worse than an untracked edit the
+ * user was told about.
  *
  * @param {string} platform - Value from getHostPlatform()
  * @returns {boolean}
  */
 export function supportsTrackedRowOps(platform) {
-    return platform === 'PC' || platform === 'Mac' || platform === 'Universal';
+    return platform === 'PC' || platform === 'Mac';
 }
