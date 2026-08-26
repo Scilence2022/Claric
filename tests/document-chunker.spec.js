@@ -6,7 +6,7 @@
  * - CHUNK-01: Heading-aware splitting at H1/H2 boundaries
  * - CHUNK-02: Token limit enforcement (no chunk exceeds maxTokens)
  * - CHUNK-03: Overlap context between adjacent chunks
- * - Table paragraph atomicity (consecutive inTable paragraphs kept together)
+ * - Table exclusion (inTable paragraphs skipped; hard chunk boundary; merge barrier)
  * - No-heading fallback (token-count-based splitting)
  */
 const { chunkDocument } = require('../src/lib/document-chunker.js');
@@ -216,11 +216,11 @@ describe('chunkDocument', () => {
         });
     });
 
-    // --- Table paragraph atomicity ---
+    // --- Table exclusion ---
 
-    describe('table paragraph atomicity', () => {
-        test('consecutive table paragraphs are never split across chunks', () => {
-            // A table with 8 paragraphs (4000 tokens), then body text
+    describe('table exclusion', () => {
+        test('table paragraphs are excluded and split chunks at the boundary', () => {
+            // A table with 8 paragraphs, surrounded by body text
             const paras = [
                 makePara({ index: 0, text: 'Before table', tokenEstimate: 100 }),
                 ...Array.from({ length: 8 }, (_, i) =>
@@ -232,30 +232,66 @@ describe('chunkDocument', () => {
 
             const chunks = chunkDocument(doc, { maxTokens: 5000, minTokens: 100 });
 
-            // Check that all table paragraphs are in the same chunk
+            // Two chunks (before/after the table), no cell text anywhere
+            expect(chunks.length).toBe(2);
+            expect(chunks[0].paragraphs.map(p => p.text)).toEqual(['Before table']);
+            expect(chunks[1].paragraphs.map(p => p.text)).toEqual(['After table']);
+            expect(chunks.some(c => c.paragraphs.some(p => p.inTable))).toBe(false);
+        });
+
+        test('no chunk index range spans a skipped table (bookmark safety)', () => {
+            // Bookmark ranges are built from startIndex..endIndex; if that
+            // interval contained an inTable paragraph, apply-time alignment
+            // would see cell text again.
+            const paras = [
+                makePara({ index: 0, text: 'Intro', tokenEstimate: 100 }),
+                makePara({ index: 1, text: 'Cell A', inTable: true, tokenEstimate: 50 }),
+                makePara({ index: 2, text: 'Cell B', inTable: true, tokenEstimate: 50 }),
+                makePara({ index: 3, text: 'Outro', tokenEstimate: 100 })
+            ];
+            const chunks = chunkDocument(makeDocModel(paras), { maxTokens: 5000, minTokens: 10 });
+
+            expect(chunks.length).toBe(2);
+            expect(chunks[0].startIndex).toBe(0);
+            expect(chunks[0].endIndex).toBe(0);
+            expect(chunks[1].startIndex).toBe(3);
+            expect(chunks[1].endIndex).toBe(3);
             for (const chunk of chunks) {
-                const tableParagraphs = chunk.paragraphs.filter(p => p.inTable);
-                if (tableParagraphs.length > 0) {
-                    // All 8 table paragraphs should be together
-                    expect(tableParagraphs.length).toBe(8);
+                for (let idx = chunk.startIndex; idx <= chunk.endIndex; idx++) {
+                    expect(paras[idx].inTable).toBe(false);
                 }
             }
         });
 
-        test('table paragraphs kept together even when exceeding maxTokens', () => {
-            // A table with 15 paragraphs (7500 tokens) exceeds maxTokens but stays together
+        test('a table-only document produces no chunks', () => {
+            const paras = Array.from({ length: 15 }, (_, i) =>
+                makePara({ index: i, text: 'Table cell ' + i, inTable: true, tokenEstimate: 500 })
+            );
+            expect(chunkDocument(makeDocModel(paras), { maxTokens: 5000, minTokens: 100 })).toEqual([]);
+        });
+
+        test('tiny trailing chunk does NOT merge across a table', () => {
             const paras = [
-                ...Array.from({ length: 15 }, (_, i) =>
-                    makePara({ index: i, text: 'Table cell ' + i, inTable: true, tokenEstimate: 500 })
-                )
+                makePara({ index: 0, text: 'Big section', tokenEstimate: 1000 }),
+                makePara({ index: 1, text: 'Cell A', inTable: true, tokenEstimate: 50 }),
+                makePara({ index: 2, text: 'Tiny tail', tokenEstimate: 10 })
             ];
-            const doc = makeDocModel(paras);
+            const chunks = chunkDocument(makeDocModel(paras), { maxTokens: 12000, minTokens: 500 });
 
-            const chunks = chunkDocument(doc, { maxTokens: 5000, minTokens: 100 });
+            // Merging the tiny tail into the big chunk would span the table.
+            expect(chunks.length).toBe(2);
+            expect(chunks[1].paragraphs.map(p => p.text)).toEqual(['Tiny tail']);
+        });
 
-            // All table paragraphs must be in one chunk
+        test('tiny trailing chunk still merges when no table stands between', () => {
+            const paras = [
+                makePara({ index: 0, text: 'Big section', headingLevel: 1, tokenEstimate: 1000 }),
+                makePara({ index: 1, text: 'Tiny head', headingLevel: 1, tokenEstimate: 10 })
+            ];
+            const chunks = chunkDocument(makeDocModel(paras), { maxTokens: 12000, minTokens: 500 });
+
             expect(chunks.length).toBe(1);
-            expect(chunks[0].paragraphs.length).toBe(15);
+            expect(chunks[0].paragraphs.map(p => p.text)).toEqual(['Big section', 'Tiny head']);
         });
     });
 
