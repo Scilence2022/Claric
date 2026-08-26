@@ -46,7 +46,8 @@ src/
     document-parser.js         # Office.js traversal → ParsedParagraph[] with
                                #   heading levels, list info, table membership
     document-chunker.js        # Token-budgeted chunking with heading boundaries,
-                               #   table atomicity, overlap context
+                               #   table exclusion (hard boundary + merge
+                               #   barrier), overlap context
     context-extractor.js       # Definitions/abbreviations/outline extraction,
                                #   per-chunk filtered context prefix
     orchestrator.js            # Worker-pool parallel LLM dispatch with
@@ -118,7 +119,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (795 tests, 34 suites)
+tests/                         # Jest unit tests (798 tests, 34 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -141,7 +142,7 @@ tests/                         # Jest unit tests (795 tests, 34 suites)
   task-planner.spec.js         # Plan parsing, caps, prompt contract
   orchestrator.spec.js         # Parallel dispatch, cancellation, streaming
   document-parser.spec.js      # Heading detection, paragraph extraction
-  document-chunker.spec.js     # Chunking constraints
+  document-chunker.spec.js     # Chunking constraints, table exclusion/barrier
   context-extractor.spec.js    # Definitions/abbreviations/outline
   response-parser.spec.js      # Delimited response parsing
   prompt-state.spec.js         # PromptManager CRUD, activation, summary category
@@ -250,6 +251,13 @@ per amended chunk. Bookmarks persist until Apply (tracked changes, selective by
 chunk) or Reject (discard + cleanup). Staged ranges are re-anchored at apply
 time, so inserting content via another card first (e.g. a title) never causes
 the amendment to delete drifted paragraphs.
+
+Tables never enter this pipeline: the chunker skips inTable paragraphs and
+splits chunks at table boundaries (with a merge barrier, so no chunk's
+bookmark range can span a table). Flattened cell lines would invite the model
+to reorganize or echo them, and the paragraph alignment would then pollute
+the document with phantom paragraphs. Table content stays untouched by
+document checks; use the selection routes (table patch / mixed) to edit it.
 
 ### Format Flow
 

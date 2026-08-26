@@ -7,7 +7,11 @@
  * Key behaviors:
  * - Splits at H1/H2 heading boundaries as primary break points
  * - Enforces maxTokens limit per chunk (default 12000)
- * - Keeps consecutive table paragraphs (inTable=true) as atomic units
+ * - Excludes table paragraphs (inTable=true) entirely: a table acts as a
+ *   hard chunk boundary and its cell text is never sent to the LLM —
+ *   flattened cell lines invite the model to reorganize/echo them, and the
+ *   paragraph alignment then pollutes the document with phantom paragraphs
+ *   (tables remain editable via the selection routes)
  * - Falls back to paragraph-boundary splitting when no headings exist
  * - Includes overlap context from previous chunk for continuity
  *
@@ -39,7 +43,9 @@
  *   1. Iterate paragraphs in document order
  *   2. On H1/H2 heading: finalize current chunk (if >= minTokens), start new
  *   3. On maxTokens exceeded: finalize current chunk, start new
- *   4. Table paragraphs: accumulate consecutive inTable paragraphs as atomic unit
+ *   4. Table paragraphs: skipped entirely; the table finalizes the current
+ *      chunk as a hard boundary and sets a barrier the tiny-chunk merge
+ *      never crosses (a merged bookmark range would span the table)
  *   5. After all paragraphs: finalize last chunk
  *   6. Merge tiny trailing chunks (< minTokens) into previous chunk
  *   7. Add overlap: for each chunk after first, set overlapBefore
@@ -67,15 +73,21 @@ export function chunkDocument(docModel, options = {}) {
     const rawChunks = [];
     let currentParas = [];
     let currentTokens = 0;
+    // Set when a skipped table run stands immediately before the next chunk:
+    // the trailing-chunk merge must never cross it (the merged chunk's
+    // bookmark range would physically span the table).
+    let tableBarrier = false;
 
     function finalizeCurrentChunk() {
         if (currentParas.length > 0) {
             rawChunks.push({
                 paragraphs: currentParas,
-                tokenCount: currentTokens
+                tokenCount: currentTokens,
+                barrierBefore: tableBarrier
             });
             currentParas = [];
             currentTokens = 0;
+            tableBarrier = false;
         }
     }
 
@@ -83,26 +95,16 @@ export function chunkDocument(docModel, options = {}) {
     while (i < paragraphs.length) {
         const para = paragraphs[i];
 
-        // Handle table paragraphs as atomic units
+        // Table paragraphs never enter amendment chunks. Cell text flattened
+        // into prose lines invites the model to reorganize or echo it, and
+        // the paragraph alignment then pollutes the document (phantom
+        // paragraphs from inserts) or risks striking cell content. The table
+        // instead splits chunks as a hard boundary; tables remain editable
+        // through the selection routes (table patch / mixed selection).
         if (para.inTable) {
-            // Accumulate all consecutive table paragraphs
-            const tableParas = [];
-            let tableTokens = 0;
-            while (i < paragraphs.length && paragraphs[i].inTable) {
-                tableParas.push(paragraphs[i]);
-                tableTokens += paragraphs[i].tokenEstimate;
-                i++;
-            }
-
-            // If adding the table would exceed maxTokens and we have content,
-            // finalize current chunk first
-            if (currentParas.length > 0 && currentTokens + tableTokens > maxTokens && currentTokens >= minTokens) {
-                finalizeCurrentChunk();
-            }
-
-            // Add all table paragraphs to current chunk (keep them atomic)
-            currentParas.push(...tableParas);
-            currentTokens += tableTokens;
+            finalizeCurrentChunk();
+            while (i < paragraphs.length && paragraphs[i].inTable) i++;
+            tableBarrier = true;
             continue;
         }
 
@@ -128,10 +130,12 @@ export function chunkDocument(docModel, options = {}) {
     // Don't forget the last chunk
     finalizeCurrentChunk();
 
-    // Merge tiny trailing chunk (below minTokens) into previous chunk
+    // Merge tiny trailing chunk (below minTokens) into previous chunk —
+    // unless a skipped table stands between them (barrier): merging would
+    // give the combined chunk a bookmark range that spans the table.
     if (rawChunks.length > 1) {
         const lastChunk = rawChunks[rawChunks.length - 1];
-        if (lastChunk.tokenCount < minTokens) {
+        if (lastChunk.tokenCount < minTokens && !lastChunk.barrierBefore) {
             const prevChunk = rawChunks[rawChunks.length - 2];
             prevChunk.paragraphs.push(...lastChunk.paragraphs);
             prevChunk.tokenCount += lastChunk.tokenCount;
