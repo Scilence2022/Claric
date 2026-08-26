@@ -185,9 +185,26 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
             trackingEnabled = true;
         }
 
-        // Apply Deletes (Reverse order)
-        deleteTargets.sort((a, b) => b.index - a.index);
-        deleteTargets.forEach((token) => token.range.delete());
+        // Apply Deletes (reverse document order). Adjacent tokens (consecutive
+        // indices) are coalesced into one spanning delete: a single Word
+        // revision + undo entry per contiguous run instead of one per token.
+        // Per-token deletions inflate Word's session-scoped undo/revision
+        // bookkeeping, which survives add-in close and is a known source of
+        // post-apply editing lag (cleared only by closing the document).
+        deleteTargets.sort((a, b) => a.index - b.index);
+        const deleteRuns = [];
+        for (const token of deleteTargets) {
+            const run = deleteRuns[deleteRuns.length - 1];
+            if (run && token.index === run.last.index + 1) {
+                run.last = token;
+            } else {
+                deleteRuns.push({ first: token, last: token });
+            }
+        }
+        for (let i = deleteRuns.length - 1; i >= 0; i--) {
+            const { first, last } = deleteRuns[i];
+            (last === first ? first.range : first.range.expandTo(last.range)).delete();
+        }
         deletions = deleteTargets.length;
 
         // Apply Inserts
