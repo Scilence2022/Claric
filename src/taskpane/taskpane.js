@@ -11,9 +11,6 @@
  *   word-actions.js  - document/LLM pipelines
  *   ui/*             - chat view, input bar, welcome, settings, status bar
  *
- * `normalizeConfig` is re-exported from app-state.js as a test seam
- * (tests/config-persistence.spec.js).
- *
  * Module-level code only imports modules and registers Office.onReady, so the
  * module stays importable under Jest (node/jsdom) without Word globals.
  */
@@ -34,8 +31,6 @@ import { initHistoryView, openHistory } from './ui/history-view.js';
 import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession } from './sessions.js';
 import { getProviderPreset } from '../lib/providers.js';
 import { getHostPlatform } from '../lib/platform.js';
-
-export { normalizeConfig } from './app-state.js';
 
 if (typeof Office !== 'undefined') {
     Office.onReady((info) => {

@@ -19,6 +19,9 @@ module.exports = [
       'logs/',
       'assets/',
       'docs/',
+      // Vendored third-party library (verbatim upstream copy, CJS) — not
+      // held to this repo's lint rules.
+      'src/lib/vendor/',
     ],
   },
   js.configs.recommended,

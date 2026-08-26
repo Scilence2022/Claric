@@ -30,6 +30,8 @@ export { hasCjk, computeCharEdits, applyCharDiffStrategy, sliceSearchPieces } fr
  * @returns {Array<[number, string]>} diff-match-patch ops ([[-1|0|1, text], ...])
  */
 export function computeDiff(text1, text2) {
-    const dmp = new DiffMatchPatch();
+    // diff-wordmode.js extends the dmp prototype at module load (word-mode
+    // methods are not part of the vendored library's own type surface).
+    const dmp = /** @type {any} */ (new DiffMatchPatch());
     return dmp.diff_wordMode(text1, text2);
 }

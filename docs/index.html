@@ -1193,7 +1193,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     </table>
     </div>
 
-    <p>The <code>ParagraphBlock</code> model (<code>structure-model.js</code>) maintains the token map: an array of <code>{ text, range: Word.Range }</code> objects. This allows the diff engine to map individual word changes to their exact <code>Word.Range</code> in the document, producing surgical tracked changes without touching surrounding formatting.</p>
+    <p>The Token Map strategy (<code>word-diff/token-map.js</code>) maintains a token map: an array of <code>{ text, range: Word.Range }</code> objects. This allows the diff engine to map individual word changes to their exact <code>Word.Range</code> in the document, producing surgical tracked changes without touching surrounding formatting.</p>
   </section>
 
   <!-- 9. Prompt System -->

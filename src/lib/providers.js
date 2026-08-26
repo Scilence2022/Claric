@@ -105,6 +105,7 @@ export function getProviderPreset(providerId) {
  * @returns {Object<string, {url: string, apiKey: string, model: string, apiPath: string}>}
  */
 export function defaultProviderConfig() {
+  /** @type {Object<string, {url: string, apiKey: string, model: string, apiPath: string}>} */
   const config = {};
   for (const id of KNOWN_PROVIDERS) {
     const preset = PROVIDER_PRESETS[id];

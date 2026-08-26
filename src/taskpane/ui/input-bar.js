@@ -148,7 +148,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) 
         setProcessing(isProcessing) {
             processing = isProcessing;
             sendBtn.classList.toggle('cancel-mode', isProcessing);
-            sendBtn.textContent = isProcessing ? '✕' : '↑';
+            sendBtn.textContent = isProcessing ? '■' : '↑';
             sendBtn.title = isProcessing ? 'Cancel' : 'Send';
             textarea.disabled = isProcessing;
         },

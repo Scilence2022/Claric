@@ -1,26 +1,5 @@
 
-import createDOMPurify from 'dompurify';
-
-// The dompurify default export is a ready instance when a global window
-// exists at bundle time (browser/WebView2), but resolves to the factory
-// under babel/jest CommonJS interop. Initialized lazily so importing this
-// module in a no-DOM environment (node test specs) never touches window.
-// Same pattern as document-generator.js.
-let purifierInstance = null;
-
-/**
- * Returns the DOMPurify instance for the current environment.
- *
- * @returns {{ sanitize: (string, object) => string }}
- */
-function getPurifier() {
-    if (!purifierInstance) {
-        purifierInstance = typeof createDOMPurify.sanitize === 'function'
-            ? createDOMPurify
-            : createDOMPurify(window);
-    }
-    return purifierInstance;
-}
+import { getPurifier } from './sanitize.js';
 
 /**
  * Illustration Module
@@ -103,8 +82,9 @@ export function parseIllustration(raw, log = () => {}) {
 /**
  * Sanitizes an SVG string for safe DOM rendering (preview) and insertion.
  * Keeps the SVG vocabulary (shapes, gradients, filters) while stripping
- * scripts, event handlers, foreignObject, and other active content — the
- * markup is raw LLM output and may echo prompt-injected document content.
+ * scripts, event handlers, foreignObject, iframes, and other active
+ * content — the markup is raw LLM output and may echo prompt-injected
+ * document content.
  *
  * @param {string} svg - SVG markup from parseIllustration
  * @returns {string} Sanitized SVG markup
@@ -112,7 +92,7 @@ export function parseIllustration(raw, log = () => {}) {
 export function sanitizeSvg(svg) {
     return getPurifier().sanitize(svg, {
         USE_PROFILES: { svg: true, svgFilters: true },
-        FORBID_TAGS: ['foreignObject'],
+        FORBID_TAGS: ['foreignObject', 'iframe', 'script'],
     });
 }
 

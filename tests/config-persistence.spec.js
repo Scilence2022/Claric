@@ -1,5 +1,5 @@
 /**
- * Tests for normalizeConfig (taskpane.js settings validation).
+ * Tests for normalizeConfig (app-state.js settings validation).
  *
  * A corrupt or hand-edited `wordAI.config` in localStorage previously went
  * through a shallow spread merge, letting partial objects drop whole config
@@ -8,7 +8,7 @@
  * from the pre-0.4.0 `backends` shape.
  */
 
-const { normalizeConfig } = require('../src/taskpane/taskpane.js');
+const { normalizeConfig } = require('../src/taskpane/app-state.js');
 const { PROVIDER_PRESETS, KNOWN_PROVIDERS, defaultProviderConfig } = require('../src/lib/providers.js');
 
 /** Baseline defaults matching the module-level config literal. */

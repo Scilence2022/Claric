@@ -27,18 +27,22 @@ What this project does and does not promise:
   rejects path traversal, malformed percent-encoded URLs, and non-GET/HEAD
   methods (except on the LLM proxy paths); it serves files under `dist/`
   plus the generated manifest.
-- **LLM proxy** — `/ollama` and `/vllm` are proxied to the upstreams set
-  via `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET`, forwarding request bodies
-  and the `Authorization` header. Configure only upstreams you trust.
+- **LLM proxy** — production proxy routes are disabled by default; setting a
+  provider's `*_PROXY_PATH` (e.g. `OLLAMA_PROXY_PATH=/ollama`) opts in and
+  forwards request bodies and the `Authorization` header to the upstream set
+  via the matching `*_PROXY_TARGET`. Configure only upstreams you trust.
 - **TLS required** — Word requires HTTPS for add-in hosting. Certificate
   files are mounted read-only into the container.
 - **API keys** — stored client-side in `localStorage` scoped to the add-in
   origin. They are sent only to the endpoint URL configured in Settings.
   Verify the endpoint URL before entering a key: the add-in sends the key
   as an `Authorization: Bearer` header to whatever URL is configured.
-- **Dev server is dev-only** — the webpack dev server binds `0.0.0.0`, allows
-  all hosts, and serves E2E logs with permissive CORS. Never expose it
-  beyond your development machine.
+- **Dev server is dev-only** — the webpack dev server binds `127.0.0.1` by
+  default (set `DEV_SERVER_HOST=0.0.0.0` to expose it) and allows all hosts.
+  The E2E/coding-agent endpoints (`/log`, `/api/e2e-loop/*`, `/api/test-cases`,
+  `/api/prompts`) write files under the project root and use permissive CORS;
+  they are registered only when `ENABLE_DEV_ENDPOINTS=true`. Never expose the
+  dev server beyond your development machine.
 
 ## Known trade-offs
 

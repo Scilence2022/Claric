@@ -1,29 +1,23 @@
 
 import { marked } from 'marked';
-import createDOMPurify from 'dompurify';
+import { getPurifier } from './sanitize.js';
 
 // Configure marked for LLM output: GFM for tables/task lists, breaks for line breaks
 marked.use({ gfm: true, breaks: true });
 
-// The dompurify default export is a ready instance when a global window
-// exists at bundle time (browser/WebView2), but resolves to the factory
-// under babel/jest CommonJS interop. Initialized lazily so importing this
-// module in a no-DOM environment (node test specs) never touches window.
-let purifierInstance = null;
-
 /**
- * Returns the DOMPurify instance for the current environment.
+ * Restrictive URL allowlist for LLM-generated markup: absolute http(s),
+ * mailto, and in-document fragments only. Blocks javascript:, data:,
+ * protocol-relative, and relative URLs on every URI attribute.
  *
- * @returns {{ sanitize: (string, object) => string }}
+ * Known carve-out: DOMPurify 3.4.14 unconditionally keeps data: URIs on
+ * media-tag src (purify.cjs.js:2026, DATA_URI_TAGS img/source/track/...,
+ * no config off-switch), so <img src="data:image/..."> survives. That is
+ * inert embedded bytes — the dangerous data: vectors (data:text/html via
+ * <a href> or <iframe>) stay blocked because those tags are outside
+ * DATA_URI_TAGS (and iframe is FORBID_TAG'd below).
  */
-function getPurifier() {
-    if (!purifierInstance) {
-        purifierInstance = typeof createDOMPurify.sanitize === 'function'
-            ? createDOMPurify
-            : createDOMPurify(window);
-    }
-    return purifierInstance;
-}
+const ALLOWED_URI_REGEXP = /^(?:(?:https?|mailto):|#)/i;
 
 /**
  * Document Generator Module
@@ -43,9 +37,11 @@ function getPurifier() {
  *
  * The summary text comes straight from the LLM, which may echo markup from
  * prompt-injected document content. DOMPurify strips event handlers,
- * scripts, and other active content before the HTML reaches Word's
- * insertHtml(). Sanitization happens BEFORE the table-border transform so
- * the inline styles added below are trusted code, not LLM output.
+ * scripts, forms/embedded content, inline style attributes, and restricts
+ * URLs to an http(s)/mailto/fragment allowlist before the HTML reaches
+ * Word's insertHtml(). Sanitization happens BEFORE the table-border
+ * transform so the inline styles added below are trusted code, not LLM
+ * output.
  *
  * @param {string} summaryText - Raw LLM markdown
  * @returns {string} Sanitized HTML
@@ -53,6 +49,9 @@ function getPurifier() {
 function renderSummaryHtml(summaryText) {
   return getPurifier().sanitize(marked.parse(summaryText), {
     USE_PROFILES: { html: true },
+    FORBID_TAGS: ['style', 'form', 'input', 'textarea', 'select', 'button', 'iframe', 'object', 'embed', 'audio', 'video'],
+    FORBID_ATTR: ['style'],
+    ALLOWED_URI_REGEXP,
   });
 }
 
