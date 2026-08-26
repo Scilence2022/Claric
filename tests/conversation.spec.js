@@ -24,6 +24,7 @@ function makeAppState(overrides = {}) {
     processDocController: null,
     chatController: null,
     supportsComments: true,
+    supportsTables: true,
     config: { commentGranularity: 0 },
     promptManager: { getPrompts: () => [], getActivePrompt: () => null },
     ...overrides,
@@ -90,6 +91,18 @@ function makeActions(overrides = {}) {
       instruction: 'x', scope: 'selection', ops: [{ font: { bold: true } }], model: 'm',
     })),
     applyFormatProposal: jest.fn(async () => ({ applied: 1, warnings: [] })),
+    prepareTableProposal: jest.fn(async () => ({
+      instruction: 'x',
+      spec: {
+        rows: [['', '', ''], ['', '', ''], ['', '', '']],
+        position: 'end', headerRowCount: 0, style: 'tableGrid', autoFit: true,
+      },
+      model: null,
+      warnings: [],
+    })),
+    applyTableProposal: jest.fn(async () => ({
+      inserted: true, rowCount: 3, columnCount: 3, tracked: true, warnings: [],
+    })),
     prepareIllustrationProposal: jest.fn(async () => ({
       instruction: 'x',
       svg: '<svg width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>',
@@ -339,6 +352,43 @@ describe('routeTurn', () => {
     const turn = routeTurn('删除多余的空段落，然后润色全文', { hasSelection: false, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.COMPOUND);
   });
+
+  test('table creation intent routes to table (ZH, explicit dimensions)', () => {
+    const turn = routeTurn('在文档的末尾插入一个三行三列的表格', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.TABLE);
+    expect(turn.instruction).toBe('在文档的末尾插入一个三行三列的表格');
+  });
+
+  test('table placement phrasing is not counted as an append request', () => {
+    // "到文档末尾" names WHERE the table goes — a single table intent, not compound.
+    const turn = routeTurn('到文档末尾插入一个表格', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.TABLE);
+  });
+
+  test('table intent routes to table (EN) and beats append keywords', () => {
+    const turn = routeTurn('add a 3x3 table to the document', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.TABLE);
+  });
+
+  test('table intent wins over a selection (anchors before/after it)', () => {
+    const turn = routeTurn('在选中的段落后面插入一个表格', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.TABLE);
+  });
+
+  test('editing mention of an existing table stays off the table route', () => {
+    const turn = routeTurn('修改表格第二行的内容', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
+  });
+
+  test('question lead beats table intent ("如何在文档中插入表格？")', () => {
+    const turn = routeTurn('如何在文档中插入表格？', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('table + polish hits two families -> compound', () => {
+    const turn = routeTurn('插入一个三行三列的表格，并深度润色修改', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+  });
 });
 
 describe('createConversation.submit', () => {
@@ -420,6 +470,93 @@ describe('createConversation.submit', () => {
     expect(view._msg.attachProposal).not.toHaveBeenCalled();
     expect(view._msg.setStatus).toHaveBeenCalledWith('The model returned no content to append.');
     expect(actions.applyDocumentAppend).not.toHaveBeenCalled();
+  });
+
+  test('table intent stages a table proposal with a grid preview (no direct insert)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('在文档的末尾插入一个三行三列的表格');
+
+    expect(actions.prepareTableProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableProposal.mock.calls[0][1].instruction).toBe('在文档的末尾插入一个三行三列的表格');
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    // Staged: the table preview is attached to the persisted meta, and nothing
+    // is inserted before the user clicks Apply.
+    const meta = view._msg.attachProposal.mock.calls[0][1];
+    expect(meta.tablePreview.rows).toHaveLength(3);
+    expect(meta.tablePreview.rows[0]).toHaveLength(3);
+    expect(meta.tablePreview.position).toBe('end');
+    expect(actions.applyTableProposal).not.toHaveBeenCalled();
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+
+    // Clicking "Apply as tracked changes" inserts the table.
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(actions.applyTableProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test('table apply warnings settle the card into a warning state', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      applyTableProposal: jest.fn(async () => ({
+        inserted: true, rowCount: 3, columnCount: 3, tracked: false,
+        warnings: ['Table insertion cannot be tracked as a revision on this host (OfficeOnline) — applied directly.'],
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('add a 3x3 table to the document');
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(actions.applyTableProposal).toHaveBeenCalledTimes(1);
+    expect(cardEl.className).toMatch(/proposal-warning/);
+  });
+
+  test('table turn reports the requirement on hosts without WordApi 1.3', async () => {
+    const appState = makeAppState({ supportsTables: false });
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('在文档的末尾插入一个三行三列的表格');
+
+    expect(actions.prepareTableProposal).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalledTimes(1);
+    expect(view._msg.markError.mock.calls[0][0]).toMatch(/WordApi 1\.3/);
+  });
+
+  test('table turn surfaces prepare failures as message errors', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareTableProposal: jest.fn(async () => { throw new Error('表格内容生成失败（…）'); }),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('插入一个记录项目进度的表格');
+
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalledWith('表格内容生成失败（…）');
   });
 
   test('cleanup intent stages an empty-paragraph deletion proposal (no direct delete)', async () => {

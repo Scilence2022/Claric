@@ -8,6 +8,8 @@
  *   - free text hitting 2+ intent families -> compound turn (task planner decomposes
  *     into per-pipeline tasks, executed in order, one proposal card each)
  *   - free text + illustration intent -> design an SVG illustration, stage an image-insert proposal
+ *   - free text + table intent -> create a native Word table (staged proposal; explicit
+ *     dimensions resolve to an empty grid without an LLM call)
  *   - free text + append intent -> generate content, stage an append-to-end proposal
  *   - free text + format intent -> staged formatting/insert ops (existing text never rewritten)
  *   - free text + cleanup intent -> deterministic empty-paragraph deletion (staged, no LLM —
@@ -37,6 +39,7 @@ export const TURN_TYPE = Object.freeze({
     DOC_EDIT: 'doc-edit',
     DOC_APPEND: 'doc-append',
     FORMAT: 'format',
+    TABLE: 'table',
     ILLUSTRATION: 'illustration',
     CLEANUP: 'cleanup',
     COMPOUND: 'compound',
@@ -126,6 +129,29 @@ export function looksLikeAppendIntent(text) {
 }
 
 /**
+ * Table-creation intent markers: the user wants a NEW native Word table.
+ * Either a creation verb (插入/创建/生成/...; insert/create/add/...) sits near
+ * the table noun, or explicit dimensions (N行N列 / 3x3) appear at all — a bare
+ * "表格...行" mention is NOT enough, so edit instructions about an existing
+ * table ("修改表格第二行") stay on the edit pipelines. Placement phrases like
+ * 到文档末尾 name WHERE the table goes, which is why a table hit also
+ * suppresses the append count in countIntentFamilies.
+ */
+const TABLE_INTENT_RE = /(插入|创建|新增|添加|生成|制作|绘制|画|做|建)[^。]{0,12}表格|\b(insert|create|add|make|generate|draw|build)\b.{0,20}\btable\b|[0-9零〇一二两三四五六七八九十]+\s*行\s*[0-9零〇一二两三四五六七八九十]+\s*列|\b\d+\s*[x×]\s*\d+\b.{0,12}\btable\b|\btable\b.{0,12}\b\d+\s*[x×]\s*\d+\b/i;
+
+/**
+ * True when free text asks for a new table to be created. Questions stay Q&A
+ * even when they mention tables ("如何在文档中插入表格？").
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeTableIntent(text) {
+    if (looksLikeQuestion(text)) return false;
+    return TABLE_INTENT_RE.test(text);
+}
+
+/**
  * Format-intent markers: the user wants formatting/styling changes (bold,
  * color, heading, alignment, ...) WITHOUT altering existing text. These
  * route to the format pipeline (JSON formatting ops), not the text-diff
@@ -170,12 +196,14 @@ export function looksLikeCleanupIntent(text) {
 }
 
 /**
- * Counts how many intent families an instruction hits (illustration,
+ * Counts how many intent families an instruction hits (illustration, table,
  * append, format, edit, cleanup). Questions count as zero — the looksLike*
- * guards keep them Q&A. A count of 2+ means a compound instruction ("增加标题，并
- * 深度润色修改") that no single pipeline can serve; those go through the
- * task planner (TURN_TYPE.COMPOUND) instead of dropping or refusing the
- * non-matching parts.
+ * guards keep them Q&A. A table hit suppresses the append count: placement
+ * phrasing ("到文档末尾插入一个表格") names where the table goes, it is not a
+ * second request for appended prose. A count of 2+ means a compound
+ * instruction ("增加标题，并深度润色修改") that no single pipeline can serve;
+ * those go through the task planner (TURN_TYPE.COMPOUND) instead of dropping
+ * or refusing the non-matching parts.
  *
  * @param {string} text - Trimmed chat input
  * @returns {number}
@@ -183,7 +211,9 @@ export function looksLikeCleanupIntent(text) {
 export function countIntentFamilies(text) {
     let count = 0;
     if (looksLikeIllustrationIntent(text)) count++;
-    if (looksLikeAppendIntent(text)) count++;
+    const table = looksLikeTableIntent(text);
+    if (table) count++;
+    if (!table && looksLikeAppendIntent(text)) count++;
     if (looksLikeFormatIntent(text)) count++;
     if (looksLikeEditIntent(text)) count++;
     if (looksLikeCleanupIntent(text)) count++;
@@ -220,6 +250,13 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
     // to append or existing text to edit.
     if (looksLikeIllustrationIntent(trimmed)) {
         return { type: TURN_TYPE.ILLUSTRATION, instruction: trimmed };
+    }
+    // Table intent wins over the append branch: 到文档末尾-style placement
+    // phrases name where the new table goes, not a prose-append request. It
+    // also wins over the selection branch: a table creation anchors on the
+    // selection (before/after) rather than editing it.
+    if (looksLikeTableIntent(trimmed)) {
+        return { type: TURN_TYPE.TABLE, instruction: trimmed };
     }
     // Append intent wins over the selection/edit branches: the user explicitly
     // asked for new content in the document, not a rewrite of existing text.
@@ -712,6 +749,81 @@ export function createConversation(deps) {
     }
 
     /**
+     * Runs a table turn: creates one NEW native Word table from a natural-
+     * language request. Explicit dimensions without content wording resolve
+     * to an empty grid deterministically (no LLM); content-bearing or
+     * dimensionless requests go through the model's strict JSON table
+     * protocol (lib/table-ops.js). The spec is staged in a proposal card
+     * with a read-only grid preview; Apply inserts the table via Word.js
+     * (tracked only where the host records structural revisions).
+     */
+    async function runTableTurn(turn, msg, turnDeps) {
+        if (appState.supportsTables === false) {
+            msg.markError('This Word host does not support the table APIs (WordApi 1.3). Update Word to create tables.');
+            return;
+        }
+        appState.isProcessing = true;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Drafting table...');
+            const proposal = await actions.prepareTableProposal(turnDeps, {
+                instruction: turn.instruction,
+                onToken: (t) => msg.appendModelToken({ id: 'table' }, 'content', t),
+                onReasoning: (t) => msg.appendModelToken({ id: 'table' }, 'reasoning', t),
+            });
+            if (!proposal.spec) {
+                msg.setStatus('No table could be drafted from this instruction.');
+                return;
+            }
+            msg.setStatus('');
+            const rowCount = proposal.spec.rows.length;
+            const columnCount = proposal.spec.rows[0].length;
+            const title = `Proposed table (${rowCount}×${columnCount}, ${proposal.spec.position})`;
+            const countsText = `${rowCount}×${columnCount} table at ${proposal.spec.position}`;
+            const tablePreview = {
+                rows: proposal.spec.rows,
+                headerRowCount: proposal.spec.headerRowCount,
+                style: proposal.spec.style,
+                position: proposal.spec.position,
+            };
+            const card = createProposalCard({
+                title,
+                countsText,
+                tablePreview,
+                comment: null,
+                onApply: async () => {
+                    try {
+                        const result = await actions.applyTableProposal(turnDeps, proposal);
+                        if (result && result.warnings && result.warnings.length > 0) {
+                            card.markWarning(`Table inserted with warning: ${result.warnings[0]}`);
+                        } else {
+                            card.markApplied();
+                        }
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Proposal rejected by user.', 'info');
+                },
+            });
+            msg.attachProposal(card, {
+                title,
+                state: 'pending',
+                countsText,
+                tablePreview,
+                items: [],
+            });
+        } catch (error) {
+            msg.markError(error.message);
+        } finally {
+            appState.isProcessing = false;
+            input.setProcessing(false);
+        }
+    }
+
+    /**
      * Runs an illustration turn: the LLM designs one self-contained SVG from
      * the document's subject and mood, staged in a proposal card with an
      * image preview. Apply rasterizes it to PNG and inserts it into the
@@ -961,6 +1073,8 @@ export function createConversation(deps) {
                     : { type: TURN_TYPE.DOC_EDIT, instruction };
             case 'append':
                 return { type: TURN_TYPE.DOC_APPEND, instruction };
+            case 'table':
+                return { type: TURN_TYPE.TABLE, instruction };
             case 'illustration':
                 return { type: TURN_TYPE.ILLUSTRATION, instruction };
             case 'qa':
@@ -1028,6 +1142,8 @@ export function createConversation(deps) {
             await runAppendTurn(turn.instruction, msg, turnDeps, selectionText);
         } else if (turn.type === TURN_TYPE.ILLUSTRATION) {
             await runIllustrationTurn(turn, msg, turnDeps);
+        } else if (turn.type === TURN_TYPE.TABLE) {
+            await runTableTurn(turn, msg, turnDeps);
         } else if (turn.type === TURN_TYPE.FORMAT) {
             await runFormatTurn(turn, msg, turnDeps, selectionText);
         } else if (turn.type === TURN_TYPE.CLEANUP) {

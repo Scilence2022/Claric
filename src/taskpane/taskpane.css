@@ -572,6 +572,63 @@ body {
     color: var(--error-color);
 }
 
+/* Table proposal preview: compact, read-only, horizontally scrollable. */
+.proposal-card-table-preview {
+    margin-bottom: var(--spacing-sm);
+}
+
+.proposal-card-table-meta {
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+    margin-bottom: var(--spacing-xs);
+}
+
+.proposal-card-table-scroll {
+    max-height: 220px;
+    overflow: auto;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+}
+
+.proposal-card-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: var(--font-size-sm);
+}
+
+.proposal-card-table-caption {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.proposal-card-table th,
+.proposal-card-table td {
+    border: 1px solid var(--border-color);
+    padding: 2px var(--spacing-xs);
+    text-align: left;
+    vertical-align: top;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.proposal-card-table th {
+    background: var(--secondary-bg);
+    font-weight: 600;
+}
+
+.proposal-card-table-empty {
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+    padding: var(--spacing-xs) 0;
+}
+
 /* ==========================================================================
    Comment status bar + log drawer
    ========================================================================== */

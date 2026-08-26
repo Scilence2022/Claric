@@ -15,6 +15,11 @@ describe('parsePlan', () => {
     ]);
   });
 
+  test('accepts the table task type', () => {
+    const tasks = parsePlan('[{"type":"table","instruction":"在文档末尾插入一个三行三列的表格"}]');
+    expect(tasks).toEqual([{ type: 'table', instruction: '在文档末尾插入一个三行三列的表格' }]);
+  });
+
   test('strips code fences and tolerates surrounding prose', () => {
     const tasks = parsePlan('Sure:\n```json\n[{"type":"qa","instruction":"总结全文"}]\n```\nDone.');
     expect(tasks).toEqual([{ type: 'qa', instruction: '总结全文' }]);
@@ -83,7 +88,7 @@ describe('buildPlanPrompt', () => {
   test('embeds the instruction and lists every capability', () => {
     const p = buildPlanPrompt('增加标题，并深度润色修改', false);
     expect(p).toContain('增加标题，并深度润色修改');
-    for (const type of ['"insert"', '"format"', '"edit"', '"append"', '"illustration"', '"qa"']) {
+    for (const type of ['"insert"', '"format"', '"edit"', '"append"', '"table"', '"illustration"', '"qa"']) {
       expect(p).toContain(type);
     }
     expect(p).toContain('Output ONLY a JSON array');

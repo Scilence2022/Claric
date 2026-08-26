@@ -23,13 +23,13 @@ describe('supportsTrackedRowOps', () => {
   test('desktop hosts track table row revisions', () => {
     expect(supportsTrackedRowOps('PC')).toBe(true);
     expect(supportsTrackedRowOps('Mac')).toBe(true);
-    expect(supportsTrackedRowOps('Universal')).toBe(true);
   });
 
-  test('web/mobile/unknown hosts do not', () => {
+  test('web/mobile/universal/unknown hosts fail closed', () => {
     expect(supportsTrackedRowOps('OfficeOnline')).toBe(false);
     expect(supportsTrackedRowOps('iOS')).toBe(false);
     expect(supportsTrackedRowOps('Android')).toBe(false);
+    expect(supportsTrackedRowOps('Universal')).toBe(false);
     expect(supportsTrackedRowOps('unknown')).toBe(false);
   });
 });

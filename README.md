@@ -1,8 +1,9 @@
 # Claric — your redlining scribe for Word
 
 Claric is an AI-powered Microsoft Word add-in with a chat-driven taskpane. Tell
-it what to do — polish a passage, restyle the headings, add a title, draw an
-illustration, continue writing, delete empty paragraphs, or summarize the
+it what to do — polish a passage, restyle the headings, add a title, insert a
+table, draw an illustration, continue writing, delete empty paragraphs, or
+summarize the
 comments — and it routes the request to the right pipeline, stages the result
 as a reviewable proposal card, and applies it as native tracked changes.
 Instructions work in English or Chinese, against any OpenAI-compatible LLM
@@ -15,9 +16,9 @@ backend, local or hosted.
 - Chat-first taskpane: message list, bottom input bar, welcome empty state with skill chips
 - Slash-command skill picker — type `/` to filter; Enter/Tab/click to select; the send button morphs into Cancel while a run is processing (AbortController)
 - Built-in skills: `/copy-edit`, `/check-doc`, `/flag-issues`, `/summarize-contract`, `/industry-overview`, `/storylining`; saved prompts register as custom slash commands
-- Intent routing for free text (English and Chinese): edit, format, append, illustration, and empty-paragraph cleanup each route to their own pipeline; questions always go to Q&A
+- Intent routing for free text (English and Chinese): edit, format, append, table, illustration, and empty-paragraph cleanup each route to their own pipeline; questions always go to Q&A
 - Free text with a non-empty selection → amendment pipeline with the text as the edit instruction; `selection-first` skills run on the selection when one exists, otherwise on the whole document
-- Compound instructions ("add a title, then polish the whole text") are decomposed by an LLM task planner into up to 6 ordered tasks (`insert`, `format`, `edit`, `append`, `illustration`, `qa`), one proposal card per pipeline
+- Compound instructions ("add a title, then polish the whole text") are decomposed by an LLM task planner into up to 6 ordered tasks (`insert`, `format`, `edit`, `append`, `table`, `illustration`, `qa`), one proposal card per pipeline
 - Ambiguous instructions with no intent keyword are classified by the planner instead of defaulting to Q&A; planning failure falls back gracefully
 
 ### Staged Proposals & Per-Change Review
@@ -61,6 +62,14 @@ Every document mutation is staged as a proposal card — nothing is written unti
 ### Document Append
 
 - "Continue writing" drafts new content against the full document context and stages an append-to-end proposal; Apply inserts it as tracked changes
+
+### Table Creation
+
+- "Insert a 3×3 table at the end of the document" routes to a dedicated table pipeline; explicit dimensions without a content request resolve to an empty grid deterministically — no LLM call, nothing to hallucinate
+- Content-bearing requests ("…并填充项目数据" / "fill it with project data") go through a strict JSON table protocol (`src/lib/table-ops.js`): a rectangular plain-text cell matrix, row/column/cell/character limits, and a dimension check against the instruction (a mismatched model grid rejects the whole proposal)
+- The proposal card shows a read-only grid preview; Apply inserts one native Word table at the document start/end or before/after the selection, with the grid style, an optional header row, and AutoFit
+- The insertion is recorded as a tracked revision on Word desktop; on hosts without structural-revision support (Word for the web, mobile) it lands untracked with an explicit warning instead of a half-tracked state
+- Editing an EXISTING table is a separate route: select its cells and the multi-cell patch protocol (`src/lib/table-patch.js`) stages per-cell edits and row insert/delete ops
 
 ### Empty-Paragraph Cleanup
 
@@ -486,13 +495,16 @@ Test suites cover:
 - `reassembler.spec.js` — paragraph alignment, line ending normalization, content validation, staged-range re-anchoring, blank-paragraph handling
 - `response-parser.spec.js` — parseDelimitedResponse, fallback classification
 - `format-ops.spec.js` — parseFormatOps allowlist sanitizing, insert ops, describeFormatOp
+- `table-ops.spec.js` — table creation spec inference (EN/ZH dimensions), creation prompt, strict response parsing/validation, limits
+- `table-patch.spec.js` — multi-cell patch prompt, JSON parsing/validation, bounds/row-op rules
+- `word-actions-table.spec.js` / `word-actions-table-create.spec.js` — table selection patch route (ordering, tracking split, staleness guards) and table creation route (empty-grid fast path, constrained generation, insertion positions, platform tracking split)
 - `illustration.spec.js` — parseIllustration, SVG sanitizing, dimensions, position heuristic
 - `task-planner.spec.js` — parsePlan caps/truncation, buildPlanPrompt
 - `providers.spec.js` — provider preset catalog, MiniMax pair, default config
 - `char-diff.spec.js` — CJK detection, computeCharEdits, applyCharDiffStrategy
 - `word-diff.spec.js` — word/sentence diff modes, sliceSearchPieces
 - `skills.spec.js` — built-in skill registry, resolveSkill parsing, custom skill registration
-- `conversation.spec.js` — chat turn routing (skill / selection edit / doc edit / format / append / illustration / compound / Q&A), staged proposals, selective apply, honest warnings, concurrency guard, cancel
+- `conversation.spec.js` — chat turn routing (skill / selection edit / doc edit / format / append / table / illustration / compound / Q&A), staged proposals, selective apply, honest warnings, concurrency guard, cancel
 - `proposal-card.spec.js` — per-change checkboxes, inline diff, locate, selective apply, warning/error states
 - `chat-view.spec.js` — model activity auto-scroll follow/disengage behavior
 - `config-persistence.spec.js` — normalizeConfig validation and legacy migration

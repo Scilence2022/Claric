@@ -89,11 +89,18 @@ describe('parseTablePatchResponse', () => {
     expect(cells).toEqual([{ row: 2, col: 1, text: 'old a' }]);
   });
 
-  test('duplicate cell entries: last wins with a warning', () => {
+  test('conflicting duplicate cell entries are all dropped (never last-wins)', () => {
     const raw = '{"cells":[{"row":2,"col":1,"text":"first"},{"row":2,"col":1,"text":"second"}]}';
     const { cells, warnings } = parseTablePatchResponse(raw, { ...DIMS_3X2, originals: ORIGINALS_3X2 });
-    expect(cells).toEqual([{ row: 2, col: 1, text: 'second' }]);
-    expect(warnings[0]).toMatch(/Duplicate/);
+    expect(cells).toEqual([]);
+    expect(warnings[0]).toMatch(/Conflicting duplicate/);
+  });
+
+  test('identical duplicate cell entries are coalesced with a warning', () => {
+    const raw = '{"cells":[{"row":2,"col":1,"text":"new a"},{"row":2,"col":1,"text":"new a"}]}';
+    const { cells, warnings } = parseTablePatchResponse(raw, { ...DIMS_3X2, originals: ORIGINALS_3X2 });
+    expect(cells).toEqual([{ row: 2, col: 1, text: 'new a' }]);
+    expect(warnings[0]).toMatch(/coalesced/);
   });
 
   test('coerces numeric cell values to text', () => {
@@ -119,15 +126,14 @@ describe('parseTablePatchResponse', () => {
     expect(warnings).toHaveLength(3);
   });
 
-  test('insert values are padded/truncated to the column count', () => {
-    const raw = '{"rowOps":[{"op":"insertBefore","row":1,"values":["only"]},{"op":"insertAfter","row":2,"values":["a","b","c"]}]}';
+  test('insert values must match the column count exactly (no silent pad/truncate)', () => {
+    const raw = '{"rowOps":[{"op":"insertBefore","row":1,"values":["only"]},{"op":"insertAfter","row":2,"values":["a","b","c"]},{"op":"insertAfter","row":3,"values":["x","y"]}]}';
     const { rowOps, warnings } = parseTablePatchResponse(raw, DIMS_3X2);
     expect(rowOps).toEqual([
-      { op: 'insertAfter', row: 2, values: ['a', 'b'] },
-      { op: 'insertBefore', row: 1, values: ['only', ''] },
+      { op: 'insertAfter', row: 3, values: ['x', 'y'] },
     ]);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/truncated/);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/exactly 2 required/);
   });
 
   test('non-array cells/rowOps are ignored with warnings', () => {
@@ -135,6 +141,91 @@ describe('parseTablePatchResponse', () => {
     expect(cells).toEqual([]);
     expect(rowOps).toEqual([]);
     expect(warnings).toHaveLength(2);
+  });
+
+  test('allowedBounds restrict cells to the selected region', () => {
+    const raw = '{"cells":[{"row":1,"col":1,"text":"outside"},{"row":2,"col":2,"text":"inside"}]}';
+    const { cells, warnings } = parseTablePatchResponse(raw, {
+      ...DIMS_3X2,
+      allowedBounds: { startRow: 2, endRow: 3, startCol: 2, endCol: 2 },
+    });
+    expect(cells).toEqual([{ row: 2, col: 2, text: 'inside' }]);
+    expect(warnings[0]).toMatch(/outside allowedBounds/);
+  });
+
+  test('invalid allowedBounds reject the entire patch', () => {
+    const raw = '{"cells":[{"row":1,"col":1,"text":"x"}]}';
+    const { cells, warnings } = parseTablePatchResponse(raw, {
+      ...DIMS_3X2,
+      allowedBounds: { startRow: 3, endRow: 1, startCol: 1, endCol: 2 },
+    });
+    expect(cells).toEqual([]);
+    expect(warnings[0]).toMatch(/allowedBounds/);
+  });
+
+  test('row ops are rejected for partial-width or disallowed selections', () => {
+    const raw = '{"rowOps":[{"op":"delete","row":2}]}';
+    const partial = parseTablePatchResponse(raw, {
+      ...DIMS_3X2,
+      allowedBounds: { startRow: 1, endRow: 3, startCol: 1, endCol: 1, allowRowOps: true },
+    });
+    expect(partial.rowOps).toEqual([]);
+    expect(partial.warnings[0]).toMatch(/full-width/);
+
+    const disallowed = parseTablePatchResponse(raw, {
+      ...DIMS_3X2,
+      allowedBounds: { startRow: 1, endRow: 3, startCol: 1, endCol: 2 },
+    });
+    expect(disallowed.rowOps).toEqual([]);
+    expect(disallowed.warnings[0]).toMatch(/not allowed/);
+  });
+
+  test('full-width allowedBounds with allowRowOps accept in-range row ops', () => {
+    const raw = '{"rowOps":[{"op":"delete","row":2},{"op":"insertAfter","row":1,"values":["a","b"]}]}';
+    const { rowOps, warnings } = parseTablePatchResponse(raw, {
+      ...DIMS_3X2,
+      allowedBounds: { startRow: 1, endRow: 3, startCol: 1, endCol: 2, allowRowOps: true },
+    });
+    expect(rowOps).toEqual([
+      { op: 'delete', row: 2 },
+      { op: 'insertAfter', row: 1, values: ['a', 'b'] },
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  test('conflicting duplicate row ops are all dropped', () => {
+    const raw = '{"rowOps":[{"op":"insertAfter","row":1,"values":["a","b"]},{"op":"insertAfter","row":1,"values":["x","y"]}]}';
+    const { rowOps, warnings } = parseTablePatchResponse(raw, DIMS_3X2);
+    expect(rowOps).toEqual([]);
+    expect(warnings[0]).toMatch(/Conflicting duplicate row op/);
+  });
+
+  test('deleting every existing row is rejected as a whole', () => {
+    const raw = '{"rowOps":[{"op":"delete","row":1},{"op":"delete","row":2},{"op":"delete","row":3}]}';
+    const { rowOps, warnings } = parseTablePatchResponse(raw, DIMS_3X2);
+    expect(rowOps).toEqual([]);
+    expect(warnings[0]).toMatch(/delete all existing rows/);
+  });
+
+  test('unsupported colOps are warned and ignored', () => {
+    const raw = '{"cells":[{"row":2,"col":1,"text":"new a"}],"colOps":[{"op":"delete","col":1}]}';
+    const { cells, warnings } = parseTablePatchResponse(raw, DIMS_3X2);
+    expect(cells).toHaveLength(1);
+    expect(warnings[0]).toMatch(/colOps/);
+  });
+
+  test('oversized responses are rejected before parsing', () => {
+    const { cells, rowOps, warnings } = parseTablePatchResponse('x'.repeat(300 * 1024), DIMS_3X2);
+    expect(cells).toEqual([]);
+    expect(rowOps).toEqual([]);
+    expect(warnings[0]).toMatch(/character limit/);
+  });
+
+  test('entry-count caps drop the whole bucket with a warning', () => {
+    const manyCells = Array.from({ length: 600 }, (_, i) => ({ row: 1, col: 1, text: `v${i}` }));
+    const { cells, warnings } = parseTablePatchResponse(JSON.stringify({ cells: manyCells }), DIMS_3X2);
+    expect(cells).toEqual([]);
+    expect(warnings[0]).toMatch(/limit is 512/);
   });
 });
 

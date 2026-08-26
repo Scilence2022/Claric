@@ -36,6 +36,10 @@ const ENV = {
   MINIMAX_PROXY_TARGET: process.env.MINIMAX_PROXY_TARGET || 'https://api.minimax.io',
   MINIMAX_CN_PROXY_PATH: process.env.MINIMAX_CN_PROXY_PATH || '/minimax-cn',
   MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
+  // Custom (any OpenAI-compatible endpoint). Path defaults to empty so the
+  // dev server does not register a route unless the user opts in.
+  CUSTOM_PROXY_PATH: process.env.CUSTOM_PROXY_PATH || '',
+  CUSTOM_PROXY_TARGET: process.env.CUSTOM_PROXY_TARGET || '',
 };
 
 
@@ -64,6 +68,7 @@ function buildLlmProxies(ENV) {
     ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET', 'Kimi'],
     ['MINIMAX_PROXY_PATH', 'MINIMAX_PROXY_TARGET', 'MiniMax'],
     ['MINIMAX_CN_PROXY_PATH', 'MINIMAX_CN_PROXY_TARGET', 'MiniMax-CN'],
+    ['CUSTOM_PROXY_PATH', 'CUSTOM_PROXY_TARGET', 'Custom'],
   ];
 
   // webpack-dev-server v5 requires the array form: one entry per provider,
