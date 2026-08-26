@@ -323,7 +323,8 @@ document checks; use the selection routes (table patch / mixed) to edit it.
   → LLM returns one self-contained SVG
   → sanitizeSvg() (DOMPurify SVG profile) → card with image preview
   → on Apply: SVG rasterized to PNG (offscreen canvas), inserted as a
-    centered inline picture ≤450pt wide at document start (题图/头图) or end
+    centered inline picture ≤450pt wide at document start (题图/头图), end,
+    or inline at the caret (光标/此处 — anchor read at apply time)
 ```
 
 ### Cleanup Flow
@@ -417,7 +418,7 @@ OOXML tracked changes pipeline:
 - `parseIllustration()` — fence stripping, 256KB cap
 - `sanitizeSvg()` — DOMPurify with SVG + SVG-filters profiles
 - `svgDimensions()` / `ensureSvgDimensions()` — width/height from viewBox or 1200×800 default (needed for rasterization)
-- `illustrationPositionFromInstruction()` — 题图/头图/开头/top/header → document start, else end
+- `illustrationPositionFromInstruction()` — 光标/此处/cursor → caret (anchor read at apply time), 题图/头图/开头/top/header → document start, else end
 - Applied via `_svgToPngBase64()` (offscreen canvas, 1600px wide) + `insertInlinePictureFromBase64`, centered, scaled to ≤450pt width
 
 ### Task Planner (`src/lib/task-planner.js`)

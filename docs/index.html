@@ -1411,7 +1411,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
       <li>The prompt contract forbids scripts, event handlers, and <code>foreignObject</code>; <code>sanitizeSvg()</code> enforces it with DOMPurify's SVG + SVG-filters profiles, and parsing is capped at 256KB.</li>
       <li>Dimensions come from the SVG's <code>viewBox</code> (1200&times;800 default) so the raster is always well-formed; the offscreen canvas renders at 1600px wide.</li>
       <li>Word's <code>insertInlinePictureFromBase64</code> rejects SVG, so the illustration is inserted as a PNG, centered, scaled to at most 450pt wide, with a best-effort alt-text description&mdash;tracked as a revision when track changes is on.</li>
-      <li>A position heuristic reads the instruction: header/题图/头图 &rarr; document start, otherwise document end. The proposal card shows an image preview before anything is inserted.</li>
+      <li>A position heuristic reads the instruction: 光标/此处/cursor &rarr; inline at the caret (anchored when Apply is clicked), header/题图/头图 &rarr; document start, otherwise document end. The proposal card shows an image preview before anything is inserted.</li>
     </ul>
   </section>
 
