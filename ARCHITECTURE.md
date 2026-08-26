@@ -74,6 +74,9 @@ src/
     platform.js                # Office host detection; which hosts record
                                #   table row insert/delete as tracked revisions
     selection-with-comments.js # Splices comment anchors into selection OOXML
+    selection-context.js       # Pure formatters: table selections → LLM-ready
+                               #   markdown grids (budget-aware row/col
+                               #   truncation), mixed paragraph+table blocks
     sanitize.js                # Shared lazy DOMPurify factory (used by
                                #   document-generator and illustration)
     vendor/
@@ -171,6 +174,8 @@ tests/                         # Jest unit tests (901 tests, 37 suites)
   char-diff.spec.js            # CJK char-level diff
   word-diff.spec.js            # Word/sentence diff modes
   selection-with-comments.spec.js # Comment anchor splicing
+  selection-context.spec.js   # Table→markdown formatting, truncation notes,
+                               #   mixed paragraph+table interleaving
   generate-manifest.spec.js    # Manifest generation
   __mocks__/                   # Jest style mock
 

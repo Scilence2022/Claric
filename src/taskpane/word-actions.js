@@ -31,6 +31,7 @@ import { supportsTrackedRowOps } from '../lib/platform.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
+import { formatTableMarkdown, formatMixedContext } from '../lib/selection-context.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
 import { parseDelimitedResponse, buildFallbackClassificationPrompt } from '../lib/response-parser.js';
 import { parseDocument } from '../lib/document-parser.js';
@@ -284,6 +285,149 @@ export async function readMixedTableSelection(deps) {
         log(`Mixed selection: ${mixed.paraCount} paragraph(s), ${mixed.tableParaCount} inside table(s) — paragraph-granular mode`, 'info');
     }
     return mixed;
+}
+
+/**
+ * Reads the current selection as STRUCTURED prompt context: table content
+ * becomes a markdown grid (lib/selection-context.js) instead of the
+ * flattened cell string selection.text gives. Read-only, so unlike the
+ * edit-side readers above there is no isUniform constraint — merged cells
+ * simply render as they read.
+ *
+ * Shapes, mirroring the edit-side routing:
+ * - selection contained in a table (single or multi cell) → the WHOLE
+ *   table matrix, with the covered region noted in the marker. Questions
+ *   about selected data cells still need the header row for meaning.
+ * - selection overlapping but not contained in a table (caption + table +
+ *   note) → document-ordered paragraphs + table grids.
+ * - plain text selection / no table overlap → null (caller keeps the flat
+ *   selection text).
+ *
+ * Any failure resolves to null so the QA path falls back to plain text
+ * instead of erroring the turn.
+ *
+ * @param {object} deps - { log }
+ * @returns {Promise<null | {kind: 'table', contextText: string, rowCount: number,
+ *   colCount: number} | {kind: 'mixed', contextText: string, tableCount: number}>}
+ */
+export async function readSelectionTableContext(deps) {
+    const { log } = deps;
+    let result = null;
+    try {
+        await Word.run(async (context) => {
+            const selection = context.document.getSelection();
+            const table = selection.parentTableOrNullObject;
+            const anchorCell = selection.parentTableCellOrNullObject;
+            table.load('isNullObject');
+            anchorCell.load('isNullObject');
+            await context.sync();
+
+            // Contained in a table (single- or multi-cell selection).
+            if (!table.isNullObject) {
+                let startCell = null;
+                let endCell = null;
+                if (!anchorCell.isNullObject) {
+                    anchorCell.load('rowIndex,cellIndex');
+                } else {
+                    // Rectangular covered region bounded by the start/end
+                    // cells (same two-coordinate trick as
+                    // readSelectionTableRegion).
+                    startCell = selection.getRange(Word.RangeLocation.start).parentTableCellOrNullObject;
+                    endCell = selection.getRange(Word.RangeLocation.end).parentTableCellOrNullObject;
+                    startCell.load('isNullObject,rowIndex,cellIndex');
+                    endCell.load('isNullObject,rowIndex,cellIndex');
+                }
+                table.load('values');
+                await context.sync();
+
+                const values = table.values || [];
+                const rowCount = values.length;
+                const colCount = rowCount > 0 && Array.isArray(values[0]) ? values[0].length : 0;
+
+                let note = '';
+                if (!anchorCell.isNullObject) {
+                    note = `user selected cell R${anchorCell.rowIndex + 1}C${anchorCell.cellIndex + 1}`;
+                } else if (!startCell.isNullObject && !endCell.isNullObject) {
+                    const startRow = Math.min(startCell.rowIndex, endCell.rowIndex) + 1;
+                    const endRow = Math.max(startCell.rowIndex, endCell.rowIndex) + 1;
+                    const startCol = Math.min(startCell.cellIndex, endCell.cellIndex) + 1;
+                    const endCol = Math.max(startCell.cellIndex, endCell.cellIndex) + 1;
+                    note = (startRow === 1 && endRow === rowCount && startCol === 1 && endCol === colCount)
+                        ? 'user selected the whole table'
+                        : `user selected R${startRow}C${startCol}–R${endRow}C${endCol}`;
+                }
+
+                const contextText = formatTableMarkdown(values, { note });
+                if (contextText) {
+                    log(`Selection context: table ${rowCount}×${colCount}${note ? ` (${note})` : ''}`, 'info');
+                    result = { kind: 'table', contextText, rowCount, colCount };
+                }
+                return;
+            }
+
+            // Mixed selection: table overlap without containment (mirrors
+            // readMixedTableSelection's detection).
+            const paragraphs = selection.paragraphs;
+            paragraphs.load('items');
+            await context.sync();
+            if (paragraphs.items.length === 0) return;
+
+            for (const para of paragraphs.items) para.load('text');
+            const tableChecks = paragraphs.items.map((p) => {
+                const t = p.parentTableOrNullObject;
+                t.load('isNullObject');
+                return t;
+            });
+            await context.sync();
+
+            const inTable = tableChecks.map((t) => !t.isNullObject);
+            if (!inTable.some(Boolean)) return;
+
+            // Group consecutive table paragraphs into runs. Adjacent Word
+            // tables merge unless a paragraph separates them, so each run is
+            // one table; its matrix is read from the run's first paragraph.
+            const runs = [];
+            for (let i = 0; i < inTable.length; i++) {
+                if (!inTable[i]) continue;
+                const last = runs[runs.length - 1];
+                if (last && last.end === i - 1) {
+                    last.end = i;
+                } else {
+                    runs.push({ start: i, end: i });
+                }
+            }
+
+            const runTables = runs.map((run) => {
+                const t = paragraphs.items[run.start].parentTableOrNullObject;
+                t.load('values');
+                return t;
+            });
+            await context.sync();
+
+            const parts = [];
+            let cursor = 0;
+            runs.forEach((run, i) => {
+                for (let j = cursor; j < run.start; j++) {
+                    parts.push({ type: 'paragraph', text: paragraphs.items[j].text });
+                }
+                parts.push({ type: 'table', values: runTables[i].values || [] });
+                cursor = run.end + 1;
+            });
+            for (let j = cursor; j < paragraphs.items.length; j++) {
+                parts.push({ type: 'paragraph', text: paragraphs.items[j].text });
+            }
+
+            const contextText = formatMixedContext(parts);
+            if (contextText) {
+                log(`Selection context: mixed selection, ${runs.length} table(s) — markdown mode`, 'info');
+                result = { kind: 'mixed', contextText, tableCount: runs.length };
+            }
+        });
+    } catch (err) {
+        if (log) log(`Table context read failed (${err.message}); using plain selection text.`, 'warning');
+        result = null;
+    }
+    return result;
 }
 
 /**
@@ -1147,8 +1291,13 @@ export async function prepareTableProposal(deps, { instruction, onToken, onReaso
     }
 
     // Content-bearing or dimensionless request: the model fills the grid.
-    // Selection text is the preferred context; fall back to the document.
-    let scopeText = (await readSelectionSnippet()).trim();
+    // Selection is the preferred context — a selected table renders as a
+    // markdown grid (structure survives), plain selections pass through as
+    // flat text; fall back to the document.
+    const tableContext = await readSelectionTableContext({ log });
+    let scopeText = tableContext
+        ? tableContext.contextText
+        : (await readSelectionSnippet()).trim();
     if (!scopeText) {
         const richness = (appState.config.docExtraction || {}).richness || 'structured';
         log('Extracting document text for context...', 'info');
@@ -2125,7 +2274,18 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
     }
     prompt += question;
     if (selectionText && selectionText.trim()) {
-        prompt += '\n\n--- SELECTED TEXT (the user is asking about this excerpt) ---\n' + selectionText.trim();
+        // Table selections carry structure that selection.text flattens away:
+        // read the grid as markdown, fall back to the flat text otherwise
+        // (readSelectionTableContext swallows its own failures → null).
+        const tableContext = await readSelectionTableContext(deps);
+        if (tableContext) {
+            const label = tableContext.kind === 'mixed'
+                ? 'SELECTED CONTENT (paragraphs and tables the user is asking about)'
+                : 'SELECTED TABLE (the user is asking about this table)';
+            prompt += `\n\n--- ${label} ---\n` + tableContext.contextText;
+        } else {
+            prompt += '\n\n--- SELECTED TEXT (the user is asking about this excerpt) ---\n' + selectionText.trim();
+        }
     }
     prompt += '\n\n--- DOCUMENT ---\n' + documentText;
 
