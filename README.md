@@ -1,5 +1,9 @@
 # Claric — your redlining scribe for Word
 
+<p align="center">
+  <img src="assets/icon-128.png" alt="Claric" width="96" height="96" />
+</p>
+
 Claric is an AI-powered Microsoft Word add-in with a chat-driven taskpane. Tell
 it what to do — polish a passage, restyle the headings, add a title, insert a
 table, draw an illustration, continue writing, delete empty paragraphs, or
@@ -70,6 +74,7 @@ Every document mutation is staged as a proposal card — nothing is written unti
 - The proposal card shows a read-only grid preview; Apply inserts one native Word table at the document start/end or before/after the selection, with the grid style, an optional header row, and AutoFit
 - The insertion is recorded as a tracked revision on Word desktop; on hosts without structural-revision support (Word for the web, mobile) it lands untracked with an explicit warning instead of a half-tracked state
 - Editing an EXISTING table is a separate route: select its cells and the multi-cell patch protocol (`src/lib/table-patch.js`) stages per-cell edits and row insert/delete ops
+- Tables and images enter the conversation as **controllable objects with a tool list**, not raw content: a multi-cell/whole-table selection or an image selection routes to a tool-loop session (`src/lib/table-model.js` / `src/lib/image-model.js`). The table side exposes `get_state` / `set_cell` / `insert_row` / `delete_row` / `merge_cells`; the image side exposes `list_images` / `read_image` (multimodal content reading via the loop) / `design_illustration` / `replace_illustration` / `delete_image` / `resize_image` / `set_alt_text`. Ops are staged as a diffable transaction and applied only on Apply.
 
 ### Empty-Paragraph Cleanup
 
