@@ -86,8 +86,9 @@ src/
                                #   call/turn + observation, step budget,
                                #   injected send/execute, abort-aware)
     table-model.js             # L2 tool-calling: table draft model + tools
-                               #   (get_state/set_cell/insert_row/delete_row);
-                               #   validates ops, translates to tablePatch
+                               #   (get_state/set_cell/insert_row/delete_row/
+                               #   merge_cells); validates ops, translates to
+                               #   tablePatch (incl. merges)
     image-model.js             # L2 tool-calling: image draft model + tools
                                #   (list/design/replace/delete/resize/alt/
                                #   read_image — visual content via the loop);
@@ -150,7 +151,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (1036 tests, 44 suites)
+tests/                         # Jest unit tests (1043 tests, 44 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -419,7 +420,9 @@ L3  lib/tool-loop.js                      (one JSON call/turn + observation,
                                            stripped)
 L2  lib/table-model.js, lib/image-model.js (draft models the tools operate on —
                                            NEVER Word directly; ops are a
-                                           staged, diffable transaction)
+                                           staged, diffable transaction; the
+                                           table side covers cell text, row
+                                           ops, and merge_cells)
 L1  lib/tool-registry.js                  (tool specs + loop system prompt)
 ```
 
@@ -633,7 +636,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 1036 tests, 44 suites, ~1s
+npm test          # 1043 tests, 44 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

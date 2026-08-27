@@ -123,6 +123,22 @@ describe('prepareTableToolEdit', () => {
         expect(proposal.toolLoop).toEqual({ steps: 3, finished: true });
     });
 
+    test('merge_cells stages a merge op + card item', async () => {
+        readSelectionTableRegion.mockResolvedValue(REGION);
+        sendMessages.mockResolvedValueOnce('{"tool":"set_cell","args":{"row":2,"col":1,"text":"merged"}}')
+            .mockResolvedValueOnce('{"tool":"merge_cells","args":{"row":2,"col":1,"rows":2,"cols":2}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"merged the block"}}');
+
+        const proposal = await prepareTableToolEdit(makeDeps(), { instruction: '把 R2C1 到 R3C2 合并' });
+
+        expect(proposal.tablePatch.merges).toEqual([
+            { op: 'merge', startRow: 2, startCol: 1, endRow: 3, endCol: 2 },
+        ]);
+        // Card item for the merge, after the cell item.
+        const mergeItem = proposal.tableItems.find((i) => /^Merge R2C1/.test(i.label));
+        expect(mergeItem).toMatchObject({ before: 'old a | b | c | d', after: 'merged' });
+    });
+
     test('returns null for non-table selections (caller falls back)', async () => {
         readSelectionTableRegion.mockResolvedValue(null);
         expect(await prepareTableToolEdit(makeDeps(), { instruction: 'x' })).toBeNull();

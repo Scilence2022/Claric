@@ -767,6 +767,7 @@ export function createConversation(deps) {
                         let toApply = proposal;
                         if (isTable && selectedIds) {
                             const cellCount = proposal.tablePatch.cells.length;
+                            const rowOpCount = proposal.tablePatch.rowOps.length;
                             const picked = new Set(selectedIds);
                             toApply = {
                                 ...proposal,
@@ -774,6 +775,7 @@ export function createConversation(deps) {
                                     ...proposal.tablePatch,
                                     cells: proposal.tablePatch.cells.filter((_, i) => picked.has(i)),
                                     rowOps: proposal.tablePatch.rowOps.filter((_, j) => picked.has(cellCount + j)),
+                                    merges: (proposal.tablePatch.merges || []).filter((_, k) => picked.has(cellCount + rowOpCount + k)),
                                 },
                             };
                         }
@@ -1250,6 +1252,7 @@ export function createConversation(deps) {
                         let toApply = proposal;
                         if (selectedIds) {
                             const cellCount = proposal.tablePatch.cells.length;
+                            const rowOpCount = proposal.tablePatch.rowOps.length;
                             const picked = new Set(selectedIds);
                             toApply = {
                                 ...proposal,
@@ -1257,6 +1260,7 @@ export function createConversation(deps) {
                                     ...proposal.tablePatch,
                                     cells: proposal.tablePatch.cells.filter((_, i) => picked.has(i)),
                                     rowOps: proposal.tablePatch.rowOps.filter((_, j) => picked.has(cellCount + j)),
+                                    merges: (proposal.tablePatch.merges || []).filter((_, k) => picked.has(cellCount + rowOpCount + k)),
                                 },
                             };
                         }

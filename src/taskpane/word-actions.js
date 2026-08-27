@@ -1147,10 +1147,18 @@ async function _applyTablePatch(deps, proposal) {
         log(`${warning} Cell text edits are still tracked.`, 'warning');
     }
 
+    const merges = tablePatch.merges || [];
+    if (merges.length > 0) {
+        const warning = 'Cell merges are structural and cannot be tracked as revisions — applied directly.';
+        warnings.push(warning);
+        log(warning, 'warning');
+    }
+
     log('Applying table patch...', 'info');
     let cellsApplied = 0;
     let cellsSkipped = 0;
     let rowOpsApplied = 0;
+    let mergesApplied = 0;
 
     await Word.run(async (context) => {
         const selection = context.document.getSelection();
@@ -1235,6 +1243,48 @@ async function _applyTablePatch(deps, proposal) {
                 }
                 await context.sync();
             }
+
+            // Phase 3: cell merges. Merge is a structure op — hosts do not
+            // track it as a revision, so it always runs untracked here. The
+            // non-anchor cells are cleared first so the merged cell ends up
+            // holding the anchor's content deterministically.
+            if (merges.length > 0) {
+                if (Word.ChangeTrackingMode) {
+                    context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                    await context.sync();
+                }
+                for (const m of merges) {
+                    if (typeof table.mergeCells !== 'function') {
+                        warnings.push('Cell merge is not supported by this Word API — skipped.');
+                        log('Cell merge skipped (Word API lacks Table.mergeCells).', 'warning');
+                        continue;
+                    }
+                    // Clear the non-anchor cells so Word's concatenation on
+                    // merge yields just the anchor's content.
+                    for (let r = m.startRow; r <= m.endRow; r++) {
+                        for (let c = m.startCol; c <= m.endCol; c++) {
+                            if (r === m.startRow && c === m.startCol) continue;
+                            const cell = table.getCell(r - 1, c - 1);
+                            const paras = cell.body.paragraphs;
+                            paras.load('items');
+                            await context.sync();
+                            try {
+                                for (const para of paras.items) para.clear();
+                            } catch (clearErr) {
+                                log(`Merge: could not clear R${r}C${c} (${clearErr.message || clearErr})`, 'warning');
+                            }
+                        }
+                    }
+                    await context.sync();
+
+                    const first = table.getCell(m.startRow - 1, m.startCol - 1).getRange();
+                    const last = table.getCell(m.endRow - 1, m.endCol - 1).getRange();
+                    const range = first.union(last);
+                    table.mergeCells(range);
+                    await context.sync();
+                    mergesApplied++;
+                }
+            }
         } finally {
             // Later turns and comments must not inherit tracking state.
             if (Word.ChangeTrackingMode) {
@@ -1245,8 +1295,9 @@ async function _applyTablePatch(deps, proposal) {
     });
 
     log(`Table patch applied: ${cellsApplied} cell(s) revised, ${rowOpsApplied} row op(s)` +
+        (mergesApplied ? `, ${mergesApplied} merge(s)` : '') +
         (cellsSkipped ? `, ${cellsSkipped} cell(s) already up to date` : ''), 'success');
-    return { cellsApplied, cellsSkipped, rowOpsApplied, warnings };
+    return { cellsApplied, cellsSkipped, rowOpsApplied, mergesApplied, warnings };
 }
 
 /**

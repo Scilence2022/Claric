@@ -193,6 +193,26 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep }
                 after: op.values.join(' | '),
                 searchText: ((originals[op.row - 1] || [])[0] || '').trim().slice(0, 60) || undefined,
             })),
+        ...(patch.merges || []).map((m) => {
+            const regionText = [];
+            for (let r = m.startRow; r <= m.endRow; r++) {
+                for (let c = m.startCol; c <= m.endCol; c++) {
+                    regionText.push((originals[r - 1] || [])[c - 1] || '');
+                }
+            }
+            // The merged result holds the anchor's FINAL text (a set_cell on
+            // the anchor overrides the original; originals otherwise).
+            const anchorEdit = patch.cells.find((c) => c.row === m.startRow && c.col === m.startCol);
+            const anchor = anchorEdit
+                ? anchorEdit.text
+                : ((originals[m.startRow - 1] || [])[m.startCol - 1] || '');
+            return {
+                label: `Merge R${m.startRow}C${m.startCol}–R${m.endRow}C${m.endCol}`,
+                before: regionText.join(' | '),
+                after: anchor,
+                searchText: anchor.trim().slice(0, 60) || undefined,
+            };
+        }),
     ];
 
     return {
