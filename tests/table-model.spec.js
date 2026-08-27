@@ -142,7 +142,62 @@ describe('executeTableTool', () => {
 
     test('TABLE_TOOL_SPECS are registry-valid', () => {
         expect(TABLE_TOOL_SPECS.map((t) => t.name)).toEqual([
-            'get_state', 'set_cell', 'insert_row', 'delete_row',
+            'get_state', 'set_cell', 'insert_row', 'delete_row', 'merge_cells',
         ]);
+    });
+
+    test('merge_cells stages a rectangular merge and marks away-cells read-only', () => {
+        const model = createTableModel(REGION);
+        expect(model.mergeCells({ row: 2, col: 1, rows: 2, cols: 2 }))
+            .toEqual({ ok: true, result: { merged: 'R2C1–R3C2 (anchor R2C1)' } });
+
+        // Away cells (non-anchor) become read-only — set_cell rejects them.
+        expect(model.setCell(2, 2, 'x').error).toMatch(/merged away/);
+        expect(model.setCell(3, 1, 'x').error).toMatch(/merged away/);
+        // The anchor stays editable.
+        expect(model.setCell(2, 1, 'merged cell').ok).toBe(true);
+
+        // Grid reflects the merge.
+        const { result } = model.getState();
+        expect(result.grid).toContain('[R2C2] (merged — read-only)');
+        expect(result.pendingOps).toEqual([
+            { tool: 'set_cell', row: 2, col: 1, text: 'merged cell' },
+            { tool: 'merge_cells', op: 'merge', startRow: 2, startCol: 1, endRow: 3, endCol: 2 },
+        ]);
+
+        const patch = model.toTablePatch();
+        expect(patch.merges).toEqual([{ op: 'merge', startRow: 2, startCol: 1, endRow: 3, endCol: 2 }]);
+    });
+
+    test('merge_cells validation: bounds, single-cell, second merge, existing merge', () => {
+        const model = createTableModel(REGION);
+        expect(model.mergeCells({ row: 1, col: 1, rows: 1, cols: 2 }).ok).toBe(true);
+        expect(model.mergeCells({ row: 1, col: 1, rows: 2, cols: 2 }).error).toMatch(/Only one cell merge/);
+        expect(model.mergeCells({ row: 1, col: 1, rows: 1, cols: 1 }).error).toMatch(/single cell/);
+        expect(model.mergeCells({ row: 9, col: 1, rows: 2, cols: 2 }).error).toMatch(/outside the 3x2 table/);
+
+        const merged = createTableModel({ ...REGION, merged: true, shadowKeys: new Set(['1,2']) });
+        expect(merged.mergeCells({ row: 1, col: 1, rows: 2, cols: 2 }).error).toMatch(/existing merged cell/);
+    });
+
+    test('merge_cells rejects a region overlapping a pending-delete row', () => {
+        const model = createTableModel(REGION);
+        expect(model.deleteRow(3).ok).toBe(true);
+        expect(model.mergeCells({ row: 2, col: 1, rows: 2, cols: 2 }).error).toMatch(/pending delete/);
+    });
+
+    test('a staged merge disables further row operations', () => {
+        const model = createTableModel(REGION);
+        expect(model.mergeCells({ row: 1, col: 1, rows: 1, cols: 2 }).ok).toBe(true);
+        expect(model.insertRow({ position: 'after', row: 2, values: ['a', 'b'] }).error)
+            .toMatch(/cell merge is pending/);
+        expect(model.deleteRow(2).error).toMatch(/cell merge is pending/);
+    });
+
+    test('executeTableTool dispatches merge_cells', () => {
+        const model = createTableModel(REGION);
+        const out = executeTableTool(model, 'merge_cells', { row: 1, col: 1, rows: 2, cols: 1 });
+        expect(out.ok).toBe(true);
+        expect(model.opCount).toBe(1);
     });
 });

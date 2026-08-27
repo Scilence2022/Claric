@@ -165,11 +165,16 @@ function makeApplyContext({ tableRowCount = 3 } = {}) {
       cells[`${r},${c}`] = {
         body: {
           paragraphs: {
-            items: [{ getRange: jest.fn(() => paraRange), load: jest.fn() }],
+            items: [{
+              getRange: jest.fn(() => paraRange),
+              clear: jest.fn(() => calls.push(`clear:${r + 1},${c + 1}`)),
+              load: jest.fn(),
+            }],
             load: jest.fn(),
           },
         },
         parentRow: rows[r],
+        getRange: jest.fn(() => ({ union: jest.fn(() => ({ mergeTarget: true })) })),
       };
     }
   }
@@ -181,6 +186,7 @@ function makeApplyContext({ tableRowCount = 3 } = {}) {
     isUniform: true,
     load: jest.fn(),
     getCell: jest.fn((r, c) => cells[`${r},${c}`]),
+    mergeCells: jest.fn(() => calls.push('merge')),
   };
   const selection = { parentTableOrNullObject: table };
 
@@ -471,6 +477,41 @@ describe('applySelectionAmendment (table route)', () => {
       'delete:3',
       'insert:1:After:[["n1","n2"]]',
     ]);
+  });
+
+  test('applies a cell merge: clears away-cells then table.mergeCells', async () => {
+    const mergeProposal = {
+      selectionText: 'x',
+      amendedText: null,
+      commentText: null,
+      tablePatch: {
+        rowCount: 3,
+        colCount: 2,
+        cells: [],
+        rowOps: [],
+        merges: [{ op: 'merge', startRow: 2, startCol: 1, endRow: 3, endCol: 2 }],
+        bounds: { startRow: 1, endRow: 3, startCol: 1, endCol: 2 },
+        originals: TABLE_VALUES,
+      },
+      tableItems: [],
+    };
+
+    const { context, calls } = makeApplyContext();
+    setWordRun(context);
+    const deps = makeDeps('PC');
+    const result = await applySelectionAmendment(deps, mergeProposal);
+
+    // Non-anchor cells (R2C2, R3C1, R3C2) cleared; the anchor (R2C1) kept.
+    expect(calls).toEqual([
+      'clear:2,2',
+      'clear:3,1',
+      'clear:3,2',
+      'merge',
+    ]);
+    expect(result.mergesApplied).toBe(1);
+    // Structural — merge is not tracked as a revision (tracking off).
+    const logged = deps.log.mock.calls.map((c) => `${c[1]}:${c[0]}`).join('\n');
+    expect(logged).toContain('not be tracked');
   });
 
   test('desktop (PC) keeps tracking on for row ops', async () => {
