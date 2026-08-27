@@ -2375,9 +2375,15 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
      *   card's change list: only amendment results for these chunks are
      *   applied. Results without an amendment (comment-only) are not
      *   selectable items, so they always ride along.
+     * @param {object} [opts]
+     * @param {AbortSignal} [opts.signal] - Cooperative pause signal (Stop
+     *   button): apply stops at the next chunk boundary, leaving remaining
+     *   chunk bookmarks in place so the card can offer "Continue applying".
+     * @param {function(string, object)} [opts.onChunkApplied] - Per-chunk
+     *   progress callback for the proposal card to mark items applied.
      * @returns {Promise<object>} applicationResult from applyChunkResults
      */
-    const apply = async (chunkIds) => {
+    const apply = async (chunkIds, { signal, onChunkApplied } = {}) => {
         const selected = Array.isArray(chunkIds)
             ? results.filter((r) => !r.amendment || (r.chunk && chunkIds.includes(r.chunk.id)))
             : results;
@@ -2387,9 +2393,16 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
             lineDiffEnabled: appState.config.lineDiffEnabled,
             log,
             commentGranularity: appState.config.commentGranularity,
+            ...(signal ? { signal } : {}),
+            ...(onChunkApplied ? { onChunkApplied } : {}),
         });
 
-        await cleanupBookmarks(bookmarkMap);
+        // On a pause (interrupted) the not-yet-applied chunks must keep their
+        // bookmarks so the "Continue applying" resume can still target them;
+        // only clean up once the whole selection has been applied.
+        if (!applicationResult.interrupted) {
+            await cleanupBookmarks(bookmarkMap);
+        }
 
         log(
             `Document processed: ${chunks.length} chunks, ` +

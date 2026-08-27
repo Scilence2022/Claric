@@ -550,6 +550,37 @@ body {
     word-break: break-word;
 }
 
+/* Applied change row: dimmed + strikethrough so the user sees which items
+   have landed while the apply is in progress (and after completion). */
+.proposal-card-change-done {
+    opacity: 0.55;
+}
+
+.proposal-card-change-done .proposal-card-change-label {
+    text-decoration: line-through;
+}
+
+.proposal-card-change-error {
+    opacity: 0.75;
+}
+
+.proposal-card-change-error .proposal-card-change-label {
+    color: var(--error-color);
+    text-decoration: line-through;
+}
+
+.proposal-card-change-status {
+    flex: 0 0 auto;
+    font-size: var(--font-size-xs, 11px);
+    font-weight: 600;
+    color: var(--success-color);
+    white-space: nowrap;
+}
+
+.proposal-card-change-error .proposal-card-change-status {
+    color: var(--error-color);
+}
+
 .proposal-card-locate {
     border: none;
     background: none;
@@ -614,6 +645,10 @@ body {
 
 .proposal-error .proposal-card-status {
     color: var(--error-color);
+}
+
+.proposal-paused .proposal-card-status {
+    color: var(--warning-color);
 }
 
 /* Table proposal preview: compact, read-only, horizontally scrollable. */

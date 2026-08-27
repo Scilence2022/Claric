@@ -650,7 +650,14 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
  * @param {function} options.log
  * @param {Map<string, string[]>} [options.chunkOriginals] - chunkId -> staged
  *   paragraph texts, used to re-anchor ranges that drifted since staging
- * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, noChangeCount: number, errors: string[]}>}
+ * @param {AbortSignal} [options.signal] - Cooperative pause: when aborted, the
+ *   loop finishes the in-flight chunk then stops before the next, leaving the
+ *   remaining chunks' bookmarks intact so the caller can resume later
+ * @param {function(string, {applied: boolean, noChange?: boolean, error?: boolean, skipped?: boolean}): void} [options.onChunkApplied] -
+ *   Called after each chunk's apply attempt with its chunkId + outcome, so the
+ *   UI can mark individual items applied as they land
+ * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, noChangeCount: number,
+ *   errors: string[], appliedChunkIds: string[], interrupted: boolean}>}
  */
 export async function applyChunkResults(results, bookmarkMap, options) {
   const {
@@ -658,12 +665,16 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     lineDiffEnabled = false,
     log = () => {},
     chunkOriginals = null,
+    signal = null,
+    onChunkApplied = /** @type {function(string, object): void} */ (() => {}),
   } = options;
 
   let amendmentsApplied = 0;
   let commentsInserted = 0;
   let noChangeCount = 0;
   const errors = [];
+  const appliedChunkIds = [];
+  let interrupted = false;
 
   // Collect rejected/cancelled errors for reporting
   for (const result of results) {
@@ -680,9 +691,19 @@ export async function applyChunkResults(results, bookmarkMap, options) {
   const reverseSorted = _sortReverseDocumentOrder(fulfilledWithAmendments);
 
   for (const result of reverseSorted) {
+    // Cooperative pause: the Stop button aborts the signal; we finish the
+    // current chunk (already in-flight Word.run) and stop at the next
+    // boundary, leaving the remaining chunks' bookmarks intact for resume.
+    if (signal && signal.aborted) {
+      interrupted = true;
+      break;
+    }
+
     const bookmarkName = bookmarkMap.get(result.chunkId);
     if (!bookmarkName) {
       errors.push(`Chunk ${result.chunkId}: no bookmark found`);
+      appliedChunkIds.push(result.chunkId);
+      onChunkApplied(result.chunkId, { applied: false, skipped: true });
       continue;
     }
 
@@ -778,67 +799,75 @@ export async function applyChunkResults(results, bookmarkMap, options) {
       } else {
         log(`Chunk ${result.chunkId}: no changes needed`, 'info');
       }
+      appliedChunkIds.push(result.chunkId);
+      onChunkApplied(result.chunkId, { applied: chunkApplied, noChange: !chunkApplied });
     } catch (err) {
       errors.push(`Chunk ${result.chunkId}: ${err.message || String(err)}`);
       log(`Chunk ${result.chunkId}: amendment failed -- ${err.message}`, 'error');
+      appliedChunkIds.push(result.chunkId);
+      onChunkApplied(result.chunkId, { applied: false, error: true });
     }
 
     // Yield to event loop between chunks to prevent UI freeze
     await _yieldToEventLoop();
   }
 
-  // Phase 2: Comments in document order (after all amendments)
-  // Ensure tracked changes are off before inserting comments.
-  // If any amendment fallback path left ChangeTrackingMode.trackAll enabled,
-  // comment insertion on ranges containing tracked changes can fail with AccessDenied.
-  if (fulfilledWithAmendments.length > 0) {
-    try {
-      await Word.run(async (context) => {
-        if (Word.ChangeTrackingMode) {
-          context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+  // Phase 2: Comments in document order (after all amendments).
+  // Skipped entirely when the apply was paused mid-way — the resume re-runs
+  // this for the remaining chunks.
+  if (!interrupted) {
+    // Ensure tracked changes are off before inserting comments.
+    // If any amendment fallback path left ChangeTrackingMode.trackAll enabled,
+    // comment insertion on ranges containing tracked changes can fail with AccessDenied.
+    if (fulfilledWithAmendments.length > 0) {
+      try {
+        await Word.run(async (context) => {
+          if (Word.ChangeTrackingMode) {
+            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+            await context.sync();
+          }
+        });
+      } catch (_err) {
+        // Best-effort -- continue with comment insertion even if this fails
+      }
+    }
+
+    const fulfilledWithComments = results
+      .filter((r) => r.status === 'fulfilled' && r.comment);
+
+    for (const result of fulfilledWithComments) {
+      const bookmarkName = bookmarkMap.get(result.chunkId);
+      if (!bookmarkName) continue;
+
+      try {
+        await Word.run(async (context) => {
+          const range = context.document.getBookmarkRangeOrNullObject(bookmarkName);
+          range.load('isNullObject,text');
           await context.sync();
-        }
-      });
-    } catch (_err) {
-      // Best-effort -- continue with comment insertion even if this fails
+
+          if (range.isNullObject) {
+            errors.push(`Chunk ${result.chunkId}: bookmark range lost for comment`);
+            return;
+          }
+
+          range.insertComment(result.comment);
+          await context.sync();
+        });
+
+        commentsInserted++;
+        log(`Chunk ${result.chunkId}: comment inserted`, 'info');
+      } catch (err) {
+        errors.push(`Chunk ${result.chunkId}: comment failed -- ${err.message || String(err)}`);
+        log(`Chunk ${result.chunkId}: comment failed -- ${err.message}`, 'error');
+      }
+
+      // Yield to event loop between comments to prevent UI freeze and
+      // avoid overwhelming the Word document model with rapid-fire Word.run() calls
+      await _yieldToEventLoop();
     }
   }
 
-  const fulfilledWithComments = results
-    .filter((r) => r.status === 'fulfilled' && r.comment);
-
-  for (const result of fulfilledWithComments) {
-    const bookmarkName = bookmarkMap.get(result.chunkId);
-    if (!bookmarkName) continue;
-
-    try {
-      await Word.run(async (context) => {
-        const range = context.document.getBookmarkRangeOrNullObject(bookmarkName);
-        range.load('isNullObject,text');
-        await context.sync();
-
-        if (range.isNullObject) {
-          errors.push(`Chunk ${result.chunkId}: bookmark range lost for comment`);
-          return;
-        }
-
-        range.insertComment(result.comment);
-        await context.sync();
-      });
-
-      commentsInserted++;
-      log(`Chunk ${result.chunkId}: comment inserted`, 'info');
-    } catch (err) {
-      errors.push(`Chunk ${result.chunkId}: comment failed -- ${err.message || String(err)}`);
-      log(`Chunk ${result.chunkId}: comment failed -- ${err.message}`, 'error');
-    }
-
-    // Yield to event loop between comments to prevent UI freeze and
-    // avoid overwhelming the Word document model with rapid-fire Word.run() calls
-    await _yieldToEventLoop();
-  }
-
-  return { amendmentsApplied, commentsInserted, noChangeCount, errors };
+  return { amendmentsApplied, commentsInserted, noChangeCount, errors, appliedChunkIds, interrupted };
 }
 
 /**
