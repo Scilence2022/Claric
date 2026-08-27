@@ -166,7 +166,10 @@ export async function readSelectionText(deps) {
  * compares, no row-collection iteration). An endpoint that lands exactly
  * ON a table boundary (whole-table selections hit both) resolves to the
  * unit OUTSIDE the table and reads as a null cell; such endpoints clamp
- * to the table edge instead of failing the read.
+ * to the table edge instead of failing the read. Merged layouts are
+ * probed via getCell anchors; hosts that throw on merge-covered
+ * coordinates degrade to "merged, layout unknown" (mergedUnknown=true,
+ * empty shadowKeys) with apply-time validation instead of failing.
  *
  * @param {object} deps - { appState, log }
  * @returns {Promise<null | {rowCount: number, colCount: number,
@@ -237,8 +240,13 @@ export async function readSelectionTableRegion(deps) {
         // merged cell, whose rowIndex/cellIndex are its anchor slot. Probe
         // every covered coordinate once: a probe resolving to coordinates
         // other than its own is a read-only shadow of that merge anchor.
+        // Some hosts throw ItemNotFound for getCell on merge-covered
+        // coordinates instead of resolving to the anchor — the probe sync is
+        // guarded, and a failure degrades to "merged, layout unknown" (edits
+        // validated only at apply) rather than failing the whole turn.
         const merged = table.isUniform === false;
         const shadowKeys = new Set();
+        let mergedUnknown = false;
         if (merged) {
             const probes = [];
             for (let r = startRow; r <= endRow; r++) {
@@ -248,13 +256,20 @@ export async function readSelectionTableRegion(deps) {
                     probes.push({ r, c, probe });
                 }
             }
-            await context.sync();
-            for (const { r, c, probe } of probes) {
-                if (probe.rowIndex !== r || probe.cellIndex !== c) {
-                    shadowKeys.add(`${r + 1},${c + 1}`);
-                }
+            try {
+                await context.sync();
+            } catch (probeErr) {
+                mergedUnknown = true;
+                log(`Merge layout could not be probed (${probeErr.name || 'Error'}: ${probeErr.message}) — continuing with unknown merge layout; invalid edits will be skipped at apply.`, 'warning');
             }
-            log(`Table contains merged cells — ${shadowKeys.size} covered slot(s) read-only, row ops disabled; anchor-cell text edits stay available.`, 'warning');
+            if (!mergedUnknown) {
+                for (const { r, c, probe } of probes) {
+                    if (probe.rowIndex !== r || probe.cellIndex !== c) {
+                        shadowKeys.add(`${r + 1},${c + 1}`);
+                    }
+                }
+                log(`Table contains merged cells — ${shadowKeys.size} covered slot(s) read-only, row ops disabled; anchor-cell text edits stay available.`, 'warning');
+            }
         }
 
         const cells = [];
@@ -272,7 +287,7 @@ export async function readSelectionTableRegion(deps) {
             cells,
             values,
             merged,
-            ...(merged ? { shadowKeys } : {}),
+            ...(merged ? { shadowKeys, mergedUnknown } : {}),
         };
     });
     if (region) {
@@ -789,13 +804,16 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
     const instruction = (promptTemplate || '').includes('{selection}')
         ? promptTemplate.replace(/{selection}/g, 'the selected table cells')
         : (promptTemplate || '');
+    const baseInstruction = tableRegion.mergedUnknown
+        ? `${instruction}\n\nNOTE: This table contains merged cells whose layout could not be mapped. Some listed coordinates may be covered by a merge — edits to them are skipped at apply time.`
+        : instruction;
 
     const messages = [];
     const contextPrompt = appState.promptManager.getActivePrompt('context');
     if (contextPrompt) {
         messages.push({ role: 'system', content: contextPrompt.template });
     }
-    messages.push({ role: 'user', content: buildTableUserPrompt(instruction, cells, { rowCount, colCount }) });
+    messages.push({ role: 'user', content: buildTableUserPrompt(baseInstruction, cells, { rowCount, colCount }) });
 
     const promptText = _flattenMessages(messages);
     const rawResponse = (onToken || onReasoning)
@@ -1107,16 +1125,27 @@ async function _applyTablePatch(deps, proposal) {
  * count matches, else a coarse whole-content replace. Returns true when the
  * cell was written, false when its text already matched.
  *
+ * Addressing a cell can itself fail on merged tables — some hosts throw
+ * ItemNotFound for getCell on merge-covered coordinates — which degrades to
+ * a skip with a warning instead of failing the whole patch.
+ *
  * @private
  */
 async function _patchCell(context, table, cellPatch, log) {
     const label = `R${cellPatch.row}C${cellPatch.col}`;
-    const cell = table.getCell(cellPatch.row - 1, cellPatch.col - 1);
+    let cell;
+    try {
+        cell = table.getCell(cellPatch.row - 1, cellPatch.col - 1);
+        const paragraphs = cell.body.paragraphs;
+        paragraphs.load('items');
+        await context.sync();
+        if (paragraphs.items.length === 0) return false; // a cell always holds ≥1 paragraph
+    } catch (addrErr) {
+        log(`Cell ${label}: could not be addressed (${addrErr.name || 'Error'} — likely merge-covered), skipped`, 'warning');
+        return false;
+    }
     const paragraphs = cell.body.paragraphs;
-    paragraphs.load('items');
-    await context.sync();
     const items = paragraphs.items;
-    if (items.length === 0) return false; // a cell always holds ≥1 paragraph
 
     if (items.length === 1) {
         const range = items[0].getRange(Word.RangeLocation.content);

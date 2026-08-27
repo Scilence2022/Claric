@@ -90,6 +90,9 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep }
         'The selection covers this table region (1-based absolute coordinates):\n\n' +
         `${state.grid}\n\n` +
         `Covered region: ${state.coveredRegion}. Row operations allowed: ${state.rowOpsAllowed ? 'yes' : 'no'}.\n` +
+        (tableRegion.mergedUnknown
+            ? 'The table contains merged cells whose layout could not be mapped — edits to merge-covered coordinates are skipped at apply time.\n'
+            : '') +
         'Work through the task with the table tools. Verify with get_state when unsure.';
 
     const loop = await _runLoop(deps, {
