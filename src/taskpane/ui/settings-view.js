@@ -31,7 +31,12 @@ export function initSettings({ onConfigChanged } = {}) {
 
     document.getElementById('settingsBtn').addEventListener('click', openSettings);
     document.getElementById('settingsCloseBtn').addEventListener('click', closeSettings);
-    document.getElementById('settingsSaveBtn').addEventListener('click', saveSettings);
+    document.getElementById('settingsSaveBtn').addEventListener('click', () => {
+        // Explicit Save gives visible feedback (settings are auto-saved too);
+        // saveSettings returns true/false so we can show the outcome inline.
+        const ok = saveSettings();
+        showSaveConfirmation(ok);
+    });
     for (const tab of document.querySelectorAll('.settings-tab')) {
         tab.addEventListener('click', () => switchSettingsTab(tab.dataset.tab));
     }
@@ -155,6 +160,7 @@ function switchSettingsTab(name) {
 /**
  * Reads the settings form into appState.config and persists it.
  * Re-tests the connection and refreshes the model pill afterwards.
+ * Returns true on success, false when persistSettings throws.
  */
 function saveSettings() {
     const config = appState.config;
@@ -184,10 +190,34 @@ function saveSettings() {
         _onConfigChanged();
         // Re-test connection with new settings
         testConnectionUI();
+        return true;
     } catch (e) {
         addLog(`Failed to save settings: ${e.message}`, 'error');
+        return false;
     }
 }
+
+/**
+ * Shows a transient inline confirmation next to the Save button after an
+ * explicit save attempt ("Saved ✓" / "Save failed"). Auto-hides after 2s.
+ *
+ * @param {boolean} ok - Whether the save succeeded
+ */
+function showSaveConfirmation(ok) {
+    const el = document.getElementById('settingsSaveStatus');
+    if (!el) return;
+    el.textContent = ok ? 'Saved ✓' : 'Save failed';
+    el.classList.toggle('success', ok);
+    el.classList.toggle('error', !ok);
+    el.hidden = false;
+    clearTimeout(_saveStatusTimer);
+    _saveStatusTimer = setTimeout(() => {
+        el.hidden = true;
+    }, 2000);
+}
+
+/** Timer handle for the transient Save confirmation. */
+let _saveStatusTimer = null;
 
 /**
  * Pushes appState.config into the settings form.
