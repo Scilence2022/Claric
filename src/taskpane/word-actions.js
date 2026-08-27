@@ -662,30 +662,58 @@ const MAX_SELECTION_IMAGES = 6;
 
 /**
  * Reads the current selection as FULL content: plain text plus the inline
- * pictures inside the selection (base64 data URL + size + alt text), so ANY
- * selected content is visible to the add-in — a picture selection has empty
- * selection.text and is otherwise invisible to every text-only reader.
+ * pictures inside the selection (base64 data URL + size + alt text), AND
+ * the selection's table shape (multi-cell region + corner coords). So
+ * ANY selected content is visible to the add-in — picture selections have
+ * empty selection.text, single-cell selections stay on the text path, and
+ * multi-cell selections route into the table tool session.
+ *
+ * The table shape is detected in the SAME Word.run as the image read
+ * (a single sync covers both); the full matrix that the table tool loop
+ * needs is loaded separately inside prepareTableToolEdit — cheap here.
  *
  * Image-bearing selections are consumed by the image tool session (object
  * reference + tools, see agent-actions); the preview shows thumbnails.
- * Errors resolve to empty content (same contract as readSelectionSnippet).
+ * Multi-cell selections route into the table tool session (same pattern,
+ * TABLE_TOOL turn). Errors resolve to empty content (same contract as
+ * readSelectionSnippet).
  *
  * @returns {Promise<{ text: string,
  *   images: Array<{ base64: string, dataUrl: string, width: number, height: number, altText: string }>,
- *   totalImages: number }>}
+ *   totalImages: number,
+ *   hasMultiCellTableRegion: boolean,
+ *   tableRegion: null | { startRow: number, endRow: number, startCol: number, endCol: number } }>}
  *   totalImages counts every picture in the selection (images.length ≤
- *   totalImages when the cap truncates).
+ *   totalImages when the cap truncates). tableRegion is non-null only
+ *   when the selection covers multiple cells AND both endpoint cells
+ *   resolve cleanly (whole-table boundary selections may return
+ *   hasMultiCellTableRegion=true with tableRegion=null — the corner
+ *   coords are inferred inside the full region read instead).
  */
 export async function readSelectionContent() {
     try {
         let text = '';
         let images = [];
         let totalImages = 0;
+        let hasMultiCellTableRegion = false;
+        let tableRegion = null;
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
             selection.load('text');
             const pictures = selection.inlinePictures;
             pictures.load('items');
+            // Shape probes — same Word.run, no extra sync.
+            const parentTable = selection.parentTableOrNullObject;
+            const anchorCell = selection.parentTableCellOrNullObject;
+            parentTable.load('isNullObject');
+            anchorCell.load('isNullObject');
+            const startRange = selection.getRange(Word.RangeLocation.start);
+            const endRange = selection.getRange(Word.RangeLocation.end);
+            const startCell = startRange.parentTableCellOrNullObject;
+            const endCell = endRange.parentTableCellOrNullObject;
+            startCell.load('isNullObject,rowIndex,cellIndex');
+            endCell.load('isNullObject,rowIndex,cellIndex');
+
             await context.sync();
             text = selection.text || '';
 
@@ -707,20 +735,39 @@ export async function readSelectionContent() {
                     height: pic.height,
                     altText: pic.altTextDescription || '',
                 }));
+
+            // Multi-cell shape: inside a table BUT not wholly inside a single
+            // anchor cell — same predicate as readSelectionTableRegion's gate.
+            hasMultiCellTableRegion = !parentTable.isNullObject && anchorCell.isNullObject;
+            if (hasMultiCellTableRegion) {
+                if (!startCell.isNullObject && !endCell.isNullObject) {
+                    tableRegion = {
+                        startRow: Math.min(startCell.rowIndex, endCell.rowIndex) + 1,
+                        endRow: Math.max(startCell.rowIndex, endCell.rowIndex) + 1,
+                        startCol: Math.min(startCell.cellIndex, endCell.cellIndex) + 1,
+                        endCol: Math.max(startCell.cellIndex, endCell.cellIndex) + 1,
+                    };
+                }
+                // Whole-table boundary selections leave one or both endpoints
+                // as null proxies; the full region read in prepareTableToolEdit
+                // clamps those to the table edge — handle there.
+            }
         });
-        return { text, images, totalImages };
+        return { text, images, totalImages, hasMultiCellTableRegion, tableRegion };
     } catch (_err) {
-        return { text: '', images: [], totalImages: 0 };
+        return { text: '', images: [], totalImages: 0, hasMultiCellTableRegion: false, tableRegion: null };
     }
 }
 
 /**
  * Watches the Word selection and invokes the callback with the current
- * selection CONTENT ({ text, images, totalImages } — '' / [] when nothing
- * is selected; image-only selections carry empty text with images).
- * Events are debounced so a drag selection fires one Word.run at the end.
+ * selection CONTENT ({ text, images, totalImages, hasMultiCellTableRegion,
+ * tableRegion } — '' / [] when nothing is selected; image-only selections
+ * carry empty text with images; multi-cell table regions carry corner
+ * coords in tableRegion). Events are debounced so a drag selection fires
+ * one Word.run at the end.
  *
- * @param {function({text: string, images: Array, totalImages: number})} callback
+ * @param {function(object)} callback - Receives the live selection content
  * @param {object} [opts]
  * @param {number} [opts.debounceMs=200] - Trailing debounce for change events
  * @returns {function()} Unsubscribe function

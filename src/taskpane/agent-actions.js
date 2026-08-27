@@ -110,6 +110,11 @@ async function _runLoop(deps, { systemPrompt, taskPrompt, tools, execute, maxSte
  * @param {function} [args.onStep] - Loop activity hook
  * @returns {Promise<object|null>} Table-route proposal, or null when the
  *   selection is not a multi-cell table region (caller falls back).
+ *   A read-only loop (no ops recorded, finish summary present) resolves
+ *   to a {noOps: true, answer} proposal; the turn runner renders that
+ *   as the chat answer instead of throwing — supports selection-driven
+ *   analysis ("review the selected table") via the same object+tools
+ *   protocol as image selections.
  */
 export async function prepareTableToolEdit(deps, { instruction, signal, onStep } = {}) {
     const { log } = deps;
@@ -148,6 +153,19 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep }
 
     const patch = model.toTablePatch();
     if (patch.cells.length === 0 && patch.rowOps.length === 0) {
+        // Read-only outcome (e.g. the model inspected the table with
+        // get_state and answered a review question): the summary IS the
+        // chat answer — no card to apply. Mirrors prepareImageToolEdit.
+        if (loop.finished && loop.summary && loop.summary.trim()) {
+            return {
+                noOps: true,
+                answer: loop.summary.trim(),
+                instruction: (instruction || '').trim(),
+                selectionText: tableRegion.cells.map((c) => c.text).join('\n'),
+                model: getActiveBackendConfig(deps.appState).model,
+                toolLoop: { steps: loop.steps, finished: loop.finished },
+            };
+        }
         const err = new Error('The tool loop produced no table changes. Try rephrasing the instruction.');
         err.noChanges = true;
         throw err;

@@ -229,6 +229,34 @@ describe('routeTurn', () => {
     expect(routeTurn('把标题居中', { hasSelection: true, skills: BUILTIN_SKILLS }).scope).toBe('selection');
   });
 
+  test('multi-cell table selection routes to the table tool session', () => {
+    // Edit-ish instruction: text pipelines can't represent cell boundaries.
+    expect(routeTurn('润色表格', {
+      hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
+    }).type).toBe(TURN_TYPE.TABLE_TOOL);
+    // Questions too: visual reading is get_state, not injected markdown.
+    expect(routeTurn('这个表格有什么问题?', {
+      hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
+    }).type).toBe(TURN_TYPE.TABLE_TOOL);
+    expect(routeTurn('summarize this table', {
+      hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
+    }).type).toBe(TURN_TYPE.TABLE_TOOL);
+  });
+
+  test('intra-cell text selection stays on the flat-text SELECTION_EDIT path', () => {
+    // parentTableCell non-null → single cell — text pipeline.
+    const turn = routeTurn('改一下这段', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
+  });
+
+  test('multi-cell table selection takes document scope for format intent', () => {
+    const turn = routeTurn('把表格居中', {
+      hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
+    });
+    expect(turn.type).toBe(TURN_TYPE.FORMAT);
+    expect(turn.scope).toBe('document');
+  });
+
   test('empty input returns null', () => {
     expect(routeTurn('   ', { hasSelection: false, skills: BUILTIN_SKILLS })).toBeNull();
     expect(routeTurn('', { hasSelection: true, skills: BUILTIN_SKILLS })).toBeNull();
@@ -677,6 +705,73 @@ describe('createConversation.submit', () => {
     const args = actions.answerQuestion.mock.calls[0][1];
     expect(args.selectionText).toBe('Figure 1 shows revenue.');
     expect(args.selectionImages).toEqual([{ width: 300, height: 200, altText: 'revenue chart' }]);
+  });
+
+  test('multi-cell table selection enters the table tool session with ops', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareTableToolEdit: jest.fn(async () => ({
+        instruction: '给第一行加一行合计',
+        selectionText: 'R1C1 R1C2',
+        amendedText: null,
+        commentText: null,
+        model: 'm',
+        tablePatch: {
+          rowCount: 3, colCount: 2,
+          cells: [{ row: 3, col: 1, text: '合计' }],
+          rowOps: [],
+          bounds: { startRow: 1, endRow: 3, startCol: 1, endCol: 2 },
+          originals: [['A', 'B'], ['a', 'b'], ['合计', '']],
+        },
+        tableItems: [{ id: 0, label: 'Cell R3C1', before: '', after: '合计', searchText: undefined }],
+        toolLoop: { steps: 3, finished: true },
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions,
+      getSelectionContent: async () => ({
+        text: 'R1C1 R1C2',
+        hasMultiCellTableRegion: true,
+        tableRegion: { startRow: 1, endRow: 1, startCol: 1, endCol: 2 },
+      }),
+    });
+
+    await conv.submit('给第一行加一行合计');
+
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit.mock.calls[0][1].instruction).toBe('给第一行加一行合计');
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test('multi-cell table selection + analysis question routes to the loop (noOps answer)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareTableToolEdit: jest.fn(async () => ({
+        noOps: true,
+        answer: 'two columns, totals match header sum',
+        selectionText: 'header\nrow a\nrow b',
+        model: 'm',
+        toolLoop: { steps: 1, finished: true },
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions,
+      getSelectionContent: async () => ({
+        text: 'header\nrow a\nrow b',
+        hasMultiCellTableRegion: true,
+        tableRegion: { startRow: 1, endRow: 3, startCol: 1, endCol: 2 },
+      }),
+    });
+
+    await conv.submit('总结一下这个表格');
+
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(view._msg.setText).toHaveBeenCalledWith('two columns, totals match header sum');
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
   });
 
   test('free text without selection runs document Q&A', async () => {

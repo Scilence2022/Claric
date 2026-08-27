@@ -326,6 +326,19 @@ body {
     display: none;
 }
 
+.selection-preview-table {
+    flex: 0 0 auto;
+    padding: 1px var(--spacing-xs);
+    border: 1px solid var(--accent-color, #5b8def);
+    border-radius: 3px;
+    font-size: var(--font-size-xs, 11px);
+    color: var(--accent-color, #5b8def);
+    background: var(--tertiary-bg);
+    font-style: italic;
+    cursor: default;
+    white-space: nowrap;
+}
+
 .selection-preview-img {
     height: 24px;
     max-width: 56px;

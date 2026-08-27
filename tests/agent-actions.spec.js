@@ -129,11 +129,21 @@ describe('prepareTableToolEdit', () => {
         expect(sendMessages).not.toHaveBeenCalled();
     });
 
-    test('throws a noChanges error when the loop records nothing', async () => {
+    test('throws a noChanges error when the loop records nothing and produces no summary', async () => {
         readSelectionTableRegion.mockResolvedValue(REGION);
-        sendMessages.mockResolvedValue('{"tool":"finish","args":{"summary":"nothing to do"}}');
+        sendMessages.mockResolvedValue('{"tool":"finish","args":{"summary":""}}');
         await expect(prepareTableToolEdit(makeDeps(), { instruction: 'x' }))
             .rejects.toMatchObject({ noChanges: true });
+    });
+
+    test('read-only loop (summary, no patch) resolves a noOps chat answer', async () => {
+        readSelectionTableRegion.mockResolvedValue(REGION);
+        sendMessages.mockResolvedValue('{"tool":"finish","args":{"summary":"row totals inconsistent"}}');
+        const proposal = await prepareTableToolEdit(makeDeps(), { instruction: '看看这个表格' });
+        expect(proposal.noOps).toBe(true);
+        expect(proposal.answer).toBe('row totals inconsistent');
+        expect(proposal.tablePatch).toBeUndefined();
+        expect(proposal.tableItems).toBeUndefined();
     });
 });
 

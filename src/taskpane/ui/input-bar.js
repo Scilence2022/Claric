@@ -169,8 +169,10 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) 
         /**
          * Shows/hides the live selection preview above the input.
          * Accepts the watcher's content object ({ text, images,
-         * totalImages } — image entries carry dataUrl thumbnails) or a
-         * plain string (text only). Empty text with no images hides it.
+         * totalImages, hasMultiCellTableRegion, tableRegion } — image
+         * entries carry dataUrl thumbnails; tableRegion entries carry
+         * corner coords R1C1..RnCn) or a plain string (text only).
+         * Empty text + no images + no table flag hides it.
          */
         setSelectionPreview(content) {
             const preview = document.getElementById('selectionPreview');
@@ -181,8 +183,10 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) 
             const images = content && Array.isArray(content.images) ? content.images : [];
             const total = (content && Number.isInteger(content.totalImages) && content.totalImages > images.length)
                 ? content.totalImages : images.length;
+            const tableRegion = (content && typeof content.tableRegion === 'object') ? content.tableRegion : null;
+            const hasTable = !!(content && content.hasMultiCellTableRegion);
             const trimmed = text.trim();
-            if (!trimmed && images.length === 0) {
+            if (!trimmed && images.length === 0 && !hasTable) {
                 preview.setAttribute('hidden', '');
                 return;
             }
@@ -190,6 +194,19 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) 
             previewText.title = trimmed;
             previewText.toggleAttribute('hidden', !trimmed);
             previewImages.innerHTML = '';
+            // Table region badge renders first when present — multi-cell
+            // regions route into the table tool session, not the text
+            // pipeline, so the badge primes the user to expect ops output.
+            if (hasTable) {
+                const label = tableRegion
+                    ? `Table R${tableRegion.startRow}C${tableRegion.startCol} → R${tableRegion.endRow}C${tableRegion.endCol}`
+                    : 'Table region';
+                const tag = document.createElement('span');
+                tag.className = 'selection-preview-table';
+                tag.textContent = label;
+                tag.title = label;
+                previewImages.appendChild(tag);
+            }
             images.forEach((img) => {
                 if (!img || !img.dataUrl) return;
                 const el = document.createElement('img');
