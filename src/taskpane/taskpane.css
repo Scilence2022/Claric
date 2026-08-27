@@ -88,15 +88,21 @@ body {
     flex: 1 1 auto;
 }
 
+/* Uniform icon buttons: fixed square, flex-centered, so every header icon
+   renders the same size regardless of its glyph line-height. */
 .icon-btn {
     border: none;
     background: transparent;
-    font-size: var(--font-size-lg);
-    line-height: 1;
-    padding: var(--spacing-xs) var(--spacing-sm);
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
     border-radius: var(--border-radius-sm);
     color: var(--secondary-text);
     cursor: pointer;
+    position: relative;
 }
 
 .icon-btn:hover {
@@ -104,11 +110,34 @@ body {
     color: var(--primary-text);
 }
 
+.icon-btn svg {
+    display: block;
+}
+
+/* Styled tooltip below the button (data-tooltip), replacing the slow native
+   title for the header controls. */
+.icon-btn[data-tooltip]:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--secondary-bg);
+    color: var(--primary-text);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    padding: 4px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    box-shadow: var(--shadow-sm);
+    z-index: 50;
+    pointer-events: none;
+}
+
 .connection-status {
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
-    margin-left: auto;
 }
 
 .status-indicator {
@@ -904,7 +933,6 @@ body {
 }
 
 .model-pill {
-    margin-top: var(--spacing-xs);
     border: 1px solid var(--border-color);
     background: var(--secondary-bg);
     color: var(--secondary-text);
@@ -921,6 +949,14 @@ body {
 .model-pill:hover {
     border-color: var(--accent-color);
     color: var(--accent-color);
+}
+
+/* Bottom row next to the input: model pill + connection status dot. */
+.input-status-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-xs);
 }
 
 /* Skill picker popup */
