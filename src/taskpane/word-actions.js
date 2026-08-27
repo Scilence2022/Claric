@@ -230,14 +230,39 @@ export async function readSelectionTableRegion(deps) {
         if (startCell.isNullObject || endCell.isNullObject) {
             log('Selection endpoint(s) sat on a table boundary — clamping the region to the table edge.', 'warning');
         }
-        if (table.isUniform === false) {
-            throw new Error('The table has merged cells; table edits are only supported on uniform (non-merged) tables.');
+
+        // Merged tables: Word JS has no merge/unmerge surface and row ops
+        // assume a uniform grid, but CONTENT edits are safe on merge anchors
+        // — getCell(r, c) resolves a coordinate inside a merged region to the
+        // merged cell, whose rowIndex/cellIndex are its anchor slot. Probe
+        // every covered coordinate once: a probe resolving to coordinates
+        // other than its own is a read-only shadow of that merge anchor.
+        const merged = table.isUniform === false;
+        const shadowKeys = new Set();
+        if (merged) {
+            const probes = [];
+            for (let r = startRow; r <= endRow; r++) {
+                for (let c = startCol; c <= endCol; c++) {
+                    const probe = table.getCell(r, c);
+                    probe.load('rowIndex,cellIndex');
+                    probes.push({ r, c, probe });
+                }
+            }
+            await context.sync();
+            for (const { r, c, probe } of probes) {
+                if (probe.rowIndex !== r || probe.cellIndex !== c) {
+                    shadowKeys.add(`${r + 1},${c + 1}`);
+                }
+            }
+            log(`Table contains merged cells — ${shadowKeys.size} covered slot(s) read-only, row ops disabled; anchor-cell text edits stay available.`, 'warning');
         }
 
         const cells = [];
         for (let r = startRow; r <= endRow; r++) {
             for (let c = startCol; c <= endCol; c++) {
-                cells.push({ row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' });
+                const entry = { row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' };
+                if (shadowKeys.has(`${r + 1},${c + 1}`)) entry.merged = true;
+                cells.push(entry);
             }
         }
         region = {
@@ -246,6 +271,8 @@ export async function readSelectionTableRegion(deps) {
             bounds: { startRow: startRow + 1, endRow: endRow + 1, startCol: startCol + 1, endCol: endCol + 1 },
             cells,
             values,
+            merged,
+            ...(merged ? { shadowKeys } : {}),
         };
     });
     if (region) {
@@ -361,7 +388,7 @@ export async function readSelectionTableContext(deps) {
                     startCell.load('isNullObject,rowIndex,cellIndex');
                     endCell.load('isNullObject,rowIndex,cellIndex');
                 }
-                table.load('values');
+                table.load('values,isUniform');
                 await context.sync();
 
                 const values = table.values || [];
@@ -379,6 +406,9 @@ export async function readSelectionTableContext(deps) {
                     note = (startRow === 1 && endRow === rowCount && startCol === 1 && endCol === colCount)
                         ? 'user selected the whole table'
                         : `user selected R${startRow}C${startCol}–R${endRow}C${endCol}`;
+                }
+                if (table.isUniform === false) {
+                    note = note ? `${note}; contains merged cells` : 'contains merged cells';
                 }
 
                 const contextText = formatTableMarkdown(values, { note });
@@ -786,16 +816,22 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
 
     // Restrict the model's patch to the selected rectangle. Structural row
     // ops are allowed only for full-width selections: inserting/deleting a
-    // row rewrites cells the user never selected otherwise.
+    // row rewrites cells the user never selected otherwise. Merged tables
+    // never allow row ops (values arrays assume a uniform grid; deleting a
+    // row that intersects a vertical merge is structurally ambiguous).
+    const merged = !!tableRegion.merged;
     const bounds = tableRegion.bounds || {
         startRow: 1, endRow: rowCount, startCol: 1, endCol: colCount,
     };
     const allowedBounds = {
         ...bounds,
-        allowRowOps: bounds.startCol === 1 && bounds.endCol === colCount,
+        allowRowOps: !merged && bounds.startCol === 1 && bounds.endCol === colCount,
     };
 
-    const patch = parseTablePatchResponse(rawResponse, { rowCount, colCount, originals, allowedBounds });
+    const patch = parseTablePatchResponse(rawResponse, {
+        rowCount, colCount, originals, allowedBounds,
+        shadowCoords: tableRegion.shadowKeys,
+    });
     for (const warning of patch.warnings) log(`Table patch: ${warning}`, 'warning');
 
     const tableItems = [
@@ -975,9 +1011,11 @@ async function _applyTablePatch(deps, proposal) {
         if (table.isNullObject) {
             throw new Error('The selection is no longer inside the table — re-select the region and apply again.');
         }
-        if (table.isUniform === false) {
-            throw new Error('The table now has merged cells — draft a new edit on the current table.');
-        }
+        // No isUniform guard: merged-table proposals were parse-filtered to
+        // merge-anchor coordinates at prepare time, and _patchCell writes via
+        // getCell (which resolves to the anchor). Row ops are empty for
+        // merged tables by the same parse-time rule. The staleness guard
+        // below catches layout drift between prepare and apply.
         if (table.rowCount !== tablePatch.rowCount) {
             throw new Error(`Table changed since this proposal was drafted (${tablePatch.rowCount} → ${table.rowCount} rows). Draft a new edit instead.`);
         }

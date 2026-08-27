@@ -67,7 +67,8 @@ src/
                                #   plan parser (7 task types, caps)
     table-patch.js             # Coordinate patch protocol for multi-cell
                                #   table selections: prompt builder, JSON
-                               #   patch parser/validator, row-op ordering
+                               #   patch parser/validator, row-op ordering;
+                               #   merged-cell aware (shadow slots read-only)
     table-ops.js               # Table creation protocol: EN/ZH dimension
                                #   inference (empty-grid fast path), creation
                                #   prompt builder, strict spec parser/validator
@@ -219,7 +220,8 @@ a pure function, evaluated in this exact order:
    the parser never sees blank paragraphs, so the text pipelines structurally
    cannot serve this).
 8. Selection present → question lead means Q&A with the selection as focused
-   context; otherwise SELECTION_EDIT.
+   context; a review intent without edit verbs ("检查选择的表格的内容") is
+   also Q&A (analysis, not a rewrite); otherwise SELECTION_EDIT.
 9. Edit intent (`EDIT_INTENT_RE`, EN + ZH verbs; update/enrich verbs require a
    document-ish object) → DOC_EDIT (whole-document amendment).
 10. Question lead (`QUESTION_LEAD_RE`) → DOC_QA (never planner-mediated).
