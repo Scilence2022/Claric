@@ -1254,9 +1254,16 @@ async function _applyTablePatch(deps, proposal) {
                     await context.sync();
                 }
                 for (const m of merges) {
-                    if (typeof table.mergeCells !== 'function') {
-                        warnings.push('Cell merge is not supported by this Word API — skipped.');
-                        log('Cell merge skipped (Word API lacks Table.mergeCells).', 'warning');
+                    const anchor = table.getCell(m.startRow - 1, m.startCol - 1);
+                    // Word.js: Table.mergeCells(range) requires a selection-like
+                    // range — a body.getRange().expandTo() span yields
+                    // InvalidArgument. The cell-level TableCell.merge(other)
+                    // takes TableCells directly (no range), which is what Word
+                    // accepts. Re-fetch the anchor each iteration since the
+                    // grid changes as cells merge in.
+                    if (typeof anchor.merge !== 'function') {
+                        warnings.push('Cell merge is not supported on this Word host — skipped.');
+                        log('Cell merge skipped (Word host lacks TableCell.merge).', 'warning');
                         continue;
                     }
                     // Clear the non-anchor cells so Word's concatenation on
@@ -1277,21 +1284,12 @@ async function _applyTablePatch(deps, proposal) {
                     }
                     await context.sync();
 
-                    // Word.js has no Range.union — the correct method is
-                    // expandTo(range), which extends this range to cover the
-                    // other. Word.TableCell has no getRange(); use
-                    // cell.body.getRange() to get the cell's content range,
-                    // then expand from the top-left cell to the bottom-right
-                    // cell to span the whole merge block.
-                    const first = table.getCell(m.startRow - 1, m.startCol - 1).body.getRange();
-                    const last = table.getCell(m.endRow - 1, m.endCol - 1).body.getRange();
-                    if (typeof first.expandTo !== 'function') {
-                        warnings.push('Cell merge is not supported by this Word API — skipped.');
-                        log(`Merge skipped (Word API lacks Range.expandTo for R${m.startRow}C${m.startCol}–R${m.endRow}C${m.endCol}).`, 'warning');
-                        continue;
+                    for (let r = m.startRow; r <= m.endRow; r++) {
+                        for (let c = m.startCol; c <= m.endCol; c++) {
+                            if (r === m.startRow && c === m.startCol) continue;
+                            table.getCell(m.startRow - 1, m.startCol - 1).merge(table.getCell(r - 1, c - 1));
+                        }
                     }
-                    const range = first.expandTo(last);
-                    table.mergeCells(range);
                     await context.sync();
                     mergesApplied++;
                 }
