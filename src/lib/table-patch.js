@@ -40,27 +40,33 @@ export const TABLE_PATCH_LIMITS = Object.freeze({
 /**
  * Formats covered cells as the coordinate listing embedded in the prompt.
  * One line per cell: `[R{row}C{col}] {text}` (1-based absolute coordinates).
+ * Cells covered by a merged region carry a read-only marker.
  *
- * @param {Array<{row: number, col: number, text: string}>} cells
+ * @param {Array<{row: number, col: number, text: string, merged?: boolean}>} cells
  * @returns {string}
  */
 export function formatCellGrid(cells) {
-    return cells.map((c) => `[R${c.row}C${c.col}] ${c.text}`).join('\n');
+    return cells.map((c) => `[R${c.row}C${c.col}]${c.merged ? ' (merged — read-only)' : ''} ${c.text}`).join('\n');
 }
 
 /**
  * Builds the user message for a table-scope amendment: the user's edit
  * instruction, the coordinate grid of current cell contents, and the JSON
- * patch output rules.
+ * patch output rules. When any covered cell is merged-readonly, extra rules
+ * restrict the patch to merge anchors and forbid row structure ops.
  *
  * @param {string} instruction - The amendment instruction (skill template or
  *   free text; may contain a {selection} placeholder, already NOT substituted
  *   — the grid below plays that role)
- * @param {Array<{row: number, col: number, text: string}>} cells - Covered cells
+ * @param {Array<{row: number, col: number, text: string, merged?: boolean}>} cells - Covered cells
  * @param {{rowCount: number, colCount: number}} dims - Table dimensions
  * @returns {string}
  */
 export function buildTableUserPrompt(instruction, cells, { rowCount, colCount }) {
+    const mergedRules = cells.some((c) => c.merged)
+        ? '\n- MERGED CELLS: entries marked "(merged — read-only)" are grid slots covered by a merged cell. NEVER include them in "cells" — their coordinates are not editable.' +
+          '\n- This table contains merged cells: "rowOps" MUST be an empty array (row insert/delete is not supported on merged tables).'
+        : '';
     return `${instruction}
 
 The selection covers a table region in a Word document (${rowCount} rows x ${colCount} columns total). Current contents of the covered cells (1-based absolute coordinates):
@@ -73,7 +79,7 @@ CRITICAL OUTPUT RULES (table mode):
 - "cells": list ONLY cells whose text you change. "row"/"col" must be coordinates from the listing above. "text" is the FULL new text of that cell (plain text, no markdown).
 - "rowOps": list ONLY structural changes. Supported ops: "delete" (remove the row), "insertAfter" / "insertBefore" (insert one new row next to the given row, "values" = the new row's cell texts, exactly ${colCount} entries).
 - If only cell text changes, omit "rowOps" or use an empty array. If nothing should change, respond with {"cells":[],"rowOps":[]}.
-- Do NOT rewrite the table as text or markdown. Do NOT include unchanged cells.`;
+- Do NOT rewrite the table as text or markdown. Do NOT include unchanged cells.${mergedRules}`;
 }
 
 /**
@@ -93,6 +99,9 @@ CRITICAL OUTPUT RULES (table mode):
  *   and insert-values length); omit to reject the patch as undimensioned
  * @param {string[][]} [shape.originals] - Current cell texts (0-based [r][c])
  *   for no-op detection; omit to keep every parsed cell entry
+ * @param {Set<string>} [shape.shadowCoords] - 1-based "row,col" keys of grid
+ *   slots covered by a merged cell (read-only); patch entries targeting them
+ *   are dropped with a warning
  * @param {{startRow: number, endRow: number, startCol: number, endCol: number,
  *   allowRowOps?: boolean}} [shape.allowedBounds] - Optional selection scope.
  *   Structural changes additionally require allowRowOps=true and full width.
@@ -130,7 +139,8 @@ export function parseTablePatchResponse(raw, shape = {}) {
 
     const originals = shape && shape.originals;
     const cells = _parseCells(parsed.cells, {
-        rowCount, colCount, originals, allowedBounds: boundsResult.bounds, warnings,
+        rowCount, colCount, originals, allowedBounds: boundsResult.bounds,
+        shadowCoords: shape && shape.shadowCoords, warnings,
     });
     const rowOps = planRowOpOrder(_parseRowOps(parsed.rowOps, {
         rowCount, colCount, allowedBounds: boundsResult.bounds, warnings,
@@ -213,7 +223,7 @@ function _normalizeAllowedBounds(rawBounds, rowCount, colCount, warnings) {
 }
 
 /** @private */
-function _parseCells(rawCells, { rowCount, colCount, originals, allowedBounds, warnings }) {
+function _parseCells(rawCells, { rowCount, colCount, originals, allowedBounds, shadowCoords, warnings }) {
     if (rawCells === undefined || rawCells === null) return [];
     if (!Array.isArray(rawCells)) {
         warnings.push('"cells" is not an array — ignored');
@@ -238,6 +248,10 @@ function _parseCells(rawCells, { rowCount, colCount, originals, allowedBounds, w
         if (allowedBounds && (row < allowedBounds.startRow || row > allowedBounds.endRow
             || col < allowedBounds.startCol || col > allowedBounds.endCol)) {
             warnings.push(`Cell R${row}C${col} is outside allowedBounds — dropped`);
+            continue;
+        }
+        if (shadowCoords && shadowCoords.has(`${row},${col}`)) {
+            warnings.push(`Cell R${row}C${col} is covered by a merged cell — not editable, dropped`);
             continue;
         }
 

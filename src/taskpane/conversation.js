@@ -196,6 +196,27 @@ export function looksLikeCleanupIntent(text) {
 }
 
 /**
+ * Review-intent markers: the user wants the selection ANALYZED or CHECKED,
+ * not rewritten ("检查选择的表格的内容"). With a selection this routes to
+ * Q&A (the selection becomes focused context) instead of the edit
+ * pipelines, which would draft a rewrite. A co-occurring edit verb still
+ * wins — "检查并修改这段话" is an edit, not a review.
+ */
+const REVIEW_INTENT_RE = /\b(check|review|inspect|examine|audit|analy[sz]e|look at)\b|检查|审查|核对|审视|评估|分析|看看/i;
+
+/**
+ * True when free text asks for the selection to be analyzed/checked.
+ * Questions stay Q&A (already covered by the question-lead check).
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeReviewIntent(text) {
+    if (looksLikeQuestion(text)) return false;
+    return REVIEW_INTENT_RE.test(text);
+}
+
+/**
  * Counts how many intent families an instruction hits (illustration, table,
  * append, format, edit, cleanup). Questions count as zero — the looksLike*
  * guards keep them Q&A. A table hit suppresses the append count: placement
@@ -277,6 +298,11 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
         // Selection + a question is a question ABOUT the selection (answered
         // in chat with the selection as context), not an edit instruction.
         if (looksLikeQuestion(trimmed)) {
+            return { type: TURN_TYPE.DOC_QA, question: trimmed };
+        }
+        // Selection + review intent is likewise an analysis request, not a
+        // rewrite — unless an edit verb co-occurs ("检查并修改").
+        if (looksLikeReviewIntent(trimmed) && !looksLikeEditIntent(trimmed)) {
             return { type: TURN_TYPE.DOC_QA, question: trimmed };
         }
         return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };

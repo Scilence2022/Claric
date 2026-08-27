@@ -175,6 +175,23 @@ describe('routeTurn', () => {
     expect(turn.type).toBe(TURN_TYPE.DOC_QA);
   });
 
+  test('review intent with selection routes to Q&A, not the edit pipeline', () => {
+    // The reported scenario: "check the selected table's contents" is an
+    // analysis request — routing it to SELECTION_EDIT made it hit the
+    // (former) uniform-table guard and error out.
+    const turn = routeTurn('检查选择的表格的内容', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+    expect(turn.question).toBe('检查选择的表格的内容');
+
+    expect(routeTurn('check the selected data', { hasSelection: true, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('review + edit verbs with selection still route to selection edit', () => {
+    const turn = routeTurn('检查并修改这段话', { hasSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
+  });
+
   test('empty input returns null', () => {
     expect(routeTurn('   ', { hasSelection: false, skills: BUILTIN_SKILLS })).toBeNull();
     expect(routeTurn('', { hasSelection: true, skills: BUILTIN_SKILLS })).toBeNull();

@@ -93,6 +93,54 @@ function makePrepareContext() {
 }
 
 /**
+ * Word.run mock for a MERGED table: row 1 has a horizontal merge across both
+ * columns (values reports the text in the anchor slot, '' in the shadow).
+ * getCell(r, c) resolves shadow coordinates to the anchor cell — the exact
+ * Word behavior the merge detection relies on.
+ */
+function makeMergedPrepareContext() {
+  const values = [
+    ['Wide header', ''],
+    ['old a', 'b'],
+    ['c', 'd'],
+  ];
+  // Anchor coordinates per grid slot; (0,1) is covered by the merge at (0,0).
+  const anchors = [
+    [{ rowIndex: 0, cellIndex: 0 }, { rowIndex: 0, cellIndex: 0 }],
+    [{ rowIndex: 1, cellIndex: 0 }, { rowIndex: 1, cellIndex: 1 }],
+    [{ rowIndex: 2, cellIndex: 0 }, { rowIndex: 2, cellIndex: 1 }],
+  ];
+  const cellProxies = {};
+  const table = {
+    isNullObject: false,
+    rowCount: 3,
+    values,
+    isUniform: false,
+    load: jest.fn(),
+    getCell: jest.fn((r, c) => {
+      const key = `${r},${c}`;
+      if (!cellProxies[key]) {
+        cellProxies[key] = { ...anchors[r][c], load: jest.fn() };
+      }
+      return cellProxies[key];
+    }),
+  };
+  const selection = {
+    parentTableOrNullObject: table,
+    parentTableCellOrNullObject: { isNullObject: true, load: jest.fn() },
+    getRange: jest.fn((loc) => ({
+      parentTableCellOrNullObject: loc === 'Start'
+        ? { isNullObject: false, rowIndex: 0, cellIndex: 0, load: jest.fn() }
+        : { isNullObject: false, rowIndex: 2, cellIndex: 1, load: jest.fn() },
+    })),
+  };
+  return {
+    document: { getSelection: () => selection },
+    sync: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
+/**
  * Word.run mock for the apply phase. Records the order of cell/row writes and
  * every changeTrackingMode assignment.
  */
@@ -240,6 +288,20 @@ describe('readSelectionTableRegion', () => {
     expect(region.bounds).toEqual({ startRow: 1, endRow: 2, startCol: 1, endCol: 2 });
     expect(region.cells.map((c) => `${c.row},${c.col}`)).toEqual(['1,1', '1,2', '2,1', '2,2']);
   });
+
+  test('merged table: detects the merge shadow instead of erroring', async () => {
+    setWordRun(makeMergedPrepareContext());
+    const deps = makeDeps();
+    const region = await readSelectionTableRegion(deps);
+
+    expect(region).not.toBeNull();
+    expect(region.merged).toBe(true);
+    expect(region.shadowKeys).toEqual(new Set(['1,2']));
+    // Anchor slot stays editable, shadow slot is flagged.
+    expect(region.cells[0]).toEqual({ row: 1, col: 1, text: 'Wide header' });
+    expect(region.cells[1]).toEqual({ row: 1, col: 2, text: '', merged: true });
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('merged cells'), 'warning');
+  });
 });
 
 describe('prepareSelectionAmendment (table route)', () => {
@@ -299,6 +361,32 @@ describe('prepareSelectionAmendment (table route)', () => {
     });
     expect(sendPromptStream).toHaveBeenCalled();
     expect(proposal.tablePatch.cells).toEqual([{ row: 2, col: 2, text: 'b2' }]);
+  });
+
+  test('merged table: shadow edits dropped, row ops disabled, anchors kept', async () => {
+    setWordRun(makeMergedPrepareContext());
+    // The model tries to edit the shadow slot AND insert a row — both must
+    // be rejected by the protocol; the anchor edit survives.
+    sendPrompt.mockResolvedValue(
+      '{"cells":[{"row":1,"col":2,"text":"shadow write"},' +
+      '{"row":1,"col":1,"text":"Wider header"}],' +
+      '"rowOps":[{"op":"insertAfter","row":1,"values":["n1","n2"]}]}'
+    );
+
+    const deps = makeDeps();
+    const proposal = await prepareSelectionAmendment(deps, { promptTemplate: 'Fix the header' });
+
+    // Prompt carries the merged markers and the merged rules
+    const promptText = sendPrompt.mock.calls[0][1];
+    expect(promptText).toContain('[R1C2] (merged — read-only)');
+    expect(promptText).toContain('MERGED CELLS');
+
+    expect(proposal.tablePatch.cells).toEqual([{ row: 1, col: 1, text: 'Wider header' }]);
+    expect(proposal.tablePatch.rowOps).toEqual([]);
+
+    const logged = deps.log.mock.calls.map((c) => `${c[1]}:${c[0]}`).join('\n');
+    expect(logged).toMatch(/warning:Table patch: Cell R1C2 is covered by a merged cell/);
+    expect(logged).toMatch(/warning:Table patch: Row operations are not allowed/);
   });
 });
 
@@ -395,6 +483,36 @@ describe('applySelectionAmendment (table route)', () => {
     setWordRun(context);
     await expect(applySelectionAmendment(makeDeps('PC'), proposal))
       .rejects.toThrow(/Table changed/);
+  });
+
+  test('merged table applies anchor-cell edits without the old uniform guard', async () => {
+    // A merged-table proposal: one anchor cell edit, no row ops. The old
+    // code threw on isUniform === false at apply time; now anchor writes go
+    // through getCell (which resolves to the anchor) and nothing throws.
+    const { context, calls } = makeApplyContext();
+    context.document.getSelection().parentTableOrNullObject.isUniform = false;
+    const mergedValues = [
+      ['Wide header', ''],
+      ['old a', 'b'],
+      ['c', 'd'],
+    ];
+    context.document.getSelection().parentTableOrNullObject.values = mergedValues;
+    setWordRun(context);
+
+    const mergedProposal = {
+      ...proposal,
+      tablePatch: {
+        ...proposal.tablePatch,
+        values: undefined,
+        cells: [{ row: 2, col: 1, text: 'new a' }],
+        rowOps: [],
+        originals: mergedValues,
+      },
+    };
+    await applySelectionAmendment(makeDeps('PC'), mergedProposal);
+
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([]);
   });
 });
 

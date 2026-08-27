@@ -27,6 +27,14 @@ describe('formatCellGrid', () => {
     ]);
     expect(grid).toBe('[R1C1] Header A\n[R1C2] Header B\n[R2C1] old a');
   });
+
+  test('marks merge-covered slots as read-only', () => {
+    const grid = formatCellGrid([
+      { row: 1, col: 1, text: 'Wide header' },
+      { row: 1, col: 2, text: '', merged: true },
+    ]);
+    expect(grid).toBe('[R1C1] Wide header\n[R1C2] (merged — read-only) ');
+  });
 });
 
 describe('buildTableUserPrompt', () => {
@@ -41,6 +49,19 @@ describe('buildTableUserPrompt', () => {
     expect(prompt).toContain('insertAfter');
     expect(prompt).toContain('exactly 2 entries');
     expect(prompt).toContain('3 rows x 2 columns');
+    expect(prompt).not.toContain('MERGED CELLS');
+  });
+
+  test('adds merged-cell rules when any covered slot is merge-covered', () => {
+    const cells = [
+      { row: 1, col: 1, text: 'Wide header' },
+      { row: 1, col: 2, text: '', merged: true },
+    ];
+    const prompt = buildTableUserPrompt('Fix the header', cells, DIMS_3X2);
+
+    expect(prompt).toContain('(merged — read-only)');
+    expect(prompt).toContain('MERGED CELLS');
+    expect(prompt).toContain('"rowOps" MUST be an empty array');
   });
 });
 
@@ -55,6 +76,20 @@ describe('parseTablePatchResponse', () => {
     ]);
     expect(rowOps).toEqual([]);
     expect(warnings).toEqual([]);
+  });
+
+  test('drops patch entries targeting merge-covered (shadow) coordinates', () => {
+    const raw = '{"cells":[{"row":1,"col":2,"text":"x"},{"row":2,"col":1,"text":"new a"}]}';
+    const { cells, warnings } = parseTablePatchResponse(raw, {
+      ...DIMS_3X2,
+      originals: ORIGINALS_3X2,
+      shadowCoords: new Set(['1,2']),
+    });
+
+    expect(cells).toEqual([{ row: 2, col: 1, text: 'new a' }]);
+    expect(warnings).toEqual([
+      'Cell R1C2 is covered by a merged cell — not editable, dropped',
+    ]);
   });
 
   test('tolerates markdown fences, surrounding prose and trailing commas', () => {
