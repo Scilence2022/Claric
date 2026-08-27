@@ -79,6 +79,18 @@ src/
                                #   markdown grids (budget-aware row/col
                                #   truncation), mixed paragraph+table blocks,
                                #   cursor-location context
+    tool-registry.js           # L1 tool-calling: tool spec normalization +
+                               #   ReAct-style loop system prompt (backend-
+                               #   agnostic — no native function-calling)
+    tool-loop.js               # L3 tool-calling: the execution loop (one JSON
+                               #   call/turn + observation, step budget,
+                               #   injected send/execute, abort-aware)
+    table-model.js             # L2 tool-calling: table draft model + tools
+                               #   (get_state/set_cell/insert_row/delete_row);
+                               #   validates ops, translates to tablePatch
+    image-model.js             # L2 tool-calling: image draft model + tools
+                               #   (list/design/replace/delete/resize/alt);
+                               #   stable snapshot indexes, card items
     sanitize.js                # Shared lazy DOMPurify factory (used by
                                #   document-generator and illustration)
     vendor/
@@ -115,6 +127,10 @@ src/
                                #   prepare+apply pairs, gated doc-scope runs,
                                #   planner, Q&A, summary, selection watch,
                                #   reveal/locate
+    agent-actions.js           # Word glue for the tool-calling stack:
+                               #   prepareTableToolEdit (chained table edits →
+                               #   tablePatch proposal), prepareImageToolEdit +
+                               #   applyImageOps (image management ops)
     ui/
       chat-view.js             # Message rendering, streaming text, per-turn
                                #   work log, model activity (auto-scroll),
@@ -179,6 +195,13 @@ tests/                         # Jest unit tests (901 tests, 37 suites)
   selection-context.spec.js   # Table→markdown formatting, truncation notes,
                                #   mixed paragraph+table interleaving,
                                #   cursor-location formatting
+  tool-loop.spec.js           # Tool registry prompts + loop protocol
+                               #   (recovery, step limit, abort)
+  table-model.spec.js         # Table draft model: op validation, patch
+                               #   translation, tool dispatch
+  image-model.spec.js         # Image draft model: indexes, consumption,
+                               #   validation, card items
+  agent-actions.spec.js       # Tool-loop Word glue: prepare/apply halves
   generate-manifest.spec.js    # Manifest generation
   __mocks__/                   # Jest style mock
 
@@ -328,6 +351,34 @@ document checks; use the selection routes (table patch / mixed) to edit it.
     centered inline picture ≤450pt wide at document start (题图/头图), end,
     or inline at the caret (光标/此处 — anchor read at apply time)
 ```
+
+### Tool Loop (agent-style table/image operations)
+
+```
+L4  existing proposal card + Apply        (UX and safety gating unchanged)
+L3  lib/tool-loop.js                      (one JSON call/turn + observation,
+                                           step budget, abort-aware)
+L2  lib/table-model.js, lib/image-model.js (draft models the tools operate on —
+                                           NEVER Word directly; ops are a
+                                           staged, diffable transaction)
+L1  lib/tool-registry.js                  (tool specs + loop system prompt)
+```
+
+Backend-agnostic by design: the loop is ReAct-style over plain chat
+messages (no native function-calling — the project targets arbitrary
+OpenAI-compatible endpoints), so any model can drive it.
+
+Triggers (single-shot protocols stay the default — the loop costs multiple
+LLM round trips):
+- Chained instructions on a selection ("…，然后…") → prepareTableToolEdit;
+  non-table selections return null and fall back to the single-shot patch.
+- An unparseable single-shot table patch retries once via the tool loop.
+- Image management (删除/替换/缩放/alt text on 图片/插图, or multi-image
+  design) → IMAGE_TOOL turn → prepareImageToolEdit + applyImageOps; indexes
+  are stable snapshot indexes with a count-based staleness guard at apply.
+
+The table loop's ops translate into the existing tablePatch shape, so the
+table proposal card and applySelectionAmendment serve unchanged.
 
 ### Cleanup Flow
 

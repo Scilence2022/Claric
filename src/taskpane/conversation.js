@@ -28,6 +28,7 @@
  */
 
 import * as defaultActions from './word-actions.js';
+import * as agentActions from './agent-actions.js';
 import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard } from './ui/proposal-card.js';
 import { describeFormatOp } from '../lib/format-ops.js';
@@ -41,6 +42,7 @@ export const TURN_TYPE = Object.freeze({
     FORMAT: 'format',
     TABLE: 'table',
     ILLUSTRATION: 'illustration',
+    IMAGE_TOOL: 'image-tool',
     CLEANUP: 'cleanup',
     COMPOUND: 'compound',
     DOC_QA: 'doc-qa',
@@ -113,6 +115,47 @@ const ILLUSTRATION_INTENT_RE = /插图|插画|配图|扉页图|题图|头图|画
 export function looksLikeIllustrationIntent(text) {
     if (looksLikeQuestion(text)) return false;
     return ILLUSTRATION_INTENT_RE.test(text);
+}
+
+/**
+ * Image-tool intent markers: the user wants EXISTING images MANAGED —
+ * deleted/replaced/resized/relabeled — or SEVERAL illustrations designed at
+ * once. Single-image design stays on the dedicated illustration turn (its
+ * streaming UX is better); management and multi-image work need the
+ * multi-step tool loop. Design verbs alone do not match.
+ */
+const IMAGE_TOOL_INTENT_RE = /(删除|移除|去掉|替换|更换|重设|缩放|调整).{0,8}(图片|图像|插图|配图|插画)|(图片|图像|插图|配图|插画).{0,6}(删除|移除|去掉|替换|更换|太小|太大|大小|尺寸)|(两|三|四|五|几|多)张.{0,4}(插图|配图|插画|图片)|\b(delete|remove|replace|resize|relabel)\b.{0,20}\b(images?|pictures?|illustrations?)|\bset\b.{0,10}\balt\b/i;
+
+/**
+ * True when free text asks for image management or multi-image design.
+ * Questions stay Q&A; single-image design stays on the illustration turn.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeImageToolIntent(text) {
+    if (looksLikeQuestion(text)) return false;
+    return IMAGE_TOOL_INTENT_RE.test(text);
+}
+
+/**
+ * Chained-instruction markers: sequence connectors naming MULTIPLE actions
+ * ("删除空行，然后重新编号，再加一行合计"). A bare 再 ("再润色一下" — again,
+ * one action) does not match; the comma-leading form (，再) does. Chained
+ * table instructions route through the table tool loop, which verifies each
+ * step against the draft model instead of betting on one-shot JSON.
+ */
+const CHAIN_RE = /然后|接着|随后|并且|同时|最后|[，、;；]再/;
+
+/**
+ * True when the instruction chains multiple actions with sequence
+ * connectors.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeChainedInstruction(text) {
+    return CHAIN_RE.test((text || '').trim());
 }
 
 /**
@@ -266,6 +309,12 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
     if (allowCompound && countIntentFamilies(trimmed) >= 2) {
         return { type: TURN_TYPE.COMPOUND, instruction: trimmed };
     }
+    // Image-management intent wins over the single-illustration branch:
+    // deleting/replacing/resizing existing images or designing several at
+    // once needs the multi-step tool loop, not one streaming SVG design.
+    if (looksLikeImageToolIntent(trimmed)) {
+        return { type: TURN_TYPE.IMAGE_TOOL, instruction: trimmed };
+    }
     // Illustration intent wins over the append/edit branches: the artifact
     // nouns (插图/配图/svg...) name an image to design and insert, not text
     // to append or existing text to edit.
@@ -341,7 +390,7 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
  */
 export function createConversation(deps) {
     const { appState, view, input, log, logWithRetry, updateStatusBar } = deps;
-    const actions = deps.actions || defaultActions;
+    const actions = deps.actions || { ...defaultActions, ...agentActions };
     const getSelectionText = deps.getSelectionText || actions.readSelectionSnippet;
     // Optional dep fired whenever the live session has new content worth
     // persisting (after a turn settles, and before newChat wipes the array).
@@ -565,13 +614,48 @@ export function createConversation(deps) {
         try {
             msg.setStatus('Drafting edit...');
             const commentInstructions = getCommentInstructions();
-            const proposal = await actions.prepareSelectionAmendment(turnDeps, {
-                promptTemplate,
-                commentInstructions,
-                signal: myController.signal,
-                onToken: (t) => msg.appendModelToken({ id: 'selection' }, 'content', t),
-                onReasoning: (t) => msg.appendModelToken({ id: 'selection' }, 'reasoning', t),
-            });
+
+            let proposal;
+            // Chained instructions on (possibly) a table selection take the
+            // tool loop: each step is validated against the draft model
+            // instead of betting on one-shot JSON. Non-table selections
+            // resolve to null and fall through to the single-shot path.
+            if (looksLikeChainedInstruction(promptTemplate)) {
+                msg.setStatus('Working through the steps (tool loop)...');
+                proposal = await actions.prepareTableToolEdit(turnDeps, {
+                    instruction: promptTemplate,
+                    signal: myController.signal,
+                    onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
+                        s.text ? `${s.text}\n` : ''),
+                });
+            }
+            if (!proposal) {
+                try {
+                    proposal = await actions.prepareSelectionAmendment(turnDeps, {
+                        promptTemplate,
+                        commentInstructions,
+                        signal: myController.signal,
+                        onToken: (t) => msg.appendModelToken({ id: 'selection' }, 'content', t),
+                        onReasoning: (t) => msg.appendModelToken({ id: 'selection' }, 'reasoning', t),
+                    });
+                } catch (err) {
+                    // A table selection whose one-shot JSON patch didn't
+                    // parse gets one structured retry via the tool loop —
+                    // step-wise validation recovers what one-shot couldn't.
+                    if (/no JSON object/i.test(err.message)) {
+                        log(`Single-shot table patch failed (${err.message}); retrying via the tool loop.`, 'warning');
+                        proposal = await actions.prepareTableToolEdit(turnDeps, {
+                            instruction: promptTemplate,
+                            signal: myController.signal,
+                            onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
+                                s.text ? `${s.text}\n` : ''),
+                        });
+                        if (!proposal) throw err;
+                    } else {
+                        throw err;
+                    }
+                }
+            }
             msg.setStatus('');
 
             // Table patches review per-cell / per-row items instead of a
@@ -955,6 +1039,88 @@ export function createConversation(deps) {
     }
 
     /**
+     * Runs an image-management tool-loop turn: the model drives list/design/
+     * replace/delete/resize/alt-text tools against a draft snapshot of the
+     * document's images, and the recorded ops stage in a proposal card with
+     * one selectable change per op. Apply runs only the checked ops.
+     */
+    async function runImageToolTurn(turn, msg, turnDeps, turnController) {
+        const myController = turnController || new AbortController();
+        appState.isProcessing = true;
+        appState.chatController = myController;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Working through the image changes (tool loop)...');
+            const proposal = await actions.prepareImageToolEdit(turnDeps, {
+                instruction: turn.instruction,
+                signal: myController.signal,
+                onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
+                    s.text ? `${s.text}\n` : ''),
+            });
+            msg.setStatus('');
+            const title = 'Proposed image changes';
+            const svgOps = proposal.items.filter((item) => item.svg);
+            const previewSrc = svgOps.length === 1
+                ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgOps[0].svg)))}`
+                : undefined;
+            const cardItems = proposal.items.map(({ id, label, before, after }) => ({
+                id, label, before, after,
+            }));
+            const card = createProposalCard({
+                title,
+                countsText: `${proposal.ops.length} image operation(s)`,
+                previewSrc,
+                comment: null,
+                items: cardItems,
+                onApply: async (selectedIds) => {
+                    try {
+                        // One checkbox per op — honor the user's unchecking.
+                        const picked = new Set(selectedIds);
+                        const ops = proposal.ops.filter((_, i) => picked.has(i + 1));
+                        if (ops.length === 0) {
+                            card.markWarning('No operations selected.');
+                            return;
+                        }
+                        const result = await actions.applyImageOps(turnDeps, { ...proposal, ops });
+                        if (result && result.warnings && result.warnings.length > 0) {
+                            card.markWarning(`Applied with warning: ${result.warnings[0]}`);
+                        } else {
+                            card.markApplied();
+                        }
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Image proposal rejected by user.', 'info');
+                },
+            });
+            msg.attachProposal(card, {
+                title,
+                state: 'pending',
+                countsText: `${proposal.ops.length} image operation(s)`,
+                previewSrc,
+                items: cardItems,
+            });
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else if (error.noChanges) {
+                msg.setStatus(error.message);
+            } else {
+                msg.markError(error.message);
+            }
+        } finally {
+            appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
+            input.setProcessing(false);
+        }
+    }
+
+    /**
      * Runs a cleanup turn: deterministically scans the document for redundant
      * empty paragraphs (no LLM — blank paragraphs are invisible to the parser
      * and excluded from text-pipeline alignment, so a Word.js scan is the only
@@ -1252,6 +1418,8 @@ export function createConversation(deps) {
             await runAppendTurn(turn.instruction, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.ILLUSTRATION) {
             await runIllustrationTurn(turn, msg, turnDeps, turnController);
+        } else if (turn.type === TURN_TYPE.IMAGE_TOOL) {
+            await runImageToolTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.TABLE) {
             await runTableTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.FORMAT) {

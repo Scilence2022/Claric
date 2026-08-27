@@ -2004,7 +2004,7 @@ export async function applyIllustrationProposal(deps, proposal) {
     if (!svg) {
         throw new Error('No illustration to apply — the model returned no usable SVG.');
     }
-    const { base64, width, height } = await _svgToPngBase64(svg);
+    const { base64, width, height } = await svgToPngBase64(svg);
     const position = proposal.position === 'start' || proposal.position === 'cursor'
         ? proposal.position
         : 'end';
@@ -2016,35 +2016,13 @@ export async function applyIllustrationProposal(deps, proposal) {
                 : Word.ChangeTrackingMode.off;
         }
         try {
-            let picture;
-            if (position === 'cursor') {
-                // Zero-width range at the selection end: inserting at its
-                // start puts the picture right after the selected text —
-                // exactly at a collapsed caret, and never over a selection.
-                const insertionPoint = context.document.getSelection()
-                    .getRange(Word.RangeLocation.end);
-                picture = insertionPoint.insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
-            } else {
-                const location = position === 'start' ? Word.InsertLocation.start : Word.InsertLocation.end;
-                // A dedicated paragraph keeps the image standalone and centerable.
-                const paragraph = context.document.body.insertParagraph('', location);
-                picture = paragraph.getRange(Word.RangeLocation.start)
-                    .insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
-                paragraph.alignment = Word.Alignment.centered;
-            }
-            picture.load('width,height');
+            const picture = insertPngPicture(context, {
+                base64,
+                position,
+            });
             await context.sync();
-            // Inline picture dimensions are points; scale oversized images down
-            // to the content width, keeping the aspect ratio.
-            if (picture.width > MAX_ILLUSTRATION_WIDTH_PT) {
-                picture.height = picture.height * (MAX_ILLUSTRATION_WIDTH_PT / picture.width);
-                picture.width = MAX_ILLUSTRATION_WIDTH_PT;
-            }
-            try {
-                picture.altTextDescription = (proposal.instruction || 'Illustration').slice(0, 200);
-            } catch (_e) {
-                // Alt text is best-effort (not critical for the insertion).
-            }
+            // Scaling reads the synced width; alt text is best-effort.
+            finalizeInsertedPicture(context, picture, (proposal.instruction || 'Illustration').slice(0, 200));
             await context.sync();
         } finally {
             if (Word.ChangeTrackingMode) {
@@ -2058,12 +2036,75 @@ export async function applyIllustrationProposal(deps, proposal) {
 }
 
 /**
+ * Inserts one PNG (base64) as an inline picture inside an OPEN Word.run
+ * context — the shared insertion primitive of the illustration pipeline
+ * and the image tool loop. The caller owns the change-tracking mode.
+ *
+ * start/end: a centered inline picture in its own paragraph at the document
+ * start/end. cursor: INLINE at the caret — the insertion point is read when
+ * this runs (the document keeps its selection while focus is in the
+ * taskpane), anchored to the selection end so a non-collapsed selection
+ * never has its text replaced. Oversized pictures scale down to the content
+ * width; alt text is best-effort.
+ *
+ * @param {Word.RequestContext} context - An open Word.run context
+ * @param {object} args
+ * @param {string} args.base64 - PNG base64 (no data-URL prefix)
+ * @param {'start'|'end'|'cursor'} args.position
+ * @returns {Word.InlinePicture} The inserted picture proxy
+ */
+export function insertPngPicture(context, { base64, position }) {
+    let picture;
+    if (position === 'cursor') {
+        // Zero-width range at the selection end: inserting at its
+        // start puts the picture right after the selected text —
+        // exactly at a collapsed caret, and never over a selection.
+        const insertionPoint = context.document.getSelection()
+            .getRange(Word.RangeLocation.end);
+        picture = insertionPoint.insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
+    } else {
+        const location = position === 'start' ? Word.InsertLocation.start : Word.InsertLocation.end;
+        // A dedicated paragraph keeps the image standalone and centerable.
+        const paragraph = context.document.body.insertParagraph('', location);
+        picture = paragraph.getRange(Word.RangeLocation.start)
+            .insertInlinePictureFromBase64(base64, Word.InsertLocation.start);
+        paragraph.alignment = Word.Alignment.centered;
+    }
+    picture.load('width,height');
+    return picture;
+}
+
+/**
+ * Queues the post-insert fixes for a picture inserted by insertPngPicture:
+ * scale oversized images down to the content width (keeping the aspect
+ * ratio) and set best-effort alt text. Runs inside the caller's Word.run —
+ * sync happens once after all queued ops.
+ *
+ * @param {Word.RequestContext} context
+ * @param {Word.InlinePicture} picture
+ * @param {string} [altText]
+ */
+export function finalizeInsertedPicture(context, picture, altText) {
+    // Inline picture dimensions are points; scale oversized images down
+    // to the content width, keeping the aspect ratio.
+    if (picture.width > MAX_ILLUSTRATION_WIDTH_PT) {
+        picture.height = picture.height * (MAX_ILLUSTRATION_WIDTH_PT / picture.width);
+        picture.width = MAX_ILLUSTRATION_WIDTH_PT;
+    }
+    try {
+        if (altText) picture.altTextDescription = String(altText).slice(0, 200);
+    } catch (_e) {
+        // Alt text is best-effort (not critical for the insertion).
+    }
+}
+
+/**
  * Rasterizes an SVG string to PNG base64 at 1600px wide via an offscreen
  * canvas (browser/WebView2 only — not exercised under node tests). The SVG
  * is vector, so rendering up to 1600px keeps the inserted image crisp.
- * @private
+ * Exported for the image tool loop (agent-actions).
  */
-async function _svgToPngBase64(svg) {
+export async function svgToPngBase64(svg) {
     const dims = svgDimensions(svg) || { width: 1200, height: 800 };
     const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
