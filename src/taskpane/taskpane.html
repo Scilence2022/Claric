@@ -73,10 +73,13 @@
         <div id="settingsOverlay" class="settings-overlay" hidden>
             <aside class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
                 <div class="settings-header">
-                    <h2>Settings</h2>
-                    <div class="settings-header-actions">
-                        <button id="settingsSaveBtn" class="btn btn-compact">Save</button>
+                    <div class="settings-header-left">
                         <button id="settingsCloseBtn" class="icon-btn" title="Close settings" aria-label="Close settings">&times;</button>
+                        <h2>Settings</h2>
+                    </div>
+                    <div class="settings-header-actions">
+                        <span id="settingsSaveStatus" class="settings-save-status" hidden></span>
+                        <button id="settingsSaveBtn" class="btn btn-compact">Save</button>
                     </div>
                 </div>
                 <div class="settings-tabs" role="tablist" aria-label="Settings sections">

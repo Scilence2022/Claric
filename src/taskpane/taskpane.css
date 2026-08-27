@@ -968,7 +968,14 @@ body {
     border-bottom: 1px solid var(--border-color);
 }
 
+.settings-header-left {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
 .settings-header h2 {
+    margin: 0;
     font-size: var(--font-size-lg);
 }
 
@@ -976,6 +983,21 @@ body {
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
+}
+
+.settings-save-status {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    white-space: nowrap;
+    transition: opacity 0.2s ease;
+}
+
+.settings-save-status.success {
+    color: var(--success-color);
+}
+
+.settings-save-status.error {
+    color: var(--error-color);
 }
 
 .settings-tabs {
