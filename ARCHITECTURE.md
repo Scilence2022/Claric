@@ -150,7 +150,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (1019 tests, 44 suites)
+tests/                         # Jest unit tests (1030 tests, 44 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -340,9 +340,11 @@ picture or table enters the conversation as a live reference with a
 tool list, never as raw content.
 
 - **Selection reader**: `readSelectionContent` returns `{ text, images,
-  totalImages }`. `watchSelection` debounces selection-change events
-  into the input-bar preview (text snippet + thumbnail row + `+N` badge
-  when the selection exceeds the cap).
+  totalImages, hasMultiCellTableRegion, tableRegion }`. `watchSelection`
+  debounces selection-change events into the input-bar preview
+  (text snippet + image thumbnail row + `+N` badge when the image cap
+  truncates, plus a `Table R1C1 → R3C2` corner-coords badge when the
+  selection covers multiple cells).
 - **Image selection** routes any instruction to the IMAGE_TOOL session:
   snapshot indexes serve as handles; the task prompt lists each
   picture (`image 1: 300×200pt, alt "…"`) and marks the user's current
@@ -351,13 +353,22 @@ tool list, never as raw content.
   message; text-only backends fall back via an attachment-stripped
   retry. A read-only loop (no recorded ops, just a `finish` summary)
   becomes the chat answer — no proposal card.
+- **Multi-cell table selection** routes any instruction to the
+  TABLE_TOOL session (`TURN_TYPE.TABLE_TOOL` — the table-side
+  counterpart of IMAGE_TOOL): `prepareTableToolEdit` already seeds the
+  table draft model from the selection's table region, exposing the
+  same `get_state` / `set_cell` / `insert_row` / `delete_row` tools
+  used for chained instructions. Per-cell/per-row cards reuse the
+  existing tablePatch proposal + `applySelectionAmendment` table
+  branch — zero new apply-side surface. Read-only outcomes (`finish`
+  with a summary, no patch) render the summary as the chat answer —
+  same read-only contract as the image tool session.
+- **Intra-cell text selections** (single cell, `parentTableCell` is the
+  non-null anchor) stay on the flat-text pipelines — the multi-cell
+  router doesn't fire, so SELECTION_EDIT / QA behave as before.
 - **Mixed text + image** selections carry text through the flat QA path
   with image metadata appended as a separate `--- SELECTED IMAGES ---
   - image N: W×Hpt, alt "…"` block; bytes are never injected.
-- **Table selections** already use the selection-seeded `prepareTableToolEdit`
-  pattern (`get_state` / `set_cell` / `insert_row` / `delete_row`
-  tools): the same object-and-tools philosophy, triggered for chained
-  instructions or unparseable single-shot patches.
 
 ### Format Flow
 
@@ -619,7 +630,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 1019 tests, 44 suites, ~1s
+npm test          # 1030 tests, 44 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

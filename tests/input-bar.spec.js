@@ -62,6 +62,30 @@ describe('setSelectionPreview', () => {
         expect(document.querySelector('.selection-preview-more').textContent).toBe('+3');
     });
 
+    test('multi-cell table selection renders corner-coords badge', () => {
+        const bar = setupDom();
+        bar.setSelectionPreview({
+            text: 'R1C1 R1C2 R2C1',
+            hasMultiCellTableRegion: true,
+            tableRegion: { startRow: 1, endRow: 2, startCol: 1, endCol: 2 },
+        });
+
+        expect(document.getElementById('selectionPreview').hasAttribute('hidden')).toBe(false);
+        expect(document.querySelector('.selection-preview-table').textContent)
+            .toBe('Table R1C1 → R2C2');
+    });
+
+    test('table-region flag without coords falls back to a generic label', () => {
+        const bar = setupDom();
+        bar.setSelectionPreview({
+            text: '',
+            hasMultiCellTableRegion: true,
+            tableRegion: null,
+        });
+
+        expect(document.querySelector('.selection-preview-table').textContent).toBe('Table region');
+    });
+
     test('empty content and legacy strings still work', () => {
         const bar = setupDom();
         bar.setSelectionPreview({ text: '', images: [], totalImages: 0 });

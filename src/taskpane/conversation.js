@@ -43,6 +43,7 @@ export const TURN_TYPE = Object.freeze({
     TABLE: 'table',
     ILLUSTRATION: 'illustration',
     IMAGE_TOOL: 'image-tool',
+    TABLE_TOOL: 'table-tool',
     CLEANUP: 'cleanup',
     COMPOUND: 'compound',
     DOC_QA: 'doc-qa',
@@ -290,18 +291,23 @@ export function countIntentFamilies(text) {
  * @param {string} text - Raw chat input
  * @param {object} ctx
  * @param {boolean} ctx.hasSelection - Whether the document has a non-empty
- *   selection (selected text OR selected image(s))
+ *   selection (selected text OR selected image(s) OR a multi-cell table
+ *   region)
  * @param {boolean} [ctx.hasImageSelection=false] - True when the selection
  *   contains image(s) and NO text: every instruction then enters the image
  *   tool session (object + tools) — questions included, since visual reading
  *   is the read_image tool, not injected bytes
+ * @param {boolean} [ctx.hasMultiCellTableRegion=false] - True when the
+ *   selection covers multiple cells of a single table (whole table or a
+ *   rectangular sub-region): any instruction enters the table tool session
+ *   (object + tools). Intra-cell text selections stay on the flat text path.
  * @param {Array<object>} ctx.skills - Available skills (from listSkills)
  * @param {boolean} [ctx.allowCompound=true] - False disables the compound
  *   branch (planner fallback re-routes through single intent)
  * @returns {{ type: string, skill?: object, args?: string, instruction?: string, question?: string, scope?: string } | null}
  *   Null for empty input.
  */
-export function routeTurn(text, { hasSelection, hasImageSelection = false, skills, allowCompound = true } = {}) {
+export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMultiCellTableRegion = false, skills, allowCompound = true } = {}) {
     const trimmed = (text || '').trim();
     if (!trimmed) return null;
 
@@ -341,8 +347,10 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, skill
     // Format intent wins over the selection/edit branches too: formatting ops
     // never rewrite text, so they must not enter the text-diff pipelines.
     // Image-only selections take document scope — format ops target text.
+    // Multi-cell table regions also take document scope — format ops target
+    // paragraphs, not table cells.
     if (looksLikeFormatIntent(trimmed)) {
-        return { type: TURN_TYPE.FORMAT, instruction: trimmed, scope: hasSelection && !hasImageSelection ? 'selection' : 'document' };
+        return { type: TURN_TYPE.FORMAT, instruction: trimmed, scope: hasSelection && !hasImageSelection && !hasMultiCellTableRegion ? 'selection' : 'document' };
     }
     // Cleanup intent is document-scope and deterministic: empty paragraphs
     // are invisible to the parser/LLM, so no text pipeline could serve this.
@@ -356,6 +364,14 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, skill
         // op tools — the text pipelines have nothing to operate on.
         if (hasImageSelection) {
             return { type: TURN_TYPE.IMAGE_TOOL, instruction: trimmed };
+        }
+        // Multi-cell table region: the table enters as a controllable TABLE
+        // OBJECT (grid + get_state / set_cell / insert_row / delete_row
+        // tools). Mirrors image selection: questions answered inside the
+        // session via get_state, edits via the cell/row op tools. Intra-cell
+        // text selections skip this branch and stay on the flat text path.
+        if (hasMultiCellTableRegion) {
+            return { type: TURN_TYPE.TABLE_TOOL, instruction: trimmed };
         }
         // Selection + a question is a question ABOUT the selection (answered
         // in chat with the selection as context), not an edit instruction.
@@ -1151,6 +1167,106 @@ export function createConversation(deps) {
     }
 
     /**
+     * Runs a table tool turn for a multi-cell table selection: every
+     * instruction enters the selection as a controllable TABLE OBJECT
+     * (grid + get_state / set_cell / insert_row / delete_row tools). The
+     * loop's translated patch reuses the existing tablePatch proposal
+     * shape, so the same per-cell checkbox card + applySelectionAmendment
+     * (table branch) serve unchanged. Mirrors runImageToolTurn: a
+     * read-only outcome (loop finishes with summary, no ops) renders the
+     * summary as chat text — no card.
+     */
+    async function runTableToolTurn(turn, msg, turnDeps, turnController) {
+        const myController = turnController || new AbortController();
+        appState.isProcessing = true;
+        appState.chatController = myController;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Working through the table task (tool loop)...');
+            const proposal = await actions.prepareTableToolEdit(turnDeps, {
+                instruction: turn.instruction,
+                signal: myController.signal,
+                onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
+                    s.text ? `${s.text}\n` : ''),
+            });
+            if (proposal && proposal.noOps) {
+                msg.setStatus('');
+                msg.setText(proposal.answer || '(no table changes)');
+                return;
+            }
+            if (!proposal) {
+                msg.setStatus('The selection is no longer a multi-cell table region — nothing to operate on.');
+                return;
+            }
+            msg.setStatus('');
+
+            const title = 'Proposed table edit';
+            const beforeChars = proposal.tableItems.reduce((sum, item) => sum + (item.before || '').length, 0);
+            const afterChars = proposal.tableItems.reduce((sum, item) => sum + (item.after || '').length, 0);
+            const items = proposal.tableItems.map((item, index) => ({
+                id: index,
+                label: item.label,
+                before: item.before,
+                after: item.after,
+                searchText: item.searchText,
+            }));
+            const card = createProposalCard({
+                title,
+                beforeChars,
+                afterChars,
+                comment: null,
+                items,
+                onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
+                onApply: async (selectedIds) => {
+                    try {
+                        let toApply = proposal;
+                        if (selectedIds) {
+                            const cellCount = proposal.tablePatch.cells.length;
+                            const picked = new Set(selectedIds);
+                            toApply = {
+                                ...proposal,
+                                tablePatch: {
+                                    ...proposal.tablePatch,
+                                    cells: proposal.tablePatch.cells.filter((_, i) => picked.has(i)),
+                                    rowOps: proposal.tablePatch.rowOps.filter((_, j) => picked.has(cellCount + j)),
+                                },
+                            };
+                        }
+                        await actions.applySelectionAmendment(turnDeps, toApply);
+                        card.markApplied();
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Table proposal rejected.', 'info');
+                },
+            });
+            msg.attachProposal(card, {
+                title,
+                state: 'pending',
+                countsText: `${beforeChars} → ${afterChars} chars`,
+                items,
+            });
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else if (error.noChanges) {
+                msg.setStatus(error.message);
+            } else {
+                msg.markError(error.message);
+            }
+        } finally {
+            appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
+            input.setProcessing(false);
+        }
+    }
+
+    /**
      * Runs a cleanup turn: deterministically scans the document for redundant
      * empty paragraphs (no LLM — blank paragraphs are invisible to the parser
      * and excluded from text-pipeline alignment, so a Word.js scan is the only
@@ -1456,6 +1572,8 @@ export function createConversation(deps) {
             await runImageToolTurn(turn, msg, turnDeps, selectionImages, turnController);
         } else if (turn.type === TURN_TYPE.TABLE) {
             await runTableTurn(turn, msg, turnDeps, turnController);
+        } else if (turn.type === TURN_TYPE.TABLE_TOOL) {
+            await runTableToolTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.FORMAT) {
             await runFormatTurn(turn, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.CLEANUP) {
@@ -1493,20 +1611,29 @@ export function createConversation(deps) {
         // Metadata only — base64 payloads never leave the selection readers
         // (preview thumbnails come from watchSelection's own read).
         let selectionImages = [];
+        // Multi-cell table region: matched in readSelectionContent's same
+        // Word.run — boolean flag for routing, full coords available via
+        // the full read inside prepareTableToolEdit.
+        let hasMultiCellTableRegion = false;
         try {
-            const sel = _normalizeSelection(await getSelection());
+            const raw = await getSelection();
+            const sel = _normalizeSelection(raw);
+            const extras = (raw && typeof raw === 'object') ? raw : {};
             selectionText = (sel.text || '').trim();
             selectionImages = sel.images;
+            hasMultiCellTableRegion = !!extras.hasMultiCellTableRegion;
         } catch (_err) {
             selectionText = '';
             selectionImages = [];
+            hasMultiCellTableRegion = false;
         }
-        const hasSelection = !!selectionText || selectionImages.length > 0;
-        const hasImageSelection = !selectionText && selectionImages.length > 0;
+        const hasSelection = !!selectionText || selectionImages.length > 0 || hasMultiCellTableRegion;
+        const hasImageSelection = !selectionText && !hasMultiCellTableRegion && selectionImages.length > 0;
 
         const turn = routeTurn(trimmed, {
             hasSelection,
             hasImageSelection,
+            hasMultiCellTableRegion,
             skills: listSkills(appState.promptManager),
         });
         if (!turn) return;
