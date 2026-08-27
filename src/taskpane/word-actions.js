@@ -1279,10 +1279,12 @@ async function _applyTablePatch(deps, proposal) {
 
                     // Word.js has no Range.union — the correct method is
                     // expandTo(range), which extends this range to cover the
-                    // other. Expand from the top-left cell to the bottom-right
-                    // cell to get a range spanning the whole merge block.
-                    const first = table.getCell(m.startRow - 1, m.startCol - 1).getRange();
-                    const last = table.getCell(m.endRow - 1, m.endCol - 1).getRange();
+                    // other. Word.TableCell has no getRange(); use
+                    // cell.body.getRange() to get the cell's content range,
+                    // then expand from the top-left cell to the bottom-right
+                    // cell to span the whole merge block.
+                    const first = table.getCell(m.startRow - 1, m.startCol - 1).body.getRange();
+                    const last = table.getCell(m.endRow - 1, m.endCol - 1).body.getRange();
                     if (typeof first.expandTo !== 'function') {
                         warnings.push('Cell merge is not supported by this Word API — skipped.');
                         log(`Merge skipped (Word API lacks Range.expandTo for R${m.startRow}C${m.startCol}–R${m.endRow}C${m.endCol}).`, 'warning');

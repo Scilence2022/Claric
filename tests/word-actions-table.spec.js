@@ -172,9 +172,9 @@ function makeApplyContext({ tableRowCount = 3 } = {}) {
             }],
             load: jest.fn(),
           },
+          getRange: jest.fn(() => ({ expandTo: jest.fn(() => ({ mergeTarget: true })) })),
         },
         parentRow: rows[r],
-        getRange: jest.fn(() => ({ expandTo: jest.fn(() => ({ mergeTarget: true })) })),
       };
     }
   }
