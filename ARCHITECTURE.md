@@ -218,6 +218,10 @@ scripts/
   generate-manifest.cjs        # Builds manifest.xml from template + .env
                                #   (stable GUID persistence, version sync,
                                #   XML escaping)
+  generate-icons.cjs           # Rasterizes assets/icon.svg to the manifest's
+                               #   PNG sizes (16/32/64/80/128) via sharp;
+                               #   runs before webpack in `npm run build` so
+                               #   the deployed icons track the source mark
   docker-server.cjs            # Hardened production static file server:
                                #   /healthz, traversal + crash protection,
                                #   graceful shutdown, access logging,
