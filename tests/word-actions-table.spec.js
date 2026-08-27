@@ -201,6 +201,45 @@ describe('readSelectionTableRegion', () => {
     expect(region.cells[0]).toEqual({ row: 1, col: 1, text: 'Header A' });
     expect(region.cells[5]).toEqual({ row: 3, col: 2, text: 'd' });
   });
+
+  test('whole-table selection (both endpoints on boundaries) clamps to the whole table', async () => {
+    // Whole-table selection via the move handle / Select Table: both
+    // endpoint ranges sit exactly on table boundaries and resolve OUTSIDE
+    // (null cells) even though containment (parentTable + no anchor cell)
+    // proves an in-table multi-cell selection.
+    const context = makePrepareContext();
+    context.document.getSelection().getRange = jest.fn(() => ({
+      parentTableCellOrNullObject: { isNullObject: true, load: jest.fn() },
+    }));
+    setWordRun(context);
+
+    const deps = makeDeps();
+    const region = await readSelectionTableRegion(deps);
+
+    expect(region).not.toBeNull();
+    expect(region.cells).toHaveLength(6);
+    expect(region.bounds).toEqual({ startRow: 1, endRow: 3, startCol: 1, endCol: 2 });
+    expect(deps.log).toHaveBeenCalledWith(
+      expect.stringContaining('table boundary'), 'warning');
+  });
+
+  test('selection from the table start through a resolved end keeps the end corner', async () => {
+    // Start point on the first-cell boundary (null), end point resolvable:
+    // the region runs from the table's first cell to the resolved corner.
+    const context = makePrepareContext();
+    context.document.getSelection().getRange = jest.fn((loc) => ({
+      parentTableCellOrNullObject: loc === 'Start'
+        ? { isNullObject: true, load: jest.fn() }
+        : { isNullObject: false, rowIndex: 1, cellIndex: 1, load: jest.fn() },
+    }));
+    setWordRun(context);
+
+    const region = await readSelectionTableRegion(makeDeps());
+
+    expect(region).not.toBeNull();
+    expect(region.bounds).toEqual({ startRow: 1, endRow: 2, startCol: 1, endCol: 2 });
+    expect(region.cells.map((c) => `${c.row},${c.col}`)).toEqual(['1,1', '1,2', '2,1', '2,2']);
+  });
 });
 
 describe('prepareSelectionAmendment (table route)', () => {

@@ -163,7 +163,10 @@ export async function readSelectionText(deps) {
  * Word cell selections are rectangular, so the zero-width selection start
  * and end points each sit in the top-left / bottom-right covered cell —
  * two coordinate reads bound the whole region (no per-cell location
- * compares, no row-collection iteration).
+ * compares, no row-collection iteration). An endpoint that lands exactly
+ * ON a table boundary (whole-table selections hit both) resolves to the
+ * unit OUTSIDE the table and reads as a null cell; such endpoints clamp
+ * to the table edge instead of failing the read.
  *
  * @param {object} deps - { appState, log }
  * @returns {Promise<null | {rowCount: number, colCount: number,
@@ -197,20 +200,40 @@ export async function readSelectionTableRegion(deps) {
         table.load('rowCount,values,isUniform');
         await context.sync();
 
+        // Boundary-ambiguous selections: a zero-width range sitting exactly
+        // ON a table boundary belongs to the OUTSIDE unit in Word's position
+        // model (the paragraph before the table for a selection starting at
+        // the very top of the first cell; the row-end mark / following
+        // paragraph for one ending at the very end of the last cell).
+        // Selecting the WHOLE table hits both. The containment checks above
+        // (parentTable non-null, anchorCell null) already prove a multi-cell
+        // in-table selection, so clamp missing endpoints to the table edge
+        // instead of erroring: resolved corners keep their exact coordinates.
+        const values = table.values || [];
+        const colCount = values[0] ? values[0].length : 0;
+        const startRow = Math.min(
+            startCell.isNullObject ? 0 : startCell.rowIndex,
+            endCell.isNullObject ? (table.rowCount || values.length) - 1 : endCell.rowIndex
+        );
+        const endRow = Math.max(
+            startCell.isNullObject ? 0 : startCell.rowIndex,
+            endCell.isNullObject ? (table.rowCount || values.length) - 1 : endCell.rowIndex
+        );
+        const startCol = Math.min(
+            startCell.isNullObject ? 0 : startCell.cellIndex,
+            endCell.isNullObject ? colCount - 1 : endCell.cellIndex
+        );
+        const endCol = Math.max(
+            startCell.isNullObject ? 0 : startCell.cellIndex,
+            endCell.isNullObject ? colCount - 1 : endCell.cellIndex
+        );
         if (startCell.isNullObject || endCell.isNullObject) {
-            throw new Error('Could not locate the selected cells — re-select the table region.');
+            log('Selection endpoint(s) sat on a table boundary — clamping the region to the table edge.', 'warning');
         }
         if (table.isUniform === false) {
             throw new Error('The table has merged cells; table edits are only supported on uniform (non-merged) tables.');
         }
 
-        const startRow = Math.min(startCell.rowIndex, endCell.rowIndex);
-        const endRow = Math.max(startCell.rowIndex, endCell.rowIndex);
-        const startCol = Math.min(startCell.cellIndex, endCell.cellIndex);
-        const endCol = Math.max(startCell.cellIndex, endCell.cellIndex);
-
-        const values = table.values || [];
-        const colCount = values[0] ? values[0].length : 0;
         const cells = [];
         for (let r = startRow; r <= endRow; r++) {
             for (let c = startCol; c <= endCol; c++) {
