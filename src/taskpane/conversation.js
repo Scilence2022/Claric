@@ -66,13 +66,22 @@ const EDIT_INTENT_RE = /\b(edit|revise|revision|polish|proofread|rewrite|redline
 const QUESTION_LEAD_RE = /^\s*(what|why|how|does|do|is|are|can|could|should|would|which|who|when|where|explain|describe|summarize|list|tell me)\b|^\s*(什么|为什么|为何|怎么|怎样|如何|哪些|哪个|是不是|是否|能否|解释|说明|总结|概述|介绍)/i;
 
 /**
- * True when free text starts with a question marker (EN + ZH).
+ * True when free text reads as a question (EN + ZH lead, 吗/呢, or a
+ * trailing question mark). The 吗/呢 / trailing-? checks catch Chinese
+ * yes/no questions that begin with a subject rather than a question word
+ * ("你能改变选择的表格的样式吗？") — without them such a question slips into
+ * the FORMAT/format-op pipeline and ends as "no changes" instead of an
+ * answer.
  *
  * @param {string} text - Trimmed chat input
  * @returns {boolean}
  */
 export function looksLikeQuestion(text) {
-    return QUESTION_LEAD_RE.test(text);
+    const trimmed = (text || '').trim();
+    if (QUESTION_LEAD_RE.test(trimmed)) return true;
+    if (/[吗呢]/.test(trimmed)) return true;
+    if (/[？?]$/.test(trimmed)) return true;
+    return false;
 }
 
 /**

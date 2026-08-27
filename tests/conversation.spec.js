@@ -301,6 +301,22 @@ describe('routeTurn', () => {
     expect(turn.scope).toBe('document');
   });
 
+  test('a Chinese yes/no question with 吗 routes to Q&A, not FORMAT', () => {
+    // "Can you change the style of the selected table?" — contains 样式
+    // (format intent) but is a question, so it must be ANSWERED, not parsed
+    // as a format-op request that yields "no changes".
+    const turn = routeTurn('你能改变选择的表格的样式吗？', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+    expect(turn.question).toBe('你能改变选择的表格的样式吗？');
+    expect(turn.type).not.toBe(TURN_TYPE.FORMAT);
+  });
+
+  test('a trailing question mark routes to Q&A even without a question lead', () => {
+    const turn = routeTurn('样式能改吗？', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.DOC_QA);
+    expect(turn.type).not.toBe(TURN_TYPE.FORMAT);
+  });
+
   test('"add a title" routes to format — insert ops live in the format pipeline', () => {
     const turn = routeTurn('增加文章标题', { hasSelection: false, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.FORMAT);
