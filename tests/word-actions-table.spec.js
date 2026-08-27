@@ -302,6 +302,51 @@ describe('readSelectionTableRegion', () => {
     expect(region.cells[1]).toEqual({ row: 1, col: 2, text: '', merged: true });
     expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('merged cells'), 'warning');
   });
+
+  test('merged table with failing probes degrades to unknown layout (no crash)', async () => {
+    // Hosts that throw ItemNotFound for getCell on merge-covered coordinates:
+    // the probe sync is the 3rd sync in the read.
+    const context = makeMergedPrepareContext();
+    let syncCount = 0;
+    context.sync = jest.fn(() => {
+        syncCount++;
+        return syncCount === 3
+            ? Promise.reject(Object.assign(new Error('ItemNotFound'), { name: 'ItemNotFound' }))
+            : Promise.resolve(undefined);
+    });
+    setWordRun(context);
+
+    const deps = makeDeps();
+    const region = await readSelectionTableRegion(deps);
+
+    expect(region).not.toBeNull();
+    expect(region.merged).toBe(true);
+    expect(region.mergedUnknown).toBe(true);
+    expect(region.shadowKeys).toEqual(new Set());
+    // No cell is flagged read-only — validation moves to apply time.
+    expect(region.cells.every((c) => !c.merged)).toBe(true);
+    const logged = deps.log.mock.calls.map((c) => `${c[1]}:${c[0]}`).join('\n');
+    expect(logged).toMatch(/warning:Merge layout could not be probed/);
+  });
+
+  test('unknown merge layout adds the apply-time note to the single-shot prompt', async () => {
+    const context = makeMergedPrepareContext();
+    let syncCount = 0;
+    context.sync = jest.fn(() => {
+        syncCount++;
+        return syncCount === 3
+            ? Promise.reject(Object.assign(new Error('ItemNotFound'), { name: 'ItemNotFound' }))
+            : Promise.resolve(undefined);
+    });
+    setWordRun(context);
+    sendPrompt.mockResolvedValue('{"cells":[{"row":2,"col":1,"text":"new a"}]}');
+
+    await prepareSelectionAmendment(makeDeps(), { promptTemplate: 'Fix' });
+
+    const promptText = sendPrompt.mock.calls[0][1];
+    expect(promptText).toContain('layout could not be mapped');
+    expect(promptText).toContain('skipped at apply time');
+  });
 });
 
 describe('prepareSelectionAmendment (table route)', () => {
@@ -513,6 +558,36 @@ describe('applySelectionAmendment (table route)', () => {
 
     expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
     expect(calls).toEqual([]);
+  });
+
+  test('a cell that cannot be addressed (merge-covered) is skipped, not fatal', async () => {
+    const { context, table } = makeApplyContext();
+    // R1C2 is merge-covered on this host: getCell throws ItemNotFound.
+    const realGetCell = table.getCell;
+    table.getCell = jest.fn((r, c) => {
+        if (r === 0 && c === 1) {
+            throw Object.assign(new Error('ItemNotFound'), { name: 'ItemNotFound' });
+        }
+        return realGetCell(r, c);
+    });
+    setWordRun(context);
+
+    const deps = makeDeps('PC');
+    await applySelectionAmendment(deps, {
+      ...proposal,
+      tablePatch: {
+        ...proposal.tablePatch,
+        cells: [
+          { row: 1, col: 2, text: 'shadow write' }, // merge-covered → skipped
+          { row: 2, col: 1, text: 'new a' },        // good → applied
+        ],
+        rowOps: [],
+      },
+    });
+
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+    const logged = deps.log.mock.calls.map((c) => `${c[1]}:${c[0]}`).join('\n');
+    expect(logged).toMatch(/warning:Cell R1C2: could not be addressed/);
   });
 });
 
