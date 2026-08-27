@@ -632,11 +632,95 @@ export async function readSelectionSnippet() {
 }
 
 /**
- * Watches the Word selection and invokes callback with the current selected
- * plain text ('' when nothing is selected). Events are debounced so a drag
- * selection fires one Word.run at the end.
+ * Wraps a raw base64 image payload (as returned by
+ * InlinePicture.getBase64ImageSrc) into a data URL, sniffing the MIME type
+ * from the base64 magic prefix — Word does not report the encoded format.
+ * Already-wrapped values pass through unchanged.
  *
- * @param {function(string)} callback - Receives the selection text
+ * @param {string} base64 - Raw base64 (or an existing data: URL)
+ * @returns {string} data: URL
+ */
+export function imageDataUrl(base64) {
+    const raw = String(base64 || '');
+    if (raw.startsWith('data:')) return raw;
+    let mime = 'image/png';
+    if (raw.startsWith('/9j/')) mime = 'image/jpeg';
+    else if (raw.startsWith('R0lGO')) mime = 'image/gif';
+    else if (raw.startsWith('UklGR')) mime = 'image/webp';
+    else if (raw.startsWith('iVBOR')) mime = 'image/png';
+    else if (raw.startsWith('PHN2Z')) mime = 'image/svg+xml';
+    return `data:${mime};base64,${raw}`;
+}
+
+/**
+ * Cap on selection images read fully (base64 + metadata) per read. Word
+ * selections can span dozens of pictures; the preview and the image-tool
+ * selection focus only need a handful, and every image costs a base64
+ * round-trip.
+ */
+const MAX_SELECTION_IMAGES = 6;
+
+/**
+ * Reads the current selection as FULL content: plain text plus the inline
+ * pictures inside the selection (base64 data URL + size + alt text), so ANY
+ * selected content is visible to the add-in — a picture selection has empty
+ * selection.text and is otherwise invisible to every text-only reader.
+ *
+ * Image-bearing selections are consumed by the image tool session (object
+ * reference + tools, see agent-actions); the preview shows thumbnails.
+ * Errors resolve to empty content (same contract as readSelectionSnippet).
+ *
+ * @returns {Promise<{ text: string,
+ *   images: Array<{ base64: string, dataUrl: string, width: number, height: number, altText: string }>,
+ *   totalImages: number }>}
+ *   totalImages counts every picture in the selection (images.length ≤
+ *   totalImages when the cap truncates).
+ */
+export async function readSelectionContent() {
+    try {
+        let text = '';
+        let images = [];
+        let totalImages = 0;
+        await Word.run(async (context) => {
+            const selection = context.document.getSelection();
+            selection.load('text');
+            const pictures = selection.inlinePictures;
+            pictures.load('items');
+            await context.sync();
+            text = selection.text || '';
+
+            const items = pictures.items || [];
+            totalImages = items.length;
+            const shown = items.slice(0, MAX_SELECTION_IMAGES);
+            const reads = [];
+            for (const pic of shown) {
+                pic.load('width,height,altTextDescription');
+                reads.push({ pic, b64: pic.getBase64ImageSrc() });
+            }
+            if (reads.length > 0) await context.sync();
+            images = reads
+                .filter(({ b64 }) => b64.value)
+                .map(({ pic, b64 }) => ({
+                    base64: b64.value,
+                    dataUrl: imageDataUrl(b64.value),
+                    width: pic.width,
+                    height: pic.height,
+                    altText: pic.altTextDescription || '',
+                }));
+        });
+        return { text, images, totalImages };
+    } catch (_err) {
+        return { text: '', images: [], totalImages: 0 };
+    }
+}
+
+/**
+ * Watches the Word selection and invokes the callback with the current
+ * selection CONTENT ({ text, images, totalImages } — '' / [] when nothing
+ * is selected; image-only selections carry empty text with images).
+ * Events are debounced so a drag selection fires one Word.run at the end.
+ *
+ * @param {function({text: string, images: Array, totalImages: number})} callback
  * @param {object} [opts]
  * @param {number} [opts.debounceMs=200] - Trailing debounce for change events
  * @returns {function()} Unsubscribe function
@@ -652,7 +736,7 @@ export function watchSelection(callback, { debounceMs = 200 } = {}) {
         if (timer) clearTimeout(timer);
         timer = setTimeout(async () => {
             timer = null;
-            callback(await readSelectionSnippet());
+            callback(await readSelectionContent());
         }, debounceMs);
     };
 
@@ -662,7 +746,7 @@ export function watchSelection(callback, { debounceMs = 200 } = {}) {
         () => {} // registration failure is non-fatal: the preview just stays static
     );
 
-    // Emit the initial state (the user may have selected text before opening the pane)
+    // Emit the initial state (the user may have selected content before opening the pane)
     onChange();
 
     return () => {
@@ -2499,13 +2583,17 @@ export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoni
  * @param {string} [args.selectionText] - Currently selected text, added as a
  *   focused excerpt before the full document context; when EMPTY, the cursor
  *   location (caret paragraph + nearest heading) is injected instead
+ * @param {Array<{width: number, height: number, altText: string}>} [args.selectionImages] -
+ *   Metadata of inline pictures inside the selection. They enter the prompt
+ *   as object references (size + alt text), not raw bytes — the model is
+ *   pointed at the image tool session (read_image) for visual content
  * @param {function} [args.onToken] - Called with each streamed token
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @param {function} [args.onStatus] - Called with stage updates ("Reading the document...", "Waiting for model...")
  * @param {AbortSignal} [args.signal] - Cancellation signal
  * @returns {Promise<string>} The full answer text
  */
-export async function answerQuestion(deps, { question, skillTemplate, selectionText, onToken, onReasoning, onStatus, signal } = {}) {
+export async function answerQuestion(deps, { question, skillTemplate, selectionText, selectionImages, onToken, onReasoning, onStatus, signal } = {}) {
     const { appState, log } = deps;
 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
@@ -2522,6 +2610,12 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
         prompt += skillTemplate + '\n\n';
     }
     prompt += question;
+    // Image metadata for MIXED text+image selections: object references in
+    // the prompt, never the bytes (visual reading belongs to the image tool
+    // session's read_image). Pure image selections never reach QA — they
+    // route to the image tool turn.
+    const imageMeta = (Array.isArray(selectionImages) ? selectionImages : [])
+        .slice(0, MAX_SELECTION_IMAGES);
     if (selectionText && selectionText.trim()) {
         // Table selections carry structure that selection.text flattens away:
         // read the grid as markdown, fall back to the flat text otherwise
@@ -2535,6 +2629,22 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
         } else {
             prompt += '\n\n--- SELECTED TEXT (the user is asking about this excerpt) ---\n' + selectionText.trim();
         }
+        if (imageMeta.length > 0) {
+            prompt += '\n\n--- SELECTED IMAGES (also inside the selection) ---\n' +
+                imageMeta.map((img, i) =>
+                    `- image ${i + 1}: ${img.width}x${img.height}pt` +
+                    (img.altText ? `, alt "${String(img.altText).slice(0, 80)}"` : '')).join('\n') +
+                '\n(Visual content is not attached here; image instructions can view and edit these pictures.)';
+        }
+    } else if (imageMeta.length > 0) {
+        // Image-only selection reaching QA (defense in depth — routing sends
+        // image-only selections to the image tool session; planned qa tasks
+        // may still land here): object references, not bytes.
+        prompt += '\n\n--- SELECTED IMAGES (the user is asking about these pictures) ---\n' +
+            imageMeta.map((img, i) =>
+                `- image ${i + 1}: ${img.width}x${img.height}pt` +
+                (img.altText ? `, alt "${String(img.altText).slice(0, 80)}"` : '')).join('\n') +
+            '\n(Visual content is not attached here; image instructions can view and edit these pictures.)';
     } else {
         // Bare caret: inject where the user is working so document-scope
         // answers can weight the current section (no tool-call path exists;

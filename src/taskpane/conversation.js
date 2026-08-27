@@ -289,14 +289,19 @@ export function countIntentFamilies(text) {
  *
  * @param {string} text - Raw chat input
  * @param {object} ctx
- * @param {boolean} ctx.hasSelection - Whether the document has a non-empty selection
+ * @param {boolean} ctx.hasSelection - Whether the document has a non-empty
+ *   selection (selected text OR selected image(s))
+ * @param {boolean} [ctx.hasImageSelection=false] - True when the selection
+ *   contains image(s) and NO text: every instruction then enters the image
+ *   tool session (object + tools) — questions included, since visual reading
+ *   is the read_image tool, not injected bytes
  * @param {Array<object>} ctx.skills - Available skills (from listSkills)
  * @param {boolean} [ctx.allowCompound=true] - False disables the compound
  *   branch (planner fallback re-routes through single intent)
  * @returns {{ type: string, skill?: object, args?: string, instruction?: string, question?: string, scope?: string } | null}
  *   Null for empty input.
  */
-export function routeTurn(text, { hasSelection, skills, allowCompound = true } = {}) {
+export function routeTurn(text, { hasSelection, hasImageSelection = false, skills, allowCompound = true } = {}) {
     const trimmed = (text || '').trim();
     if (!trimmed) return null;
 
@@ -335,8 +340,9 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
     }
     // Format intent wins over the selection/edit branches too: formatting ops
     // never rewrite text, so they must not enter the text-diff pipelines.
+    // Image-only selections take document scope — format ops target text.
     if (looksLikeFormatIntent(trimmed)) {
-        return { type: TURN_TYPE.FORMAT, instruction: trimmed, scope: hasSelection ? 'selection' : 'document' };
+        return { type: TURN_TYPE.FORMAT, instruction: trimmed, scope: hasSelection && !hasImageSelection ? 'selection' : 'document' };
     }
     // Cleanup intent is document-scope and deterministic: empty paragraphs
     // are invisible to the parser/LLM, so no text pipeline could serve this.
@@ -344,6 +350,13 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
         return { type: TURN_TYPE.CLEANUP, instruction: trimmed };
     }
     if (hasSelection) {
+        // Image-only selection: the selection enters as a controllable image
+        // OBJECT (snapshot index + metadata + tool list). Questions are
+        // answered through read_image inside the session; edits through the
+        // op tools — the text pipelines have nothing to operate on.
+        if (hasImageSelection) {
+            return { type: TURN_TYPE.IMAGE_TOOL, instruction: trimmed };
+        }
         // Selection + a question is a question ABOUT the selection (answered
         // in chat with the selection as context), not an edit instruction.
         if (looksLikeQuestion(trimmed)) {
@@ -384,14 +397,22 @@ export function routeTurn(text, { hasSelection, skills, allowCompound = true } =
  * @param {function} [deps.logWithRetry] - Log-with-retry-link callback
  * @param {function} [deps.updateStatusBar] - Comment pending-count callback
  * @param {object} [deps.actions] - word-actions overrides (tests)
- * @param {function} [deps.getSelectionText] - async () => string (current
- *   selection text, '' when empty; tests)
+ * @param {function} [deps.getSelectionContent] - async () => ({ text, images })
+ *   full selection content at submit time (defaults to word-actions'
+ *   readSelectionContent)
+ * @param {function} [deps.getSelectionText] - Legacy/test override returning
+ *   a plain string (treated as text-only selection)
  * @returns {{ submit: Function, cancel: Function, newChat: Function }}
  */
 export function createConversation(deps) {
     const { appState, view, input, log, logWithRetry, updateStatusBar } = deps;
     const actions = deps.actions || { ...defaultActions, ...agentActions };
-    const getSelectionText = deps.getSelectionText || actions.readSelectionSnippet;
+    // Selection reader: full content ({ text, images }) when available;
+    // string-returning overrides (legacy getSelectionText, test mocks)
+    // normalize via _normalizeSelection.
+    const getSelection = deps.getSelectionContent
+        || deps.getSelectionText
+        || (typeof actions.readSelectionContent === 'function' ? actions.readSelectionContent : actions.readSelectionSnippet);
     // Optional dep fired whenever the live session has new content worth
     // persisting (after a turn settles, and before newChat wipes the array).
     // The bootstrap wires this to sessions.saveSession(...).
@@ -1044,19 +1065,28 @@ export function createConversation(deps) {
      * document's images, and the recorded ops stage in a proposal card with
      * one selectable change per op. Apply runs only the checked ops.
      */
-    async function runImageToolTurn(turn, msg, turnDeps, turnController) {
+    async function runImageToolTurn(turn, msg, turnDeps, selectionImages, turnController) {
         const myController = turnController || new AbortController();
         appState.isProcessing = true;
         appState.chatController = myController;
         input.setProcessing(true);
         try {
-            msg.setStatus('Working through the image changes (tool loop)...');
+            msg.setStatus('Working through the image task (tool loop)...');
             const proposal = await actions.prepareImageToolEdit(turnDeps, {
                 instruction: turn.instruction,
+                selectionImages,
                 signal: myController.signal,
                 onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
                     s.text ? `${s.text}\n` : ''),
             });
+            // Read-only outcome (e.g. the model inspected the selected image
+            // with read_image and answered): the finish summary is the chat
+            // answer — no proposal card, nothing to apply.
+            if (proposal.noOps) {
+                msg.setStatus('');
+                msg.setText(proposal.answer || '(no image changes)');
+                return;
+            }
             msg.setStatus('');
             const title = 'Proposed image changes';
             const svgOps = proposal.items.filter((item) => item.svg);
@@ -1229,9 +1259,10 @@ export function createConversation(deps) {
     /**
      * Runs a chat Q&A turn with streaming.
      * selectionText (when non-empty) is added to the prompt as a focused
-     * excerpt alongside the full document context.
+     * excerpt alongside the full document context; selectionImages metadata
+     * rides along as object references for mixed text+image selections.
      */
-    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, turnController) {
+    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, selectionImages, turnController) {
         const myController = turnController || new AbortController();
         appState.isProcessing = true;
         appState.chatController = myController;
@@ -1242,6 +1273,7 @@ export function createConversation(deps) {
                 question,
                 skillTemplate,
                 selectionText,
+                selectionImages,
                 signal: myController.signal,
                 onStatus: (s) => msg.setStatus(s),
                 onToken: (token) => {
@@ -1270,12 +1302,12 @@ export function createConversation(deps) {
     /**
      * Dispatches a skill turn by category and resolved scope.
      */
-    async function runSkillTurn(skill, args, hasSelection, msg, turnDeps, selectionText, turnController) {
+    async function runSkillTurn(skill, args, hasSelection, msg, turnDeps, selectionText, selectionImages, turnController) {
         switch (skill.category) {
             case 'chat':
             case 'context':
                 // Custom context prompts act as chat personas.
-                await runQaTurn(args || skill.description, skill.defaultTemplate, msg, turnDeps, selectionText, turnController);
+                await runQaTurn(args || skill.description, skill.defaultTemplate, msg, turnDeps, selectionText, selectionImages, turnController);
                 break;
             case 'summary':
                 await runSummaryTurn(skill, args, msg, turnDeps, turnController);
@@ -1347,7 +1379,7 @@ export function createConversation(deps) {
      * back to single-intent routing of the whole instruction (the
      * pre-planner behavior).
      */
-    async function runCompoundTurn(turn, msg, turnDeps, selectionText, turnController) {
+    async function runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController) {
         // One shared controller for the whole compound turn: cancel() aborts
         // the in-flight sub-task AND stops the remaining planned tasks.
         const myController = turnController || new AbortController();
@@ -1366,9 +1398,11 @@ export function createConversation(deps) {
             if (!plan.tasks || plan.tasks.length === 0) {
                 log('Task planning failed; falling back to single-intent routing.', 'warning');
                 const fallback = routeTurn(turn.instruction, {
-                    hasSelection: !!selectionText, skills: [], allowCompound: false,
+                    hasSelection: !!selectionText || selectionImages.length > 0,
+                    hasImageSelection: !selectionText && selectionImages.length > 0,
+                    skills: [], allowCompound: false,
                 });
-                if (fallback) await dispatchTurn(fallback, msg, turnDeps, selectionText);
+                if (fallback) await dispatchTurn(fallback, msg, turnDeps, selectionText, selectionImages);
                 return;
             }
             log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
@@ -1379,7 +1413,7 @@ export function createConversation(deps) {
                 // compound turn's busy flag between tasks.
                 appState.isProcessing = true;
                 input.setProcessing(true);
-                await dispatchTurn(turnForTask(task, !!selectionText), msg, turnDeps, selectionText, myController);
+                await dispatchTurn(turnForTask(task, !!selectionText), msg, turnDeps, selectionText, selectionImages, myController);
                 // A cancelled task ends the whole compound turn — the
                 // remaining tasks must not start.
                 if (myController.signal.aborted) {
@@ -1409,9 +1443,9 @@ export function createConversation(deps) {
      * optional turnController lets a compound turn share its AbortController
      * with every sub-task, so one cancel stops the whole chain.
      */
-    async function dispatchTurn(turn, msg, turnDeps, selectionText, turnController) {
+    async function dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController) {
         if (turn.type === TURN_TYPE.SKILL) {
-            await runSkillTurn(turn.skill, turn.args, !!selectionText, msg, turnDeps, selectionText, turnController);
+            await runSkillTurn(turn.skill, turn.args, !!selectionText, msg, turnDeps, selectionText, selectionImages, turnController);
         } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
             await runSelectionEditTurn(turn.instruction, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.DOC_APPEND) {
@@ -1419,7 +1453,7 @@ export function createConversation(deps) {
         } else if (turn.type === TURN_TYPE.ILLUSTRATION) {
             await runIllustrationTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.IMAGE_TOOL) {
-            await runImageToolTurn(turn, msg, turnDeps, turnController);
+            await runImageToolTurn(turn, msg, turnDeps, selectionImages, turnController);
         } else if (turn.type === TURN_TYPE.TABLE) {
             await runTableTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.FORMAT) {
@@ -1427,7 +1461,7 @@ export function createConversation(deps) {
         } else if (turn.type === TURN_TYPE.CLEANUP) {
             await runCleanupTurn(msg, turnDeps);
         } else if (turn.type === TURN_TYPE.COMPOUND) {
-            await runCompoundTurn(turn, msg, turnDeps, selectionText, turnController);
+            await runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController);
         } else if (turn.type === TURN_TYPE.DOC_EDIT) {
             // Free-text edit instruction without a selection: run the
             // whole-document amendment pipeline with the user's text as
@@ -1437,7 +1471,7 @@ export function createConversation(deps) {
                 defaultTemplate: turn.instruction,
             }, undefined, msg, turnDeps);
         } else {
-            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, turnController);
+            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, selectionImages, turnController);
         }
     }
 
@@ -1456,15 +1490,23 @@ export function createConversation(deps) {
         }
 
         let selectionText = '';
+        // Metadata only — base64 payloads never leave the selection readers
+        // (preview thumbnails come from watchSelection's own read).
+        let selectionImages = [];
         try {
-            selectionText = ((await getSelectionText()) || '').trim();
+            const sel = _normalizeSelection(await getSelection());
+            selectionText = (sel.text || '').trim();
+            selectionImages = sel.images;
         } catch (_err) {
             selectionText = '';
+            selectionImages = [];
         }
-        const hasSelection = !!selectionText;
+        const hasSelection = !!selectionText || selectionImages.length > 0;
+        const hasImageSelection = !selectionText && selectionImages.length > 0;
 
         const turn = routeTurn(trimmed, {
             hasSelection,
+            hasImageSelection,
             skills: listSkills(appState.promptManager),
         });
         if (!turn) return;
@@ -1477,7 +1519,7 @@ export function createConversation(deps) {
         const turnDeps = actionDepsFor(msg);
 
         try {
-            await dispatchTurn(turn, msg, turnDeps, selectionText);
+            await dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages);
         } catch (error) {
             msg.markError(error.message || String(error));
         } finally {
@@ -1539,6 +1581,26 @@ export function createConversation(deps) {
     }
 
     return { submit, cancel, newChat };
+}
+
+/**
+ * Normalizes a selection-reader result into { text, images }. Legacy
+ * string readers (getSelectionText overrides, test mocks) map to text-only;
+ * object results carry image metadata ({ width, height, altText }) with any
+ * base64 payload stripped.
+ *
+ * @param {string|{text?: string, images?: Array<object>}} result
+ * @returns {{ text: string, images: Array<{width: number, height: number, altText: string}> }}
+ */
+function _normalizeSelection(result) {
+    if (typeof result === 'string') return { text: result, images: [] };
+    if (result && Array.isArray(result.images)) {
+        return {
+            text: result.text || '',
+            images: result.images.map(({ width, height, altText }) => ({ width, height, altText: altText || '' })),
+        };
+    }
+    return { text: '', images: [] };
 }
 
 /**

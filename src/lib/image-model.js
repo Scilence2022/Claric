@@ -2,10 +2,13 @@
  * Image Tool Model
  *
  * L2 of the tool-calling stack: the draft model image tools operate on.
- * Seeded from a snapshot of the document's inline pictures (metadata only —
- * multimodal image READING is a separate, backend-dependent capability and
- * deliberately out of scope). Ops accumulate as a transaction applied by
- * applyImageOps only when the user clicks Apply on the proposal card.
+ * Seeded from a snapshot of the document's inline pictures. Content ops
+ * (design/replace) execute a nested LLM call host-side; visual READING is
+ * the host-executed read_image tool (agent-actions attaches the picture to
+ * the next loop message as a multimodal image input — backend-dependent,
+ * degraded gracefully by the send wrapper). Ops accumulate as a transaction
+ * applied by applyImageOps only when the user clicks Apply on the proposal
+ * card.
  *
  * Index discipline: image indexes are STABLE snapshot indexes (1-based,
  * document order at prepare time). Deletes/replaces mark their slot
@@ -38,6 +41,11 @@ export const IMAGE_TOOL_SPECS = Object.freeze([
         name: 'list_images',
         description: 'List the document\'s inline pictures with their 1-based index, size in points, and alt text. Indexes refer to this snapshot for every other image tool.',
         argsExample: {},
+    }),
+    defineTool({
+        name: 'read_image',
+        description: 'View the VISUAL CONTENT of one image. The picture is attached as an image input to the observation that follows this call, so vision-capable models see it directly. Requires a vision-capable model — if the observation reports the backend rejected image input, fall back to alt text and metadata and say so. "index" is the snapshot index of the picture.',
+        argsExample: { index: 1 },
     }),
     defineTool({
         name: 'design_illustration',

@@ -139,9 +139,10 @@ function initialize() {
         if (full) chatView.setCurrentSession(full);
     }
 
-    // Live selection preview above the input bar (selection text is also
-    // added to the next turn's context at submit time)
-    watchSelection((text) => input.setSelectionPreview(text));
+    // Live selection preview above the input bar (text snippet + image
+    // thumbnails; image-bearing selections enter the turn's context via the
+    // image tool session at submit time)
+    watchSelection((content) => input.setSelectionPreview(content));
 
     // Detect and log supported Word API version (diagnostics only)
     const apiVersions = ['1.8', '1.7', '1.6', '1.5', '1.4', '1.3', '1.2', '1.1'];

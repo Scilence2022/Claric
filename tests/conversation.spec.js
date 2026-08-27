@@ -202,6 +202,33 @@ describe('routeTurn', () => {
     expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
   });
 
+  test('image-only selection routes every instruction to the image tool session', () => {
+    // Edit-ish instruction: the text pipelines have nothing to operate on —
+    // the image OBJECT (snapshot index + tools) is the context.
+    expect(routeTurn('润色一下', { hasSelection: true, hasImageSelection: true, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    // Questions too: visual reading is the read_image tool, not injected bytes.
+    expect(routeTurn('这是什么图?', { hasSelection: true, hasImageSelection: true, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('describe this picture', { hasSelection: true, hasImageSelection: true, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+  });
+
+  test('mixed text+image selection keeps text routing (edit/question)', () => {
+    expect(routeTurn('make it formal', { hasSelection: true, hasImageSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.SELECTION_EDIT);
+    expect(routeTurn('what does this say?', { hasSelection: true, hasImageSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('image-only selection takes document scope for format intent', () => {
+    const turn = routeTurn('把标题居中', { hasSelection: true, hasImageSelection: true, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.FORMAT);
+    expect(turn.scope).toBe('document');
+    // Text selection keeps selection scope.
+    expect(routeTurn('把标题居中', { hasSelection: true, skills: BUILTIN_SKILLS }).scope).toBe('selection');
+  });
+
   test('empty input returns null', () => {
     expect(routeTurn('   ', { hasSelection: false, skills: BUILTIN_SKILLS })).toBeNull();
     expect(routeTurn('', { hasSelection: true, skills: BUILTIN_SKILLS })).toBeNull();
@@ -572,6 +599,84 @@ describe('createConversation.submit', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(actions.applyImageOps).toHaveBeenCalledTimes(1);
     expect(actions.applyImageOps.mock.calls[0][1].ops).toEqual([{ type: 'delete', index: 1 }]);
+  });
+
+  test('image-only selection enters the image tool session with selection focus', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions,
+      getSelectionContent: async () => ({
+        text: '',
+        totalImages: 1,
+        images: [{ base64: 'HUGE', dataUrl: 'data:image/png;base64,HUGE', width: 300, height: 200, altText: 'sunset' }],
+      }),
+    });
+
+    await conv.submit('描述这张图');
+
+    expect(actions.prepareImageToolEdit).toHaveBeenCalledTimes(1);
+    const args = actions.prepareImageToolEdit.mock.calls[0][1];
+    expect(args.instruction).toBe('描述这张图');
+    // Metadata only — the base64 payload never leaves the selection reader.
+    expect(args.selectionImages).toEqual([{ width: 300, height: 200, altText: 'sunset' }]);
+  });
+
+  test('image tool loop with a read-only outcome answers in chat (no card)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareImageToolEdit: jest.fn(async () => ({
+        noOps: true,
+        answer: 'the picture shows a bar chart of revenue',
+        ops: [],
+        items: [],
+        snapshotCount: 1,
+        model: 'm',
+        toolLoop: { steps: 2, finished: true },
+      })),
+    });
+    // Image-only selection: any instruction enters the image tool session.
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions,
+      getSelectionContent: async () => ({
+        text: '',
+        totalImages: 1,
+        images: [{ dataUrl: 'data:image/png;base64,X', width: 320, height: 200, altText: 'chart' }],
+      }),
+    });
+
+    await conv.submit('描述这张图');
+
+    expect(actions.prepareImageToolEdit).toHaveBeenCalledTimes(1);
+    expect(view._msg.setText).toHaveBeenCalledWith('the picture shows a bar chart of revenue');
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+  });
+
+  test('mixed text+image question carries image metadata into Q&A', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions,
+      getSelectionContent: async () => ({
+        text: 'Figure 1 shows revenue.',
+        totalImages: 1,
+        images: [{ dataUrl: 'data:image/png;base64,X', width: 300, height: 200, altText: 'revenue chart' }],
+      }),
+    });
+
+    // "解释" leads with a question marker — routes mixed selection to DOC_QA.
+    await conv.submit('解释这段和图');
+
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    const args = actions.answerQuestion.mock.calls[0][1];
+    expect(args.selectionText).toBe('Figure 1 shows revenue.');
+    expect(args.selectionImages).toEqual([{ width: 300, height: 200, altText: 'revenue chart' }]);
   });
 
   test('free text without selection runs document Q&A', async () => {
