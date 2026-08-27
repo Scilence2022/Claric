@@ -139,6 +139,29 @@ describe('prepareTableToolEdit', () => {
         expect(mergeItem).toMatchObject({ before: 'old a | b | c | d', after: 'merged' });
     });
 
+    test('merge-only result is a REAL proposal (noOps stays undefined)', async () => {
+        readSelectionTableRegion.mockResolvedValue(REGION);
+        sendMessages.mockResolvedValueOnce('{"tool":"merge_cells","args":{"row":1,"col":1,"rows":1,"cols":2}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"merged row 1"}}');
+
+        const proposal = await prepareTableToolEdit(makeDeps(), { instruction: '合并第一行' });
+
+        expect(proposal.noOps).toBeUndefined();
+        expect(proposal.tablePatch.merges).toHaveLength(1);
+        expect(proposal.tableItems).toHaveLength(1);
+    });
+
+    test('a read-only loop (get_state then finish) still resolves noOps', async () => {
+        readSelectionTableRegion.mockResolvedValue(REGION);
+        sendMessages.mockResolvedValueOnce('{"tool":"get_state","args":{}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"the table looks fine"}}');
+
+        const proposal = await prepareTableToolEdit(makeDeps(), { instruction: '看看这个表格' });
+
+        expect(proposal.noOps).toBe(true);
+        expect(proposal.answer).toBe('the table looks fine');
+    });
+
     test('returns null for non-table selections (caller falls back)', async () => {
         readSelectionTableRegion.mockResolvedValue(null);
         expect(await prepareTableToolEdit(makeDeps(), { instruction: 'x' })).toBeNull();

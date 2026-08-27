@@ -174,7 +174,7 @@ function makeApplyContext({ tableRowCount = 3 } = {}) {
           },
         },
         parentRow: rows[r],
-        getRange: jest.fn(() => ({ union: jest.fn(() => ({ mergeTarget: true })) })),
+        getRange: jest.fn(() => ({ expandTo: jest.fn(() => ({ mergeTarget: true })) })),
       };
     }
   }
@@ -496,10 +496,15 @@ describe('applySelectionAmendment (table route)', () => {
       tableItems: [],
     };
 
-    const { context, calls } = makeApplyContext();
+    const { context, calls, table } = makeApplyContext();
     setWordRun(context);
     const deps = makeDeps('PC');
     const result = await applySelectionAmendment(deps, mergeProposal);
+
+    // Range spanning the block is built with expandTo (Word.js has no union)
+    // and passed to table.mergeCells(range); the mock's expandTo returns
+    // { mergeTarget: true }, proving the expanded range reached mergeCells.
+    expect(table.mergeCells).toHaveBeenCalledWith({ mergeTarget: true });
 
     // Non-anchor cells (R2C2, R3C1, R3C2) cleared; the anchor (R2C1) kept.
     expect(calls).toEqual([
