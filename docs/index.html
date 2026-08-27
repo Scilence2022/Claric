@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claric &mdash; Technical Architecture</title>
+<link rel="icon" type="image/png" href="../assets/icon-64.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -182,6 +183,13 @@
     grid-template-columns: 1fr 1fr;
     gap: 3rem;
     align-items: center;
+  }
+
+  .hero-logo {
+    display: block;
+    margin: 0 auto;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(16, 163, 127, 0.25);
   }
   /* Tracked Caps title */
   .hero-text h1 {
@@ -658,10 +666,9 @@
 <nav class="nav">
   <div class="nav-inner">
     <a href="#" class="nav-brand">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-        <polyline points="14 2 14 8 20 8"/>
-        <path d="M9 15l2 2 4-4" stroke="var(--accent)"/>
+      <svg viewBox="0 0 128 128" width="20" height="20" aria-hidden="true">
+        <rect width="128" height="128" rx="30" fill="#10a37f"/>
+        <path d="M 89.1 25.4 A 46 46 0 1 0 89.1 102.6 L 77.6 85.0 A 25 25 0 1 1 77.6 43.0 Z" fill="#fff"/>
       </svg>
       Claric — your redlining scribe for Word
     </a>
@@ -692,6 +699,7 @@
   <div class="hero-blob hero-blob-2"></div>
   <div class="hero-blob hero-blob-3"></div>
   <div class="hero-inner">
+    <img class="hero-logo" src="../assets/icon-128.png" alt="Claric" width="96" height="96" />
     <div class="hero-text">
       <h1>Claric <span class="title-caps">for Word</span></h1>
       <p class="subtitle">AI-powered Microsoft Word add-in that turns natural-language instructions into native tracked changes. A chat UI routes each request to the right pipeline&mdash;redlining, formatting, illustration, append, summary, or Q&amp;A&mdash;and stages every mutation as a reviewable proposal card. A structure-aware diff strategy bridges the gap between Word's object model and LLM text processing.</p>
