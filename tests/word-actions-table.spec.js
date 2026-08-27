@@ -172,9 +172,9 @@ function makeApplyContext({ tableRowCount = 3 } = {}) {
             }],
             load: jest.fn(),
           },
-          getRange: jest.fn(() => ({ expandTo: jest.fn(() => ({ mergeTarget: true })) })),
         },
         parentRow: rows[r],
+        merge: jest.fn((other) => calls.push(`merge:${r + 1},${c + 1}->${other}`)),
       };
     }
   }
@@ -501,18 +501,11 @@ describe('applySelectionAmendment (table route)', () => {
     const deps = makeDeps('PC');
     const result = await applySelectionAmendment(deps, mergeProposal);
 
-    // Range spanning the block is built with expandTo (Word.js has no union)
-    // and passed to table.mergeCells(range); the mock's expandTo returns
-    // { mergeTarget: true }, proving the expanded range reached mergeCells.
-    expect(table.mergeCells).toHaveBeenCalledWith({ mergeTarget: true });
-
-    // Non-anchor cells (R2C2, R3C1, R3C2) cleared; the anchor (R2C1) kept.
-    expect(calls).toEqual([
-      'clear:2,2',
-      'clear:3,1',
-      'clear:3,2',
-      'merge',
-    ]);
+    // Non-anchor cells (R2C2, R3C1, R3C2) cleared; anchor (R2C1) kept and
+    // merged with each other cell in the block via TableCell.merge(mergeTo).
+    expect(calls.slice(0, 3)).toEqual(['clear:2,2', 'clear:3,1', 'clear:3,2']);
+    const anchor = table.getCell(1, 0);
+    expect(anchor.merge).toHaveBeenCalledTimes(3);
     expect(result.mergesApplied).toBe(1);
     // Structural — merge is not tracked as a revision (tracking off).
     const logged = deps.log.mock.calls.map((c) => `${c[1]}:${c[0]}`).join('\n');
