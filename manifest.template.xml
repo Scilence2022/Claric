@@ -8,8 +8,8 @@
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="${DISPLAY_NAME}"/>
   <Description DefaultValue="AI-powered contract review and editing for Microsoft Word with word-level tracked changes"/>
-  <IconUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/assets/icon-64.png"/>
-  <HighResolutionIconUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/assets/icon-80.png"/>
+  <IconUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/assets/icon-64.png?v=${ICON_CACHE}"/>
+  <HighResolutionIconUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/assets/icon-80.png?v=${ICON_CACHE}"/>
   <SupportUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/"/>
   <Hosts>
     <Host Name="Document"/>

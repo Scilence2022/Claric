@@ -105,10 +105,32 @@ function getVersion(rootDir) {
 }
 
 /**
+ * Computes a short content hash of the add-in icon PNG, used as a cache-busting
+ * query on the manifest's IconUrl / HighResolutionIconUrl. Word loads the
+ * icon through WebView2's HTTP cache keyed by URL — the icon URL was
+ * previously identical across deployments, so after changing the icon Word
+ * kept serving the stale (placeholder/default) image. Baking a content hash
+ * into the URL makes the URL change whenever the icon changes, forcing a
+ * fresh fetch. Falls back to the package version when the file is missing.
+ *
+ * @param {string} rootDir
+ * @returns {string}
+ */
+function getIconCache(rootDir) {
+  for (const name of ['icon-64.png', 'icon-32.png']) {
+    const iconPath = path.join(rootDir, 'assets', name);
+    if (fs.existsSync(iconPath)) {
+      return crypto.createHash('sha256').update(fs.readFileSync(iconPath)).digest('hex').slice(0, 10);
+    }
+  }
+  return getVersion(rootDir);
+}
+
+/**
  * Generates manifest.xml from manifest.template.xml.
  *
  * Placeholders: ${HOST}, ${PORT}, ${PROTOCOL}, ${VERSION}, ${GUID},
- * ${DISPLAY_NAME}. All substituted values are XML-escaped.
+ * ${DISPLAY_NAME}, ${ICON_CACHE}. All substituted values are XML-escaped.
  *
  * @param {object} [options]
  * @param {string} [options.rootDir] - Project root override (defaults to repo root)
@@ -141,6 +163,7 @@ function generateManifest(options = {}) {
     VERSION: getVersion(rootDir),
     GUID: templateGuid || resolveGuid(rootDir, env.ADDIN_GUID),
     DISPLAY_NAME: options.displayName || 'Claric',
+    ICON_CACHE: getIconCache(rootDir),
   };
 
   const output = renderTemplate(template, values);
