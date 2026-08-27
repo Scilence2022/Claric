@@ -16,7 +16,7 @@
  * @param {function()} deps.onCancel - Called when the morphed Cancel button is clicked
  * @param {function(): Array<object>} deps.getSkills - Returns the current skill list
  * @param {function()} deps.onOpenSettings - Opens the settings slide-over
- * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), updateModelPill: function(string), setSelectionPreview: function(string) }}
+ * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), updateModelPill: function(string), setSelectionPreview: function(object|string) }}
  */
 export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) {
     const textarea = document.getElementById('chatInput');
@@ -168,19 +168,44 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) 
         },
         /**
          * Shows/hides the live selection preview above the input.
-         * Pass the current selection text, or ''/null to hide.
+         * Accepts the watcher's content object ({ text, images,
+         * totalImages } — image entries carry dataUrl thumbnails) or a
+         * plain string (text only). Empty text with no images hides it.
          */
-        setSelectionPreview(text) {
+        setSelectionPreview(content) {
             const preview = document.getElementById('selectionPreview');
             const previewText = document.getElementById('selectionPreviewText');
-            if (!preview || !previewText) return;
-            const trimmed = (text || '').trim();
-            if (!trimmed) {
+            const previewImages = document.getElementById('selectionPreviewImages');
+            if (!preview || !previewText || !previewImages) return;
+            const text = typeof content === 'string' ? content : (content && content.text) || '';
+            const images = content && Array.isArray(content.images) ? content.images : [];
+            const total = (content && Number.isInteger(content.totalImages) && content.totalImages > images.length)
+                ? content.totalImages : images.length;
+            const trimmed = text.trim();
+            if (!trimmed && images.length === 0) {
                 preview.setAttribute('hidden', '');
                 return;
             }
             previewText.textContent = trimmed;
             previewText.title = trimmed;
+            previewText.toggleAttribute('hidden', !trimmed);
+            previewImages.innerHTML = '';
+            images.forEach((img) => {
+                if (!img || !img.dataUrl) return;
+                const el = document.createElement('img');
+                el.className = 'selection-preview-img';
+                el.src = img.dataUrl;
+                el.alt = img.altText || 'Selected image';
+                el.title = `${img.width || '?'}×${img.height || '?'}pt${img.altText ? ` — ${img.altText}` : ''}`;
+                previewImages.appendChild(el);
+            });
+            if (total > images.length) {
+                const more = document.createElement('span');
+                more.className = 'selection-preview-more';
+                more.textContent = `+${total - images.length}`;
+                previewImages.appendChild(more);
+            }
+            previewImages.toggleAttribute('hidden', previewImages.childNodes.length === 0);
             preview.removeAttribute('hidden');
         },
     };

@@ -44,6 +44,35 @@ function _extractJsonObject(raw) {
 }
 
 /**
+ * Builds the user-message for one observation. Plain observations serialize
+ * to a JSON string as before; observations carrying `attachments`
+ * ({dataUrl}) become OpenAI-compatible multimodal content arrays — the JSON
+ * body (attachments stripped) as the text part plus one image_url part per
+ * attachment, so vision-capable backends actually see e.g. a read_image
+ * result. Text-only backends reject the array (HTTP 4xx) — degradation is
+ * the send wrapper's job, not the loop's.
+ *
+ * @param {{ok?: boolean, result?: *, error?: string, attachments?: Array<{dataUrl: string}>}} observation
+ * @returns {{role: string, content: string|Array<object>}}
+ * @private
+ */
+function _observationMessage(observation) {
+    const attachments = Array.isArray(observation.attachments) ? observation.attachments : [];
+    if (attachments.length === 0) {
+        return { role: 'user', content: JSON.stringify(observation) };
+    }
+    const { attachments: _drop, ...body } = observation;
+    /** @type {Array<{type: string, text?: string, image_url?: {url: string}}>} */
+    const parts = [{ type: 'text', text: JSON.stringify(body) }];
+    for (const att of attachments) {
+        if (att && typeof att.dataUrl === 'string' && att.dataUrl) {
+            parts.push({ type: 'image_url', image_url: { url: att.dataUrl } });
+        }
+    }
+    return { role: 'user', content: parts };
+}
+
+/**
  * Runs the tool loop.
  *
  * Message history grows as [system, user(task), assistant(call),
@@ -60,10 +89,13 @@ function _extractJsonObject(raw) {
  * @param {string} args.systemPrompt - Protocol prompt (buildToolLoopSystemPrompt)
  * @param {string} args.taskPrompt - Task + initial state for the first user message
  * @param {Array<{name: string}>} args.tools - Registered tool specs (names validate calls)
- * @param {function(string, object): Promise<{ok: boolean, result?: *, error?: string}>} args.execute -
- *   Host-side dispatch: (toolName, args) → observation
- * @param {function(Array<{role: string, content: string}>): Promise<string>} args.send -
- *   LLM transport: messages → assistant reply text
+ * @param {function(string, object): Promise<{ok: boolean, result?: *, error?: string,
+ *   attachments?: Array<{dataUrl: string}>}>} args.execute -
+ *   Host-side dispatch: (toolName, args) → observation; attachments ride the
+ *   next user message as image inputs (see _observationMessage)
+ * @param {function(Array<{role: string, content: string|Array<object>}>): Promise<string>} args.send -
+ *   LLM transport: messages → assistant reply text (content may be a
+ *   multimodal parts array on attachment-bearing observations)
  * @param {number} [args.maxSteps=TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT]
  * @param {AbortSignal} [args.signal]
  * @param {function({step: number, call: {tool: string, args: object}|null,
@@ -79,6 +111,7 @@ export async function runToolLoop({
     maxSteps = TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT, signal, onStep,
 }) {
     const known = new Set((Array.isArray(tools) ? tools : []).map((t) => t.name));
+    /** @type {Array<{role: string, content: string | Array<object>}>} */
     const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `${taskPrompt}\n\nBegin.` },
@@ -139,7 +172,7 @@ export async function runToolLoop({
             observation = { ok: false, error: `Tool execution failed: ${err.message}` };
         }
         calls.push({ tool: name, ok: observation.ok !== false });
-        messages.push({ role: 'user', content: JSON.stringify(observation) });
+        messages.push(_observationMessage(observation));
         if (onStep) {
             onStep({
                 step: steps,

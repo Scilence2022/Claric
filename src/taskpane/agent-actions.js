@@ -10,8 +10,10 @@
  *   the existing tablePatch proposal shape, so applySelectionAmendment and
  *   the table proposal card serve unchanged.
  * - prepareImageToolEdit: image management (design/insert, replace,
- *   delete, resize, alt text). A snapshot of inline-picture metadata seeds
- *   an image draft model; applyImageOps executes the staged ops.
+ *   delete, resize, alt text) plus read_image content inspection. A
+ *   snapshot of inline-picture metadata seeds an image draft model;
+ *   applyImageOps executes the staged ops. Selection metadata maps onto
+ *   snapshot indexes so the loop knows which image the user selected.
  *
  * Nested LLM calls: design_illustration / replace_illustration run the
  * existing illustration design prompt host-side inside tool execution.
@@ -31,7 +33,7 @@ import {
     buildIllustrationPrompt, parseIllustration, sanitizeSvg, ensureSvgDimensions,
 } from '../lib/illustration.js';
 import { extractDocumentStructured } from '../lib/comment-extractor.js';
-import { readSelectionTableRegion, svgToPngBase64, insertPngPicture, finalizeInsertedPicture } from './word-actions.js';
+import { readSelectionTableRegion, svgToPngBase64, insertPngPicture, finalizeInsertedPicture, imageDataUrl } from './word-actions.js';
 import { getActiveBackendConfig } from './app-state.js';
 
 /** Step budgets per loop kind. Tables get more steps (per-cell work). */
@@ -40,13 +42,47 @@ const STEP_BUDGETS = Object.freeze({ table: 14, image: 8 });
 /** Per-step request timeout (loops make several calls; keep each bounded). */
 const STEP_TIMEOUT_MS = 180000;
 
+/** Max base64 chars for one read_image attachment (≈4.5MB binary). */
+const MAX_READ_IMAGE_CHARS = 6 * 1024 * 1024;
+
+/**
+ * Sends one loop turn. When the history carries image attachments (image_url
+ * parts from read_image observations) and the backend rejects the request
+ * with an HTTP 4xx — typical for text-only models — retries once with the
+ * attachments stripped, so the loop continues text-only instead of erroring
+ * the whole turn. Abort/timeout/5xx propagate untouched.
+ *
+ * @private
+ */
+async function _sendLoopMessages(deps, backendConfig, messages, signal) {
+    const { log } = deps;
+    try {
+        return await sendMessages(backendConfig, messages, log, signal, STEP_TIMEOUT_MS);
+    } catch (err) {
+        if (err.name === 'AbortError' || err.name === 'TimeoutError' || !/^HTTP 4\d\d/.test(err.message || '')) {
+            throw err;
+        }
+        const carriesImages = messages.some((m) => Array.isArray(m.content));
+        if (!carriesImages) throw err;
+        log(`Backend rejected image inputs (${err.message}); retrying without image attachments.`, 'warning');
+        const stripped = messages.map((m) => {
+            if (!Array.isArray(m.content)) return m;
+            const textParts = m.content.filter((p) => p && p.type !== 'image_url');
+            return {
+                role: m.role,
+                content: textParts.length ? textParts : [{ type: 'text', text: '(image attachment removed)' }],
+            };
+        });
+        return sendMessages(backendConfig, stripped, log, signal, STEP_TIMEOUT_MS);
+    }
+}
+
 /**
  * Runs one tool loop with the standard send wiring.
  *
  * @private
  */
 async function _runLoop(deps, { systemPrompt, taskPrompt, tools, execute, maxSteps, signal, onStep }) {
-    const { log } = deps;
     const backendConfig = getActiveBackendConfig(deps.appState);
     return runToolLoop({
         systemPrompt,
@@ -56,7 +92,7 @@ async function _runLoop(deps, { systemPrompt, taskPrompt, tools, execute, maxSte
         maxSteps,
         signal,
         onStep,
-        send: (messages) => sendMessages(backendConfig, messages, log, signal, STEP_TIMEOUT_MS),
+        send: (messages) => _sendLoopMessages(deps, backendConfig, messages, signal),
     });
 }
 
@@ -195,20 +231,65 @@ async function _designSvg(deps, { instruction, documentText, signal }) {
 }
 
 /**
+ * Reads one snapshot-indexed picture's visual content for the read_image
+ * tool: base64 bytes as a data URL plus its dimensions.
+ *
+ * @param {number} index - 1-based document-order snapshot index
+ * @returns {Promise<{dataUrl: string, width: number, height: number}>}
+ * @throws {Error} When the index is out of range or the image is too large
+ * @private
+ */
+async function _readImageAttachment(index) {
+    if (!Number.isInteger(index) || index < 1) {
+        throw new Error('"index" must be a 1-based snapshot index.');
+    }
+    let out = null;
+    await Word.run(async (context) => {
+        const pictures = context.document.body.inlinePictures;
+        pictures.load('items');
+        await context.sync();
+        const items = pictures.items || [];
+        const pic = items[index - 1];
+        if (!pic) {
+            throw new Error(`Image ${index} does not exist in this snapshot (${items.length} picture(s)).`);
+        }
+        pic.load('width,height');
+        const b64 = pic.getBase64ImageSrc();
+        await context.sync();
+        if (!b64.value) {
+            throw new Error(`Image ${index} returned no image data.`);
+        }
+        if (b64.value.length > MAX_READ_IMAGE_CHARS) {
+            throw new Error(`Image ${index} is too large to attach (${(b64.value.length / 1048576).toFixed(1)}MB base64).`);
+        }
+        out = { dataUrl: imageDataUrl(b64.value), width: pic.width, height: pic.height };
+    });
+    return out;
+}
+
+/**
  * Prepares image operations via the tool loop: design/insert, replace,
  * delete, resize, alt text. Returns a proposal with card items; apply
  * happens only via applyImageOps when the user clicks Apply.
  *
+ * A read-only loop (no ops, but a finish summary — e.g. the model inspected
+ * the selected image with read_image and answered a question) resolves to a
+ * {noOps: true, answer} proposal instead of staging a card.
+ *
  * @param {object} deps - { appState, log }
  * @param {object} args
  * @param {string} args.instruction - The image-management instruction
+ * @param {Array<{width: number, height: number, altText: string}>} [args.selectionImages] -
+ *   Metadata of the pictures inside the CURRENT selection (from
+ *   readSelectionContent); matched onto snapshot indexes so the task prompt
+ *   can tell the model which image the user is pointing at
  * @param {AbortSignal} [args.signal]
  * @param {function} [args.onStep] - Loop activity hook
  * @returns {Promise<{ instruction: string, ops: Array<object>, items: Array<object>,
  *   snapshotCount: number, model: string, toolLoop: object }>}
- * @throws {Error} When the loop records no ops
+ * @throws {Error} When the loop records no ops and produces no answer
  */
-export async function prepareImageToolEdit(deps, { instruction, signal, onStep } = {}) {
+export async function prepareImageToolEdit(deps, { instruction, selectionImages, signal, onStep } = {}) {
     const { appState, log } = deps;
 
     log('Reading document images...', 'info');
@@ -225,6 +306,21 @@ export async function prepareImageToolEdit(deps, { instruction, signal, onStep }
         switch (name) {
             case 'list_images':
                 return model.listImages();
+            case 'read_image': {
+                // Throws on bad index/oversized image — the loop turns the
+                // throw into an error observation the model can react to.
+                const img = await _readImageAttachment(args.index);
+                return {
+                    ok: true,
+                    result: {
+                        index: args.index,
+                        widthPt: img.width,
+                        heightPt: img.height,
+                        note: 'the image is attached to this observation as an image input — look at it',
+                    },
+                    attachments: [{ dataUrl: img.dataUrl }],
+                };
+            }
             case 'design_illustration': {
                 const svg = await _designSvg(deps, { instruction: args.instruction, documentText, signal });
                 return model.recordInsert({ position: args.position, instruction: args.instruction, svg });
@@ -244,6 +340,27 @@ export async function prepareImageToolEdit(deps, { instruction, signal, onStep }
         }
     };
 
+    // Selection focus: map the selected pictures (metadata) onto snapshot
+    // indexes, first-match-wins — duplicates beyond the first stay unmapped.
+    // Advisory only: every tool remains index-addressed against the snapshot.
+    const focusLines = [];
+    if (Array.isArray(selectionImages) && selectionImages.length > 0) {
+        const used = new Set();
+        for (const sel of selectionImages) {
+            const hit = snapshot.find((img, i) => !used.has(i)
+                && img.width === sel.width
+                && img.height === sel.height
+                && (img.altText || '') === (sel.altText || ''));
+            if (hit) {
+                used.add(hit.index - 1);
+                focusLines.push(`- image ${hit.index} (SELECTED by the user right now)`);
+            }
+        }
+        if (focusLines.length === 0) {
+            focusLines.push('- (the selected picture(s) could not be matched to a snapshot index)');
+        }
+    }
+
     const taskPrompt =
         `USER TASK: ${(instruction || '').trim()}\n\n` +
         `The document has ${snapshot.length} inline picture(s):\n` +
@@ -252,6 +369,11 @@ export async function prepareImageToolEdit(deps, { instruction, signal, onStep }
                 `- image ${img.index}: ${img.width}x${img.height}pt${img.altText ? `, alt "${img.altText.slice(0, 60)}"` : ''}`
             ).join('\n')
             : '(none)') +
+        (focusLines.length > 0
+            ? '\n\nThe user\'s current selection in the document:\n' +
+              focusLines.join('\n') +
+              '\nWhen the task says "this/that image" (这张/此图), it means the selected one(s); use read_image on it before answering questions about its content.'
+            : '') +
         '\n\nWork through the task with the image tools. Indexes refer to this snapshot.';
 
     const loop = await _runLoop(deps, {
@@ -270,6 +392,18 @@ export async function prepareImageToolEdit(deps, { instruction, signal, onStep }
     if (loop.summary) log(`Tool loop summary: ${loop.summary}`, 'info');
 
     if (model.ops.length === 0) {
+        if (loop.finished && loop.summary && loop.summary.trim()) {
+            return {
+                noOps: true,
+                answer: loop.summary.trim(),
+                instruction: (instruction || '').trim(),
+                ops: [],
+                items: [],
+                snapshotCount: snapshot.length,
+                model: getActiveBackendConfig(appState).model,
+                toolLoop: { steps: loop.steps, finished: loop.finished },
+            };
+        }
         const err = new Error('The tool loop proposed no image changes.');
         err.noChanges = true;
         throw err;

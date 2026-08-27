@@ -89,7 +89,8 @@ src/
                                #   (get_state/set_cell/insert_row/delete_row);
                                #   validates ops, translates to tablePatch
     image-model.js             # L2 tool-calling: image draft model + tools
-                               #   (list/design/replace/delete/resize/alt);
+                               #   (list/design/replace/delete/resize/alt/
+                               #   read_image — visual content via the loop);
                                #   stable snapshot indexes, card items
     sanitize.js                # Shared lazy DOMPurify factory (used by
                                #   document-generator and illustration)
@@ -136,7 +137,8 @@ src/
                                #   work log, model activity (auto-scroll),
                                #   progress bar, citation pills
       input-bar.js             # Textarea, skill picker popup, send/cancel,
-                               #   model pill, selection preview chip
+                               #   model pill, selection preview chip (text
+                               #   snippet + image thumbnails + +N badge)
       welcome.js               # Welcome empty state with skill chips
       settings-view.js         # Settings slide-over + prompt management
       proposal-card.js         # Staged proposal card: per-change checkboxes,
@@ -148,7 +150,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (901 tests, 37 suites)
+tests/                         # Jest unit tests (1019 tests, 44 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -202,6 +204,13 @@ tests/                         # Jest unit tests (901 tests, 37 suites)
   image-model.spec.js         # Image draft model: indexes, consumption,
                                #   validation, card items
   agent-actions.spec.js       # Tool-loop Word glue: prepare/apply halves
+                               #   + read_image attachments + selection focus
+                               #   + 4xx image-strip retry + noOps answer
+  input-bar.spec.js           # @jest-environment jsdom — selection preview
+                               #   chip (text + thumbnails + +N badge)
+  selection-images.spec.js    # readSelectionContent (text + inline pictures,
+                               #   cap + totalImages), imageDataUrl mime
+                               #   sniffing, debounced watchSelection
   generate-manifest.spec.js    # Manifest generation
   __mocks__/                   # Jest style mock
 
@@ -321,6 +330,35 @@ to reorganize or echo them, and the paragraph alignment would then pollute
 the document with phantom paragraphs. Table content stays untouched by
 document checks; use the selection routes (table patch / mixed) to edit it.
 
+### Selection as Object (images + tables)
+
+Picture and table selections were previously invisible to the text-only
+QA path — `selection.text` is empty for images, so the preview chip
+didn't show, `hasSelection` was false, and the LLM never saw the
+content. The fix is the **selection-as-object** pattern: a selected
+picture or table enters the conversation as a live reference with a
+tool list, never as raw content.
+
+- **Selection reader**: `readSelectionContent` returns `{ text, images,
+  totalImages }`. `watchSelection` debounces selection-change events
+  into the input-bar preview (text snippet + thumbnail row + `+N` badge
+  when the selection exceeds the cap).
+- **Image selection** routes any instruction to the IMAGE_TOOL session:
+  snapshot indexes serve as handles; the task prompt lists each
+  picture (`image 1: 300×200pt, alt "…"`) and marks the user's current
+  selection. The new `read_image` tool is host-executed and attaches
+  the picture as a multimodal image input to the next observation
+  message; text-only backends fall back via an attachment-stripped
+  retry. A read-only loop (no recorded ops, just a `finish` summary)
+  becomes the chat answer — no proposal card.
+- **Mixed text + image** selections carry text through the flat QA path
+  with image metadata appended as a separate `--- SELECTED IMAGES ---
+  - image N: W×Hpt, alt "…"` block; bytes are never injected.
+- **Table selections** already use the selection-seeded `prepareTableToolEdit`
+  pattern (`get_state` / `set_cell` / `insert_row` / `delete_row`
+  tools): the same object-and-tools philosophy, triggered for chained
+  instructions or unparseable single-shot patches.
+
 ### Format Flow
 
 ```
@@ -357,7 +395,13 @@ document checks; use the selection routes (table patch / mixed) to edit it.
 ```
 L4  existing proposal card + Apply        (UX and safety gating unchanged)
 L3  lib/tool-loop.js                      (one JSON call/turn + observation,
-                                           step budget, abort-aware)
+                                           step budget, abort-aware; optional
+                                           multimodal observation attachments —
+                                           read_image attaches the picture as
+                                           an image_url part on the next user
+                                           message; text-only backends 4xx
+                                           retry the turn with attachments
+                                           stripped)
 L2  lib/table-model.js, lib/image-model.js (draft models the tools operate on —
                                            NEVER Word directly; ops are a
                                            staged, diffable transaction)
@@ -373,9 +417,22 @@ LLM round trips):
 - Chained instructions on a selection ("…，然后…") → prepareTableToolEdit;
   non-table selections return null and fall back to the single-shot patch.
 - An unparseable single-shot table patch retries once via the tool loop.
-- Image management (删除/替换/缩放/alt text on 图片/插图, or multi-image
-  design) → IMAGE_TOOL turn → prepareImageToolEdit + applyImageOps; indexes
-  are stable snapshot indexes with a count-based staleness guard at apply.
+- IMAGE_TOOL turn: image-management instructions ("删除/替换/缩放/alt text on
+  图片/插图", multi-image design), OR any instruction paired with an
+  image-only selection (`routeTurn` short-circuits the hasSelection branch
+  to IMAGE_TOOL when the selection carries images and no text). Selection
+  metadata (width/height/altText) is matched onto snapshot indexes by
+  first-match-wins so the task prompt can tell the model which picture the
+  user is pointing at. The loop's read_image tool is host-executed: it
+  fetches the picture base64 via Office.js and returns it as an
+  `attachments: [{dataUrl}]` observation; `tool-loop` turns the
+  attachment into an OpenAI-compatible multimodal content parts array on
+  the next user message, so vision-capable models actually see the
+  picture. Text-only backends that reject the array get one
+  attachment-stripped retry (`_sendLoopMessages`). A read-only loop (no
+  ops recorded but the model called `finish` with a `summary`)
+  resolves to a `{noOps: true, answer}` proposal that the turn runner
+  renders directly in chat — no proposal card.
 
 The table loop's ops translate into the existing tablePatch shape, so the
 table proposal card and applySelectionAmendment serve unchanged.
@@ -411,7 +468,10 @@ User runs "/summarize-contract"
 ```
 Question → DOC_QA → answerQuestion()
   → prompt = context prompt + optional chat-skill template + question
-    + --- SELECTED TEXT --- (when a selection exists)
+    + --- SELECTED TEXT --- (when a text selection exists)
+    + --- SELECTED IMAGES --- (metadata reference when the selection also
+      carries image(s); content reading is the read_image tool in the
+      image session, not bytes injected here)
     + --- DOCUMENT --- (full text at configured extraction richness)
   → sendPromptStream with 300s idle timeout; tokens stream into the message
 ```
@@ -559,7 +619,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 708 tests, 29 suites, ~1s
+npm test          # 1019 tests, 44 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

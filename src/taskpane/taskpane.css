@@ -311,6 +311,37 @@ body {
     font-style: italic;
 }
 
+.selection-preview-text[hidden] {
+    display: none;
+}
+
+.selection-preview-images {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--spacing-xs);
+}
+
+.selection-preview-images[hidden] {
+    display: none;
+}
+
+.selection-preview-img {
+    height: 24px;
+    max-width: 56px;
+    object-fit: contain;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-color, #fff);
+    display: block;
+}
+
+.selection-preview-more {
+    flex: 0 0 auto;
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+}
+
 .msg-body:empty {
     display: none;
 }
