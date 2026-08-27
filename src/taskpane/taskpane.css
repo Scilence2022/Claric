@@ -138,6 +138,7 @@ body {
     display: flex;
     align-items: center;
     gap: var(--spacing-xs);
+    cursor: default;
 }
 
 .status-indicator {
@@ -156,13 +157,10 @@ body {
     background: var(--error-color);
 }
 
+/* Dot-only indicator: the label text is carried as the dot's hover tooltip
+   (set in setConnectionStatus) rather than shown inline. */
 .status-text {
-    font-size: var(--font-size-sm);
-    color: var(--secondary-text);
-    max-width: 140px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    display: none;
 }
 
 /* ==========================================================================
