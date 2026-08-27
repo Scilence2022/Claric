@@ -152,7 +152,13 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep }
     if (loop.summary) log(`Tool loop summary: ${loop.summary}`, 'info');
 
     const patch = model.toTablePatch();
-    if (patch.cells.length === 0 && patch.rowOps.length === 0) {
+    // A merge-only result (no cell edit / row op) IS a real change — the
+    // "no changes" / read-only determination must include merges, or a pure
+    // merge would be misclassified as noOps and never staged/apply.
+    const hasChanges = patch.cells.length > 0
+        || patch.rowOps.length > 0
+        || (Array.isArray(patch.merges) && patch.merges.length > 0);
+    if (!hasChanges) {
         // Read-only outcome (e.g. the model inspected the table with
         // get_state and answered a review question): the summary IS the
         // chat answer — no card to apply. Mirrors prepareImageToolEdit.
