@@ -13,7 +13,7 @@
  * happen. jsdom is used because the proposal-card path touches the DOM.
  */
 
-const { routeTurn, createConversation, TURN_TYPE, chunkCitation } = require('../src/taskpane/conversation.js');
+const { routeTurn, createConversation, TURN_TYPE, chunkCitation, looksLikeChainedInstruction } = require('../src/taskpane/conversation.js');
 const { BUILTIN_SKILLS } = require('../src/taskpane/skills.js');
 
 function makeAppState(overrides = {}) {
@@ -108,6 +108,16 @@ function makeActions(overrides = {}) {
       svg: '<svg width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>',
       position: 'end', model: 'm',
     })),
+    prepareTableToolEdit: jest.fn(async () => null),
+    prepareImageToolEdit: jest.fn(async () => ({
+      instruction: 'x',
+      ops: [{ type: 'delete', index: 1 }],
+      items: [{ id: 1, label: 'Delete image 1', before: 'existing picture', after: '' }],
+      snapshotCount: 1,
+      model: 'm',
+      toolLoop: { steps: 2, finished: true },
+    })),
+    applyImageOps: jest.fn(async () => ({ applied: 1, warnings: [] })),
     applyIllustrationProposal: jest.fn(async () => ({ inserted: true })),
     planDocumentTasks: jest.fn(async () => ({
       tasks: [{ type: 'insert', instruction: '增加标题' }, { type: 'edit', instruction: '深度润色修改' }],
@@ -318,6 +328,38 @@ describe('routeTurn', () => {
     expect(turn.type).toBe(TURN_TYPE.ILLUSTRATION);
   });
 
+  test('image management routes to the image tool loop (ZH + EN)', () => {
+    expect(routeTurn('删除文档里的第二张图片', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('把第一张图片替换成一张黄昏场景', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('delete the second image', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('resize image 1 to 300pt', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+  });
+
+  test('multi-image design routes to the image tool loop', () => {
+    expect(routeTurn('设计两张插图，一张在开头一张在文末', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    // Single-image design stays on the dedicated illustration turn.
+    expect(routeTurn('设计一张插图放在文末', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.ILLUSTRATION);
+  });
+
+  test('image questions stay Q&A even with management verbs', () => {
+    expect(routeTurn('如何删除文档里的图片？', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('chained instruction detection', () => {
+    expect(looksLikeChainedInstruction('删除空行，然后重新编号')).toBe(true);
+    expect(looksLikeChainedInstruction('先改标题，接着润色全文')).toBe(true);
+    expect(looksLikeChainedInstruction('加一行，再删一行')).toBe(true);
+    expect(looksLikeChainedInstruction('再润色一下')).toBe(false);
+    expect(looksLikeChainedInstruction('润色这段话')).toBe(false);
+  });
+
   test('generic image words without a creation verb stay an edit', () => {
     const turn = routeTurn('修改图像描述的措辞', { hasSelection: true, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
@@ -428,6 +470,108 @@ describe('createConversation.submit', () => {
     expect(actions.applySelectionAmendment).not.toHaveBeenCalled();
     expect(input.setProcessing).toHaveBeenCalledWith(true);
     expect(input.setProcessing).toHaveBeenLastCalledWith(false);
+  });
+
+  test('chained instruction + selection tries the table tool loop first', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareTableToolEdit: jest.fn(async () => ({
+        selectionText: 'a\nb', amendedText: null, commentText: null, model: 'm',
+        tablePatch: {
+          rowCount: 2, colCount: 1,
+          cells: [{ row: 2, col: 1, text: 'new' }],
+          rowOps: [],
+          bounds: { startRow: 1, endRow: 2, startCol: 1, endCol: 1 },
+          originals: [['a'], ['b']],
+        },
+        tableItems: [{ label: 'Cell R2C1', before: 'b', after: 'new' }],
+        toolLoop: { steps: 3, finished: true },
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'a b',
+    });
+
+    await conv.submit('把第二格改好，然后加一行合计');
+
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit.mock.calls[0][1].instruction).toBe('把第二格改好，然后加一行合计');
+    // Single-shot path untouched when the tool loop produced the proposal.
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test('chained instruction on a non-table selection falls back to single-shot', async () => {
+    const actions = makeActions({ prepareTableToolEdit: jest.fn(async () => null) });
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'plain text',
+    });
+
+    await conv.submit('先润色，然后压缩这段话');
+
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
+  });
+
+  test('unparseable single-shot table patch retries via the tool loop', async () => {
+    const toolProposal = {
+      selectionText: 'a\nb', amendedText: null, commentText: null, model: 'm',
+      tablePatch: {
+        rowCount: 2, colCount: 1,
+        cells: [{ row: 1, col: 1, text: 'fixed' }],
+        rowOps: [], bounds: { startRow: 1, endRow: 2, startCol: 1, endCol: 1 },
+        originals: [['a'], ['b']],
+      },
+      tableItems: [{ label: 'Cell R1C1', before: 'a', after: 'fixed' }],
+      toolLoop: { steps: 4, finished: true },
+    };
+    const actions = makeActions({
+      prepareSelectionAmendment: jest.fn(async () => {
+        throw new Error('Table patch response contains no JSON object');
+      }),
+      prepareTableToolEdit: jest.fn(async () => toolProposal),
+    });
+    const view = makeView();
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'a b',
+    });
+
+    await conv.submit('修改表格内容');
+
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    expect(view._msg.markError).not.toHaveBeenCalled();
+  });
+
+  test('image tool turn stages ops and apply runs only checked ops', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('删除文档里的第二张图片');
+
+    expect(actions.prepareImageToolEdit).toHaveBeenCalledTimes(1);
+    expect(actions.prepareImageToolEdit.mock.calls[0][1].instruction).toBe('删除文档里的第二张图片');
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+
+    // One checkbox per op; checking it and applying runs exactly that op.
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    const boxes = cardEl.querySelectorAll('.proposal-card-change input[type="checkbox"]');
+    expect(boxes).toHaveLength(1);
+    boxes[0].checked = true;
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(actions.applyImageOps).toHaveBeenCalledTimes(1);
+    expect(actions.applyImageOps.mock.calls[0][1].ops).toEqual([{ type: 'delete', index: 1 }]);
   });
 
   test('free text without selection runs document Q&A', async () => {
