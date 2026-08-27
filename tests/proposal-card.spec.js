@@ -66,7 +66,10 @@ describe('createProposalCard', () => {
     boxes[1].checked = false;
     card.el.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
-    expect(onApply).toHaveBeenCalledWith(['a', 'c']);
+    expect(onApply).toHaveBeenCalledWith(['a', 'c'], expect.objectContaining({
+      signal: expect.anything(),
+      onChunkApplied: expect.any(Function),
+    }));
   });
 
   test('apply without items forwards undefined', async () => {
@@ -74,7 +77,7 @@ describe('createProposalCard', () => {
     const card = makeCard({ onApply });
     card.el.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
-    expect(onApply).toHaveBeenCalledWith(undefined);
+    expect(onApply).toHaveBeenCalledWith(undefined, expect.anything());
   });
 
   test('unchecking everything disables Apply; re-checking re-enables it', () => {
@@ -96,6 +99,53 @@ describe('createProposalCard', () => {
     card.markApplied();
     expect(card.el.querySelector('.proposal-card-status').textContent)
       .toBe('Applied 2 of 3 change(s) as tracked changes.');
+  });
+
+  test('markItemApplied dims + disables the row and adds a status tag', () => {
+    const card = makeCard({ items: makeItems() });
+    const rows = card.el.querySelectorAll('.proposal-card-change');
+    card.markItemApplied('a', { applied: true });
+
+    expect(card.el.querySelectorAll('input[type="checkbox"]')[0].disabled).toBe(true);
+    expect(card.el.querySelectorAll('input[type="checkbox"]')[0].checked).toBe(true);
+    expect(rows[0].classList.contains('proposal-card-change-done')).toBe(true);
+    expect(rows[0].querySelector('.proposal-card-change-status').textContent).toBe('applied');
+    // Unrelated rows untouched.
+    expect(rows[1].classList.contains('proposal-card-change-done')).toBe(false);
+  });
+
+  test('markItemApplied tags error / skipped outcomes distinctly', () => {
+    const card = makeCard({ items: makeItems() });
+    const rows = card.el.querySelectorAll('.proposal-card-change');
+    card.markItemApplied('a', { error: true });
+    card.markItemApplied('b', { skipped: true });
+    expect(rows[0].querySelector('.proposal-card-change-status').textContent).toBe('error');
+    expect(rows[0].classList.contains('proposal-card-change-error')).toBe(true);
+    expect(rows[1].querySelector('.proposal-card-change-status').textContent).toBe('skipped');
+  });
+
+  test('setPaused re-enables Apply as "Continue applying"', () => {
+    const card = makeCard({ items: makeItems() });
+    card.markItemApplied('a', { applied: true });
+    card.setPaused('Paused — 1 of 3 applied.');
+
+    const applyBtn = card.el.querySelector('.btn-primary');
+    expect(applyBtn.disabled).toBe(false);
+    expect(applyBtn.textContent).toBe('Continue applying');
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain('Paused');
+    expect(card.el.classList.contains('proposal-paused')).toBe(true);
+  });
+
+  test('continue (resume) forwards only the still-pending ids', async () => {
+    const onApply = jest.fn(async () => {});
+    const card = makeCard({ items: makeItems(), onApply });
+    card.markItemApplied('a', { applied: true });
+    card.setPaused('Paused — 1 of 3 applied.');
+
+    card.el.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    // Applied 'a' is excluded from the resumed selection.
+    expect(onApply).toHaveBeenCalledWith(['b', 'c'], expect.anything());
   });
 
   test('markApplied keeps the original line without items', () => {

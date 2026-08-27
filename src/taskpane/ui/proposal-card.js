@@ -197,9 +197,12 @@ export function renderTablePreview(preview) {
  * @param {function(Array<string|number>|undefined)} args.onApply - Async
  *   apply callback; receives the selected item ids when items are given
  * @param {function()} [args.onReject] - Reject callback
- * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string) }}
+ * @param {function(AbortController|null)} [args.registerController] - Optional
+ *   register/unregister the live apply AbortController so the host Stop button
+ *   can abort (pause) the in-flight apply; receives null when apply settles
+ * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string), markItemApplied: function(string, object), setPaused: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, tablePreview, items, onLocate, comment, onApply, onReject }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, tablePreview, items, onLocate, comment, onApply, onReject, registerController }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -254,6 +257,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     // diff). Apply forwards the checked ids; unchecking everything disables
     // Apply. The applied count is remembered for the terminal status line.
     const changeBoxes = [];
+    const changeEntries = [];
     let lastAppliedCount = 0;
     if (items && items.length) {
         const details = document.createElement('details');
@@ -277,6 +281,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             text.textContent = item.label;
             rowHead.appendChild(box);
             rowHead.appendChild(text);
+            changeEntries.push({ id: item.id, box, row, rowHead });
             if (item.searchText && onLocate) {
                 const locate = document.createElement('button');
                 locate.type = 'button';
@@ -300,10 +305,47 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         el.appendChild(details);
     }
 
-    /** Ids of the currently checked change items (undefined without items). */
+    /** Ids of the currently checked, not-yet-applied change items. */
     function selectedIds() {
         if (!changeBoxes.length) return undefined;
-        return items.filter((_, i) => changeBoxes[i].checked).map((item) => item.id);
+        return items.filter((_, i) => changeBoxes[i].checked && !changeBoxes[i].disabled)
+            .map((item) => item.id);
+    }
+
+    /** Tracked applied item ids — cumulative across pause/resume runs. */
+    const appliedIdSet = new Set();
+    let applyController = null;
+    let applyInFlight = false;
+
+    /**
+     * Visually marks one change item as applied (checked + disabled, row
+     * dimmed + status tag). Called live by applyChunkResults' onChunkApplied
+     * so the user sees each section land as the apply progresses.
+     *
+     * @param {string|number} id - The change item's id
+     * @param {{applied?: boolean, noChange?: boolean, error?: boolean, skipped?: boolean}} [status]
+     */
+    function markItemApplied(id, status = {}) {
+        appliedIdSet.add(id);
+        const entry = changeEntries.find((e) => String(e.id) === String(id));
+        if (!entry) return;
+        entry.box.checked = true;
+        entry.box.disabled = true;
+        entry.row.classList.add('proposal-card-change-done');
+        const tag = document.createElement('span');
+        tag.className = 'proposal-card-change-status';
+        if (status.error) {
+            tag.textContent = 'error';
+            entry.row.classList.add('proposal-card-change-error');
+        } else if (status.skipped) {
+            tag.textContent = 'skipped';
+            entry.row.classList.add('proposal-card-change-skipped');
+        } else if (status.noChange) {
+            tag.textContent = 'no change';
+        } else {
+            tag.textContent = 'applied';
+        }
+        entry.rowHead.appendChild(tag);
     }
 
     actions.appendChild(applyBtn);
@@ -320,11 +362,45 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         status.textContent = text;
     }
 
+    /**
+     * Paused state after a Stop: the remaining, not-yet-applied items keep
+     * their checkboxes; Apply is re-enabled as "Continue applying" so the
+     * user can resume from where it stopped.
+     *
+     * @param {Array<string|number>} [remainingIds] - Ids still pending
+     */
+    function setPaused(message) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Continue applying';
+        rejectBtn.disabled = true; // partial apply — reject would be misleading
+        status.style.display = '';
+        status.textContent = message;
+        el.classList.add('proposal-paused');
+    }
+
     applyBtn.addEventListener('click', async () => {
-        lastAppliedCount = changeBoxes.filter((b) => b.checked).length;
+        if (applyInFlight) return;
+        applyInFlight = true;
         applyBtn.disabled = true;
         rejectBtn.disabled = true;
-        await onApply(selectedIds());
+        const resuming = applyBtn.textContent === 'Continue applying';
+        const ids = selectedIds();
+        lastAppliedCount = changeBoxes.filter((b) => b.checked && !b.disabled).length;
+        if (resuming) applyBtn.textContent = 'Applying...';
+        applyController = new AbortController();
+        if (typeof registerController === 'function') registerController(applyController);
+        try {
+            await onApply(ids, {
+                signal: applyController.signal,
+                onChunkApplied: markItemApplied,
+            });
+        } finally {
+            applyInFlight = false;
+            if (typeof registerController === 'function') registerController(null);
+            // A paused state re-enables the button (setPaused was called by
+            // the onApply handler); otherwise the caller settles terminal
+            // state via markApplied/markWarning/markError.
+        }
     });
 
     const api = {
@@ -333,7 +409,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         markApplied() {
             settle(
                 changeBoxes.length
-                    ? `Applied ${lastAppliedCount} of ${changeBoxes.length} change(s) as tracked changes.`
+                    ? `Applied ${appliedIdSet.size || lastAppliedCount} of ${changeBoxes.length} change(s) as tracked changes.`
                     : 'Applied as tracked changes.',
                 'proposal-applied'
             );
@@ -347,6 +423,10 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         markWarning(message) {
             settle(message, 'proposal-warning');
         },
+        /** Marks one change item applied live (chunk progress). */
+        markItemApplied,
+        /** Enables "Continue applying" after a paused (interrupted) apply. */
+        setPaused,
         /** Re-enables Apply after a failed attempt so the user can retry. */
         markError(message) {
             applyBtn.disabled = changeBoxes.length > 0 && changeBoxes.every((b) => !b.checked);

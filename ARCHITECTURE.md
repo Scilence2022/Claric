@@ -150,7 +150,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (1030 tests, 44 suites)
+tests/                         # Jest unit tests (1036 tests, 44 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -524,11 +524,10 @@ OOXML tracked changes pipeline:
 ### Reassembler (`src/lib/reassembler.js`)
 
 - `bookmarkChunkRanges()` — hidden `_wdp…` bookmarks persist chunk ranges across LLM processing time
-- `applyChunkResults()` — aligns LLM output to original paragraphs (LCS on exact matches, then greedy similarity matching at 0.4 threshold; CJK uses bigram similarity; blank paragraphs excluded) and applies keep/delete/insert ops in reverse document order as tracked changes; comments are inserted in a separate later phase with tracking off (avoids `AccessDenied` on ranges with pending revisions)
+- `applyChunkResults()` — aligns LLM output to original paragraphs (LCS on exact matches, then greedy similarity matching at 0.4 threshold; CJK uses bigram similarity; blank paragraphs excluded) and applies keep/delete/insert ops in reverse document order as tracked changes; comments are inserted in a separate later phase with tracking off (avoids `AccessDenied` on ranges with pending revisions). Accepts an optional `signal` (cooperative pause: aborts between chunks, leaving the remaining chunks' bookmarks intact for resumable apply) and `onChunkApplied(chunkId, outcome)` (per-chunk progress for the proposal card). Returns `{ amendmentsApplied, commentsInserted, noChangeCount, errors, appliedChunkIds, interrupted }` for honest UI feedback — `interrupted: true` signals a Stop mid-apply that the card turns into a "Continue applying" resume.
 - Table guard: insert/delete alignment ops whose target paragraph sits inside a table are skipped with a warning (they would add in-cell paragraphs or delete cell content, never rows); in-cell `keep` edits still diff granularly
 - Re-anchoring: `_reanchorChunkRange()` narrows a drifted staged range to the contiguous window holding the staged paragraphs (`_findAnchorWindow` over stored original texts); if contiguity is lost, the chunk is **skipped** with an error entry rather than falling back to the raw range
 - Truncation guard rejects LLM output under 30% of the original chunk length
-- Returns `{ amendmentsApplied, commentsInserted, noChangeCount, errors }` for honest UI feedback
 
 ### Format Ops (`src/lib/format-ops.js`)
 
@@ -586,7 +585,7 @@ Chat-driven UI split into focused modules:
 - `skills.js` — skill registry: six built-ins plus PromptManager prompts as custom slash commands
 - `word-actions.js` — the pipelines (selection/append/format/illustration/cleanup prepare+apply pairs, gated doc-scope runs, planner, Q&A, summary) with explicit args instead of DOM/active-prompt reads
 - `ui/chat-view.js` — message list, streaming body, per-turn work log (auto-collapse to "Worked for Ns · M steps"), model activity region (reasoning dimmed, per-section split, pin-to-bottom auto-scroll that disengages when the user scrolls up), progress bar with ETA, citation pills
-- `ui/proposal-card.js` — staged proposals: per-change checkbox list with inline diffs and locate buttons, selective apply ("Applied X of Y"), terminal applied/rejected/warning/error states, optional image preview (illustration)
+- `ui/proposal-card.js` — staged proposals: per-change checkbox list with inline diffs and locate buttons, selective apply ("Applied X of Y"), per-item applied feedback (dimmed + status tag) driven by `markItemApplied`, pause/resume ("Continue applying") via `setPaused`, terminal applied/rejected/warning/error states, optional image preview (illustration)
 - `ui/diff-view.js` — display-only `<del>/<ins>` inline diff via diff-match-patch `diff_cleanupSemantic`
 - Settings auto-save on every input change (no Save button), unchanged localStorage keys
 - WordApi version detection and feature gating (1.4 for comments)
@@ -630,7 +629,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 1030 tests, 44 suites, ~1s
+npm test          # 1036 tests, 44 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

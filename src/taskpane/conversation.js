@@ -581,11 +581,39 @@ export function createConversation(deps) {
                 };
             }),
             onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
-            onApply: async (selectedChunkIds) => {
+            registerController: (controller) => {
+                const old = appState.processDocController;
+                if (controller === null) {
+                    // Apply settled (either the caller settled terminal state
+                    // or cancel() already freed the controller) — release the
+                    // UI only if we still own it.
+                    if (appState.processDocController === old && old) {
+                        appState.isProcessingDoc = false;
+                        appState.processDocController = null;
+                        input.setProcessing(false);
+                    }
+                } else {
+                    appState.processDocController = controller;
+                    appState.isProcessingDoc = true;
+                    input.setProcessing(true);
+                }
+            },
+            onApply: async (selectedChunkIds, applyCtx = {}) => {
                 appState.isProcessingDoc = true;
                 input.setProcessing(true);
                 try {
-                    const applicationResult = await outcome.apply(selectedChunkIds);
+                    const applicationResult = await outcome.apply(selectedChunkIds, applyCtx);
+                    if (applicationResult.interrupted) {
+                        // Stopped mid-apply (Stop button): the remaining chunks
+                        // keep their bookmarks; re-enable "Continue applying".
+                        const appliedCount = applicationResult.appliedChunkIds.length;
+                        const total = selectedChunkIds ? selectedChunkIds.length : outcome.chunks.length;
+                        card.setPaused(
+                            `Paused — ${appliedCount} of ${total} selected change(s) applied. Click "Continue applying" to resume.`
+                        );
+                        msg.setStatus('');
+                        return;
+                    }
                     const applyErrors = applicationResult.errors || [];
                     for (const applyError of applyErrors) log(`Apply: ${applyError}`, 'warning');
                     if (applicationResult.amendmentsApplied === 0) {

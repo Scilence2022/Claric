@@ -1526,7 +1526,7 @@ describe('createConversation.submit', () => {
     boxes[1].checked = false;
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
-    expect(staged.apply).toHaveBeenCalledWith(['c0']);
+    expect(staged.apply).toHaveBeenCalledWith(['c0'], expect.anything());
   });
 
   test('document edit card warns honestly when apply lands nothing (skipped chunk)', async () => {

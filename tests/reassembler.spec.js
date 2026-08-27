@@ -1118,6 +1118,74 @@ describe('applyChunkResults re-anchoring', () => {
     expect(outcome.noChangeCount).toBe(1);
     expect(applyTokenMapStrategy).not.toHaveBeenCalled();
   });
+
+  test('aborted signal pauses between chunks: interrupted with partial appliedChunkIds', async () => {
+    const paragraphs = [
+      { text: 'Para 0' }, { text: 'Para 1' }, { text: 'Para 2' },
+      { text: 'Para 3' }, { text: 'Para 4' }, { text: 'Para 5' },
+    ];
+    const bookmarkRanges = {
+      '_wdpbm0': { text: 'Para 0\nPara 1\nPara 2' },
+      '_wdpbm1': { text: 'Para 3\nPara 4\nPara 5' },
+    };
+    const mock = createMockWordRun(paragraphs, bookmarkRanges);
+    global.Word.run = mock.wordRun;
+
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Amended 0', chunk: mockChunk('chunk-0', 0, 'Para 0\nPara 1\nPara 2', 0, 2),
+      }),
+      makeChunkResult('chunk-1', 1, 'fulfilled', {
+        amendment: 'Amended 1', chunk: mockChunk('chunk-1', 1, 'Para 3\nPara 4\nPara 5', 3, 5),
+      }),
+    ];
+    const bookmarkMap = new Map([
+      ['chunk-0', '_wdpbm0'],
+      ['chunk-1', '_wdpbm1'],
+    ]);
+
+    // Reverse order applies chunk-1 first, then chunk-0. Abort after the
+    // first chunk lands so the second is skipped.
+    const controller = new AbortController();
+    const appliedChunkIds = [];
+    const applied = [];
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+      signal: controller.signal,
+      onChunkApplied: (id, status) => {
+        appliedChunkIds.push(id);
+        applied.push(status);
+        controller.abort(); // pause right after the first chunk finishes
+      },
+    });
+
+    expect(outcome.interrupted).toBe(true);
+    expect(outcome.appliedChunkIds).toHaveLength(1);
+    expect(outcome.appliedChunkIds[0]).toBe('chunk-1'); // reverse order → first
+    expect(applied).toHaveLength(1);
+    expect(applied[0]).toMatchObject({ applied: true });
+    // The remaining chunk was NOT attempted (signal aborted before its turn).
+    expect(outcome.amendmentsApplied).toBe(1);
+  });
+
+  test('no signal / no interruption returns interrupted:false', async () => {
+    const mock = createParagraphAwareMockRun(['a']);
+    global.Word.run = mock.wordRun;
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'b', chunk: { id: 'chunk-0', startIndex: 0, endIndex: 0 },
+      }),
+    ];
+    const outcome = await applyChunkResults(results, new Map([['chunk-0', '_wdpbm0']]), {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+    expect(outcome.interrupted).toBe(false);
+    expect(outcome.appliedChunkIds).toEqual(['chunk-0']);
+  });
 });
 
 // --- Table paragraph guards ---
