@@ -100,11 +100,15 @@ describe('createImageModel', () => {
 });
 
 describe('IMAGE_TOOL_SPECS', () => {
-    test('covers the full management surface', () => {
+    test('covers the full management surface incl. visual reading', () => {
         expect(IMAGE_TOOL_SPECS.map((t) => t.name)).toEqual([
-            'list_images', 'design_illustration', 'replace_illustration',
+            'list_images', 'read_image', 'design_illustration', 'replace_illustration',
             'delete_image', 'resize_image', 'set_alt_text',
         ]);
         expect(IMAGE_POSITIONS).toEqual(['start', 'end', 'cursor']);
+        // read_image is host-executed (agent-actions attaches the picture to
+        // the next observation) — it stages no draft op of its own.
+        const read = IMAGE_TOOL_SPECS.find((t) => t.name === 'read_image');
+        expect(read.description).toMatch(/image input/i);
     });
 });

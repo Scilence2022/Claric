@@ -194,4 +194,50 @@ describe('runToolLoop', () => {
         });
         expect(out.calls).toEqual([{ tool: 'set_cell', ok: true }]);
     });
+
+    test('observations with attachments become multimodal content arrays', async () => {
+        const { send, sent } = makeLoop({
+            replies: [
+                '{"tool":"get_state","args":{}}',
+                '{"tool":"finish","args":{"summary":"seen"}}',
+            ],
+        });
+        const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+        const out = await runToolLoop({
+            systemPrompt: 'SYS', taskPrompt: 'TASK', tools: TOOLS,
+            execute: async () => ({
+                ok: true,
+                result: { seen: true },
+                attachments: [{ dataUrl }, { dataUrl: '' }],  // empty entries dropped
+            }),
+            send,
+        });
+
+        expect(out.finished).toBe(true);
+        const observation = sent[1][3];
+        expect(Array.isArray(observation.content)).toBe(true);
+        // Text part carries the JSON body WITHOUT the attachment bytes.
+        const textPart = observation.content[0];
+        expect(textPart.type).toBe('text');
+        expect(JSON.parse(textPart.text)).toEqual({ ok: true, result: { seen: true } });
+        // One image_url part per valid attachment.
+        expect(observation.content[1]).toEqual({ type: 'image_url', image_url: { url: dataUrl } });
+        expect(observation.content).toHaveLength(2);
+    });
+
+    test('plain observations stay JSON strings (no behavior change)', async () => {
+        const { send, sent } = makeLoop({
+            replies: [
+                '{"tool":"get_state","args":{}}',
+                '{"tool":"finish","args":{"summary":"ok"}}',
+            ],
+        });
+        await runToolLoop({
+            systemPrompt: 'SYS', taskPrompt: 'TASK', tools: TOOLS,
+            execute: async () => ({ ok: true, result: {}, attachments: [] }),
+            send,
+        });
+        expect(typeof sent[1][3].content).toBe('string');
+        expect(JSON.parse(sent[1][3].content).ok).toBe(true);
+    });
 });
