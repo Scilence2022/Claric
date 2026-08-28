@@ -98,8 +98,12 @@ src/
                                #   normalization, target-region clipping,
                                #   card labels (WordApi 1.3 surface)
     image-model.js             # L2 tool-calling: image draft model + tools
-                               #   (list/design/replace/delete/resize/alt/
-                               #   read_image — visual content via the loop);
+                               #   (list_images/read_image/
+                               #   design_illustration/replace_illustration/
+                               #   delete_image/resize_image (widthPt |
+                               #   heightPt | scalePct + lockAspectRatio)
+                               #   /align_image /set_alt_text (description
+                               #   + title) /set_image_link);
                                #   stable snapshot indexes, card items
     sanitize.js                # Shared lazy DOMPurify factory (used by
                                #   document-generator and illustration)
@@ -159,7 +163,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (1089 tests, 45 suites)
+tests/                         # Jest unit tests (1099 tests, 45 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -215,8 +219,9 @@ tests/                         # Jest unit tests (1089 tests, 45 suites)
   table-style.spec.js         # Style-op vocabulary: colors, border specs,
                                #   alignment/font normalization, targets,
                                #   labels
-  image-model.spec.js         # Image draft model: indexes, consumption,
-                               #   validation, card items
+  image-model.spec.js         # Image draft model: reshape/scale/lock,
+                               #   align/link/alt-title; consume rules,
+                               #   describeOps labels, normalizeImageLink
   agent-actions.spec.js       # Tool-loop Word glue: prepare/apply halves
                                #   + read_image attachments + selection focus
                                #   + 4xx image-strip retry + noOps answer
@@ -453,7 +458,12 @@ L2  lib/table-model.js, lib/image-model.js (draft models the tools operate on �
                                            three-line tables), cell shading/
                                            alignment, fonts, header rows,
                                            layout, column widths — validated
-                                           by lib/table-style.js)
+                                           by lib/table-style.js; the image
+                                           side covers alt text (description
+                                           + title), paragraph alignment
+                                           (居中 via pic.paragraph), size
+                                           (width/height/scale + aspect
+                                           lock), and hyperlink set/clear)
 L1  lib/tool-registry.js                  (tool specs + loop system prompt)
 ```
 
@@ -667,7 +677,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 1089 tests, 45 suites, ~1s
+npm test          # 1099 tests, 45 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

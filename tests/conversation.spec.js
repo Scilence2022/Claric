@@ -427,6 +427,19 @@ describe('routeTurn', () => {
       .toBe(TURN_TYPE.ILLUSTRATION);
   });
 
+  test('image styling intents (align/link/alt-title/scale) enter the image tool loop', () => {
+    expect(routeTurn('把图片居中', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('给第一张图片加超链接 https://example.com', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('改一下图片的标题', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('把图片缩放到一半', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('center the image', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+  });
+
   test('image questions stay Q&A even with management verbs', () => {
     expect(routeTurn('如何删除文档里的图片？', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
       .toBe(TURN_TYPE.DOC_QA);

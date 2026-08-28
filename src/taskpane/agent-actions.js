@@ -241,7 +241,10 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep }
 }
 
 /**
- * Snapshots the document's inline pictures for the image draft model.
+ * Snapshots the document's inline pictures for the image draft model. Loads
+ * style metadata (alt-text title, paragraph alignment, hyperlink, aspect-
+ * ratio lock) alongside size/alt-text so list_images can surface it. Image
+ * format is desktop-only and loaded best-effort in a separate sync.
  *
  * @private
  */
@@ -252,15 +255,34 @@ async function _snapshotImages() {
         pictures.load('items');
         await context.sync();
         const items = pictures.items || [];
-        for (const pic of items) pic.load('width,height,altTextDescription');
+        for (const pic of items) {
+            pic.load('width,height,altTextDescription,altTextTitle,hyperlink,lockAspectRatio');
+            if (pic.paragraph && typeof pic.paragraph.load === 'function') {
+                pic.paragraph.load('alignment');
+            }
+        }
         await context.sync();
+        // imageFormat is WordApiDesktop 1.1; loading on web throws at sync.
+        // Best-effort: load separately and ignore failures (host unknown).
+        try {
+            for (const pic of items) pic.load('imageFormat');
+            await context.sync();
+        } catch (_formatErr) {
+            // Snapshot stays without format field on hosts that reject it.
+        }
         items.forEach((pic, i) => {
-            snapshot.push({
+            const entry = {
                 index: i + 1,
                 width: pic.width,
                 height: pic.height,
                 altText: pic.altTextDescription || '',
-            });
+                title: pic.altTextTitle || '',
+                alignment: pic.paragraph && pic.paragraph.alignment ? String(pic.paragraph.alignment).toLowerCase() : null,
+                lockAspectRatio: pic.lockAspectRatio,
+                hyperlink: pic.hyperlink || '',
+            };
+            if (pic.imageFormat !== undefined) entry.format = String(pic.imageFormat);
+            snapshot.push(entry);
         });
     });
     return snapshot;
@@ -384,9 +406,13 @@ export async function prepareImageToolEdit(deps, { instruction, selectionImages,
             case 'delete_image':
                 return model.recordDelete(args.index);
             case 'resize_image':
-                return model.recordResize(args.index, args.widthPt);
+                return model.recordResize(args.index, args || {});
+            case 'align_image':
+                return model.recordAlign(args.index, args && args.alignment);
             case 'set_alt_text':
-                return model.recordAltText(args.index, args.text);
+                return model.recordAltText(args.index, args || {});
+            case 'set_image_link':
+                return model.recordLink(args.index, args && args.url);
             default:
                 return { ok: false, error: `Unknown image tool "${name}".` };
         }
@@ -504,7 +530,12 @@ export async function applyImageOps(deps, proposal) {
                 `(${proposal.snapshotCount} → ${items.length}). Draft a new edit instead.`
             );
         }
-        for (const pic of items) pic.load('width,height');
+        for (const pic of items) {
+            pic.load('width,height,altTextDescription,altTextTitle,hyperlink,lockAspectRatio');
+            if (pic.paragraph && typeof pic.paragraph.load === 'function') {
+                pic.paragraph.load('alignment');
+            }
+        }
         await context.sync();
 
         if (Word.ChangeTrackingMode) {
@@ -521,25 +552,14 @@ export async function applyImageOps(deps, proposal) {
                     warnings.push(`Image ${op.index} no longer exists — op skipped.`);
                     continue;
                 }
-                if (op.type === 'delete') {
-                    pic.delete();
-                } else if (op.type === 'resize') {
-                    const ratio = (pic.height || 1) / (pic.width || 1);
-                    pic.width = op.widthPt;
-                    pic.height = Math.round(op.widthPt * ratio);
-                } else if (op.type === 'altText') {
-                    pic.altTextDescription = op.text;
-                } else if (op.type === 'replace') {
-                    const { base64 } = await svgToPngBase64(op.svg);
-                    // Insert the replacement at the old picture's position,
-                    // then delete the old one — under tracking this records
-                    // as a delete + insert pair, individually rejectable.
-                    const range = pic.getRange(Word.RangeLocation.start);
-                    const newPic = range.insertInlinePictureFromBase64(base64, Word.InsertLocation.before);
-                    newPic.load('width,height');
-                    pic.delete();
+                try {
+                    await _applyImageIndexOp(context, pic, op, log, warnings);
+                    applied++;
+                } catch (opErr) {
+                    const warning = `Image op (${op.type} on #${op.index}) failed: ${opErr.message || opErr} — skipped.`;
+                    warnings.push(warning);
+                    log(warning, 'warning');
                 }
-                applied++;
             }
             await context.sync();
 
@@ -566,4 +586,98 @@ export async function applyImageOps(deps, proposal) {
     log(`Applied ${applied} image operation(s)` +
         (warnings.length ? ` (${warnings.length} skipped)` : '') + '.', 'success');
     return { applied, warnings };
+}
+
+/** Maps an image alignment keyword onto the Word Alignment string value. */
+const IMAGE_ALIGNMENT_MAP = Object.freeze({ left: 'Left', centered: 'Centered', right: 'Right' });
+
+/**
+ * Applies one index-addressed image op (delete / resize / altText / align /
+ * link / replace). Syncs the queued commands before returning so a failure
+ * in one op doesn't poison the next batch. Each op is wrapped by its caller's
+ * try/catch — failures degrade to a warning instead of failing the apply.
+ *
+ * @private
+ */
+async function _applyImageIndexOp(context, pic, op, log, warnings) {
+    switch (op.type) {
+        case 'delete':
+            pic.delete();
+            await context.sync();
+            return;
+        case 'resize': {
+            if (op.lockAspectRatio !== undefined) pic.lockAspectRatio = op.lockAspectRatio;
+            const lock = (op.lockAspectRatio === undefined) ? (pic.lockAspectRatio !== false) : op.lockAspectRatio;
+            if (op.widthPt !== undefined) {
+                if (lock) {
+                    // Word auto-adjusts height when the ratio is locked.
+                    pic.width = op.widthPt;
+                } else {
+                    const ratio = (pic.height || 1) / (pic.width || 1);
+                    pic.width = op.widthPt;
+                    pic.height = Math.round(op.widthPt * ratio);
+                }
+            } else if (op.heightPt !== undefined) {
+                if (lock) {
+                    pic.height = op.heightPt;
+                } else {
+                    const ratio = (pic.width || 1) / (pic.height || 1);
+                    pic.height = op.heightPt;
+                    pic.width = Math.round(op.heightPt * ratio);
+                }
+            } else if (op.scalePct !== undefined) {
+                const scale = op.scalePct / 100;
+                pic.width = Math.max(1, Math.round((pic.width || 0) * scale));
+                pic.height = Math.max(1, Math.round((pic.height || 0) * scale));
+            }
+            await context.sync();
+            return;
+        }
+        case 'altText':
+            if (op.text !== undefined) pic.altTextDescription = op.text;
+            if (op.title !== undefined) pic.altTextTitle = op.title;
+            await context.sync();
+            return;
+        case 'align': {
+            const target = IMAGE_ALIGNMENT_MAP[op.alignment];
+            if (!target) {
+                warnings.push(`align: unknown alignment "${op.alignment}"`);
+                return;
+            }
+            if (!pic.paragraph) {
+                warnings.push(`align: image ${op.index} has no paragraph anchor — skipped.`);
+                return;
+            }
+            pic.paragraph.alignment = target;
+            await context.sync();
+            return;
+        }
+        case 'link': {
+            // Word accepts a string URL; null/empty clears the hyperlink.
+            try {
+                pic.hyperlink = op.url === null ? null : op.url;
+                await context.sync();
+            } catch (linkErr) {
+                // Some hosts reject null assignments — fall back to empty string.
+                if (op.url === null) {
+                    pic.hyperlink = '';
+                    await context.sync();
+                } else {
+                    throw linkErr;
+                }
+            }
+            return;
+        }
+        case 'replace': {
+            const { base64 } = await svgToPngBase64(op.svg);
+            const range = pic.getRange(Word.RangeLocation.start);
+            const newPic = range.insertInlinePictureFromBase64(base64, Word.InsertLocation.before);
+            newPic.load('width,height');
+            pic.delete();
+            await context.sync();
+            return;
+        }
+        default:
+            throw new Error(`Unknown image op type "${op.type}".`);
+    }
 }

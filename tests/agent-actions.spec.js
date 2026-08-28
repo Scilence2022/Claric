@@ -79,12 +79,26 @@ function makeDeps() {
 
 /** Word.run mock whose body lists the given picture proxies. */
 function setImageWorld(pictures) {
-    const items = pictures.map((over) => ({
-        width: 300, height: 200, altTextDescription: '',
-        load: jest.fn(), delete: jest.fn(),
-        getRange: jest.fn(() => ({ insertInlinePictureFromBase64: jest.fn(() => ({ load: jest.fn() })) })),
-        ...over,
-    }));
+    const items = pictures.map((over) => {
+        const paragraph = {
+            alignment: 'Left',
+            // Expose paragraph.alignment as a real property so assignments stick.
+        };
+        Object.defineProperty(paragraph, 'alignment', {
+            get: () => paragraph._alignment,
+            set: (v) => { paragraph._alignment = v; },
+            configurable: true,
+        });
+        paragraph._alignment = over.alignment || 'Left';
+        return {
+            width: 300, height: 200, altTextDescription: '', altTextTitle: '',
+            hyperlink: '', lockAspectRatio: true,
+            paragraph,
+            load: jest.fn(), delete: jest.fn(),
+            getRange: jest.fn(() => ({ insertInlinePictureFromBase64: jest.fn(() => ({ load: jest.fn() })) })),
+            ...over,
+        };
+    });
     global.Word = {
         run: jest.fn(async (cb) => cb({
             document: { body: { inlinePictures: { items, load: jest.fn() } } },
@@ -416,6 +430,77 @@ describe('applyImageOps', () => {
     test('empty ops reject', async () => {
         await expect(applyImageOps(makeDeps(), { ops: [] }))
             .rejects.toThrow(/No image operations/);
+    });
+
+    test('resize by height keeps the width (unlocked)', async () => {
+        const [pic] = setImageWorld([{ lockAspectRatio: false, width: 300, height: 200 }]);
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'resize', index: 1, heightPt: 400, lockAspectRatio: false }],
+        });
+        expect(pic.height).toBe(400);
+        expect(pic.width).toBe(600);
+    });
+
+    test('resize by scale computes both axes from the current size', async () => {
+        const [pic] = setImageWorld([{ width: 200, height: 100 }]);
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'resize', index: 1, scalePct: 150 }],
+        });
+        expect(pic.width).toBe(300);
+        expect(pic.height).toBe(150);
+    });
+
+    test('altText sets both title and description independently', async () => {
+        const [pic] = setImageWorld([{ altTextDescription: 'old' }]);
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'altText', index: 1, title: 'Revenue chart', text: 'Q3 numbers' }],
+        });
+        expect(pic.altTextTitle).toBe('Revenue chart');
+        expect(pic.altTextDescription).toBe('Q3 numbers');
+    });
+
+    test('align_image sets the picture paragraph alignment (Word string value)', async () => {
+        const [pic] = setImageWorld([{ alignment: 'Left' }]);
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'align', index: 1, alignment: 'centered' }],
+        });
+        expect(pic.paragraph._alignment).toBe('Centered');
+        expect(result.applied).toBe(1);
+        expect(result.warnings).toEqual([]);
+    });
+
+    test('set_image_link assigns the URL or null to clear', async () => {
+        const [pic] = setImageWorld([{ hyperlink: 'https://old.example' }]);
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'link', index: 1, url: 'https://new.example/report' }],
+        });
+        expect(pic.hyperlink).toBe('https://new.example/report');
+
+        const [pic2] = setImageWorld([{ hyperlink: 'https://existing' }]);
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'link', index: 1, url: null }],
+        });
+        expect([null, ''].includes(pic2.hyperlink)).toBe(true);
+    });
+
+    test('a failing image op warns and later ops still apply', async () => {
+        // First picture has no paragraph anchor — the align op pushes a warning.
+        setImageWorld([{ paragraph: null }, {}]);
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 2,
+            ops: [
+                { type: 'align', index: 1, alignment: 'centered' },
+                { type: 'delete', index: 2 },
+            ],
+        });
+        expect(result.applied).toBe(2);
+        expect(result.warnings.some((w) => /no paragraph anchor/.test(w))).toBe(true);
     });
 });
 
