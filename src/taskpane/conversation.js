@@ -134,7 +134,7 @@ export function looksLikeIllustrationIntent(text) {
  * streaming UX is better); management and multi-image work need the
  * multi-step tool loop. Design verbs alone do not match.
  */
-const IMAGE_TOOL_INTENT_RE = /(删除|移除|去掉|替换|更换|重设|缩放|调整).{0,8}(图片|图像|插图|配图|插画)|(图片|图像|插图|配图|插画).{0,6}(删除|移除|去掉|替换|更换|太小|太大|大小|尺寸)|(两|三|四|五|几|多)张.{0,4}(插图|配图|插画|图片)|\b(delete|remove|replace|resize|relabel)\b.{0,20}\b(images?|pictures?|illustrations?)|\bset\b.{0,10}\balt\b/i;
+const IMAGE_TOOL_INTENT_RE = /(删除|移除|去掉|替换|更换|重设|缩放|调整|居中|对齐|链接|超链接|比例|标题).{0,8}(图片|图像|插图|配图|插画)|(图片|图像|插图|配图|插画).{0,6}(删除|移除|去掉|替换|更换|太小|太大|大小|尺寸|居中|对齐|链接|超链接|标题|缩放|调整)|(两|三|四|五|几|多)张.{0,4}(插图|配图|插画|图片)|\b(delete|remove|replace|resize|relabel|center|align|link|hyperlink|scal)\w*\b.{0,20}\b(images?|pictures?|illustrations?)|\bset\b.{0,10}\balt\b/i;
 
 /**
  * True when free text asks for image management or multi-image design.
