@@ -296,7 +296,10 @@ function _alignParagraphs(origParas, newParas) {
  * @param {Word.Range} range - The bookmarked chunk range
  * @param {string} amendedText - The LLM's amended text (newline-delimited paragraphs)
  * @param {boolean} trackChangesEnabled - Whether to enable tracked changes
- * @param {boolean} lineDiffEnabled - Whether to use sentence-diff vs token-map for fallback
+ * @param {boolean} lineDiffEnabled - When true, per-paragraph edits use the
+ *   sentence-diff strategy (Settings: Force Line Diff / Sentence Mode) and
+ *   the range-level fallback does too; the default uses token-map for
+ *   spaced scripts and char-diff for CJK
  * @param {function} log - Logging callback
  * @returns {Promise<boolean>} True when changes were written; false when the
  *   amended text matched the original (nothing to do)
@@ -407,11 +410,16 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         // This preserves run-level formatting (w:rPr) while applying tracked changes.
         // CJK text has no word boundaries for the token map (a whole sentence
         // becomes one token), so it uses the char-level strategy instead.
+        // The Settings toggle (Force Line Diff / Sentence Mode) forces the
+        // sentence-level strategy — the same ordering as the selection-scope
+        // apply path.
         // The outer scope already owns the tracking mode (set above, restored
         // below), so the strategy must not clobber it mid-loop.
         try {
           const diffOptions = { trackChanges: false };
-          if (hasCjk(paraRange.text) || hasCjk(newText)) {
+          if (lineDiffEnabled) {
+            await applySentenceDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
+          } else if (hasCjk(paraRange.text) || hasCjk(newText)) {
             await applyCharDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
           } else {
             await applyTokenMapStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);

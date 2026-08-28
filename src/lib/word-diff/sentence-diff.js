@@ -32,7 +32,7 @@ import { applyBlockReplaceStrategy } from './block-replace.js';
  * @param {string} text
  * @returns {string[]} Sentences in document order (deduped nowhere)
  */
-function tokenizeToSentences(text) {
+export function tokenizeToSentences(text) {
     const sentences = [];
     let remaining = text;
 
@@ -160,19 +160,36 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
         // 2. Build Sentence Map (Index -> Range)
         const sentenceMap = sentenceRanges.items.map((r, index) => ({ index, range: r, text: r.text }));
 
-        // Pass 1: Deletions
+        // Pass 1 (compute only): Deletions. A diff chunk can carry MULTIPLE
+        // consecutive sentences (diff_charsToLines decodes one op back to the
+        // concatenated sentences), so the walk advances by the chunk's
+        // sentence count, not by one per op.
+        const countSentences = (chunk) => (chunk ? tokenizeToSentences(chunk).length : 0);
         let sentenceIndex = 0;
         const deleteTargets = [];
 
-        for (const [op, _chunk] of diffs) {
+        for (const [op, chunk] of diffs) {
             if (op === 0) { // EQUAL
-                sentenceIndex++;
+                sentenceIndex += countSentences(chunk);
             } else if (op === -1) { // DELETE
-                if (sentenceIndex < sentenceMap.length) {
+                for (let k = 0; k < countSentences(chunk) && sentenceIndex < sentenceMap.length; k++) {
                     deleteTargets.push(sentenceMap[sentenceIndex]);
                     sentenceIndex++;
                 }
             }
+        }
+
+        // Degenerate layouts collapse to a whole-range block replace. With a
+        // single "sentence" — no '. ' boundaries, i.e. CJK text — or when
+        // EVERY sentence is deleted, the two-pass dance has no stable anchor
+        // for the insertions: they land before the tracked-deleted range
+        // start, where hosts absorb them into the deletion revision (the
+        // user sees no changes). Block replace's delete + insert-after is the
+        // proven whole-range revision pattern.
+        if (sentenceMap.length <= 1 || deleteTargets.length === sentenceMap.length) {
+            log(`Sentence diff is degenerate (${sentenceMap.length} sentence(s), ` +
+                `${deleteTargets.length} deleted) — using block replace`, 'info');
+            return applyBlockReplaceStrategy(context, range, text2, log, options);
         }
 
         if (deleteTargets.length > 0) {
@@ -191,10 +208,12 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
         let lastAnchorRange = null;
 
         for (const [op, chunk] of diffs) {
-            if (op === 0) { // EQUAL
-                if (currentSentenceIdx < sentencesAfterDeletes.length) {
-                    lastAnchorRange = sentencesAfterDeletes[currentSentenceIdx].range;
-                    currentSentenceIdx++;
+            if (op === 0) { // EQUAL — advance the anchor per contained sentence
+                for (let k = 0; k < countSentences(chunk); k++) {
+                    if (currentSentenceIdx < sentencesAfterDeletes.length) {
+                        lastAnchorRange = sentencesAfterDeletes[currentSentenceIdx].range;
+                        currentSentenceIdx++;
+                    }
                 }
             } else if (op === 1) { // INSERT
                 if (lastAnchorRange) {
