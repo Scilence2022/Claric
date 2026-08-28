@@ -348,6 +348,62 @@ describe('applyChunkResults', () => {
     expect(applyTokenMapStrategy).not.toHaveBeenCalled();
   });
 
+  test('paragraph-level keep branch honors the toggle (per-paragraph sentence mode)', async () => {
+    // A bookmark range that supports the paragraph-level path (.paragraphs),
+    // so the keep branch — not the range-level fallback — runs.
+    const paraItem = {
+      text: 'Original clause text here',
+      parentTableOrNullObject: { isNullObject: true, load: jest.fn() },
+      load: jest.fn(),
+      getRange: jest.fn().mockImplementation((position) => ({
+        text: 'Original clause text here',
+        isNullObject: false,
+        load: jest.fn(),
+        insertText: jest.fn(),
+      })),
+    };
+    const bookmarkRange = {
+      text: 'Original clause text here',
+      isNullObject: false,
+      load: jest.fn(),
+      paragraphs: { items: [paraItem], load: jest.fn() },
+    };
+    const mock = createMockWordRun([], {});
+    mock.mockContext.document.getBookmarkRangeOrNullObject
+      .mockImplementation(() => bookmarkRange);
+    global.Word.run = mock.wordRun;
+
+    const chunk = mockChunk('chunk-0', 0, 'Original clause text here', 0, 0);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', { amendment: 'Revised clause text', chunk }),
+    ];
+
+    await applyChunkResults(results, new Map([['chunk-0', '_wdpbm0']]), {
+      trackChangesEnabled: true,
+      lineDiffEnabled: true,
+      log: jest.fn(),
+    });
+
+    expect(applySentenceDiffStrategy).toHaveBeenCalledTimes(1);
+    const args = applySentenceDiffStrategy.mock.calls[0];
+    expect(args[2]).toBe('Original clause text here');
+    expect(args[3]).toBe('Revised clause text');
+    // trackChanges:false — the paragraph loop owns the tracking mode.
+    expect(args[5]).toEqual({ trackChanges: false });
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+
+    // Toggle OFF takes the token-map branch for the same keep edit.
+    applySentenceDiffStrategy.mockClear();
+    applyTokenMapStrategy.mockClear();
+    await applyChunkResults(results, new Map([['chunk-0', '_wdpbm0']]), {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+    expect(applySentenceDiffStrategy).not.toHaveBeenCalled();
+  });
+
   test('skips chunks with status="rejected"', async () => {
     const paragraphs = [
       { text: 'Para 0' }, { text: 'Para 1' },
