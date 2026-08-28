@@ -811,3 +811,322 @@ describe('applySelectionAmendment (mixed table route)', () => {
     expect(logged).toMatch(/No differences found/);
   });
 });
+
+// --- Table style ops (read snapshot + apply phases) ---
+
+/**
+ * Word.run mock for style-op apply: records property writes via calls, with
+ * Table/TableRow border objects, row fonts, and layout method spies.
+ */
+function makeStyleApplyContext() {
+  const calls = [];
+  // Border records: plain objects handed out by getBorder(); assertions read
+  // their type/color/width after apply.
+  const tableBorders = {};
+  const rowBorders = {};
+
+  const rows = {};
+  const cells = {};
+  for (let r = 0; r < 3; r++) {
+    rows[r] = {
+      font: { bold: null, italic: null, size: null, name: null, color: null },
+      shadingColor: null,
+      horizontalAlignment: null,
+      verticalAlignment: null,
+      getBorder: jest.fn((loc) => {
+        if (!rowBorders[`${r}:${loc}`]) rowBorders[`${r}:${loc}`] = { type: null, color: null, width: null };
+        return rowBorders[`${r}:${loc}`];
+      }),
+      delete: jest.fn(() => calls.push(`delete:${r + 1}`)),
+      load: jest.fn(),
+    };
+    for (let c = 0; c < 2; c++) {
+      cells[`${r},${c}`] = {
+        shadingColor: null,
+        horizontalAlignment: null,
+        verticalAlignment: null,
+        columnWidth: null,
+        body: { paragraphs: { items: [], load: jest.fn() } },
+        parentRow: rows[r],
+        load: jest.fn(),
+      };
+    }
+  }
+
+  const table = {
+    isNullObject: false,
+    rowCount: 3,
+    values: TABLE_VALUES,
+    isUniform: true,
+    load: jest.fn(),
+    getCell: jest.fn((r, c) => cells[`${r},${c}`]),
+    styleBuiltIn: null,
+    style: null,
+    styleBandedRows: null,
+    styleBandedColumns: null,
+    styleFirstColumn: null,
+    styleLastColumn: null,
+    styleTotalRow: null,
+    alignment: null,
+    horizontalAlignment: null,
+    verticalAlignment: null,
+    shadingColor: null,
+    headerRowCount: 0,
+    width: null,
+    font: { bold: null, italic: null, size: null, name: null, color: null },
+    getBorder: jest.fn((loc) => {
+      if (!tableBorders[loc]) tableBorders[loc] = { type: null, color: null, width: null };
+      return tableBorders[loc];
+    }),
+    autoFitWindow: jest.fn(() => calls.push('autoFitWindow')),
+    distributeColumns: jest.fn(() => calls.push('distributeColumns')),
+    setCellPadding: jest.fn((side, pt) => calls.push(`padding:${side}:${pt}`)),
+  };
+  const selection = { parentTableOrNullObject: table };
+  const context = {
+    document: { getSelection: () => selection },
+    sync: jest.fn().mockResolvedValue(undefined),
+  };
+  let mode = null;
+  const trackingModes = [];
+  Object.defineProperty(context.document, 'changeTrackingMode', {
+    get: () => mode,
+    set: (v) => { mode = v; trackingModes.push(v); },
+  });
+  return { context, calls, trackingModes, table, rows, cells, tableBorders, rowBorders };
+}
+
+function setWordRunWithEnums(context) {
+  global.Word = {
+    run: jest.fn((cb) => cb(context)),
+    RangeLocation: { start: 'Start', end: 'End', content: 'Content' },
+    InsertLocation: { replace: 'Replace', after: 'After', before: 'Before' },
+    ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' },
+    Alignment: { left: 'Left', centered: 'Centered', right: 'Right', justified: 'Justified' },
+    VerticalAlignment: { top: 'Top', center: 'Center', bottom: 'Bottom' },
+    BorderType: { none: 'None', single: 'Single', double: 'Double' },
+    BorderLocation: {
+      top: 'Top', bottom: 'Bottom', left: 'Left', right: 'Right',
+      insideHorizontal: 'InsideHorizontal', insideVertical: 'InsideVertical',
+    },
+    BuiltInStyleName: { tableGrid: 'TableGrid', gridTable4_Accent1: 'GridTable4_Accent1' },
+    UnderlineType: { none: 'None', single: 'Single', double: 'Double' },
+  };
+}
+
+describe('readSelectionTableRegion (style snapshot)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('captures the current table style when the host exposes it', async () => {
+    const context = makePrepareContext();
+    const table = context.document.getSelection().parentTableOrNullObject;
+    Object.assign(table, {
+      styleBuiltIn: 'TableGrid',
+      alignment: 'Left',
+      headerRowCount: 1,
+      styleBandedRows: true,
+      shadingColor: null,
+      font: { load: jest.fn(), bold: false, name: 'Calibri', size: 11, color: '#000000' },
+      getBorder: jest.fn((loc) => ({ load: jest.fn(), type: 'Single', color: 'auto', width: 0.5 })),
+    });
+    setWordRun(context);
+
+    const region = await readSelectionTableRegion(makeDeps());
+    expect(region.style).toMatchObject({
+      styleBuiltIn: 'TableGrid',
+      alignment: 'Left',
+      headerRowCount: 1,
+      bandedRows: true,
+      font: { bold: false, name: 'Calibri', size: 11 },
+    });
+    expect(region.style.borders.top).toEqual({ type: 'Single', color: 'auto', width: 0.5 });
+  });
+
+  test('degrades to a null snapshot when the style read fails', async () => {
+    const context = makePrepareContext();
+    const table = context.document.getSelection().parentTableOrNullObject;
+    table.getBorder = jest.fn(() => { throw new Error('no borders here'); });
+    setWordRun(context);
+
+    const region = await readSelectionTableRegion(makeDeps());
+    expect(region).not.toBeNull();
+    expect(region.style).toBeNull();
+  });
+});
+
+describe('applySelectionAmendment (style ops)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function styleProposal(styleOps, extra = {}) {
+    return {
+      selectionText: 'x',
+      amendedText: null,
+      commentText: null,
+      tablePatch: {
+        rowCount: 3,
+        colCount: 2,
+        cells: [],
+        rowOps: [],
+        merges: [],
+        styleOps,
+        bounds: { startRow: 1, endRow: 3, startCol: 1, endCol: 2 },
+        originals: TABLE_VALUES,
+        ...extra,
+      },
+      tableItems: [],
+    };
+  }
+
+  test('three-line table: table borders + header-row bottom border', async () => {
+    const mock = makeStyleApplyContext();
+    setWordRunWithEnums(mock.context);
+    const result = await applySelectionAmendment(makeDeps('PC'), styleProposal([
+      { type: 'borders', borders: {
+        top: { type: 'single', width: 1.5 },
+        bottom: { type: 'single', width: 1.5 },
+        insideH: { type: 'none' }, insideV: { type: 'none' },
+      } },
+      { type: 'borders', row: 1, borders: { bottom: { type: 'single', width: 0.75 } } },
+    ]));
+
+    expect(result.styleOpsApplied).toBe(2);
+    expect(mock.tableBorders.Top).toEqual({ type: 'Single', color: null, width: 1.5 });
+    expect(mock.tableBorders.Bottom).toEqual({ type: 'Single', color: null, width: 1.5 });
+    expect(mock.tableBorders.InsideHorizontal).toEqual({ type: 'None', color: null, width: null });
+    expect(mock.rowBorders['0:Bottom']).toEqual({ type: 'Single', color: null, width: 0.75 });
+    expect(result.warnings).toEqual([]);
+  });
+
+  test('table style + banding flags map onto styleBuiltIn', async () => {
+    const mock = makeStyleApplyContext();
+    setWordRunWithEnums(mock.context);
+    await applySelectionAmendment(makeDeps('PC'), styleProposal([
+      { type: 'tableStyle', style: 'GridTable4_Accent1', bandedRows: true, firstColumn: false },
+    ]));
+
+    expect(mock.table.styleBuiltIn).toBe('GridTable4_Accent1');
+    expect(mock.table.styleBandedRows).toBe(true);
+    expect(mock.table.styleFirstColumn).toBe(false);
+  });
+
+  test('header row sets headerRowCount and styles the header rows', async () => {
+    const mock = makeStyleApplyContext();
+    setWordRunWithEnums(mock.context);
+    await applySelectionAmendment(makeDeps('PC'), styleProposal([
+      { type: 'headerRow', rows: 1, font: { bold: true }, shadingColor: '#DEEBF7' },
+    ]));
+
+    expect(mock.table.headerRowCount).toBe(1);
+    expect(mock.rows[0].font.bold).toBe(true);
+    expect(mock.rows[0].shadingColor).toBe('#DEEBF7');
+    expect(mock.rows[1].font.bold).toBeNull();
+  });
+
+  test('region font runs BEFORE row structure ops (original coordinates)', async () => {
+    const mock = makeStyleApplyContext();
+    // Track row-2 font access order against the row delete.
+    const order = [];
+    const originalRow = mock.rows[1];
+    Object.defineProperty(originalRow.font, 'bold', {
+      get: () => null,
+      set: (v) => { order.push(`fontRow2:${v}`); },
+    });
+    originalRow.delete.mockImplementation(() => order.push('deleteRow2'));
+    setWordRunWithEnums(mock.context);
+
+    await applySelectionAmendment(makeDeps('PC'), styleProposal(
+      [{ type: 'font', region: { startRow: 2, endRow: 2, startCol: 1, endCol: 2 }, font: { bold: true } }],
+      { rowOps: [{ op: 'delete', row: 2 }] },
+    ));
+
+    expect(order).toEqual(['fontRow2:true', 'deleteRow2']);
+  });
+
+  test('full-width cellFormat writes row properties; partial-width writes cells', async () => {
+    const mock = makeStyleApplyContext();
+    setWordRunWithEnums(mock.context);
+    await applySelectionAmendment(makeDeps('PC'), styleProposal([
+      { type: 'cellFormat', region: { startRow: 2, endRow: 3, startCol: 1, endCol: 2 }, shadingColor: 'red', horizontalAlignment: 'centered' },
+      { type: 'cellFormat', region: { startRow: 1, endRow: 2, startCol: 2, endCol: 2 }, verticalAlignment: 'center' },
+    ]));
+
+    // Full-width → row writes (one per row), no cell shading.
+    expect(mock.rows[1].shadingColor).toBe('red');
+    expect(mock.rows[2].shadingColor).toBe('red');
+    expect(mock.rows[1].horizontalAlignment).toBe('Centered');
+    expect(mock.cells['0,0'].shadingColor).toBeNull();
+    // Partial width → per-cell writes inside the band only.
+    expect(mock.cells['0,1'].verticalAlignment).toBe('Center');
+    expect(mock.cells['1,1'].verticalAlignment).toBe('Center');
+    expect(mock.cells['2,1'].verticalAlignment).toBeNull();
+    expect(mock.rows[0].verticalAlignment).toBeNull();
+  });
+
+  test('whole-table cellFormat/font map onto table properties', async () => {
+    const mock = makeStyleApplyContext();
+    setWordRunWithEnums(mock.context);
+    await applySelectionAmendment(makeDeps('PC'), styleProposal([
+      { type: 'cellFormat', region: null, shadingColor: '#F3F3F3', verticalAlignment: 'center' },
+      { type: 'font', region: null, font: { bold: true, size: 12 } },
+    ]));
+
+    expect(mock.table.shadingColor).toBe('#F3F3F3');
+    expect(mock.table.verticalAlignment).toBe('Center');
+    expect(mock.table.font.bold).toBe(true);
+    expect(mock.table.font.size).toBe(12);
+  });
+
+  test('layout op drives alignment, width, autofit, and cell padding', async () => {
+    const mock = makeStyleApplyContext();
+    setWordRunWithEnums(mock.context);
+    await applySelectionAmendment(makeDeps('PC'), styleProposal([
+      { type: 'layout', alignment: 'centered', widthPt: 450, autoFitWindow: true, cellPaddingPt: 5 },
+    ]));
+
+    expect(mock.table.alignment).toBe('Centered');
+    expect(mock.table.width).toBe(450);
+    expect(mock.table.autoFitWindow).toHaveBeenCalled();
+    expect(mock.calls).toContain('padding:Top:5');
+    expect(mock.calls).toContain('padding:Left:5');
+    expect(mock.calls).toContain('padding:Bottom:5');
+    expect(mock.calls).toContain('padding:Right:5');
+  });
+
+  test('column widths write the first-row cells', async () => {
+    const mock = makeStyleApplyContext();
+    setWordRunWithEnums(mock.context);
+    await applySelectionAmendment(makeDeps('PC'), styleProposal([
+      { type: 'columnWidths', widthsPt: [120, 80] },
+    ]));
+
+    expect(mock.cells['0,0'].columnWidth).toBe(120);
+    expect(mock.cells['0,1'].columnWidth).toBe(80);
+  });
+
+  test('a failing style op warns and later ops still apply', async () => {
+    const mock = makeStyleApplyContext();
+    mock.table.getBorder = jest.fn(() => { throw new Error('border API gone'); });
+    setWordRunWithEnums(mock.context);
+    const deps = makeDeps('PC');
+    const result = await applySelectionAmendment(deps, styleProposal([
+      { type: 'borders', borders: { all: 'single' } },
+      { type: 'tableStyle', style: 'TableGrid' },
+    ]));
+
+    expect(result.styleOpsApplied).toBe(1);
+    expect(result.warnings).toHaveLength(1);
+    expect(mock.table.styleBuiltIn).toBe('TableGrid');
+    const logged = deps.log.mock.calls.map((c) => `${c[1]}:${c[0]}`).join('\n');
+    expect(logged).toMatch(/warning:Style op \(borders\) failed/);
+  });
+
+  test('unknown style op type is skipped with a warning', async () => {
+    const mock = makeStyleApplyContext();
+    setWordRunWithEnums(mock.context);
+    const result = await applySelectionAmendment(makeDeps('PC'), styleProposal([
+      { type: 'sparkle', magic: true },
+    ]));
+    expect(result.styleOpsApplied).toBe(0);
+    expect(result.warnings[0]).toMatch(/Unknown style op type/);
+  });
+});

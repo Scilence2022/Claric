@@ -143,6 +143,8 @@ describe('executeTableTool', () => {
     test('TABLE_TOOL_SPECS are registry-valid', () => {
         expect(TABLE_TOOL_SPECS.map((t) => t.name)).toEqual([
             'get_state', 'set_cell', 'insert_row', 'delete_row', 'merge_cells',
+            'set_table_style', 'set_borders', 'set_cell_format', 'set_font',
+            'set_header_row', 'set_layout', 'set_column_widths',
         ]);
     });
 
@@ -199,5 +201,170 @@ describe('executeTableTool', () => {
         const out = executeTableTool(model, 'merge_cells', { row: 1, col: 1, rows: 2, cols: 1 });
         expect(out.ok).toBe(true);
         expect(model.opCount).toBe(1);
+    });
+});
+
+describe('table style tools', () => {
+    test('get_state reports the style snapshot and pending style ops', () => {
+        const model = createTableModel({
+            ...REGION,
+            style: {
+                styleBuiltIn: 'TableGrid', headerRowCount: 1, alignment: 'Left',
+                horizontalAlignment: 'Left', verticalAlignment: 'Top', shadingColor: null,
+                font: { name: 'Calibri', size: 11, bold: false },
+                borders: { top: { type: 'single', width: 0.5 }, insideH: { type: 'none' } },
+            },
+        });
+        expect(model.setTableStyle({ style: 'grid table 4 accent 1', bandedRows: true }).ok).toBe(true);
+        const { result } = model.getState();
+        expect(result.style).toContain('TableGrid');
+        expect(result.style).toContain('header rows: 1');
+        expect(result.style).toContain('top=single 0.5pt');
+        expect(result.style).toContain('insideH=none');
+        expect(result.pendingOps).toContainEqual({
+            type: 'tableStyle', tool: 'set_table_style',
+            style: 'GridTable4_Accent1', bandedRows: true,
+        });
+
+        // No snapshot → honest "unavailable" line.
+        const bare = createTableModel(REGION).getState().result;
+        expect(bare.style).toMatch(/snapshot unavailable/);
+    });
+
+    test('set_table_style canonicalizes names and rejects unknown ones', () => {
+        const model = createTableModel(REGION);
+        expect(model.setTableStyle({ style: 'plain table 3' }).result.staged).toContain('PlainTable3');
+        expect(model.setTableStyle({ bandedRows: false }).ok).toBe(true);
+        expect(model.setTableStyle({ style: 'FancyTable' }).error).toMatch(/Unknown built-in table style/);
+        expect(model.setTableStyle({ bandedRows: 'yes' }).error).toMatch(/true or false/);
+        expect(model.setTableStyle({}).error).toMatch(/at least one/);
+    });
+
+    test('set_borders expands aliases and validates row targeting', () => {
+        const model = createTableModel(REGION);
+        const out = model.setBorders({ borders: { top: { type: 'single', width: 1.5 }, inside: 'none' } });
+        expect(out.ok).toBe(true);
+        const patch = model.toTablePatch();
+        expect(patch.styleOps[0].borders).toMatchObject({
+            top: { type: 'single', width: 1.5 },
+            insideH: { type: 'none' },
+            insideV: { type: 'none' },
+        });
+
+        expect(model.setBorders({ row: 1, borders: { bottom: 'single' } }).result.staged)
+            .toContain('row 1');
+        expect(model.setBorders({ row: 9, borders: { top: 'single' } }).error).toMatch(/out of bounds/);
+        expect(model.setBorders({ borders: {} }).error).toMatch(/no border locations/);
+
+        const deleted = createTableModel(REGION);
+        deleted.deleteRow(2);
+        expect(deleted.setBorders({ row: 2, borders: { top: 'single' } }).error).toMatch(/pending delete/);
+    });
+
+    test('set_cell_format targets cells, bands, blocks, and the whole table', () => {
+        const model = createTableModel(REGION);
+        expect(model.setCellFormat({ row: 1, shadingColor: 'light blue' }).ok).toBe(true);
+        expect(model.setCellFormat({ row: 2, horizontalAlignment: 'middle' }).ok).toBe(true);
+        expect(model.setCellFormat({ col: 1, verticalAlignment: 'bottom' }).ok).toBe(true);
+        expect(model.setCellFormat({ row: 2, col: 2, rows: 2, cols: 1, shadingColor: 'auto' }).ok).toBe(true);
+        expect(model.setCellFormat({ shadingColor: '#FFFFFF', horizontalAlignment: 'right' }).ok).toBe(true);
+
+        const styleOps = model.toTablePatch().styleOps;
+        expect(styleOps[0]).toMatchObject({ type: 'cellFormat', region: { startRow: 1, endRow: 1, startCol: 1, endCol: 2 }, shadingColor: '#ADD8E6' });
+        expect(styleOps[1].horizontalAlignment).toBe('centered');
+        expect(styleOps[4].region).toBeNull();
+
+        expect(model.setCellFormat({ row: 1, shadingColor: 'zebra' }).error).toMatch(/Invalid shadingColor/);
+        expect(model.setCellFormat({ row: 1, horizontalAlignment: 'diagonal' }).error).toMatch(/horizontalAlignment/);
+        expect(model.setCellFormat({ row: 1 }).error).toMatch(/at least one/);
+    });
+
+    test('set_cell_format / set_font reject pending-delete rows', () => {
+        const model = createTableModel(REGION);
+        model.deleteRow(2);
+        expect(model.setCellFormat({ row: 2, shadingColor: 'red' }).error).toMatch(/pending delete/);
+        expect(model.setFont({ row: 2, font: { bold: true } }).error).toMatch(/pending delete/);
+        // Whole-table stays allowed (it maps to table-level properties).
+        expect(model.setCellFormat({ shadingColor: 'red' }).ok).toBe(true);
+    });
+
+    test('set_font validates payload and whole-table targeting', () => {
+        const model = createTableModel(REGION);
+        expect(model.setFont({ row: 1, font: { bold: true, size: 11 } }).ok).toBe(true);
+        expect(model.setFont({ font: { name: 'SimSun', color: 'black' } }).ok).toBe(true);
+        const styleOps = model.toTablePatch().styleOps;
+        expect(styleOps[0]).toMatchObject({ type: 'font', font: { bold: true, size: 11 } });
+        expect(styleOps[1].region).toBeNull();
+
+        expect(model.setFont({ row: 1, font: { bold: 'yes' } }).error).toMatch(/true or false/);
+        expect(model.setFont({ row: 1, font: {} }).error).toMatch(/no supported keys/);
+        expect(model.setFont({ row: 9, font: { bold: true } }).error).toMatch(/outside the covered region/);
+    });
+
+    test('set_header_row requires the region to include row 1 and validates rows', () => {
+        const model = createTableModel(REGION);
+        const out = model.setHeaderRow({ font: { bold: true }, shadingColor: '#DEEBF7' });
+        expect(out.ok).toBe(true);
+        expect(model.toTablePatch().styleOps[0]).toEqual({
+            type: 'headerRow', tool: 'set_header_row', rows: 1,
+            font: { bold: true }, shadingColor: '#DEEBF7',
+        });
+        expect(model.setHeaderRow({ rows: 4 }).error).toMatch(/1–3/);
+        expect(model.setHeaderRow({ shadingColor: 'mud' }).error).toMatch(/Invalid shadingColor/);
+
+        const partial = createTableModel({ ...REGION, bounds: { startRow: 2, endRow: 3, startCol: 1, endCol: 2 } });
+        expect(partial.setHeaderRow({}).error).toMatch(/must include row 1/);
+
+        const deleted = createTableModel(REGION);
+        deleted.deleteRow(1);
+        expect(deleted.setHeaderRow({}).error).toMatch(/pending delete/);
+    });
+
+    test('set_layout validates each field', () => {
+        const model = createTableModel(REGION);
+        expect(model.setLayout({ alignment: 'center', autoFitWindow: true }).ok).toBe(true);
+        expect(model.setLayout({ cellPaddingPt: 5.25, widthPt: 450 }).ok).toBe(true);
+        expect(model.toTablePatch().styleOps[0]).toMatchObject({ alignment: 'centered', autoFitWindow: true });
+
+        expect(model.setLayout({ alignment: 'justify' }).error).toMatch(/alignment/);
+        expect(model.setLayout({ widthPt: 3 }).error).toMatch(/widthPt/);
+        expect(model.setLayout({ cellPaddingPt: 500 }).error).toMatch(/cellPaddingPt/);
+        expect(model.setLayout({ autoFitWindow: 'yes' }).error).toMatch(/true or false/);
+        expect(model.setLayout({}).error).toMatch(/at least one/);
+    });
+
+    test('set_column_widths requires uniform tables and exact lengths', () => {
+        const model = createTableModel(REGION);
+        expect(model.setColumnWidths({ widthsPt: [120, 80] }).ok).toBe(true);
+        expect(model.toTablePatch().styleOps[0].widthsPt).toEqual([120, 80]);
+
+        expect(model.setColumnWidths({ widthsPt: [100] }).error).toMatch(/exactly 2/);
+        expect(model.setColumnWidths({ widthsPt: [100, 2] }).error).toMatch(/Every width/);
+
+        const merged = createTableModel({ ...REGION, merged: true, shadowKeys: new Set() });
+        expect(merged.setColumnWidths({ widthsPt: [100, 100] }).error).toMatch(/merged cells/);
+    });
+
+    test('toTablePatch carries styleOps and opCount counts them', () => {
+        const model = createTableModel(REGION);
+        model.setCell(2, 1, 'new a');
+        model.setTableStyle({ style: 'TableGrid' });
+        model.setBorders({ borders: { all: 'single' } });
+        expect(model.opCount).toBe(3);
+        const patch = model.toTablePatch();
+        expect(patch.cells).toHaveLength(1);
+        expect(patch.styleOps).toHaveLength(2);
+    });
+
+    test('executeTableTool dispatches the style tools', () => {
+        const model = createTableModel(REGION);
+        expect(executeTableTool(model, 'set_table_style', { style: 'TableGrid' }).ok).toBe(true);
+        expect(executeTableTool(model, 'set_borders', { borders: { all: 'none' } }).ok).toBe(true);
+        expect(executeTableTool(model, 'set_cell_format', { row: 1, shadingColor: 'red' }).ok).toBe(true);
+        expect(executeTableTool(model, 'set_font', { row: 1, font: { bold: true } }).ok).toBe(true);
+        expect(executeTableTool(model, 'set_header_row', {}).ok).toBe(true);
+        expect(executeTableTool(model, 'set_layout', { alignment: 'centered' }).ok).toBe(true);
+        expect(executeTableTool(model, 'set_column_widths', { widthsPt: [100, 100] }).ok).toBe(true);
+        expect(executeTableTool(model, 'set_style', {}).ok).toBe(false);
     });
 });

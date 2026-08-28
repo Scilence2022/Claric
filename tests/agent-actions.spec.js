@@ -184,6 +184,33 @@ describe('prepareTableToolEdit', () => {
         expect(proposal.tablePatch).toBeUndefined();
         expect(proposal.tableItems).toBeUndefined();
     });
+
+    test('style-only loop stages a real proposal with label-only card items', async () => {
+        readSelectionTableRegion.mockResolvedValue({
+            ...REGION,
+            style: { styleBuiltIn: 'TableGrid', headerRowCount: 0, font: { bold: false } },
+        });
+        sendMessages.mockResolvedValueOnce('{"tool":"set_borders","args":{"borders":{"top":{"type":"single","width":1.5},"bottom":{"type":"single","width":1.5},"inside":"none"}}}')
+            .mockResolvedValueOnce('{"tool":"set_header_row","args":{"rows":1,"font":{"bold":true}}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"three-line table applied"}}');
+
+        const deps = makeDeps();
+        const proposal = await prepareTableToolEdit(deps, { instruction: '改成三线表，表头加粗' });
+
+        expect(proposal.noOps).toBeUndefined();
+        expect(proposal.tablePatch.cells).toEqual([]);
+        expect(proposal.tablePatch.styleOps).toHaveLength(2);
+        // Card items are label-only descriptions (no before/after diff).
+        expect(proposal.tableItems).toHaveLength(2);
+        expect(proposal.tableItems[0].label).toMatch(/^Borders: top single 1\.5pt/);
+        expect(proposal.tableItems[0]).not.toHaveProperty('before');
+        expect(proposal.tableItems[1].label).toBe('Header: 1 header row(s), bold');
+        // The task prompt carries the style snapshot and tool guidance.
+        const taskPrompt = sendMessages.mock.calls[0][1][1].content;
+        expect(taskPrompt).toContain('Current table style:');
+        expect(taskPrompt).toContain('TableGrid');
+        expect(taskPrompt).toContain('set_table_style');
+    });
 });
 
 describe('prepareImageToolEdit', () => {

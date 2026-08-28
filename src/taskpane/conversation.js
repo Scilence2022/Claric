@@ -216,6 +216,14 @@ export function looksLikeTableIntent(text) {
 const FORMAT_INTENT_RE = /样式|格式|加粗|粗体|斜体|下划线|高亮|标红|字体|字号|颜色|居中|对齐|缩进|标题\s*[1-9一二三]?|设为标题|设置为标题|\bbold\b|\bitalic|underline|highlight|font\b|\bcolor\b|\bcenter(ed)?\b|\balign|indent|heading\s*[1-9]|format(ting)?\b/i;
 
 /**
+ * Table-look markers inside a format instruction: with a multi-cell table
+ * selection these divert the turn to the table tool session, whose style
+ * tools (set_table_style / set_borders / set_cell_format / ...) own the
+ * table's look. Without a table selection they are ordinary format intent.
+ */
+const TABLE_STYLE_HINT_RE = /表格|表头|边框|底纹|斑马纹|条纹|列宽|单元格|三线表|隔行|行列|\btable\b|\bborders?\b|\bshading\b|\bcell\b|\bheader row/i;
+
+/**
  * True when free text asks for formatting/styling changes only. Questions
  * stay Q&A even when they mention formatting ("如何修改样式？").
  *
@@ -295,6 +303,28 @@ export function countIntentFamilies(text) {
 }
 
 /**
+ * Filters a tablePatch down to the card-checked items. Checkbox ids run in
+ * card order: cells → rowOps → merges → styleOps.
+ *
+ * @param {object} tablePatch - Proposal's tablePatch
+ * @param {Array<number|string>} selectedIds - Checked item ids
+ * @returns {object} New patch carrying only the picked ops
+ */
+function filterTablePatchBySelection(tablePatch, selectedIds) {
+    const picked = new Set(selectedIds);
+    const cellCount = tablePatch.cells.length;
+    const rowOpCount = tablePatch.rowOps.length;
+    const mergeCount = (tablePatch.merges || []).length;
+    return {
+        ...tablePatch,
+        cells: tablePatch.cells.filter((_, i) => picked.has(i)),
+        rowOps: tablePatch.rowOps.filter((_, j) => picked.has(cellCount + j)),
+        merges: (tablePatch.merges || []).filter((_, k) => picked.has(cellCount + rowOpCount + k)),
+        styleOps: (tablePatch.styleOps || []).filter((_, s) => picked.has(cellCount + rowOpCount + mergeCount + s)),
+    };
+}
+
+/**
  * Routes raw chat input to a turn descriptor. Pure function.
  *
  * @param {string} text - Raw chat input
@@ -355,10 +385,16 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMu
     }
     // Format intent wins over the selection/edit branches too: formatting ops
     // never rewrite text, so they must not enter the text-diff pipelines.
-    // Image-only selections take document scope — format ops target text.
-    // Multi-cell table regions also take document scope — format ops target
-    // paragraphs, not table cells.
+    // A format instruction that names the table's look (边框/底纹/表头/...)
+    // paired with a multi-cell table selection enters the table tool session
+    // instead — its style tools (set_table_style/set_borders/...) own the
+    // table. Image-only selections take document scope — format ops target
+    // text. Other multi-cell table regions also take document scope — format
+    // ops target paragraphs, not table cells.
     if (looksLikeFormatIntent(trimmed)) {
+        if (hasMultiCellTableRegion && TABLE_STYLE_HINT_RE.test(trimmed)) {
+            return { type: TURN_TYPE.TABLE_TOOL, instruction: trimmed };
+        }
         return { type: TURN_TYPE.FORMAT, instruction: trimmed, scope: hasSelection && !hasImageSelection && !hasMultiCellTableRegion ? 'selection' : 'document' };
     }
     // Cleanup intent is document-scope and deterministic: empty paragraphs
@@ -772,22 +808,10 @@ export function createConversation(deps) {
                 onApply: async (selectedIds) => {
                     try {
                         // Table cards list one checkbox per cell patch, then
-                        // one per row op — honor the user's unchecking.
-                        let toApply = proposal;
-                        if (isTable && selectedIds) {
-                            const cellCount = proposal.tablePatch.cells.length;
-                            const rowOpCount = proposal.tablePatch.rowOps.length;
-                            const picked = new Set(selectedIds);
-                            toApply = {
-                                ...proposal,
-                                tablePatch: {
-                                    ...proposal.tablePatch,
-                                    cells: proposal.tablePatch.cells.filter((_, i) => picked.has(i)),
-                                    rowOps: proposal.tablePatch.rowOps.filter((_, j) => picked.has(cellCount + j)),
-                                    merges: (proposal.tablePatch.merges || []).filter((_, k) => picked.has(cellCount + rowOpCount + k)),
-                                },
-                            };
-                        }
+                        // per row op, merge, and style op — honor unchecking.
+                        const toApply = (isTable && selectedIds)
+                            ? { ...proposal, tablePatch: filterTablePatchBySelection(proposal.tablePatch, selectedIds) }
+                            : proposal;
                         await actions.applySelectionAmendment(turnDeps, toApply);
                         card.markApplied();
                     } catch (error) {
@@ -1258,21 +1282,9 @@ export function createConversation(deps) {
                 onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
                 onApply: async (selectedIds) => {
                     try {
-                        let toApply = proposal;
-                        if (selectedIds) {
-                            const cellCount = proposal.tablePatch.cells.length;
-                            const rowOpCount = proposal.tablePatch.rowOps.length;
-                            const picked = new Set(selectedIds);
-                            toApply = {
-                                ...proposal,
-                                tablePatch: {
-                                    ...proposal.tablePatch,
-                                    cells: proposal.tablePatch.cells.filter((_, i) => picked.has(i)),
-                                    rowOps: proposal.tablePatch.rowOps.filter((_, j) => picked.has(cellCount + j)),
-                                    merges: (proposal.tablePatch.merges || []).filter((_, k) => picked.has(cellCount + rowOpCount + k)),
-                                },
-                            };
-                        }
+                        const toApply = selectedIds
+                            ? { ...proposal, tablePatch: filterTablePatchBySelection(proposal.tablePatch, selectedIds) }
+                            : proposal;
                         await actions.applySelectionAmendment(turnDeps, toApply);
                         card.markApplied();
                     } catch (error) {
