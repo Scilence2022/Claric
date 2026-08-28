@@ -24,7 +24,10 @@
  */
 
 /** Pipeline task types the planner may emit (allowlist for parsePlan). */
-const TASK_TYPES = ['insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa'];
+const TASK_TYPES = [
+    'insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa',
+    'image_management', 'table_management',
+];
 
 /** A compound instruction decomposes into at most this many tasks. */
 const MAX_TASKS = 6;
@@ -54,7 +57,13 @@ export function buildPlanPrompt(instruction, hasSelection) {
         '- "table": create a NEW native Word table (with or without generated cell content). Editing the ' +
         'content of an EXISTING table stays on "edit".\n' +
         '- "illustration": design and insert an illustration (SVG artwork).\n' +
-        '- "qa": answer a question in chat (no document change).\n\n' +
+        '- "qa": answer a question in chat (no document change).\n' +
+        '- "image_management": modify IMAGES anywhere in the document — size, alignment, alt text, ' +
+        'hyperlink, delete, replace. Editing the visual CONTENT of an image (designed replacement) stays ' +
+        'on "illustration".\n' +
+        '- "table_management": modify an EXISTING table anywhere in the document — cell text, row ops, ' +
+        'merges, AND visual styling (table style, borders incl. three-line tables, cell shading/alignment, ' +
+        'fonts, header rows, layout, column widths). Creating a NEW table stays on "table".\n\n' +
         'OUTPUT CONTRACT (strict):\n' +
         '- Output ONLY a JSON array. No markdown, no code fences, no explanations, no commentary.\n' +
         '- Each item: { "type": "insert|format|edit|append|table|illustration|qa", "instruction": "self-contained ' +

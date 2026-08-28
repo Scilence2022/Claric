@@ -44,6 +44,8 @@ export const TURN_TYPE = Object.freeze({
     ILLUSTRATION: 'illustration',
     IMAGE_TOOL: 'image-tool',
     TABLE_TOOL: 'table-tool',
+    DOCUMENT_IMAGE_TOOL: 'document-image-tool',
+    DOCUMENT_TABLE_TOOL: 'document-table-tool',
     CLEANUP: 'cleanup',
     COMPOUND: 'compound',
     DOC_QA: 'doc-qa',
@@ -146,6 +148,49 @@ const IMAGE_TOOL_INTENT_RE = /(删除|移除|去掉|替换|更换|重设|缩放|
 export function looksLikeImageToolIntent(text) {
     if (looksLikeQuestion(text)) return false;
     return IMAGE_TOOL_INTENT_RE.test(text);
+}
+
+/**
+ * Document-scope image-management intent markers: the user wants to mutate
+ * images across the whole document. Requires an explicit plural-marker
+ * ("所有/全部/每个/各/全文/整篇/文档" or English "all/every/each") and a
+ * plural-marked noun ("...图片都", "all images"), so a single-image
+ * instruction ("把图片居中", "把图片改成…") still routes to the IMAGE_TOOL
+ * turn via IMAGE_TOOL_INTENT_RE instead of the planner.
+ */
+const DOCUMENT_IMAGE_INTENT_RE = /(所有|全部|每个|各|全文|整篇|文档中|文档里).{0,8}(图片|图像|插图|配图|插画)|(图片|图像|插图|配图|插画).{0,4}(全部|都|一起)|\b(all|every|each)\b.{0,12}\b(images?|pictures?|illustrations?)/i;
+
+/**
+ * Document-scope table-management intent markers: same plural-marker rule
+ * as the image variant — a bare "把表格改成三线表" stays out (it has no
+ * plural marker), keeping single-table/selection routing put.
+ */
+const DOCUMENT_TABLE_INTENT_RE = /(所有|全部|每个|各|全文|整篇|文档中|文档里).{0,8}(表|表格)|(表|表格).{0,4}(全部|都|一起)|\b(all|every|each)\b.{0,12}\btable/i;
+
+/**
+ * True when free text (no selection) targets images across the whole document.
+ * Questions are excluded so Q&A still routes correctly.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeDocumentImageIntent(text) {
+    const trimmed = (text || '').trim();
+    if (looksLikeQuestion(trimmed)) return false;
+    return DOCUMENT_IMAGE_INTENT_RE.test(trimmed);
+}
+
+/**
+ * True when free text (no selection) targets existing tables across the whole
+ * document.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeDocumentTableIntent(text) {
+    const trimmed = (text || '').trim();
+    if (looksLikeQuestion(trimmed)) return false;
+    return DOCUMENT_TABLE_INTENT_RE.test(trimmed);
 }
 
 /**
@@ -356,8 +401,16 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMu
     }
     // Compound instructions hit several intent families at once; the task
     // planner decomposes them into per-pipeline tasks, executed in order.
-    if (allowCompound && countIntentFamilies(trimmed) >= 2) {
-        return { type: TURN_TYPE.COMPOUND, instruction: trimmed };
+    // Document-scope image/table intents ONLY compound when the selection
+    // wouldn't already route to IMAGE_TOOL/TABLE_TOOL directly — otherwise
+    // a single image selection shouldn't trigger a planner call.
+    if (allowCompound) {
+        const families = countIntentFamilies(trimmed);
+        const docCompound = !hasImageSelection && looksLikeDocumentImageIntent(trimmed) ? 1 : 0;
+        const tableDocCompound = !hasMultiCellTableRegion && looksLikeDocumentTableIntent(trimmed) ? 1 : 0;
+        if (families + docCompound + tableDocCompound >= 2) {
+            return { type: TURN_TYPE.COMPOUND, instruction: trimmed };
+        }
     }
     // Image-management intent wins over the single-illustration branch:
     // deleting/replacing/resizing existing images or designing several at
@@ -429,6 +482,17 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMu
             return { type: TURN_TYPE.DOC_QA, question: trimmed };
         }
         return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
+    }
+    // Document-scope image/table intent (no selection, plural-marked):
+    // mutates EVERY image/table in the document through the same tool loop,
+    // while a selection would have routed to IMAGE_TOOL/TABLE_TOOL above.
+    // Runs before the edit branch: "把图片都加上标题" is an image op, not a
+    // document amendment.
+    if (looksLikeDocumentTableIntent(trimmed)) {
+        return { type: TURN_TYPE.DOCUMENT_TABLE_TOOL, instruction: trimmed };
+    }
+    if (looksLikeDocumentImageIntent(trimmed)) {
+        return { type: TURN_TYPE.DOCUMENT_IMAGE_TOOL, instruction: trimmed };
     }
     if (looksLikeEditIntent(trimmed)) {
         return { type: TURN_TYPE.DOC_EDIT, instruction: trimmed };
@@ -1534,6 +1598,14 @@ export function createConversation(deps) {
                 return { type: TURN_TYPE.TABLE, instruction };
             case 'illustration':
                 return { type: TURN_TYPE.ILLUSTRATION, instruction };
+            case 'image_management':
+                // Whole-document image tool session — separate card; user
+                // reviews & selectively applies alongside any text edits.
+                return { type: TURN_TYPE.DOCUMENT_IMAGE_TOOL, instruction };
+            case 'table_management':
+                // First table in the document (v1 limitation; follow-up
+                // turns can target additional tables).
+                return { type: TURN_TYPE.DOCUMENT_TABLE_TOOL, instruction };
             case 'qa':
             default:
                 return { type: TURN_TYPE.DOC_QA, question: instruction };
@@ -1607,6 +1679,190 @@ export function createConversation(deps) {
     }
 
     /**
+     * Runs a document-scope image management turn: every inline picture in
+     * the document is snapshotted into an operable object with the full
+     * `IMAGE_TOOL_SPECS` tool list. Mirrors runImageToolTurn (selection
+     * variant) but skips the selection-image gate — the user is talking
+     * about the document as a whole.
+     *
+     * @private
+     */
+    async function runDocumentImageToolTurn(turn, msg, turnDeps, turnController) {
+        const myController = turnController || new AbortController();
+        appState.isProcessing = true;
+        appState.chatController = myController;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Working through document images (tool loop)...');
+            const proposal = await actions.prepareImageToolEdit(turnDeps, {
+                instruction: turn.instruction,
+                signal: myController.signal,
+                onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
+                    s.text ? `${s.text}\n` : ''),
+            });
+            if (proposal && proposal.noOps) {
+                msg.setStatus('');
+                msg.setText(proposal.answer || '(no image changes)');
+                return;
+            }
+            if (!proposal) {
+                msg.setStatus('Document image snapshot failed.');
+                return;
+            }
+            msg.setStatus('');
+            const title = `Document image changes (${proposal.snapshotCount} picture${proposal.snapshotCount === 1 ? '' : 's'})`;
+            const svgOps = proposal.items.filter((item) => item.svg);
+            const previewSrc = svgOps.length === 1
+                ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgOps[0].svg)))}`
+                : undefined;
+            const cardItems = proposal.items.map(({ id, label, before, after }) => ({ id, label, before, after }));
+            const card = createProposalCard({
+                title,
+                countsText: `${proposal.ops.length} image operation(s)`,
+                previewSrc,
+                comment: null,
+                items: cardItems,
+                onApply: async (selectedIds) => {
+                    try {
+                        const picked = new Set(selectedIds);
+                        const ops = proposal.ops.filter((_, i) => picked.has(i + 1));
+                        if (ops.length === 0) {
+                            card.markWarning('No operations selected.');
+                            return;
+                        }
+                        const result = await actions.applyImageOps(turnDeps, { ...proposal, ops });
+                        if (result && result.warnings && result.warnings.length > 0) {
+                            card.markWarning(`Applied with warning: ${result.warnings[0]}`);
+                        } else {
+                            card.markApplied();
+                        }
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Document image proposal rejected by user.', 'info');
+                },
+            });
+            msg.attachProposal(card, {
+                title,
+                state: 'pending',
+                countsText: `${proposal.ops.length} image operation(s)`,
+                previewSrc,
+                items: cardItems,
+            });
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else if (error.noChanges) {
+                msg.setStatus(error.message);
+            } else {
+                msg.markError(error.message);
+            }
+        } finally {
+            appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
+            input.setProcessing(false);
+        }
+    }
+
+    /**
+     * Runs a document-scope table management turn: the FIRST table in the
+     * document becomes an operable object with the full `TABLE_TOOL_SPECS`
+     * tool list. Subsequent tables need a follow-up turn (select or specify
+     * — see `_applyDocumentTableToolEdit` for the snapshot helper).
+     *
+     * @private
+     */
+    async function runDocumentTableToolTurn(turn, msg, turnDeps, turnController) {
+        const myController = turnController || new AbortController();
+        appState.isProcessing = true;
+        appState.chatController = myController;
+        input.setProcessing(true);
+        try {
+            msg.setStatus('Working through document table (tool loop)...');
+            const region = await actions.readDocumentFirstTableRegion(turnDeps);
+            if (!region) {
+                msg.setStatus('Document has no tables to manage — nothing to operate on.');
+                return;
+            }
+            const proposal = await actions.prepareTableToolEdit(turnDeps, {
+                instruction: turn.instruction,
+                region,
+                signal: myController.signal,
+                onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
+                    s.text ? `${s.text}\n` : ''),
+            });
+            if (proposal && proposal.noOps) {
+                msg.setStatus('');
+                msg.setText(proposal.answer || '(no table changes)');
+                return;
+            }
+            if (!proposal) {
+                msg.setStatus('Document has no tables to manage — nothing to operate on.');
+                return;
+            }
+            msg.setStatus('');
+            const title = 'Document table changes';
+            const beforeChars = proposal.tableItems.reduce((sum, item) => sum + (item.before || '').length, 0);
+            const afterChars = proposal.tableItems.reduce((sum, item) => sum + (item.after || '').length, 0);
+            const items = proposal.tableItems.map((item, index) => ({
+                id: index,
+                label: item.label,
+                before: item.before,
+                after: item.after,
+                searchText: item.searchText,
+            }));
+            const card = createProposalCard({
+                title,
+                beforeChars,
+                afterChars,
+                comment: null,
+                items,
+                onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
+                onApply: async (selectedIds) => {
+                    try {
+                        const toApply = selectedIds
+                            ? { ...proposal, tablePatch: filterTablePatchBySelection(proposal.tablePatch, selectedIds) }
+                            : proposal;
+                        await actions.applySelectionAmendment(turnDeps, toApply);
+                        card.markApplied();
+                    } catch (error) {
+                        log(`Apply failed: ${error.message}`, 'error');
+                        card.markError(error.message);
+                    }
+                },
+                onReject: () => {
+                    log('Document table proposal rejected.', 'info');
+                },
+            });
+            msg.attachProposal(card, {
+                title,
+                state: 'pending',
+                countsText: `${beforeChars} → ${afterChars} chars`,
+                items,
+            });
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else if (error.noChanges) {
+                msg.setStatus(error.message);
+            } else {
+                msg.markError(error.message);
+            }
+        } finally {
+            appState.isProcessing = false;
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+            }
+            input.setProcessing(false);
+        }
+    }
+
+    /**
      * Dispatches one routed turn to its pipeline runner. Shared by submit
      * (single turns) and runCompoundTurn (one call per planned task); the
      * optional turnController lets a compound turn share its AbortController
@@ -1627,6 +1883,10 @@ export function createConversation(deps) {
             await runTableTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.TABLE_TOOL) {
             await runTableToolTurn(turn, msg, turnDeps, turnController);
+        } else if (turn.type === TURN_TYPE.DOCUMENT_IMAGE_TOOL) {
+            await runDocumentImageToolTurn(turn, msg, turnDeps, turnController);
+        } else if (turn.type === TURN_TYPE.DOCUMENT_TABLE_TOOL) {
+            await runDocumentTableToolTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.FORMAT) {
             await runFormatTurn(turn, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.CLEANUP) {

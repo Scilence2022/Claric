@@ -306,6 +306,65 @@ export async function readSelectionTableRegion(deps) {
 }
 
 /**
+ * Reads the FIRST table in the document body and returns a region covering
+ * the whole table — used by document-scope `table_management` turns where
+ * no selection is available. Returns `null` when the document has no tables.
+ *
+ * Multi-table limitation: this only returns the first table in document
+ * order. Re-target additional tables by selecting them and rerunning, or
+ * via a future per-table loop. The total table count is logged so the user
+ * gets an honest hint.
+ *
+ * @param {object} deps - { log }
+ * @returns {Promise<object|null>}
+ */
+export async function readDocumentFirstTableRegion(deps) {
+    const { log } = deps;
+    let region = null;
+    let tableCount = 0;
+    await Word.run(async (context) => {
+        const tables = context.document.body.tables;
+        tables.load('items');
+        await context.sync();
+        const items = tables.items || [];
+        tableCount = items.length;
+        if (tableCount === 0) return;
+
+        const table = items[0];
+        table.load('isNullObject,rowCount,values,isUniform');
+        await context.sync();
+
+        const values = table.values || [];
+        const rowCount = table.rowCount || values.length;
+        const colCount = values[0] ? values[0].length : 0;
+        if (rowCount === 0 || colCount === 0) return;
+
+        const cells = [];
+        for (let r = 0; r < rowCount; r++) {
+            for (let c = 0; c < colCount; c++) {
+                cells.push({ row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' });
+            }
+        }
+
+        const style = await _readTableStyleSnapshot(context, table);
+
+        region = {
+            rowCount,
+            colCount,
+            bounds: { startRow: 1, endRow: rowCount, startCol: 1, endCol: colCount },
+            cells,
+            values,
+            merged: false,
+            style,
+        };
+    });
+    if (region) {
+        log(`Document has ${tableCount} table(s); this turn targets the first one (${region.rowCount}×${region.colCount}). To restyle another, select it and re-run.`, 'info');
+    }
+    return region;
+}
+
+/**
  * Reads the table's current styling into a plain snapshot for the tool
  * loop: built-in/custom style name, alignment, header rows, banding flags,
  * shading, whole-table font, and the six border locations. Best effort —

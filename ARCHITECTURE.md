@@ -64,7 +64,8 @@ src/
     illustration.js            # SVG illustration prompt/parse/sanitize
                                #   (DOMPurify SVG profile)/dimensions/position
     task-planner.js            # Compound-instruction decomposition prompt +
-                               #   plan parser (7 task types, caps)
+                               #   plan parser (7 task types + image_management/
+                               #   table_management, caps)
     table-patch.js             # Coordinate patch protocol for multi-cell
                                #   table selections: prompt builder, JSON
                                #   patch parser/validator, row-op ordering;
@@ -163,7 +164,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (1099 tests, 45 suites)
+tests/                         # Jest unit tests (1107 tests, 45 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -425,6 +426,32 @@ tool list, never as raw content.
   → on Apply: paragraphs inserted at body end as tracked changes
 ```
 
+### Document-Scope Image/Table Ops
+
+The selection-as-object pattern also works at **document scope**: a
+planner task of type `image_management` or `table_management` runs the
+existing IMAGE_TOOL / TABLE_TOOL sessions against the WHOLE document
+instead of a selection.
+
+- **`image_management`** (`TURN_TYPE.DOCUMENT_IMAGE_TOOL`): snapshots
+  every inline picture (document order, stable indexes) and drives
+  `prepareImageToolEdit` — the same tool list as a picture selection.
+- **`table_management`** (`TURN_TYPE.DOCUMENT_TABLE_TOOL`): reads the
+  FIRST table via `readDocumentFirstTableRegion` (whole-table bounds)
+  and drives `prepareTableToolEdit` with that region. v1 limitation: only
+  the first table is targeted; additional tables need a follow-up turn
+  (select the table or re-run). The tool count is logged so the user
+  knows where the card refers.
+- Each runs as a separate compound sub-task with its OWN proposal card —
+  text amendments and image/table ops never mix inside one card.
+
+Single-intent routing also fires these directly: plural-marked
+instructions ("给所有图片都加上 alt 文字", "all images centered",
+"给所有表格加边框", "every table to three-line") route to
+DOCUMENT_IMAGE_TOOL / DOCUMENT_TABLE_TOOL without a planner round-trip;
+instructions that also hit the format family (标题/居中/样式) go through
+the planner (COMPOUND), which decomposes them.
+
 ### Illustration Flow
 
 ```
@@ -594,10 +621,10 @@ OOXML tracked changes pipeline:
 
 ### Task Planner (`src/lib/task-planner.js`)
 
-- `TASK_TYPES = ['insert','format','edit','append','illustration','qa']`, `MAX_TASKS = 6`, per-task instruction cap 500 chars
+- `TASK_TYPES = ['insert','format','edit','append','table','illustration','qa','image_management','table_management']`, `MAX_TASKS = 6`, per-task instruction cap 500 chars
 - `buildPlanPrompt(instruction, hasSelection)` — also used to classify ambiguous single instructions
 - `parsePlan(raw, log)` — validated `Array<{type, instruction}> | null`
-- `conversation.js` maps tasks to turns (`turnForTask`); `insert` tasks always run at document scope
+- `conversation.js` maps tasks to turns (`turnForTask`); `insert` tasks always run at document scope; `image_management` → document-scope image tool session, `table_management` → document-scope table tool session (both first-class planner task types so "润色全文 + 给所有图片加 alt 文字" decomposes into separately reviewable cards)
 
 ### Document Generator (`src/lib/document-generator.js`)
 
@@ -677,7 +704,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 1099 tests, 45 suites, ~1s
+npm test          # 1107 tests, 45 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

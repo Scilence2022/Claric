@@ -117,6 +117,15 @@ function makeActions(overrides = {}) {
       model: 'm',
       toolLoop: { steps: 2, finished: true },
     })),
+    readDocumentFirstTableRegion: jest.fn(async () => ({
+      rowCount: 2,
+      colCount: 1,
+      values: [['a'], ['b']],
+      bounds: { startRow: 1, endRow: 2, startCol: 1, endCol: 1 },
+      cells: [{ row: 1, col: 1, text: 'a' }, { row: 2, col: 1, text: 'b' }],
+      merged: false,
+      style: null,
+    })),
     applyImageOps: jest.fn(async () => ({ applied: 1, warnings: [] })),
     applyIllustrationProposal: jest.fn(async () => ({ inserted: true })),
     planDocumentTasks: jest.fn(async () => ({
@@ -443,6 +452,45 @@ describe('routeTurn', () => {
   test('image questions stay Q&A even with management verbs', () => {
     expect(routeTurn('如何删除文档里的图片？', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
       .toBe(TURN_TYPE.DOC_QA);
+  });
+
+  test('document-scope image/table intents route to their tool sessions', () => {
+    // Plural-marked document intents, unambiguous across intent families:
+    // every picture / every table.
+    expect(routeTurn('给所有图片都加上 alt 文字', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOCUMENT_IMAGE_TOOL);
+    expect(routeTurn('把图片都加上 alt 文字', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOCUMENT_IMAGE_TOOL);
+    expect(routeTurn('给所有表格加边框', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOCUMENT_TABLE_TOOL);
+    expect(routeTurn('every table to three-line', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOCUMENT_TABLE_TOOL);
+
+    // Ambiguous phrasings that ALSO hit the format family (标题/居中/样式)
+    // compound — the planner decides; the doc turn never fires alone.
+    expect(routeTurn('把图片都加上标题', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.COMPOUND);
+    expect(routeTurn('all images centered', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.COMPOUND);
+
+    // Negative cases: no plural marker → single-object routing stays put.
+    expect(routeTurn('把图片居中', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('把表格改成三线表', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .not.toBe(TURN_TYPE.DOCUMENT_TABLE_TOOL);
+  });
+
+  test('document image/table intents compound with text-edit families', () => {
+    // "润色全文 + 给所有图片加 alt 文字" → COMPOUND (edit + image_management).
+    const turn = routeTurn('润色全文，给所有图片加 alt 文字', { hasSelection: false, skills: BUILTIN_SKILLS });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+
+    // A multi-cell table selection already routes to TABLE_TOOL — no
+    // planner trip for a single instruction on a selected table.
+    const selected = routeTurn('把表格都改成三线表', {
+      hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
+    });
+    expect(selected.type).toBe(TURN_TYPE.TABLE_TOOL);
   });
 
   test('chained instruction detection', () => {
@@ -1404,6 +1452,64 @@ describe('createConversation.submit', () => {
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
     expect(actions.applyFormatProposal).not.toHaveBeenCalled();
     expect(staged.apply).not.toHaveBeenCalled();
+  });
+
+  test('compound turn dispatches image_management/table_management to document-scope tool sessions', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({
+        tasks: [
+          { type: 'image_management', instruction: '给所有图片加上标题' },
+          { type: 'table_management', instruction: '把表格改成三线表样式' },
+        ],
+        model: 'm',
+      })),
+      prepareImageToolEdit: jest.fn(async () => ({
+        instruction: 'x',
+        ops: [{ type: 'altText', index: 1, text: '标题' }],
+        items: [{ id: 1, label: 'Alt text for image 1', before: '', after: '标题' }],
+        snapshotCount: 3,
+        model: 'm',
+        toolLoop: { steps: 2, finished: true },
+      })),
+      prepareTableToolEdit: jest.fn(async () => ({
+        selectionText: 'a\nb',
+        amendedText: null,
+        commentText: null,
+        model: 'm',
+        tablePatch: {
+          rowCount: 2, colCount: 1, cells: [], rowOps: [], merges: [],
+          styleOps: [{ type: 'borders', borders: { all: { type: 'none' } } }],
+          bounds: { startRow: 1, endRow: 2, startCol: 1, endCol: 1 },
+          originals: [['a'], ['b']],
+        },
+        tableItems: [{ label: 'Borders: all none' }],
+        toolLoop: { steps: 3, finished: true },
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions,
+      getSelectionText: async () => '',
+      getSelectionImages: async () => [],
+    });
+
+    await conv.submit('润色全文，给所有图片加标题，把表格改成三线表');
+
+    // image_management runs the whole-document image tool session (no
+    // selectionImages — snapshot covers every picture).
+    expect(actions.prepareImageToolEdit).toHaveBeenCalledTimes(1);
+    expect(actions.prepareImageToolEdit.mock.calls[0][1].instruction).toBe('给所有图片加上标题');
+    expect(actions.prepareImageToolEdit.mock.calls[0][1].selectionImages).toBeUndefined();
+    // table_management runs the table tool session against the FIRST table
+    // region (document scope), producing its own card.
+    expect(actions.readDocumentFirstTableRegion).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit.mock.calls[0][1].region).toBeDefined();
+    // One card per task; applies are gated behind the cards.
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
+    expect(actions.applyImageOps).not.toHaveBeenCalled();
   });
 
   test('compound turn with a selection scopes edit/format tasks to the selection', async () => {
