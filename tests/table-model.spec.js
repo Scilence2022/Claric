@@ -368,3 +368,86 @@ describe('table style tools', () => {
         expect(executeTableTool(model, 'set_style', {}).ok).toBe(false);
     });
 });
+
+describe('multi-table sessions', () => {
+    const REGION_TWO = {
+        rowCount: 2,
+        colCount: 3,
+        values: [
+            ['x1', 'x2', 'x3'],
+            ['y1', 'y2', 'y3'],
+        ],
+        bounds: { startRow: 1, endRow: 2, startCol: 1, endCol: 3 },
+        merged: false,
+        shadowKeys: new Set(),
+    };
+
+    test('get_state lists every table grid under its table index', () => {
+        const model = createTableModel([REGION, REGION_TWO]);
+        const { result } = model.getState();
+        expect(result.tableCount).toBe(2);
+        expect(result.grid).toContain('table 1 (3x2):');
+        expect(result.grid).toContain('table 2 (2x3):');
+        expect(result.grid).toContain('[R1C1] Header A');
+        expect(result.grid).toContain('[R2C3] y3');
+    });
+
+    test('tools address tables by tableIndex and default to table 1', () => {
+        const model = createTableModel([REGION, REGION_TWO]);
+        expect(model.setCell(2, 1, 'new a').ok).toBe(true); // table 1 default
+        expect(model.setCell(1, 1, 'X1', 2).ok).toBe(true);
+        expect(model.deleteRow(2, 2).ok).toBe(true);
+        const patch = model.toTablePatch();
+        expect(patch.cells).toEqual([
+            { tableIndex: 1, row: 2, col: 1, text: 'new a' },
+            { tableIndex: 2, row: 1, col: 1, text: 'X1' },
+        ]);
+        expect(patch.rowOps).toEqual([{ tableIndex: 2, op: 'delete', row: 2 }]);
+        expect(patch.tableCount).toBe(2);
+    });
+
+    test('unknown tableIndex is rejected constructively', () => {
+        const model = createTableModel([REGION, REGION_TWO]);
+        expect(model.setCell(1, 1, 'z', 3).error).toMatch(/"tableIndex" 3/);
+        expect(model.setTableStyle({ tableIndex: 9, style: 'TableGrid' }).error).toMatch(/"tableIndex" 9/);
+    });
+
+    test('style ops land on the right table; merged-only table blocks its own row ops', () => {
+        const model = createTableModel([
+            REGION,
+            { ...REGION_TWO, merged: true, shadowKeys: new Set(['1,2']) },
+        ]);
+        expect(model.setTableStyle({ tableIndex: 2, style: 'GridTable2', bandedRows: true }).ok).toBe(true);
+        expect(model.setBorders({ tableIndex: 1, borders: { all: 'none' } }).ok).toBe(true);
+        expect(model.deleteRow(2, 2).error).toMatch(/merged cells/);
+        expect(model.deleteRow(2, 1).ok).toBe(true);
+        const patch = model.toTablePatch();
+        expect(patch.styleOps).toEqual([
+            { type: 'borders', tool: 'set_borders', tableIndex: 1, borders: { top: { type: 'none' }, bottom: { type: 'none' }, left: { type: 'none' }, right: { type: 'none' }, insideH: { type: 'none' }, insideV: { type: 'none' } } },
+            { type: 'tableStyle', tool: 'set_table_style', tableIndex: 2, style: 'GridTable2', bandedRows: true },
+        ]);
+    });
+
+    test('get_state pendingOps carry tableIndex per op', () => {
+        const model = createTableModel([REGION, REGION_TWO]);
+        model.setCell(1, 1, 'tip', 2);
+        model.deleteRow(3, 1);
+        const { result } = model.getState();
+        expect(result.pendingOps).toContainEqual({ tool: 'set_cell', tableIndex: 2, row: 1, col: 1, text: 'tip' });
+        expect(result.pendingOps).toContainEqual({ op: 'delete', row: 3, tableIndex: 1 });
+    });
+
+    test('opCount aggregates across tables', () => {
+        const model = createTableModel([REGION, REGION_TWO]);
+        model.setCell(1, 1, 'a', 2);
+        model.setTableStyle({ tableIndex: 1, style: 'TableGrid' });
+        expect(model.opCount).toBe(2);
+    });
+
+    test('executes the same tool dispatch against any table', () => {
+        const model = createTableModel([REGION, REGION_TWO]);
+        expect(executeTableTool(model, 'set_cell', { tableIndex: 2, row: 2, col: 2, text: 'Y2' }).ok).toBe(true);
+        expect(executeTableTool(model, 'set_column_widths', { tableIndex: 2, widthsPt: [100, 100, 100] }).ok).toBe(true);
+        expect(model.toTablePatch().styleOps[0].tableIndex).toBe(2);
+    });
+});

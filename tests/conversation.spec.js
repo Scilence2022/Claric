@@ -117,7 +117,8 @@ function makeActions(overrides = {}) {
       model: 'm',
       toolLoop: { steps: 2, finished: true },
     })),
-    readDocumentFirstTableRegion: jest.fn(async () => ({
+    readDocumentTableRegions: jest.fn(async () => [{
+      tableIndex: 1,
       rowCount: 2,
       colCount: 1,
       values: [['a'], ['b']],
@@ -125,7 +126,7 @@ function makeActions(overrides = {}) {
       cells: [{ row: 1, col: 1, text: 'a' }, { row: 2, col: 1, text: 'b' }],
       merged: false,
       style: null,
-    })),
+    }]),
     applyImageOps: jest.fn(async () => ({ applied: 1, warnings: [] })),
     applyIllustrationProposal: jest.fn(async () => ({ inserted: true })),
     planDocumentTasks: jest.fn(async () => ({
@@ -1502,11 +1503,12 @@ describe('createConversation.submit', () => {
     expect(actions.prepareImageToolEdit).toHaveBeenCalledTimes(1);
     expect(actions.prepareImageToolEdit.mock.calls[0][1].instruction).toBe('给所有图片加上标题');
     expect(actions.prepareImageToolEdit.mock.calls[0][1].selectionImages).toBeUndefined();
-    // table_management runs the table tool session against the FIRST table
-    // region (document scope), producing its own card.
-    expect(actions.readDocumentFirstTableRegion).toHaveBeenCalledTimes(1);
+    // table_management runs the table tool session against the document's
+    // table REGIONS (all tables by tableIndex), producing its own card.
+    expect(actions.readDocumentTableRegions).toHaveBeenCalledTimes(1);
     expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
-    expect(actions.prepareTableToolEdit.mock.calls[0][1].region).toBeDefined();
+    expect(actions.prepareTableToolEdit.mock.calls[0][1].regions).toBeInstanceOf(Array);
+    expect(actions.prepareTableToolEdit.mock.calls[0][1].regions[0].tableIndex).toBe(1);
     // One card per task; applies are gated behind the cards.
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
     expect(actions.applyImageOps).not.toHaveBeenCalled();

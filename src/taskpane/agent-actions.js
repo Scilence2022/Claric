@@ -117,26 +117,34 @@ async function _runLoop(deps, { systemPrompt, taskPrompt, tools, execute, maxSte
  *   analysis ("review the selected table") via the same object+tools
  *   protocol as image selections.
  */
-export async function prepareTableToolEdit(deps, { instruction, signal, onStep, region } = {}) {
+export async function prepareTableToolEdit(deps, { instruction, signal, onStep, region, regions } = {}) {
     const { log } = deps;
-    const tableRegion = region || await readSelectionTableRegion(deps);
-    if (!tableRegion) return null;
+    const tableRegions = regions || [region || await readSelectionTableRegion(deps)].filter(Boolean);
+    if (tableRegions.length === 0) return null;
 
-    const model = createTableModel(tableRegion);
-    log(`Table tool loop: ${tableRegion.rowCount}×${tableRegion.colCount} region` +
-        `${tableRegion.merged ? ' (merged cells — row ops disabled)' : ''}.`, 'info');
+    const multiTable = tableRegions.length > 1;
+    const model = createTableModel(tableRegions);
+    if (multiTable) {
+        log(`Table tool loop: ${tableRegions.length} document table(s) (by tableIndex).`, 'info');
+    } else {
+        const r = tableRegions[0];
+        log(`Table tool loop: ${r.rowCount}×${r.colCount} region` +
+            `${r.merged ? ' (merged cells — row ops disabled)' : ''}.`, 'info');
+    }
 
     const state = model.getState().result;
     const taskPrompt =
         `USER TASK: ${(instruction || '').trim()}\n\n` +
-        'The selection covers this table region (1-based absolute coordinates):\n\n' +
+        (multiTable
+            ? `The document has ${tableRegions.length} table(s); each grid is listed under its table index. Coordinates are 1-based inside their own table; use "tableIndex" to choose a table.\n\n`
+            : 'The selection covers this table region (1-based absolute coordinates):\n\n') +
         `${state.grid}\n\n` +
         `Covered region: ${state.coveredRegion}. Row operations allowed: ${state.rowOpsAllowed ? 'yes' : 'no'}.\n\n` +
         'Current table style:\n' +
         `${state.style}\n\n` +
-        'Styling tools (set_table_style, set_borders, set_cell_format, set_font, set_header_row, set_layout, set_column_widths) operate on the table — table-level look changes apply to the WHOLE table containing the selection; cell/row formats respect the covered region.\n' +
-        (tableRegion.mergedUnknown
-            ? 'The table contains merged cells whose layout could not be mapped — edits to merge-covered coordinates are skipped at apply time.\n'
+        'Styling tools (set_table_style, set_borders, set_cell_format, set_font, set_header_row, set_layout, set_column_widths) operate on the table — table-level look changes apply to the WHOLE selected table; cell/row formats respect the covered region.\n' +
+        (tableRegions.some((r) => r.mergedUnknown)
+            ? 'A table contains merged cells whose layout could not be mapped — edits to merge-covered coordinates are skipped at apply time.\n'
             : '') +
         'Work through the task with the table tools. Verify with get_state when unsure.';
 
@@ -172,7 +180,9 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep, 
                 noOps: true,
                 answer: loop.summary.trim(),
                 instruction: (instruction || '').trim(),
-                selectionText: tableRegion.cells.map((c) => c.text).join('\n'),
+                selectionText: multiTable
+                    ? `<tables ${tableRegions.map((r) => r.rowCount + 'x' + r.colCount).join(', ')}>`
+                    : tableRegions[0].cells.map((c) => c.text).join('\n'),
                 model: getActiveBackendConfig(deps.appState).model,
                 toolLoop: { steps: loop.steps, finished: loop.finished },
             };
@@ -182,29 +192,32 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep, 
         throw err;
     }
 
-    // Same review-item derivation as the single-shot table route.
-    const originals = patch.originals;
+    // Per-table originals resolved against tableIndex (multi-table) or the
+    // legacy flat patch.originals (single table).
+    const prefix = (op) => (multiTable ? `T${op.tableIndex || 1}: ` : '');
+    const originalsFor = (index) => (patch.tableOriginals ? patch.tableOriginals[index] || [] : patch.originals || []);
     const tableItems = [
         ...patch.cells.map((c) => ({
-            label: `Cell R${c.row}C${c.col}`,
-            before: (originals[c.row - 1] || [])[c.col - 1] || '',
+            label: `${prefix(c)}Cell R${c.row}C${c.col}`,
+            before: originalsFor(c.tableIndex)[c.row - 1]?.[c.col - 1] || '',
             after: c.text,
-            searchText: ((originals[c.row - 1] || [])[c.col - 1] || '').trim().slice(0, 60) || undefined,
+            searchText: (originalsFor(c.tableIndex)[c.row - 1]?.[c.col - 1] || '').trim().slice(0, 60) || undefined,
         })),
         ...patch.rowOps.map((op) => (op.op === 'delete'
             ? {
-                label: `Delete row ${op.row}`,
-                before: (originals[op.row - 1] || []).join(' | '),
+                label: `${prefix(op)}Delete row ${op.row}`,
+                before: (originalsFor(op.tableIndex)[op.row - 1] || []).join(' | '),
                 after: '',
-                searchText: ((originals[op.row - 1] || [])[0] || '').trim().slice(0, 60) || undefined,
+                searchText: ((originalsFor(op.tableIndex)[op.row - 1] || [])[0] || '').trim().slice(0, 60) || undefined,
             }
             : {
-                label: `${op.op === 'insertAfter' ? 'Insert row after' : 'Insert row before'} row ${op.row}`,
+                label: `${prefix(op)}${op.op === 'insertAfter' ? 'Insert row after' : 'Insert row before'} row ${op.row}`,
                 before: '',
                 after: op.values.join(' | '),
-                searchText: ((originals[op.row - 1] || [])[0] || '').trim().slice(0, 60) || undefined,
+                searchText: ((originalsFor(op.tableIndex)[op.row - 1] || [])[0] || '').trim().slice(0, 60) || undefined,
             })),
         ...(patch.merges || []).map((m) => {
+            const originals = originalsFor(m.tableIndex);
             const regionText = [];
             for (let r = m.startRow; r <= m.endRow; r++) {
                 for (let c = m.startCol; c <= m.endCol; c++) {
@@ -213,12 +226,13 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep, 
             }
             // The merged result holds the anchor's FINAL text (a set_cell on
             // the anchor overrides the original; originals otherwise).
-            const anchorEdit = patch.cells.find((c) => c.row === m.startRow && c.col === m.startCol);
+            const anchorEdit = patch.cells.find((c) => c.row === m.startRow && c.col === m.startCol
+                && (c.tableIndex || 1) === (m.tableIndex || 1));
             const anchor = anchorEdit
                 ? anchorEdit.text
                 : ((originals[m.startRow - 1] || [])[m.startCol - 1] || '');
             return {
-                label: `Merge R${m.startRow}C${m.startCol}–R${m.endRow}C${m.endCol}`,
+                label: `${prefix(m)}Merge R${m.startRow}C${m.startCol}–R${m.endRow}C${m.endCol}`,
                 before: regionText.join(' | '),
                 after: anchor,
                 searchText: anchor.trim().slice(0, 60) || undefined,
@@ -226,16 +240,22 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep, 
         }),
         // Style items carry no before/after text — describeStyleOp's label is
         // the whole description (the card renders a bare checkbox row, no diff).
-        ...(patch.styleOps || []).map((op) => ({ label: describeStyleOp(op) })),
+        ...(patch.styleOps || []).map((op) => ({ label: `${prefix(op)}${describeStyleOp(op)}` })),
     ];
 
     return {
-        selectionText: tableRegion.cells.map((c) => c.text).join('\n'),
+        selectionText: multiTable
+            ? `<tables ${tableRegions.map((r) => r.rowCount + 'x' + r.colCount).join(', ')}>`
+            : tableRegions[0].cells.map((c) => c.text).join('\n'),
         amendedText: null,
         commentText: null,
         model: getActiveBackendConfig(deps.appState).model,
         tablePatch: patch,
         tableItems,
+        // Document-scope sessions anchor by body.tables order, even when the
+        // document happens to hold a single table. Selection sessions keep
+        // the legacy parentTable anchoring.
+        tableSource: (regions || region) ? 'document' : 'selection',
         toolLoop: { steps: loop.steps, finished: loop.finished },
     };
 }

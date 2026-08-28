@@ -68,7 +68,9 @@ src/
                                #   table_management, caps)
     table-patch.js             # Coordinate patch protocol for multi-cell
                                #   table selections: prompt builder, JSON
-                               #   patch parser/validator, row-op ordering;
+                               #   patch parser/validator, row-op ordering
+                               #   (planRowOpOrder is tableIndex-aware —
+                               #   ascending table, then descending row);
                                #   merged-cell aware (shadow slots read-only)
     table-ops.js               # Table creation protocol: EN/ZH dimension
                                #   inference (empty-grid fast path), creation
@@ -93,7 +95,10 @@ src/
                                #   set_header_row/set_layout/
                                #   set_column_widths); validates ops,
                                #   translates to tablePatch (incl. merges +
-                               #   styleOps)
+                               #   styleOps). Multi-table sessions: tools take
+                               #   a tableIndex (default 1) and the patch
+                               #   carries tableOriginals for per-table
+                               #   staleness checks
     table-style.js             # Pure style-op vocabulary for the table tool
                                #   loop: color/border/alignment/font
                                #   normalization, target-region clipping,
@@ -164,7 +169,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (1107 tests, 45 suites)
+tests/                         # Jest unit tests (1119 tests, 45 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -436,12 +441,14 @@ instead of a selection.
 - **`image_management`** (`TURN_TYPE.DOCUMENT_IMAGE_TOOL`): snapshots
   every inline picture (document order, stable indexes) and drives
   `prepareImageToolEdit` — the same tool list as a picture selection.
-- **`table_management`** (`TURN_TYPE.DOCUMENT_TABLE_TOOL`): reads the
-  FIRST table via `readDocumentFirstTableRegion` (whole-table bounds)
-  and drives `prepareTableToolEdit` with that region. v1 limitation: only
-  the first table is targeted; additional tables need a follow-up turn
-  (select the table or re-run). The tool count is logged so the user
-  knows where the card refers.
+- **`table_management`** (`TURN_TYPE.DOCUMENT_TABLE_TOOL`): reads EVERY
+  table via `readDocumentTableRegions` (whole-table bounds per region,
+  `tableIndex` = document order) and drives `prepareTableToolEdit` with
+  the regions array. One tool loop covers ALL tables — the model picks
+  a table with `tableIndex` on any tool call; the patch elements carry
+  `tableIndex` and the apply side anchors each op to the matching
+  `body.tables.items[i]`. The card prefixes items with `TN:` so the user
+  sees which table each change belongs to.
 - Each runs as a separate compound sub-task with its OWN proposal card —
   text amendments and image/table ops never mix inside one card.
 
@@ -704,7 +711,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 1107 tests, 45 suites, ~1s
+npm test          # 1119 tests, 45 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

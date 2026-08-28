@@ -1131,7 +1131,7 @@ describe('applySelectionAmendment (style ops)', () => {
   });
 });
 
-describe('readDocumentFirstTableRegion', () => {
+describe('readDocumentTableRegions', () => {
   beforeEach(() => jest.clearAllMocks());
 
   /** Word.run mock where the body holds N tables; values are 3×2. */
@@ -1152,32 +1152,194 @@ describe('readDocumentFirstTableRegion', () => {
     };
   }
 
-  const { readDocumentFirstTableRegion } = require('../src/taskpane/word-actions.js');
+  const { readDocumentTableRegions } = require('../src/taskpane/word-actions.js');
 
-  test('returns a whole-table region for the first table', async () => {
-    setWordRun(makeDocTablesContext(1));
-    const region = await readDocumentFirstTableRegion(makeDeps());
+  test('returns a region per table, numbered in document order', async () => {
+    setWordRun(makeDocTablesContext(2));
+    const regions = await readDocumentTableRegions(makeDeps());
 
-    expect(region).not.toBeNull();
-    expect(region.rowCount).toBe(3);
-    expect(region.colCount).toBe(2);
-    expect(region.bounds).toEqual({ startRow: 1, endRow: 3, startCol: 1, endCol: 2 });
-    expect(region.cells).toHaveLength(6);
-    expect(region.cells[0]).toEqual({ row: 1, col: 1, text: 'Header A' });
+    expect(regions).toHaveLength(2);
+    expect(regions[0].tableIndex).toBe(1);
+    expect(regions[1].tableIndex).toBe(2);
+    expect(regions[0].rowCount).toBe(3);
+    expect(regions[0].colCount).toBe(2);
+    expect(regions[0].bounds).toEqual({ startRow: 1, endRow: 3, startCol: 1, endCol: 2 });
+    expect(regions[0].cells).toHaveLength(6);
+    expect(regions[0].cells[0]).toEqual({ row: 1, col: 1, text: 'Header A' });
   });
 
-  test('returns null when the document has no tables', async () => {
+  test('returns an empty array when the document has no tables', async () => {
     setWordRun(makeDocTablesContext(0));
-    expect(await readDocumentFirstTableRegion(makeDeps())).toBeNull();
+    expect(await readDocumentTableRegions(makeDeps())).toEqual([]);
   });
 
-  test('logs the total table count so the user knows it targets the first one', async () => {
+  test('logs the total table count', async () => {
     setWordRun(makeDocTablesContext(3));
     const deps = makeDeps();
-    const region = await readDocumentFirstTableRegion(deps);
+    const regions = await readDocumentTableRegions(deps);
 
-    expect(region).not.toBeNull();
+    expect(regions).toHaveLength(3);
     const logged = deps.log.mock.calls.map((c) => c[0]).join('\n');
     expect(logged).toMatch(/3 table\(s\)/);
+  });
+});
+
+/**
+ * Word.run mock for a MULTI-TABLE document patch: body.tables holds N table
+ * proxies; each op anchors by tableIndex. Selection stays outside any table.
+ */
+function makeMultiTableApplyContext() {
+  const calls = [];
+  const makeTable = (rowValues) => {
+    const rows = {};
+    const cells = {};
+    for (let r = 0; r < rowValues.length; r++) {
+      rows[r] = {
+        delete: jest.fn(() => calls.push(`delete:${r + 1}`)),
+        insertRows: jest.fn(),
+        load: jest.fn(),
+      };
+      for (let c = 0; c < rowValues[0].length; c++) {
+        const paraRange = { text: rowValues[r][c], load: jest.fn(), insertText: jest.fn() };
+        cells[`${r},${c}`] = {
+          body: { paragraphs: { items: [{ getRange: jest.fn(() => paraRange), clear: jest.fn(), load: jest.fn() }], load: jest.fn() } },
+          parentRow: rows[r],
+          merge: jest.fn(),
+        };
+      }
+    }
+    return {
+      isNullObject: false,
+      rowCount: rowValues.length,
+      values: rowValues,
+      isUniform: true,
+      load: jest.fn(),
+      getCell: jest.fn((r, c) => cells[`${r},${c}`]),
+      font: { bold: null },
+      shadingColor: null,
+    };
+  };
+  const tables = [makeTable([['Header A', 'Header B'], ['old a', 'b'], ['c', 'd']]), makeTable([['x'], ['y']])];
+  const selection = { parentTableOrNullObject: { isNullObject: true, load: jest.fn() } };
+  const context = {
+    document: {
+      body: { tables: { items: tables, load: jest.fn() } },
+      getSelection: () => selection,
+    },
+    sync: jest.fn().mockResolvedValue(undefined),
+  };
+  let mode = null;
+  Object.defineProperty(context.document, 'changeTrackingMode', {
+    get: () => mode, set: (v) => { mode = v; },
+  });
+  return { context, tables, calls };
+}
+
+function setWordRunMulti(context) {
+  global.Word = {
+    run: jest.fn((cb) => cb(context)),
+    RangeLocation: { start: 'Start', end: 'End', content: 'Content' },
+    InsertLocation: { replace: 'Replace', after: 'After', before: 'Before' },
+    ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' },
+    Alignment: { left: 'Left', centered: 'Centered', right: 'Right', justified: 'Justified' },
+    VerticalAlignment: { top: 'Top', center: 'Center', bottom: 'Bottom' },
+    BorderType: { none: 'None', single: 'Single' },
+    BorderLocation: {
+      top: 'Top', bottom: 'Bottom', left: 'Left', right: 'Right',
+      insideHorizontal: 'InsideHorizontal', insideVertical: 'InsideVertical',
+    },
+    BuiltInStyleName: { tableGrid: 'TableGrid' },
+    UnderlineType: { none: 'None', single: 'Single' },
+  };
+}
+
+describe('applySelectionAmendment (multi-table patch)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function multiProposal(tablePatch) {
+    return {
+      selectionText: '<tables>',
+      amendedText: null,
+      commentText: null,
+      tableSource: 'document',
+      tablePatch: {
+        tableCount: tablePatch.tableCount,
+        rowCount: 3,
+        colCount: 2,
+        cells: [],
+        rowOps: [],
+        merges: [],
+        styleOps: [],
+        tableOriginals: {
+          1: TABLE_VALUES,
+          2: [['x'], ['y']],
+        },
+        ...tablePatch,
+      },
+      tableItems: [],
+    };
+  }
+
+  test('cell edits anchor per tableIndex', async () => {
+    const mock = makeMultiTableApplyContext();
+    setWordRunMulti(mock.context);
+    const result = await applySelectionAmendment(makeDeps('PC'), multiProposal({
+      tableCount: 2,
+      cells: [
+        { tableIndex: 1, row: 2, col: 1, text: 'new a' },
+        { tableIndex: 2, row: 1, col: 1, text: 'X' },
+      ],
+    }));
+
+    expect(result.cellsApplied).toBe(2);
+    expect(mock.tables[0].getCell).toHaveBeenCalledWith(1, 0);
+    expect(mock.tables[1].getCell).toHaveBeenCalledWith(0, 0);
+    expect(mock.tables[1].getCell).not.toHaveBeenCalledWith(1, 0);
+  });
+
+  test('row ops run per table: descending rows within each table', async () => {
+    const mock = makeMultiTableApplyContext();
+    setWordRunMulti(mock.context);
+    // Table 1: delete row 3; table 2: delete row 2. planRowOpOrder must
+    // order table 1 before table 2 regardless of the input order.
+    const result = await applySelectionAmendment(makeDeps('PC'), multiProposal({
+      tableCount: 2,
+      rowOps: [
+        { tableIndex: 2, op: 'delete', row: 2 },
+        { tableIndex: 1, op: 'delete', row: 3 },
+      ],
+    }));
+
+    expect(result.rowOpsApplied).toBe(2);
+    // Table 1's row deleted by its own proxy.
+    const t1Rows = mock.tables[0].getCell(2, 0).parentRow;
+    const t2Rows = mock.tables[1].getCell(1, 0).parentRow;
+    expect(t1Rows.delete).toHaveBeenCalled();
+    expect(t2Rows.delete).toHaveBeenCalled();
+  });
+
+  test('style ops land on the referenced table', async () => {
+    const mock = makeMultiTableApplyContext();
+    setWordRunMulti(mock.context);
+    const result = await applySelectionAmendment(makeDeps('PC'), multiProposal({
+      tableCount: 2,
+      styleOps: [
+        { type: 'tableStyle', tool: 'set_table_style', tableIndex: 2, style: 'TableGrid' },
+        { type: 'layout', tool: 'set_layout', tableIndex: 1, alignment: 'centered' },
+      ],
+    }));
+
+    expect(result.styleOpsApplied).toBe(2);
+    expect(mock.tables[1].styleBuiltIn).toBe('TableGrid');
+    expect(mock.tables[0].alignment).toBe('Centered');
+  });
+
+  test('throws when a referenced table no longer exists (staleness)', async () => {
+    const mock = makeMultiTableApplyContext();
+    setWordRunMulti(mock.context);
+    await expect(applySelectionAmendment(makeDeps('PC'), multiProposal({
+      tableCount: 2,
+      cells: [{ tableIndex: 3, row: 1, col: 1, text: 'z' }],
+    }))).rejects.toThrow(/Table 3 no longer exists/);
   });
 });
