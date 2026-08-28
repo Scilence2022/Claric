@@ -280,6 +280,12 @@ export async function readSelectionTableRegion(deps) {
                 cells.push(entry);
             }
         }
+
+        // Style snapshot for the tool loop's style tools (get_state reporting
+        // and before/after context). Read after the merge probe so the probe
+        // sync ordinal is unchanged; best effort — a host lacking a property
+        // degrades to an unknown-style snapshot, never a failed read.
+        const style = await _readTableStyleSnapshot(context, table);
         region = {
             rowCount: table.rowCount,
             colCount,
@@ -287,6 +293,7 @@ export async function readSelectionTableRegion(deps) {
             cells,
             values,
             merged,
+            style,
             ...(merged ? { shadowKeys, mergedUnknown } : {}),
         };
     });
@@ -296,6 +303,74 @@ export async function readSelectionTableRegion(deps) {
         log(`Table selection: ${region.cells.length} cell(s), R${first.row}C${first.col} → R${last.row}C${last.col}`, 'info');
     }
     return region;
+}
+
+/**
+ * Reads the table's current styling into a plain snapshot for the tool
+ * loop: built-in/custom style name, alignment, header rows, banding flags,
+ * shading, whole-table font, and the six border locations. Best effort —
+ * any failure degrades to null ("snapshot unavailable") so a host without
+ * one of the properties still serves the read.
+ *
+ * @param {Word.RequestContext} context
+ * @param {Word.Table} table - Loaded table proxy
+ * @returns {Promise<object|null>}
+ * @private
+ */
+async function _readTableStyleSnapshot(context, table) {
+    try {
+        table.load(
+            'styleBuiltIn,style,alignment,horizontalAlignment,verticalAlignment,' +
+            'headerRowCount,styleBandedRows,styleBandedColumns,styleFirstColumn,' +
+            'styleLastColumn,styleTotalRow,shadingColor,width'
+        );
+        if (table.font) table.font.load('bold,name,size,color');
+        const borderSpots = [
+            ['top', 'top', 'Top'], ['bottom', 'bottom', 'Bottom'],
+            ['left', 'left', 'Left'], ['right', 'right', 'Right'],
+            ['insideH', 'insideHorizontal', 'InsideHorizontal'],
+            ['insideV', 'insideVertical', 'InsideVertical'],
+        ];
+        const borderObjects = typeof table.getBorder === 'function'
+            ? borderSpots.map(([key, enumKey, fallback]) => {
+                // The API takes the enum value ("Top") or its string literal;
+                // hosts without the enum still accept the capitalized literal.
+                const location = (globalThis.Word && globalThis.Word.BorderLocation
+                    && globalThis.Word.BorderLocation[enumKey]) || fallback;
+                const border = table.getBorder(location);
+                border.load('type,color,width');
+                return { key, border };
+            })
+            : [];
+        await context.sync();
+        const borders = {};
+        for (const { key, border } of borderObjects) {
+            borders[key] = border.type === undefined && border.color === undefined
+                ? null
+                : { type: border.type || null, color: border.color || null, width: border.width || null };
+        }
+        return {
+            styleBuiltIn: table.styleBuiltIn || null,
+            style: table.style || null,
+            alignment: table.alignment || null,
+            horizontalAlignment: table.horizontalAlignment || null,
+            verticalAlignment: table.verticalAlignment || null,
+            headerRowCount: table.headerRowCount || 0,
+            bandedRows: table.styleBandedRows,
+            bandedColumns: table.styleBandedColumns,
+            firstColumn: table.styleFirstColumn,
+            lastColumn: table.styleLastColumn,
+            totalRow: table.styleTotalRow,
+            shadingColor: table.shadingColor || null,
+            widthPt: table.width || null,
+            font: table.font
+                ? { bold: table.font.bold, name: table.font.name, size: table.font.size, color: table.font.color }
+                : null,
+            borders: borderObjects.length ? borders : null,
+        };
+    } catch (_styleErr) {
+        return null;
+    }
 }
 
 /**
@@ -1154,11 +1229,20 @@ async function _applyTablePatch(deps, proposal) {
         log(warning, 'warning');
     }
 
+    // Style ops split by binding: region-bound ops run while ORIGINAL
+    // coordinates are still valid (before row structure changes); table-level
+    // ops run after the structure settles. Font/shading writes record as
+    // format revisions wherever the host supports them.
+    const styleOps = tablePatch.styleOps || [];
+    const regionStyleOps = styleOps.filter((op) => op.region);
+    const tableStyleOps = styleOps.filter((op) => !op.region);
+
     log('Applying table patch...', 'info');
     let cellsApplied = 0;
     let cellsSkipped = 0;
     let rowOpsApplied = 0;
     let mergesApplied = 0;
+    let styleOpsApplied = 0;
 
     await Word.run(async (context) => {
         const selection = context.document.getSelection();
@@ -1214,6 +1298,22 @@ async function _applyTablePatch(deps, proposal) {
                 for (const cellPatch of tablePatch.cells) {
                     const applied = await _patchCell(context, table, cellPatch, log);
                     if (applied) cellsApplied++; else cellsSkipped++;
+                }
+            }
+
+            // Phase 2: region-bound style ops (shading/alignment/font).
+            // Still ahead of the row structure ops, so original coordinates
+            // remain valid. Each op syncs separately — one unsupported op
+            // degrades to a warning instead of failing the batch.
+            if (regionStyleOps.length > 0) {
+                if (Word.ChangeTrackingMode) {
+                    context.document.changeTrackingMode = trackChanges
+                        ? Word.ChangeTrackingMode.trackAll
+                        : Word.ChangeTrackingMode.off;
+                }
+                for (const op of regionStyleOps) {
+                    const applied = await _applyRegionStyleOp(context, table, op, log, warnings);
+                    if (applied) styleOpsApplied++;
                 }
             }
 
@@ -1294,6 +1394,23 @@ async function _applyTablePatch(deps, proposal) {
                     mergesApplied++;
                 }
             }
+
+            // Phase 4: table-level style ops — table style/banding, borders,
+            // header rows, layout, column widths, whole-table formats. Run
+            // after the structure settled; each op syncs separately so one
+            // unsupported op degrades to a warning.
+            if (tableStyleOps.length > 0) {
+                if (Word.ChangeTrackingMode) {
+                    context.document.changeTrackingMode = trackChanges
+                        ? Word.ChangeTrackingMode.trackAll
+                        : Word.ChangeTrackingMode.off;
+                    await context.sync();
+                }
+                for (const op of tableStyleOps) {
+                    const applied = await _applyTableStyleOp(context, table, op, log, warnings);
+                    if (applied) styleOpsApplied++;
+                }
+            }
         } finally {
             // Later turns and comments must not inherit tracking state.
             if (Word.ChangeTrackingMode) {
@@ -1305,8 +1422,249 @@ async function _applyTablePatch(deps, proposal) {
 
     log(`Table patch applied: ${cellsApplied} cell(s) revised, ${rowOpsApplied} row op(s)` +
         (mergesApplied ? `, ${mergesApplied} merge(s)` : '') +
+        (styleOpsApplied ? `, ${styleOpsApplied} style op(s)` : '') +
         (cellsSkipped ? `, ${cellsSkipped} cell(s) already up to date` : ''), 'success');
-    return { cellsApplied, cellsSkipped, rowOpsApplied, mergesApplied, warnings };
+    return { cellsApplied, cellsSkipped, rowOpsApplied, mergesApplied, styleOpsApplied, warnings };
+}
+
+/**
+ * Applies one region-bound style op (cellFormat / font with a target).
+ * Full-width regions use the TableRow properties (one write per row);
+ * narrower regions fall back to per-cell writes — a row write would spill
+ * outside the covered region on partial-width selections. Returns false and
+ * pushes a warning when the op fails.
+ *
+ * @param {Word.RequestContext} context
+ * @param {Word.Table} table
+ * @param {object} op - {type: 'cellFormat'|'font', region, ...payload}
+ * @param {function} log
+ * @param {string[]} warnings
+ * @returns {Promise<boolean>}
+ * @private
+ */
+async function _applyRegionStyleOp(context, table, op, log, warnings) {
+    const { region } = op;
+    try {
+        const fullRowBands = region.startCol === 1 && region.endCol === _tableColumnCount(table);
+        if (op.type === 'font') {
+            if (fullRowBands) {
+                for (let r = region.startRow; r <= region.endRow; r++) {
+                    const row = table.getCell(r - 1, 0).parentRow;
+                    if (row && row.font) _applyFontOps(row.font, op.font, log);
+                }
+                await context.sync();
+                return true;
+            }
+            // Partial-width font: write through each cell's paragraph ranges
+            // (TableCell has no font property).
+            const cellFonts = [];
+            for (let r = region.startRow; r <= region.endRow; r++) {
+                for (let c = region.startCol; c <= region.endCol; c++) {
+                    const cell = table.getCell(r - 1, c - 1);
+                    const paragraphs = cell.body.paragraphs;
+                    paragraphs.load('items');
+                    cellFonts.push({ cell, paragraphs });
+                }
+            }
+            await context.sync();
+            for (const { paragraphs } of cellFonts) {
+                for (const para of paragraphs.items || []) {
+                    _applyFontOps(para.getRange(Word.RangeLocation.content).font, op.font, log);
+                }
+            }
+            await context.sync();
+            return true;
+        }
+        // cellFormat
+        if (fullRowBands) {
+            for (let r = region.startRow; r <= region.endRow; r++) {
+                const row = table.getCell(r - 1, 0).parentRow;
+                _applyCellFormatProps(row, op, log);
+            }
+            await context.sync();
+            return true;
+        }
+        for (let r = region.startRow; r <= region.endRow; r++) {
+            for (let c = region.startCol; c <= region.endCol; c++) {
+                _applyCellFormatProps(table.getCell(r - 1, c - 1), op, log);
+            }
+        }
+        await context.sync();
+        return true;
+    } catch (err) {
+        const warning = `Style op (${op.type}) failed: ${err.message || err} — skipped.`;
+        warnings.push(warning);
+        log(warning, 'warning');
+        return false;
+    }
+}
+
+/** Column count of a table whose values were already loaded. @private */
+function _tableColumnCount(table) {
+    const values = table.values;
+    return Array.isArray(values) && values[0] ? values[0].length : 0;
+}
+
+/**
+ * Writes a cellFormat payload onto a Table / TableRow / TableCell proxy —
+ * all three expose shadingColor and the two alignment properties.
+ * @private
+ */
+function _applyCellFormatProps(target, op, log) {
+    if (op.shadingColor) target.shadingColor = op.shadingColor;
+    if (op.horizontalAlignment) {
+        const value = _enumValue(Word.Alignment, op.horizontalAlignment);
+        if (value === undefined) log(`Table style: unknown alignment "${op.horizontalAlignment}"`, 'warning');
+        else target.horizontalAlignment = value;
+    }
+    if (op.verticalAlignment) {
+        const value = _enumValue(Word.VerticalAlignment, op.verticalAlignment);
+        if (value === undefined) log(`Table style: unknown vertical alignment "${op.verticalAlignment}"`, 'warning');
+        else target.verticalAlignment = value;
+    }
+}
+
+/**
+ * Applies one table-level style op (tableStyle / borders / headerRow /
+ * layout / columnWidths, and target-less cellFormat/font). Returns false
+ * and pushes a warning when the op fails.
+ *
+ * @param {Word.RequestContext} context
+ * @param {Word.Table} table
+ * @param {object} op
+ * @param {function} log
+ * @param {string[]} warnings
+ * @returns {Promise<boolean>}
+ * @private
+ */
+async function _applyTableStyleOp(context, table, op, log, warnings) {
+    try {
+        switch (op.type) {
+            case 'tableStyle': {
+                if (op.style) {
+                    const builtIn = _enumValue(Word.BuiltInStyleName, op.style);
+                    if (builtIn !== undefined) table.styleBuiltIn = builtIn;
+                    else table.style = op.style; // custom/localized style name
+                }
+                for (const [key, prop] of [
+                    ['bandedRows', 'styleBandedRows'], ['bandedColumns', 'styleBandedColumns'],
+                    ['firstColumn', 'styleFirstColumn'], ['lastColumn', 'styleLastColumn'],
+                    ['totalRow', 'styleTotalRow'],
+                ]) {
+                    if (op[key] !== undefined) table[prop] = op[key];
+                }
+                await context.sync();
+                return true;
+            }
+            case 'borders': {
+                if (op.row !== undefined) {
+                    const row = table.getCell(op.row - 1, 0).parentRow;
+                    for (const [location, spec] of Object.entries(op.borders)) {
+                        _setBorderSpec(row.getBorder(_borderLocation(location)), spec, log);
+                    }
+                } else {
+                    for (const [location, spec] of Object.entries(op.borders)) {
+                        _setBorderSpec(table.getBorder(_borderLocation(location)), spec, log);
+                    }
+                }
+                await context.sync();
+                return true;
+            }
+            case 'headerRow': {
+                table.headerRowCount = op.rows;
+                await context.sync();
+                if (op.font || op.shadingColor) {
+                    for (let r = 1; r <= op.rows; r++) {
+                        const row = table.getCell(r - 1, 0).parentRow;
+                        if (op.shadingColor) row.shadingColor = op.shadingColor;
+                        if (op.font && row.font) _applyFontOps(row.font, op.font, log);
+                    }
+                    await context.sync();
+                }
+                return true;
+            }
+            case 'layout': {
+                if (op.alignment) {
+                    const value = _enumValue(Word.Alignment, op.alignment);
+                    if (value === undefined) log(`Table style: unknown alignment "${op.alignment}"`, 'warning');
+                    else table.alignment = value;
+                }
+                if (op.widthPt) table.width = op.widthPt;
+                if (op.autoFitWindow && typeof table.autoFitWindow === 'function') table.autoFitWindow();
+                if (op.distributeColumns && typeof table.distributeColumns === 'function') table.distributeColumns();
+                if (op.cellPaddingPt !== undefined && typeof table.setCellPadding === 'function') {
+                    for (const side of ['Top', 'Left', 'Bottom', 'Right']) {
+                        table.setCellPadding(side, op.cellPaddingPt);
+                    }
+                }
+                await context.sync();
+                return true;
+            }
+            case 'columnWidths': {
+                for (let c = 0; c < op.widthsPt.length; c++) {
+                    table.getCell(0, c).columnWidth = op.widthsPt[c];
+                }
+                await context.sync();
+                return true;
+            }
+            case 'cellFormat': {
+                // Target-less cellFormat = whole table via Table properties.
+                _applyCellFormatProps(table, op, log);
+                await context.sync();
+                return true;
+            }
+            case 'font': {
+                if (table.font) {
+                    _applyFontOps(table.font, op.font, log);
+                    await context.sync();
+                    return true;
+                }
+                // No table.font on this host — fall back to row fonts.
+                const rowCount = table.rowCount || 0;
+                for (let r = 0; r < rowCount; r++) {
+                    const row = table.getCell(r, 0).parentRow;
+                    if (row && row.font) _applyFontOps(row.font, op.font, log);
+                }
+                await context.sync();
+                return true;
+            }
+            default: {
+                const warning = `Unknown style op type "${op.type}" — skipped.`;
+                warnings.push(warning);
+                log(warning, 'warning');
+                return false;
+            }
+        }
+    } catch (err) {
+        const warning = `Style op (${op.type}) failed: ${err.message || err} — skipped.`;
+        warnings.push(warning);
+        log(warning, 'warning');
+        return false;
+    }
+}
+
+/** Maps a border-set key onto the Word border location. @private */
+function _borderLocation(key) {
+    const map = {
+        top: 'top', bottom: 'bottom', left: 'left', right: 'right',
+        insideH: 'insideHorizontal', insideV: 'insideVertical',
+    };
+    const enumKey = map[key] || key;
+    return (Word.BorderLocation && Word.BorderLocation[enumKey]) || enumKey;
+}
+
+/** Writes one validated border spec onto a TableBorder proxy. @private */
+function _setBorderSpec(border, spec, log) {
+    const type = _enumValue(Word.BorderType, spec.type);
+    if (type === undefined) {
+        log(`Table style: unknown border type "${spec.type}"`, 'warning');
+        return;
+    }
+    border.type = type;
+    if (spec.type !== 'none') {
+        if (spec.color) border.color = spec.color;
+        if (spec.width !== undefined) border.width = spec.width;
+    }
 }
 
 /**
@@ -2098,13 +2456,17 @@ async function _resolveFormatTargets(context, scopeRange, op) {
 
 /**
  * Case-insensitive Word enum lookup (e.g. 'heading1' -> Word.Style.heading1,
- * 'dark blue' -> Word.HighlightColor.darkBlue). Returns undefined on miss.
+ * 'dark blue' -> Word.HighlightColor.darkBlue, 'GridTable4_Accent1' ->
+ * Word.BuiltInStyleName.gridTable4_Accent1). Separators are stripped on BOTH
+ * sides so snake/camel enum keys match their display spellings. Returns
+ * undefined on miss.
  * @private
  */
 function _enumValue(enumObj, name) {
     if (!enumObj || name === undefined || name === null) return undefined;
-    const wanted = String(name).replace(/[\s_-]+/g, '').toLowerCase();
-    const key = Object.keys(enumObj).find((k) => k.toLowerCase() === wanted);
+    const strip = (s) => String(s).toLowerCase().replace(/[\s_-]+/g, '');
+    const wanted = strip(name);
+    const key = Object.keys(enumObj).find((k) => strip(k) === wanted);
     return key ? enumObj[key] : undefined;
 }
 

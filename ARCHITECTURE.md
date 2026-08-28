@@ -87,8 +87,16 @@ src/
                                #   injected send/execute, abort-aware)
     table-model.js             # L2 tool-calling: table draft model + tools
                                #   (get_state/set_cell/insert_row/delete_row/
-                               #   merge_cells); validates ops, translates to
-                               #   tablePatch (incl. merges)
+                               #   merge_cells + style tools set_table_style/
+                               #   set_borders/set_cell_format/set_font/
+                               #   set_header_row/set_layout/
+                               #   set_column_widths); validates ops,
+                               #   translates to tablePatch (incl. merges +
+                               #   styleOps)
+    table-style.js             # Pure style-op vocabulary for the table tool
+                               #   loop: color/border/alignment/font
+                               #   normalization, target-region clipping,
+                               #   card labels (WordApi 1.3 surface)
     image-model.js             # L2 tool-calling: image draft model + tools
                                #   (list/design/replace/delete/resize/alt/
                                #   read_image — visual content via the loop);
@@ -151,7 +159,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (1047 tests, 44 suites)
+tests/                         # Jest unit tests (1089 tests, 45 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -201,7 +209,12 @@ tests/                         # Jest unit tests (1047 tests, 44 suites)
   tool-loop.spec.js           # Tool registry prompts + loop protocol
                                #   (recovery, step limit, abort)
   table-model.spec.js         # Table draft model: op validation, patch
-                               #   translation, tool dispatch
+                               #   translation, tool dispatch; style tools
+                               #   (borders/format/font/header/layout/
+                               #   column widths, styleOps in patch)
+  table-style.spec.js         # Style-op vocabulary: colors, border specs,
+                               #   alignment/font normalization, targets,
+                               #   labels
   image-model.spec.js         # Image draft model: indexes, consumption,
                                #   validation, card items
   agent-actions.spec.js       # Tool-loop Word glue: prepare/apply halves
@@ -293,6 +306,13 @@ revised per cell with the granular diff strategies (tracked natively), then
 row ops (`TableRow.insertRows`/`delete`) run in descending row order. Only
 Word desktop records row insert/delete as tracked revisions — on Word for
 the web the structure phase runs untracked with a warning (lib/platform.js).
+Style ops from the tool loop ride the same patch: region-bound ops
+(shading/alignment/font on covered rows/cells) run while original
+coordinates are still valid — ahead of the row ops — and table-level ops
+(built-in table style + banding, borders incl. per-row borders, header
+rows, layout, column widths, whole-table formats) run after the structure
+settles; each op syncs separately so an unsupported op degrades to a
+warning instead of failing the apply.
 
 **Table creation:** a "insert a 3×3 table …" instruction routes to its own
 pipeline (TURN_TYPE.TABLE). Explicit dimensions without content wording are
@@ -361,11 +381,16 @@ tool list, never as raw content.
 - **Multi-cell table selection** routes any instruction to the
   TABLE_TOOL session (`TURN_TYPE.TABLE_TOOL` — the table-side
   counterpart of IMAGE_TOOL): `prepareTableToolEdit` already seeds the
-  table draft model from the selection's table region, exposing the
-  same `get_state` / `set_cell` / `insert_row` / `delete_row` tools
-  used for chained instructions. Per-cell/per-row cards reuse the
-  existing tablePatch proposal + `applySelectionAmendment` table
-  branch — zero new apply-side surface. Read-only outcomes (`finish`
+  table draft model from the selection's table region (grid + style
+  snapshot), exposing the `get_state` / `set_cell` / `insert_row` /
+  `delete_row` / `merge_cells` tools plus the style tools
+  (`set_table_style`, `set_borders`, `set_cell_format`, `set_font`,
+  `set_header_row`, `set_layout`, `set_column_widths`) used for chained
+  instructions. A format intent that names the table's look
+  (边框/底纹/表头/…) with a table selection diverts here too — the
+  paragraph format pipeline never touches tables. Per-cell/per-row/style
+  cards reuse the existing tablePatch proposal + `applySelectionAmendment`
+  table branch — zero new apply-side surface. Read-only outcomes (`finish`
   with a summary, no patch) render the summary as the chat answer —
   same read-only contract as the image tool session.
 - **Intra-cell text selections** (single cell, `parentTableCell` is the
@@ -422,7 +447,13 @@ L2  lib/table-model.js, lib/image-model.js (draft models the tools operate on �
                                            NEVER Word directly; ops are a
                                            staged, diffable transaction; the
                                            table side covers cell text, row
-                                           ops, and merge_cells)
+                                           ops, merge_cells, and the style
+                                           tools — table style/banding,
+                                           borders (incl. row borders for
+                                           three-line tables), cell shading/
+                                           alignment, fonts, header rows,
+                                           layout, column widths — validated
+                                           by lib/table-style.js)
 L1  lib/tool-registry.js                  (tool specs + loop system prompt)
 ```
 
@@ -636,7 +667,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 1047 tests, 44 suites, ~1s
+npm test          # 1089 tests, 45 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

@@ -27,6 +27,7 @@
 import { buildToolLoopSystemPrompt } from '../lib/tool-registry.js';
 import { runToolLoop } from '../lib/tool-loop.js';
 import { createTableModel, executeTableTool, TABLE_TOOL_SPECS } from '../lib/table-model.js';
+import { describeStyleOp } from '../lib/table-style.js';
 import { createImageModel, IMAGE_TOOL_SPECS } from '../lib/image-model.js';
 import { sendMessages, sendPrompt } from '../lib/llm-client.js';
 import {
@@ -130,7 +131,10 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep }
         `USER TASK: ${(instruction || '').trim()}\n\n` +
         'The selection covers this table region (1-based absolute coordinates):\n\n' +
         `${state.grid}\n\n` +
-        `Covered region: ${state.coveredRegion}. Row operations allowed: ${state.rowOpsAllowed ? 'yes' : 'no'}.\n` +
+        `Covered region: ${state.coveredRegion}. Row operations allowed: ${state.rowOpsAllowed ? 'yes' : 'no'}.\n\n` +
+        'Current table style:\n' +
+        `${state.style}\n\n` +
+        'Styling tools (set_table_style, set_borders, set_cell_format, set_font, set_header_row, set_layout, set_column_widths) operate on the table — table-level look changes apply to the WHOLE table containing the selection; cell/row formats respect the covered region.\n' +
         (tableRegion.mergedUnknown
             ? 'The table contains merged cells whose layout could not be mapped — edits to merge-covered coordinates are skipped at apply time.\n'
             : '') +
@@ -152,12 +156,13 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep }
     if (loop.summary) log(`Tool loop summary: ${loop.summary}`, 'info');
 
     const patch = model.toTablePatch();
-    // A merge-only result (no cell edit / row op) IS a real change — the
-    // "no changes" / read-only determination must include merges, or a pure
-    // merge would be misclassified as noOps and never staged/apply.
+    // A merge-only or style-only result IS a real change — the "no changes" /
+    // read-only determination must include every op family, or a pure merge
+    // or restyle would be misclassified as noOps and never staged/apply.
     const hasChanges = patch.cells.length > 0
         || patch.rowOps.length > 0
-        || (Array.isArray(patch.merges) && patch.merges.length > 0);
+        || (Array.isArray(patch.merges) && patch.merges.length > 0)
+        || (Array.isArray(patch.styleOps) && patch.styleOps.length > 0);
     if (!hasChanges) {
         // Read-only outcome (e.g. the model inspected the table with
         // get_state and answered a review question): the summary IS the
@@ -219,6 +224,9 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep }
                 searchText: anchor.trim().slice(0, 60) || undefined,
             };
         }),
+        // Style items carry no before/after text — describeStyleOp's label is
+        // the whole description (the card renders a bare checkbox row, no diff).
+        ...(patch.styleOps || []).map((op) => ({ label: describeStyleOp(op) })),
     ];
 
     return {

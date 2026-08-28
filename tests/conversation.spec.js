@@ -249,12 +249,21 @@ describe('routeTurn', () => {
     expect(turn.type).toBe(TURN_TYPE.SELECTION_EDIT);
   });
 
-  test('multi-cell table selection takes document scope for format intent', () => {
+  test('table-look format intent with a table selection enters the table tool session', () => {
+    // The instruction names the table's look (居中 the 表格) — the table tool
+    // session's style tools own that, not the paragraph format pipeline.
     const turn = routeTurn('把表格居中', {
       hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
     });
-    expect(turn.type).toBe(TURN_TYPE.FORMAT);
-    expect(turn.scope).toBe('document');
+    expect(turn.type).toBe(TURN_TYPE.TABLE_TOOL);
+
+    // Non-table format targets with a table selection stay FORMAT at
+    // document scope (format ops target paragraphs, not table cells).
+    const heading = routeTurn('把标题居中', {
+      hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
+    });
+    expect(heading.type).toBe(TURN_TYPE.FORMAT);
+    expect(heading.scope).toBe('document');
   });
 
   test('empty input returns null', () => {
