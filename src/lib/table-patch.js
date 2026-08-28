@@ -156,14 +156,23 @@ export function parseTablePatchResponse(raw, shape = {}) {
  * shifts every row below it, and descending order keeps not-yet-applied
  * coordinates valid. Ties on the same row resolve inserts-before-deletes,
  * which yields "replace row" semantics for insertAfter+delete pairs.
+ *
+ * Multi-table patches carry a `tableIndex` on every op; row ops from
+ * DIFFERENT tables do not affect each other, so the order is: tableIndex
+ * ascending, then row descending within each table. Ops without a
+ * tableIndex (single-table protocol) sort exactly as before.
  * Pure function — exported for tests.
  *
- * @param {Array<{op: string, row: number}>} rowOps
- * @returns {Array<{op: string, row: number}>} New sorted array
+ * @param {Array<{op: string, row: number, tableIndex?: number, values?: string[]}>} rowOps
+ * @returns {Array<{op: string, row: number, tableIndex?: number, values?: string[]}>} New sorted array
  */
 export function planRowOpOrder(rowOps) {
     const rank = (op) => (op === ROW_OP.DELETE ? 1 : 0);
-    return [...rowOps].sort((a, b) => (b.row - a.row) || (rank(a.op) - rank(b.op)));
+    return [...rowOps].sort((a, b) =>
+        ((a.tableIndex || 1) - (b.tableIndex || 1))
+        || (b.row - a.row)
+        || (rank(a.op) - rank(b.op))
+    );
 }
 
 /**

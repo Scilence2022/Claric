@@ -532,3 +532,44 @@ describe('applyImageOps', () => {
 function svgToPngBase64Mock() {
     return require('../src/taskpane/word-actions.js').svgToPngBase64;
 }
+
+describe('prepareTableToolEdit (multi-table)', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    const SECOND_REGION = {
+        rowCount: 2,
+        colCount: 1,
+        values: [['x'], ['y']],
+        bounds: { startRow: 1, endRow: 2, startCol: 1, endCol: 1 },
+        merged: false,
+        shadowKeys: new Set(),
+    };
+
+    test('drives one loop over every region; tasks prompt lists both tables', async () => {
+        sendMessages.mockResolvedValueOnce('{"tool":"set_table_style","args":{"tableIndex":2,"style":"TableGrid"}}')
+            .mockResolvedValueOnce('{"tool":"set_cell","args":{"tableIndex":1,"row":2,"col":1,"text":"new a"}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"both tables done"}}');
+
+        const proposal = await prepareTableToolEdit(makeDeps(), {
+            instruction: '把两个表格都美化',
+            regions: [REGION, SECOND_REGION],
+        });
+
+        expect(proposal.noOps).toBeUndefined();
+        expect(proposal.tablePatch.tableCount).toBe(2);
+        expect(proposal.tablePatch.cells).toEqual([
+            { tableIndex: 1, row: 2, col: 1, text: 'new a' },
+        ]);
+        expect(proposal.tablePatch.styleOps).toEqual([
+            { type: 'tableStyle', tool: 'set_table_style', tableIndex: 2, style: 'TableGrid' },
+        ]);
+        // Card items carry the table prefix.
+        expect(proposal.tableItems[0].label).toBe('T1: Cell R2C1');
+        expect(proposal.tableItems[1].label).toMatch(/^T2: Table look/);
+        // Task prompt explains the multi-table coordinate scheme.
+        const taskPrompt = sendMessages.mock.calls[0][1][1].content;
+        expect(taskPrompt).toContain('table 1 (3x2):');
+        expect(taskPrompt).toContain('table 2 (2x1):');
+        expect(taskPrompt).toContain('tableIndex');
+    });
+});

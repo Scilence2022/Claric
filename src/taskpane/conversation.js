@@ -1770,10 +1770,10 @@ export function createConversation(deps) {
     }
 
     /**
-     * Runs a document-scope table management turn: the FIRST table in the
-     * document becomes an operable object with the full `TABLE_TOOL_SPECS`
-     * tool list. Subsequent tables need a follow-up turn (select or specify
-     * — see `_applyDocumentTableToolEdit` for the snapshot helper).
+     * Runs a document-scope table management turn: EVERY table in the
+     * document becomes an operable object (indexed by `tableIndex`) with the
+     * full `TABLE_TOOL_SPECS` tool list. The loop may cross tables in one
+     * session — e.g. "把所有表格改成三线表,并把第二个表的表头加底纹".
      *
      * @private
      */
@@ -1783,15 +1783,15 @@ export function createConversation(deps) {
         appState.chatController = myController;
         input.setProcessing(true);
         try {
-            msg.setStatus('Working through document table (tool loop)...');
-            const region = await actions.readDocumentFirstTableRegion(turnDeps);
-            if (!region) {
+            msg.setStatus('Working through document tables (tool loop)...');
+            const regions = await actions.readDocumentTableRegions(turnDeps);
+            if (!regions || regions.length === 0) {
                 msg.setStatus('Document has no tables to manage — nothing to operate on.');
                 return;
             }
             const proposal = await actions.prepareTableToolEdit(turnDeps, {
                 instruction: turn.instruction,
-                region,
+                regions,
                 signal: myController.signal,
                 onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
                     s.text ? `${s.text}\n` : ''),

@@ -306,62 +306,66 @@ export async function readSelectionTableRegion(deps) {
 }
 
 /**
- * Reads the FIRST table in the document body and returns a region covering
- * the whole table — used by document-scope `table_management` turns where
- * no selection is available. Returns `null` when the document has no tables.
- *
- * Multi-table limitation: this only returns the first table in document
- * order. Re-target additional tables by selecting them and rerunning, or
- * via a future per-table loop. The total table count is logged so the user
- * gets an honest hint.
+ * Reads EVERY table in the document body and returns an array of regions
+ * covering each whole table — used by document-scope `table_management`
+ * turns where no selection is available. Regions are numbered by document
+ * order (tableIndex 1-based). Returns an empty array when the document has
+ * no tables, or null when a table is malformed/empty (callers treat null
+ * as "nothing to operate on").
  *
  * @param {object} deps - { log }
- * @returns {Promise<object|null>}
+ * @returns {Promise<Array<object>|null>}
  */
-export async function readDocumentFirstTableRegion(deps) {
+export async function readDocumentTableRegions(deps) {
     const { log } = deps;
-    let region = null;
-    let tableCount = 0;
+    let regions = [];
     await Word.run(async (context) => {
         const tables = context.document.body.tables;
         tables.load('items');
         await context.sync();
         const items = tables.items || [];
-        tableCount = items.length;
-        if (tableCount === 0) return;
+        if (items.length === 0) return;
 
-        const table = items[0];
-        table.load('isNullObject,rowCount,values,isUniform');
-        await context.sync();
+        /** @type {Array<object>} */
+        const found = [];
+        for (const table of items) {
+            table.load('isNullObject,rowCount,values,isUniform');
+            await context.sync();
 
-        const values = table.values || [];
-        const rowCount = table.rowCount || values.length;
-        const colCount = values[0] ? values[0].length : 0;
-        if (rowCount === 0 || colCount === 0) return;
-
-        const cells = [];
-        for (let r = 0; r < rowCount; r++) {
-            for (let c = 0; c < colCount; c++) {
-                cells.push({ row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' });
+            const values = table.values || [];
+            const rowCount = table.rowCount || values.length;
+            const colCount = values[0] ? values[0].length : 0;
+            if (rowCount === 0 || colCount === 0) {
+                log(`Document table (${found.length + 1}) is empty/malformed — skipped.`, 'warning');
+                continue;
             }
+
+            const cells = [];
+            for (let r = 0; r < rowCount; r++) {
+                for (let c = 0; c < colCount; c++) {
+                    cells.push({ row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' });
+                }
+            }
+
+            const style = await _readTableStyleSnapshot(context, table);
+
+            found.push({
+                tableIndex: found.length + 1,
+                rowCount,
+                colCount,
+                bounds: { startRow: 1, endRow: rowCount, startCol: 1, endCol: colCount },
+                cells,
+                values,
+                merged: false,
+                style,
+            });
         }
-
-        const style = await _readTableStyleSnapshot(context, table);
-
-        region = {
-            rowCount,
-            colCount,
-            bounds: { startRow: 1, endRow: rowCount, startCol: 1, endCol: colCount },
-            cells,
-            values,
-            merged: false,
-            style,
-        };
+        regions = found;
     });
-    if (region) {
-        log(`Document has ${tableCount} table(s); this turn targets the first one (${region.rowCount}×${region.colCount}). To restyle another, select it and re-run.`, 'info');
+    if (regions.length > 0) {
+        log(`Document has ${regions.length} table(s); this turn manages all of them by tableIndex.`, 'info');
     }
-    return region;
+    return regions;
 }
 
 /**
@@ -1304,40 +1308,97 @@ async function _applyTablePatch(deps, proposal) {
     let styleOpsApplied = 0;
 
     await Word.run(async (context) => {
+        // Multi-table patches (document-scope table_management) anchor each
+        // op by its tableIndex against body.tables; single-table selection
+        // patches keep the legacy parentTable anchoring. A document-scope
+        // session on a ONE-table document also anchors by body.tables (the
+        // selection may sit in a different table than the one it manages).
+        const multiTablePatch = (tablePatch.tableCount || 1) > 1 || proposal.tableSource === 'document';
+        /** @type {Map<number, object>} */
+        let tableByIndex = new Map();
+        let tablesLoaded = false;
+        const loadTablesIfNeeded = async () => {
+            if (!multiTablePatch || tablesLoaded) return;
+            const tablesProxy = context.document.body.tables;
+            tablesProxy.load('items');
+            await context.sync();
+            const items = (tablesProxy.items || []).filter((t) => !t.isNullObject);
+            tableByIndex = new Map();
+            for (let i = 0; i < items.length; i++) {
+                const t = items[i];
+                t.load('isNullObject,rowCount,values,isUniform');
+                await context.sync();
+                tableByIndex.set(i + 1, t);
+            }
+            tablesLoaded = true;
+        };
+        /** Resolves the table proxy for one op (multi-table) or the single
+         *  anchored table (selection path). @private */
+        const tableFor = async (op) => {
+            if (!multiTablePatch) return table;
+            await loadTablesIfNeeded();
+            const t = tableByIndex.get((op && op.tableIndex) || 1);
+            if (!t) {
+                warnings.push(`Table ${(op && op.tableIndex) || 1} no longer exists — op skipped.`);
+                return null;
+            }
+            return t;
+        };
+
         const selection = context.document.getSelection();
         const table = selection.parentTableOrNullObject;
-        table.load('isNullObject,rowCount,values,isUniform');
-        await context.sync();
-        if (table.isNullObject) {
-            throw new Error('The selection is no longer inside the table — re-select the region and apply again.');
-        }
-        // No isUniform guard: merged-table proposals were parse-filtered to
-        // merge-anchor coordinates at prepare time, and _patchCell writes via
-        // getCell (which resolves to the anchor). Row ops are empty for
-        // merged tables by the same parse-time rule. The staleness guard
-        // below catches layout drift between prepare and apply.
-        if (table.rowCount !== tablePatch.rowCount) {
-            throw new Error(`Table changed since this proposal was drafted (${tablePatch.rowCount} → ${table.rowCount} rows). Draft a new edit instead.`);
+        if (multiTablePatch) {
+            // Document-scope patch: no selection anchor; validate the table
+            // map is loadable and each referenced table exists.
+            await loadTablesIfNeeded();
+            const referenced = new Set();
+            for (const op of tablePatch.cells) referenced.add((op.tableIndex || 1));
+            for (const op of tablePatch.rowOps) referenced.add((op.tableIndex || 1));
+            for (const m of tablePatch.merges || []) referenced.add((m.tableIndex || 1));
+            for (const op of tablePatch.styleOps || []) referenced.add((op.tableIndex || 1));
+            for (const idx of referenced) {
+                if (!tableByIndex.has(idx)) {
+                    throw new Error(`Table ${idx} no longer exists in the document (${tableByIndex.size} table(s) found). Draft a new edit instead.`);
+                }
+            }
+        } else {
+            table.load('isNullObject,rowCount,values,isUniform');
+            await context.sync();
+            if (table.isNullObject) {
+                throw new Error('The selection is no longer inside the table — re-select the region and apply again.');
+            }
+            if (table.rowCount !== tablePatch.rowCount) {
+                throw new Error(`Table changed since this proposal was drafted (${tablePatch.rowCount} → ${table.rowCount} rows). Draft a new edit instead.`);
+            }
         }
 
-        // Staleness guard: the patch's coordinates were bound to the table as
-        // it was at prepare time. If a touched cell (or a row referenced by a
-        // structure op) no longer holds its original text, the proposal is
-        // stale — applying it would silently overwrite the user's newer edit.
-        const currentValues = table.values || [];
-        const originals = tablePatch.originals || [];
+        // Staleness guard: the patch's coordinates were bound to the table(s)
+        // as they were at prepare time. If a touched cell (or a row referenced
+        // by a structure op) no longer holds its original text, the proposal
+        // is stale — applying it would silently overwrite the user's newer edit.
         const stale = [];
         for (const cellPatch of tablePatch.cells) {
-            const before = (originals[cellPatch.row - 1] || [])[cellPatch.col - 1] || '';
+            const t = await tableFor(cellPatch);
+            if (!t) continue;
+            const currentValues = (t && t.values) || [];
+            const before = tablePatch.tableOriginals
+                ? tablePatch.tableOriginals[cellPatch.tableIndex || 1]
+                : tablePatch.originals || [];
+            const beforeText = (before[cellPatch.row - 1] || [])[cellPatch.col - 1] || '';
             const now = (currentValues[cellPatch.row - 1] || [])[cellPatch.col - 1];
-            if (now === undefined || now.trim() !== before.trim()) {
+            if (now === undefined || now.trim() !== String(beforeText).trim()) {
                 stale.push(`R${cellPatch.row}C${cellPatch.col}`);
             }
         }
         for (const op of tablePatch.rowOps) {
-            const beforeRow = (originals[op.row - 1] || []).join('').trim();
-            const nowRow = (currentValues[op.row - 1] || []).join('').trim();
-            if (beforeRow !== nowRow) stale.push(`row ${op.row}`);
+            const t = await tableFor(op);
+            if (!t) continue;
+            const beforeRow = tablePatch.tableOriginals
+                ? (tablePatch.tableOriginals[op.tableIndex || 1] || [])[op.row - 1] || []
+                : (tablePatch.originals || [])[op.row - 1] || [];
+            const beforeRowText = Array.isArray(beforeRow) ? beforeRow.join('').trim() : String(beforeRow).trim();
+            const nowRow = ((t.values || [])[op.row - 1] || []).join('').trim();
+            if (beforeRowText !== nowRow) stale.push(`row ${op.row}`);
         }
         if (stale.length > 0) {
             throw new Error(
@@ -1355,7 +1416,9 @@ async function _applyTablePatch(deps, proposal) {
                         : Word.ChangeTrackingMode.off;
                 }
                 for (const cellPatch of tablePatch.cells) {
-                    const applied = await _patchCell(context, table, cellPatch, log);
+                    const t = await tableFor(cellPatch);
+                    if (!t) continue;
+                    const applied = await _patchCell(context, t, cellPatch, log);
                     if (applied) cellsApplied++; else cellsSkipped++;
                 }
             }
@@ -1371,7 +1434,9 @@ async function _applyTablePatch(deps, proposal) {
                         : Word.ChangeTrackingMode.off;
                 }
                 for (const op of regionStyleOps) {
-                    const applied = await _applyRegionStyleOp(context, table, op, log, warnings);
+                    const t = await tableFor(op);
+                    if (!t) continue;
+                    const applied = await _applyRegionStyleOp(context, t, op, log, warnings);
                     if (applied) styleOpsApplied++;
                 }
             }
@@ -1385,7 +1450,9 @@ async function _applyTablePatch(deps, proposal) {
                     await context.sync();
                 }
                 for (const op of tablePatch.rowOps) {
-                    const row = table.getCell(op.row - 1, 0).parentRow;
+                    const t = await tableFor(op);
+                    if (!t) continue;
+                    const row = t.getCell(op.row - 1, 0).parentRow;
                     if (op.op === 'delete') {
                         row.delete();
                     } else if (typeof row.insertRows === 'function') {
@@ -1413,7 +1480,9 @@ async function _applyTablePatch(deps, proposal) {
                     await context.sync();
                 }
                 for (const m of merges) {
-                    const anchor = table.getCell(m.startRow - 1, m.startCol - 1);
+                    const t = await tableFor(m);
+                    if (!t) continue;
+                    const anchor = t.getCell(m.startRow - 1, m.startCol - 1);
                     // Word.js: Table.mergeCells(range) requires a selection-like
                     // range — a body.getRange().expandTo() span yields
                     // InvalidArgument. The cell-level TableCell.merge(other)
@@ -1430,7 +1499,7 @@ async function _applyTablePatch(deps, proposal) {
                     for (let r = m.startRow; r <= m.endRow; r++) {
                         for (let c = m.startCol; c <= m.endCol; c++) {
                             if (r === m.startRow && c === m.startCol) continue;
-                            const cell = table.getCell(r - 1, c - 1);
+                            const cell = t.getCell(r - 1, c - 1);
                             const paras = cell.body.paragraphs;
                             paras.load('items');
                             await context.sync();
@@ -1446,7 +1515,7 @@ async function _applyTablePatch(deps, proposal) {
                     for (let r = m.startRow; r <= m.endRow; r++) {
                         for (let c = m.startCol; c <= m.endCol; c++) {
                             if (r === m.startRow && c === m.startCol) continue;
-                            table.getCell(m.startRow - 1, m.startCol - 1).merge(table.getCell(r - 1, c - 1));
+                            t.getCell(m.startRow - 1, m.startCol - 1).merge(t.getCell(r - 1, c - 1));
                         }
                     }
                     await context.sync();
@@ -1466,7 +1535,9 @@ async function _applyTablePatch(deps, proposal) {
                     await context.sync();
                 }
                 for (const op of tableStyleOps) {
-                    const applied = await _applyTableStyleOp(context, table, op, log, warnings);
+                    const t = await tableFor(op);
+                    if (!t) continue;
+                    const applied = await _applyTableStyleOp(context, t, op, log, warnings);
                     if (applied) styleOpsApplied++;
                 }
             }
