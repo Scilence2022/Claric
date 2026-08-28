@@ -256,9 +256,10 @@ export function looksLikeTableIntent(text) {
  * amendment pipelines. The format pipeline also handles short structural
  * inserts (an insert op), so "增加文章标题" (add a title) correctly lands
  * here via 标题. Chinese substrings cover 加粗/标红/居中-style
- * phrasings; English terms are word-boundary matched.
+ * phrasings plus 行距/列表/编号/项目符号 (spacing and list terms);
+ * English terms are word-boundary matched.
  */
-const FORMAT_INTENT_RE = /样式|格式|加粗|粗体|斜体|下划线|高亮|标红|字体|字号|颜色|居中|对齐|缩进|标题\s*[1-9一二三]?|设为标题|设置为标题|\bbold\b|\bitalic|underline|highlight|font\b|\bcolor\b|\bcenter(ed)?\b|\balign|indent|heading\s*[1-9]|format(ting)?\b/i;
+const FORMAT_INTENT_RE = /样式|格式|加粗|粗体|斜体|下划线|高亮|标红|字体|字号|颜色|居中|对齐|缩进|行距|间距|列表|编号|项目符号|标题\s*[1-9一二三]?|设为标题|设置为标题|\bbold\b|\bitalic|underline|highlight|font\b|\bcolor\b|\bcenter(ed)?\b|\balign|indent|heading\s*[1-9]|\blists?\b|\bbullets?\b|\bnumbered\b|\bnumbering\b|line\s*spacing|format(ting)?\b/i;
 
 /**
  * Table-look markers inside a format instruction: with a multi-cell table
