@@ -143,6 +143,46 @@ describe('parseFormatOps', () => {
     const ops = parseFormatOps('[{"insert":"nope","font":{"bold":true}}]');
     expect(ops).toEqual([{ font: { bold: true } }]);
   });
+
+  test('parses list ops: listType bullet/number/none and listLevel', () => {
+    const ops = parseFormatOps(
+      '[{"paragraph":{"listType":"bullet","listLevel":1}},{"paragraph":{"listType":"number"}},{"paragraph":{"listType":"none"}}]'
+    );
+    expect(ops).toEqual([
+      { paragraph: { listType: 'bullet', listLevel: 1 } },
+      { paragraph: { listType: 'number' } },
+      { paragraph: { listType: 'none' } },
+    ]);
+  });
+
+  test('listType is case-insensitive and trimmed', () => {
+    const ops = parseFormatOps('[{"paragraph":{"listType":" Bullet "}}]');
+    expect(ops).toEqual([{ paragraph: { listType: 'bullet' } }]);
+  });
+
+  test('unknown listType is dropped with a warning; op survives on other keys', () => {
+    const log = jest.fn();
+    const ops = parseFormatOps('[{"paragraph":{"listType":"circle","alignment":"centered"}}]', log);
+    expect(ops).toEqual([{ paragraph: { alignment: 'centered' } }]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('unknown listType'), 'warning');
+  });
+
+  test('listLevel is rounded to an int and clamped to 0-8; invalid ones dropped with a warning', () => {
+    const log = jest.fn();
+    const ops = parseFormatOps(
+      '[{"paragraph":{"listLevel":2.6,"listType":"number"}},{"paragraph":{"listLevel":9}},{"paragraph":{"listLevel":"deep"}}]',
+      log
+    );
+    expect(ops).toEqual([{ paragraph: { listLevel: 3, listType: 'number' } }]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('invalid listLevel "9"'), 'warning');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('invalid listLevel "deep"'), 'warning');
+  });
+
+  test('a paragraph payload with only invalid list keys leaves nothing — op dropped', () => {
+    const log = jest.fn();
+    expect(parseFormatOps('[{"paragraph":{"listType":"circle","listLevel":99}}]', log)).toEqual([]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('no valid font/paragraph/insert payload'), 'warning');
+  });
 });
 
 describe('buildFormatPrompt', () => {
@@ -172,6 +212,16 @@ describe('buildFormatPrompt', () => {
     expect(p).toContain('"position": "start|end"');
     expect(p).toContain('built-in "title" style');
   });
+
+  test('documents the style system: headings, lists, font, spacing, alignment', () => {
+    const p = buildFormatPrompt('x', 'y', 'selection');
+    expect(p).toContain('heading1-heading9');
+    expect(p).toContain('"listType": "bullet|number|none"');
+    expect(p).toContain('"listLevel"');
+    expect(p).toContain('"alignment": "left|centered|right|justified"');
+    expect(p).toContain('"lineSpacing"');
+    expect(p).toContain('"name": "font name"');
+  });
 });
 
 describe('describeFormatOp', () => {
@@ -183,6 +233,13 @@ describe('describeFormatOp', () => {
   test('paragraphStyle + paragraph payload', () => {
     expect(describeFormatOp({ paragraphStyle: 'heading1', paragraph: { alignment: 'centered' } }))
       .toBe('heading1 paragraphs → alignment: centered');
+  });
+
+  test('list payload renders as plain key: value entries', () => {
+    expect(describeFormatOp({ paragraph: { listType: 'bullet', listLevel: 1 } }))
+      .toBe('whole scope → listType: bullet, listLevel: 1');
+    expect(describeFormatOp({ paragraphStyle: 'listParagraph', paragraph: { listType: 'none' } }))
+      .toBe('listParagraph paragraphs → listType: none');
   });
 
   test('whole-scope op', () => {

@@ -2472,7 +2472,9 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
  * the scope start/end; other ops' targets are resolved inside the scope
  * range (whole scope, substring matches, or paragraphs of a given built-in
  * style), then font/paragraph properties are set with change tracking per
- * config (Word records them as Formatted revisions).
+ * config (Word records them as Formatted revisions). List ops (listType/
+ * listLevel) turn target paragraphs into a bulleted/numbered list or detach
+ * them from one.
  *
  * @param {object} deps - { appState, log }
  * @param {object} proposal - Result of prepareFormatProposal
@@ -2501,8 +2503,7 @@ export async function applyFormatProposal(deps, proposal) {
         let inserted = 0;
         for (const op of ops) {
             if (op.insert) {
-                inserted += _applyInsertOp(scopeRange, op, log);
-                await context.sync();
+                inserted += await _applyInsertOp(context, scopeRange, op, log);
                 continue;
             }
             const targets = await _resolveFormatTargets(context, scopeRange, op);
@@ -2518,6 +2519,9 @@ export async function applyFormatProposal(deps, proposal) {
                     await context.sync();
                     for (const paragraph of paragraphs.items) {
                         _applyParagraphOps(paragraph, op.paragraph, log);
+                    }
+                    if (_hasListOps(op.paragraph)) {
+                        await _applyListOps(context, paragraphs.items, op.paragraph, log);
                     }
                 }
                 applied++;
@@ -2540,21 +2544,34 @@ export async function applyFormatProposal(deps, proposal) {
  * Applies an insert op: queues the op's paragraph(s) at the start or end of
  * the scope range, styled by the op's font/paragraph payload. Paragraphs
  * inserted at the start are queued in reverse so their final order matches
- * the text. Only queues commands — the caller syncs. Returns the number of
- * paragraphs inserted.
+ * the text. List ops need the paragraphs materialized first, so this syncs
+ * internally when they are present. Returns the number of paragraphs
+ * inserted.
  * @private
  */
-function _applyInsertOp(scopeRange, op, log) {
-    const paragraphs = op.insert.text.split(/\n+/).map((p) => p.trim()).filter(Boolean);
+async function _applyInsertOp(context, scopeRange, op, log) {
+    const texts = op.insert.text.split(/\n+/).map((p) => p.trim()).filter(Boolean);
     const atStart = op.insert.position === 'start';
     const location = atStart ? Word.InsertLocation.start : Word.InsertLocation.end;
-    const ordered = atStart ? [...paragraphs].reverse() : paragraphs;
+    const ordered = atStart ? [...texts].reverse() : texts;
+    const inserted = [];
     for (const text of ordered) {
         const paragraph = scopeRange.insertParagraph(text, location);
         if (op.font) _applyFontOps(paragraph.font, op.font, log);
         if (op.paragraph) _applyParagraphOps(paragraph, op.paragraph, log);
+        inserted.push(paragraph);
     }
-    return paragraphs.length;
+    if (op.paragraph && _hasListOps(op.paragraph)) {
+        await context.sync();
+        // At-start inserts were queued last-to-first; restore document order.
+        await _applyListOps(context, atStart ? [...inserted].reverse() : inserted, op.paragraph, log);
+    }
+    return texts.length;
+}
+
+/** True when a paragraph payload carries list ops (handled by _applyListOps). @private */
+function _hasListOps(paragraphPayload) {
+    return paragraphPayload.listType !== undefined || paragraphPayload.listLevel !== undefined;
 }
 
 /**
@@ -2626,11 +2643,14 @@ function _applyFontOps(font, ops, log) {
 }
 
 /**
- * Applies validated paragraph ops to a Word.Paragraph object.
+ * Applies validated paragraph ops to a Word.Paragraph object. List keys are
+ * skipped here — they need multi-paragraph coordination and live in
+ * _applyListOps.
  * @private
  */
 function _applyParagraphOps(paragraph, ops, log) {
     for (const [key, value] of Object.entries(ops)) {
+        if (key === 'listType' || key === 'listLevel') continue;
         try {
             if (key === 'styleBuiltIn') {
                 const v = _enumValue(Word.Style, value);
@@ -2646,6 +2666,72 @@ function _applyParagraphOps(paragraph, ops, log) {
         } catch (e) {
             log(`Format ops: paragraph.${key} failed (${e.message})`, 'warning');
         }
+    }
+}
+
+/**
+ * Applies list ops to a batch of paragraphs (WordApi 1.3). 'bullet'/'number'
+ * turn the non-list paragraphs into ONE list — the first starts it, the rest
+ * attach — and format the requested level; 'none' detaches paragraphs from
+ * their list. listLevel alone re-nests paragraphs already in a list. Syncs
+ * internally; hosts without the list API get a warning instead of a failure.
+ * @private
+ */
+async function _applyListOps(context, paragraphs, ops, log) {
+    if (!paragraphs || paragraphs.length === 0) return;
+    if (typeof Word.List === 'undefined' || typeof paragraphs[0].startNewList !== 'function') {
+        log('Format ops: this Word host does not support list editing (needs WordApi 1.3); list ops skipped', 'warning');
+        return;
+    }
+    const listType = ops.listType;
+    const level = Number.isInteger(ops.listLevel) ? ops.listLevel : 0;
+
+    if (listType === 'none') {
+        for (const paragraph of paragraphs) {
+            try {
+                paragraph.detachFromList();
+            } catch (e) {
+                log(`Format ops: detachFromList failed (${e.message})`, 'warning');
+            }
+        }
+        await context.sync();
+        return;
+    }
+
+    // startNewList/attachToList fail at sync time for paragraphs that already
+    // belong to a list, so learn membership up front.
+    for (const paragraph of paragraphs) paragraph.load('isListItem');
+    await context.sync();
+
+    const fresh = [];
+    for (const paragraph of paragraphs) {
+        if (paragraph.isListItem) {
+            if (ops.listLevel !== undefined) paragraph.listItem.level = level;
+            if (listType) log('Format ops: a paragraph is already in a list; its list type was left unchanged', 'warning');
+        } else {
+            fresh.push(paragraph);
+        }
+    }
+    if (!listType && fresh.length > 0) {
+        log('Format ops: listLevel without listType only applies to existing list items', 'warning');
+    }
+
+    if (listType && fresh.length > 0) {
+        const list = fresh[0].startNewList();
+        list.load('id');
+        await context.sync();
+        if (listType === 'bullet') {
+            const bullet = _enumValue(Word.ListBullet, 'solid');
+            if (bullet !== undefined) list.setLevelBullet(level, bullet);
+        } else {
+            const numbering = _enumValue(Word.ListNumbering, 'arabic');
+            if (numbering !== undefined) list.setLevelNumbering(level, numbering);
+        }
+        if (ops.listLevel !== undefined) fresh[0].listItem.level = level;
+        for (const paragraph of fresh.slice(1)) paragraph.attachToList(list.id, level);
+        await context.sync();
+    } else if (ops.listLevel !== undefined) {
+        await context.sync();
     }
 }
 

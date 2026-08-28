@@ -17,7 +17,8 @@
  *       "paragraphStyle": "optional built-in style target (e.g. \"heading1\")",
  *       "insert": { "text": "new paragraph(s) to add", "position": "start|end" },
  *       "font": { "bold": true, "color": "#FF0000", ... },
- *       "paragraph": { "styleBuiltIn": "heading2", "alignment": "centered", ... }
+ *       "paragraph": { "styleBuiltIn": "heading2", "alignment": "centered",
+ *                      "listType": "bullet|number|none", "listLevel": 0, ... }
  *     }
  *   ]
  *
@@ -42,6 +43,10 @@ const FONT_NUMBER_KEYS = ['size'];
 const PARA_STRING_KEYS = ['style', 'styleBuiltIn', 'alignment'];
 /** Paragraph properties: point values. */
 const PARA_NUMBER_KEYS = ['lineSpacing', 'spaceBefore', 'spaceAfter', 'leftIndent', 'rightIndent', 'firstLineIndent'];
+/** Paragraph list payload: 'bullet'/'number' create a list, 'none' removes it. */
+const LIST_TYPES = ['bullet', 'number', 'none'];
+/** Word lists nest at most 9 levels (0-8). */
+const MAX_LIST_LEVEL = 8;
 
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -65,8 +70,12 @@ export function buildFormatPrompt(instruction, scopeText, scope) {
     const scopeName = scope === 'document' ? 'document' : 'selection';
     return (
         'You are a formatting assistant embedded in Microsoft Word. The user describes FORMATTING changes ' +
-        '(font, size, color, highlight, underline, paragraph style, alignment, spacing, indentation), ' +
-        'optionally including short NEW structural elements to add (e.g. an article title). ' +
+        'to text or paragraphs. Supported capabilities, all expressed through the op payloads below:\n' +
+        '- Headings & styles: built-in styles heading1-heading9, title, subtitle, quote, intenseQuote, listParagraph.\n' +
+        '- Lists: turn paragraphs into a bulleted or numbered list, nest items (levels 0-8), or remove list formatting.\n' +
+        '- Font: name, size, color, highlight, bold, italic, underline, strikethrough, superscript/subscript, caps.\n' +
+        '- Paragraph: alignment, line spacing, space before/after, indentation (left/right/first line).\n' +
+        'Optionally the ops may include short NEW structural elements to add (e.g. an article title). ' +
         'Translate the instruction into a JSON array of operations.\n\n' +
         'OUTPUT CONTRACT (strict):\n' +
         '- Output ONLY a JSON array. No markdown, no code fences, no explanations, no commentary.\n' +
@@ -81,9 +90,13 @@ export function buildFormatPrompt(instruction, scopeText, scope) {
         '"name": "font name", "size": 12 },\n' +
         '    "paragraph": { "styleBuiltIn": "normal|noSpacing|heading1|heading2|...|heading9|title|subtitle|quote|intenseQuote|listParagraph", ' +
         '"style": "custom style name", "alignment": "left|centered|right|justified", ' +
-        '"lineSpacing": 14, "spaceBefore": 6, "spaceAfter": 6, "leftIndent": 18, "rightIndent": 18, "firstLineIndent": 24 }\n' +
+        '"lineSpacing": 14, "spaceBefore": 6, "spaceAfter": 6, "leftIndent": 18, "rightIndent": 18, "firstLineIndent": 24, ' +
+        '"listType": "bullet|number|none", "listLevel": 0 }\n' +
         '  }\n' +
         `- Omit both "match" and "paragraphStyle" to target the entire ${scopeName}.\n` +
+        '- Lists: "listType": "bullet" or "number" turns the target paragraphs into ONE list (several matched ' +
+        'paragraphs become consecutive items); "listLevel" (0-8) sets the nesting level; "listType": "none" ' +
+        'removes list formatting. One op per list — do not emit a separate op per item.\n' +
         '- Use an "insert" op to ADD a short structural element that does not exist yet (e.g. a title): ' +
         `"text" is the new content and "position" is "start" or "end" of the ${scopeName} (default "end"); ` +
         '"font"/"paragraph" on the same op style the inserted paragraph(s). Keep inserts short — a title ' +
@@ -235,6 +248,22 @@ function _sanitizeParagraph(paragraph, log) {
         if (paragraph[key] !== undefined && Number.isFinite(Number(paragraph[key]))) {
             const n = Number(paragraph[key]);
             if (Math.abs(n) <= 1638) out[key] = n;
+        }
+    }
+    if (paragraph.listType !== undefined) {
+        const listType = String(paragraph.listType).trim().toLowerCase();
+        if (LIST_TYPES.includes(listType)) {
+            out.listType = listType;
+        } else {
+            log(`Format ops: unknown listType "${paragraph.listType}" (expected ${LIST_TYPES.join('|')}); dropped`, 'warning');
+        }
+    }
+    if (paragraph.listLevel !== undefined) {
+        const n = Math.round(Number(paragraph.listLevel));
+        if (Number.isFinite(n) && n >= 0 && n <= MAX_LIST_LEVEL) {
+            out.listLevel = n;
+        } else {
+            log(`Format ops: invalid listLevel "${paragraph.listLevel}" (expected 0-${MAX_LIST_LEVEL}); dropped`, 'warning');
         }
     }
     if (out.style && out.styleBuiltIn) {

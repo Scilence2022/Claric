@@ -614,8 +614,9 @@ OOXML tracked changes pipeline:
 ### Format Ops (`src/lib/format-ops.js`)
 
 - `buildFormatPrompt(instruction, scopeText, scope)` — asks the LLM for a JSON op array; rewrite-only instructions must yield `[]`
-- `parseFormatOps(raw, log)` — strict allowlist sanitizing: font payload (bold, italic, strikeThrough, doubleStrikeThrough, superscript, subscript, allCaps, smallCaps, underline, highlightColor, name, color, size), paragraph payload (style/styleBuiltIn, alignment, lineSpacing, spaceBefore/After, leftIndent/rightIndent, firstLineIndent), `insert` (`text` ≤ 2000 chars, `position: start|end`); targets via `match` substring (≤255 chars), `paragraphStyle`, or whole scope
+- `parseFormatOps(raw, log)` — strict allowlist sanitizing: font payload (bold, italic, strikeThrough, doubleStrikeThrough, superscript, subscript, allCaps, smallCaps, underline, highlightColor, name, color, size), paragraph payload (style/styleBuiltIn, alignment, lineSpacing, spaceBefore/After, leftIndent/rightIndent, firstLineIndent, listType bullet|number|none, listLevel 0-8), `insert` (`text` ≤ 2000 chars, `position: start|end`); targets via `match` substring (≤255 chars), `paragraphStyle`, or whole scope
 - `describeFormatOp(op)` — human-readable label for the proposal card
+- List ops apply via WordApi 1.3 list APIs (`_applyListOps` in word-actions.js): non-list paragraphs start/attach to ONE new list (`startNewList` + `attachToList`, `setLevelBullet`/`setLevelNumbering`); `none` detaches; `listLevel` alone re-nests existing list items; hosts without the API get a warning, not a failure
 
 ### Illustration (`src/lib/illustration.js`)
 

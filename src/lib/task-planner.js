@@ -50,8 +50,8 @@ export function buildPlanPrompt(instruction, hasSelection) {
         'list of atomic tasks, one per specialized pipeline.\n\n' +
         'CAPABILITIES (task "type"):\n' +
         '- "insert": add a short NEW structural element that does not exist yet (e.g. an article title, a heading).\n' +
-        '- "format": change the FORMATTING of existing text (font, size, color, highlight, paragraph style, ' +
-        'alignment, spacing, indentation) without rewriting it.\n' +
+        '- "format": change the FORMATTING of existing text (font, size, color, highlight, paragraph style ' +
+        'incl. headings, bulleted/numbered lists, alignment, spacing, indentation) without rewriting it.\n' +
         '- "edit": rewrite, polish, or otherwise change the CONTENT of existing text.\n' +
         '- "append": generate NEW long-form content appended at the document end.\n' +
         '- "table": create a NEW native Word table (with or without generated cell content). Editing the ' +
