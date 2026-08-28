@@ -117,9 +117,9 @@ async function _runLoop(deps, { systemPrompt, taskPrompt, tools, execute, maxSte
  *   analysis ("review the selected table") via the same object+tools
  *   protocol as image selections.
  */
-export async function prepareTableToolEdit(deps, { instruction, signal, onStep } = {}) {
+export async function prepareTableToolEdit(deps, { instruction, signal, onStep, region } = {}) {
     const { log } = deps;
-    const tableRegion = await readSelectionTableRegion(deps);
+    const tableRegion = region || await readSelectionTableRegion(deps);
     if (!tableRegion) return null;
 
     const model = createTableModel(tableRegion);

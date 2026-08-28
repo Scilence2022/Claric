@@ -1130,3 +1130,54 @@ describe('applySelectionAmendment (style ops)', () => {
     expect(result.warnings[0]).toMatch(/Unknown style op type/);
   });
 });
+
+describe('readDocumentFirstTableRegion', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  /** Word.run mock where the body holds N tables; values are 3×2. */
+  function makeDocTablesContext(tableCount) {
+    const tables = [];
+    for (let i = 0; i < tableCount; i++) {
+      tables.push({
+        isNullObject: false,
+        rowCount: 3,
+        values: TABLE_VALUES,
+        isUniform: true,
+        load: jest.fn(),
+      });
+    }
+    return {
+      document: { body: { tables: { items: tables, load: jest.fn() } } },
+      sync: jest.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  const { readDocumentFirstTableRegion } = require('../src/taskpane/word-actions.js');
+
+  test('returns a whole-table region for the first table', async () => {
+    setWordRun(makeDocTablesContext(1));
+    const region = await readDocumentFirstTableRegion(makeDeps());
+
+    expect(region).not.toBeNull();
+    expect(region.rowCount).toBe(3);
+    expect(region.colCount).toBe(2);
+    expect(region.bounds).toEqual({ startRow: 1, endRow: 3, startCol: 1, endCol: 2 });
+    expect(region.cells).toHaveLength(6);
+    expect(region.cells[0]).toEqual({ row: 1, col: 1, text: 'Header A' });
+  });
+
+  test('returns null when the document has no tables', async () => {
+    setWordRun(makeDocTablesContext(0));
+    expect(await readDocumentFirstTableRegion(makeDeps())).toBeNull();
+  });
+
+  test('logs the total table count so the user knows it targets the first one', async () => {
+    setWordRun(makeDocTablesContext(3));
+    const deps = makeDeps();
+    const region = await readDocumentFirstTableRegion(deps);
+
+    expect(region).not.toBeNull();
+    const logged = deps.log.mock.calls.map((c) => c[0]).join('\n');
+    expect(logged).toMatch(/3 table\(s\)/);
+  });
+});

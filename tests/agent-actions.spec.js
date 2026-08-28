@@ -182,6 +182,30 @@ describe('prepareTableToolEdit', () => {
         expect(sendMessages).not.toHaveBeenCalled();
     });
 
+    test('accepts an explicit region (document-scope table_management path)', async () => {
+        // Caller passed the document's first-table region directly — the
+        // selection reader is bypassed entirely and never invoked.
+        readSelectionTableRegion.mockResolvedValue(null);
+        sendMessages.mockResolvedValueOnce('{"tool":"set_table_style","args":{"style":"TableGrid"}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"styled"}}');
+        const documentRegion = {
+            ...REGION,
+            bounds: { startRow: 1, endRow: 3, startCol: 1, endCol: 2 },
+            style: { styleBuiltIn: 'TableGrid' },
+        };
+
+        const proposal = await prepareTableToolEdit(makeDeps(), { instruction: '样式', region: documentRegion });
+
+        expect(readSelectionTableRegion).not.toHaveBeenCalled();
+        expect(proposal.noOps).toBeUndefined();
+        expect(proposal.tablePatch.cells).toEqual([]);
+        expect(proposal.tablePatch.styleOps).toHaveLength(1);
+        expect(proposal.tableItems[0].label).toBe('Table look: style → TableGrid');
+        // The task prompt surfaces the ORIGINAL style snapshot from the region.
+        const taskPrompt = sendMessages.mock.calls[0][1][1].content;
+        expect(taskPrompt).toContain('Current table style:');
+    });
+
     test('throws a noChanges error when the loop records nothing and produces no summary', async () => {
         readSelectionTableRegion.mockResolvedValue(REGION);
         sendMessages.mockResolvedValue('{"tool":"finish","args":{"summary":""}}');

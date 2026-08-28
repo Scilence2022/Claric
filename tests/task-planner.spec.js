@@ -20,6 +20,14 @@ describe('parsePlan', () => {
     expect(tasks).toEqual([{ type: 'table', instruction: '在文档末尾插入一个三行三列的表格' }]);
   });
 
+  test('accepts the document-scope image/table management task types', () => {
+    const tasks = parsePlan('[{"type":"image_management","instruction":"给所有图片加上标题"},{"type":"table_management","instruction":"把表格改成三线表样式"}]');
+    expect(tasks).toEqual([
+      { type: 'image_management', instruction: '给所有图片加上标题' },
+      { type: 'table_management', instruction: '把表格改成三线表样式' },
+    ]);
+  });
+
   test('strips code fences and tolerates surrounding prose', () => {
     const tasks = parsePlan('Sure:\n```json\n[{"type":"qa","instruction":"总结全文"}]\n```\nDone.');
     expect(tasks).toEqual([{ type: 'qa', instruction: '总结全文' }]);
@@ -89,6 +97,10 @@ describe('buildPlanPrompt', () => {
     const p = buildPlanPrompt('增加标题，并深度润色修改', false);
     expect(p).toContain('增加标题，并深度润色修改');
     for (const type of ['"insert"', '"format"', '"edit"', '"append"', '"table"', '"illustration"', '"qa"']) {
+      expect(p).toContain(type);
+    }
+    // Document-scope image/table management are planner-recognizable too.
+    for (const type of ['"image_management"', '"table_management"']) {
       expect(p).toContain(type);
     }
     expect(p).toContain('Output ONLY a JSON array');
