@@ -618,6 +618,50 @@ describe('applyChunkResults', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain('Word API error');
   });
+
+  test('a truncated amendment is refused, never downgraded to a range-level strategy', async () => {
+    // Regression: the < 30% guard inside _applyParagraphLevelAmendment used
+    // to throw a plain Error, which the strategy dispatcher treated as any
+    // other paragraph-level failure and "fell back" to range-level diffing —
+    // writing the SAME truncated text in cruder form. A truncation verdict
+    // must end the chunk untouched instead.
+    const paraItem = {
+      text: 'First original paragraph with substantial content',
+      parentTableOrNullObject: { isNullObject: true, load: jest.fn() },
+      load: jest.fn(),
+    };
+    const bookmarkRange = {
+      text: 'First original paragraph with substantial content',
+      isNullObject: false,
+      load: jest.fn(),
+      paragraphs: { items: [paraItem], load: jest.fn() },
+    };
+    const mock = createMockWordRun([], {});
+    mock.mockContext.document.getBookmarkRangeOrNullObject
+      .mockImplementation(() => bookmarkRange);
+    global.Word.run = mock.wordRun;
+
+    const chunk = mockChunk('chunk-0', 0, 'First original paragraph with substantial content', 0, 0);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', { amendment: 'Tiny', chunk }),
+    ];
+    const onChunkApplied = jest.fn();
+
+    const result = await applyChunkResults(results, new Map([['chunk-0', '_wdpbm0']]), {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+      onChunkApplied,
+    });
+
+    // No range-level strategy ran with the truncated text.
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+    expect(applySentenceDiffStrategy).not.toHaveBeenCalled();
+    expect(result.amendmentsApplied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('truncated');
+    expect(onChunkApplied).toHaveBeenCalledWith('chunk-0', expect.objectContaining({ applied: false, error: true }));
+  });
 });
 
 describe('cleanupBookmarks', () => {
