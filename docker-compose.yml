@@ -12,7 +12,7 @@
 services:
   claric:
     # The tag tracks the package.json version (currently 0.5.0).
-    image: ghcr.io/yuch85/claric:0.5.0
+    image: ghcr.io/scilence2022/claric:0.5.0
     build: . # fallback to a local build when the registry image is absent
     ports:
       - "${HOST_PORT:-3000}:3000"

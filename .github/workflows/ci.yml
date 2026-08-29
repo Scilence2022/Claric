@@ -74,7 +74,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG=${GITHUB_REF#refs/tags/v}
-          IMAGE=ghcr.io/${{ github.repository_owner }}/claric
+          # GHCR repository names must be lowercase — the owner may not be
+          # (Scilence2022), so fold it via bash lowercase expansion.
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/claric"
           docker tag claric:ci "$IMAGE:$TAG"
           docker tag claric:ci "$IMAGE:latest"
           docker push "$IMAGE:$TAG"
