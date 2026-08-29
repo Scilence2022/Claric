@@ -1,0 +1,30 @@
+# Trivy suppressions for the container image gate (CI docker job).
+#
+# Scope: every entry below is a vulnerability in the node:22-alpine BASE
+# IMAGE's own packages — alpine system libraries or the npm CLI bundled
+# inside the node image. The application's runtime dependencies are clean
+# (npm audit --omit=dev reports 0 vulnerabilities, and the CI verify job
+# gates them at --audit-level=high), so these findings do not describe
+# software we ship.
+#
+# Rules for this file:
+# - One CVE per line, always with a reason and a date.
+# - Remove an entry as soon as the base image (or bundled npm) picks up the
+#   fix — check by running trivy locally or deleting the line and letting
+#   the gate tell you.
+# - NEVER add an entry for a vulnerability in an application dependency;
+#   fix the dependency instead.
+
+# npm bundled inside node:22-alpine (brace-expansion transitive)
+CVE-2026-13149 # brace-expansion DoS, npm-bundled, fixed in newer npm (2026-08-29)
+CVE-2026-14257 # brace-expansion DoS, npm-bundled (2026-08-29)
+CVE-2026-69152 # brace-expansion DoS bypass, npm-bundled (2026-08-29)
+
+# npm bundled inside node:22-alpine
+CVE-2026-69192 # ip-address parsing, npm-bundled (2026-08-29)
+CVE-2026-9496  # pacote, npm-bundled (2026-08-29)
+CVE-2026-33671 # picomatch ReDoS, npm-bundled (2026-08-29)
+CVE-2026-48815 # sigstore, npm-bundled (2026-08-29)
+CVE-2026-59873 # tar gzip-bomb DoS (CRITICAL), npm-bundled (2026-08-29)
+CVE-2026-59874 # tar malformed-archive DoS, npm-bundled (2026-08-29)
+CVE-2026-73566 # tar long-path DoS, npm-bundled (2026-08-29)

@@ -31,6 +31,10 @@ ENV NODE_ENV=production
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+
+# Pull current alpine security patches (e.g. libcrypto3/openssl) into the
+# runtime image; the node:22-alpine digest lags the alpine repos.
+RUN apk upgrade --no-cache
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/manifest.template.xml ./manifest.template.xml
 COPY --from=builder /app/package.json ./package.json
