@@ -65,9 +65,9 @@ function exampleFromSchema(schema) {
  * Builds the loop-side tool specs and the call→server mapping for a set of
  * connected MCP clients.
  *
- * @param {Array<{name: string, client: object}>} clients - Connected clients
- *   paired with their mcpTools arrays (from client.listTools()).
- * @param {Array<{name: string, client: object, mcpTools: Array}>} _clients
+ * @param {Array<{name: string, client: object, mcpTools: Array}>} clients - Connected
+ *   clients paired with their mcpTools arrays (from client.listTools()), plus any
+ *   synthetic pseudo-servers (e.g. the resource tools client).
  * @returns {{loopTools: Array, mapping: Map<string, {client: object, originalName: string, serverName: string}>}}
  */
 export function buildLoopTools(clients) {
@@ -159,4 +159,127 @@ export function createMcpToolExecutor(mapping, { maxChars = MAX_MCP_RESULT_CHARS
             return { ok: false, error: `MCP call failed: ${err.message}` };
         }
     };
+}
+
+/**
+ * The two synthetic resource tools every MCP session gets. They expose a
+ * server's MCP resources to the loop so the model can discover and pull
+ * reference material itself, instead of the host preloading everything.
+ */
+export const RESOURCE_TOOL_SPECS = Object.freeze([
+    Object.freeze({
+        name: 'mcp_list_resources',
+        description: 'List reference resources (documents, notes, files) exposed by the connected MCP servers. Returns one "server | uri | name" line per resource.',
+        inputSchema: Object.freeze({ type: 'object', properties: {} }),
+    }),
+    Object.freeze({
+        name: 'mcp_read_resource',
+        description: 'Read one resource by server and uri. Returns the resource text content.',
+        inputSchema: Object.freeze({
+            type: 'object',
+            properties: {
+                server: { type: 'string', description: 'Server name as shown by mcp_list_resources' },
+                uri: { type: 'string', description: 'Resource uri as shown by mcp_list_resources' },
+            },
+        }),
+    }),
+]);
+
+/**
+ * Builds a synthetic MCP client that implements the two resource tools on
+ * top of the connected clients' resources/list + resources/read. Fed into
+ * buildLoopTools like any real server, so namespacing stays uniform.
+ *
+ * @param {Array<{name: string, client: object}>} clients - Connected clients
+ * @returns {{callTool: function(string, object): Promise<object>}}
+ */
+export function createResourceClient(clients) {
+    const byName = new Map((Array.isArray(clients) ? clients : []).map((c) => [String(c.name || ''), c.client]));
+    return {
+        callTool: async (name, args) => {
+            if (name === 'mcp_list_resources') {
+                const lines = [];
+                for (const [serverName, client] of byName) {
+                    try {
+                        const resources = await client.listResources();
+                        for (const r of resources) {
+                            lines.push(`${serverName} | ${r && r.uri} | ${(r && r.name) || ''}`);
+                        }
+                    } catch (_err) {
+                        // A server without resource support simply lists nothing.
+                    }
+                }
+                return { content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No resources found.' }] };
+            }
+            if (name === 'mcp_read_resource') {
+                const serverName = String((args && args.server) || '');
+                const uri = String((args && args.uri) || '');
+                const client = byName.get(serverName);
+                if (!client) {
+                    return { isError: true, content: [{ type: 'text', text: `Unknown server "${serverName}". Call mcp_list_resources first.` }] };
+                }
+                try {
+                    const result = await client.readResource(uri);
+                    const texts = (result.contents || [])
+                        .map((c) => (typeof c.text === 'string' ? c.text : `[${c.mimeType || 'binary'} content]`))
+                        .join('\n');
+                    return { content: [{ type: 'text', text: texts || '(empty resource)' }] };
+                } catch (err) {
+                    return { isError: true, content: [{ type: 'text', text: `Read failed: ${err.message}` }] };
+                }
+            }
+            return { isError: true, content: [{ type: 'text', text: `Unknown resource tool "${name}".` }] };
+        },
+    };
+}
+
+/**
+ * Converts an MCP server's prompt templates into Claric skill packages
+ * (the convergence point with lib/skill-package.js): each MCP prompt
+ * becomes a SKILL.md descriptor named "<server>-<prompt>", with the first
+ * user-message text as the instruction body.
+ *
+ * @param {string} serverName
+ * @param {object} client - Connected MCP client
+ * @returns {Promise<{imported: Array<object>, errors: Array<string>}>}
+ */
+export async function importServerPrompts(serverName, client) {
+    const imported = [];
+    const errors = [];
+    let prompts = [];
+    try {
+        prompts = await client.listPrompts();
+    } catch (err) {
+        return { imported, errors: [`Listing prompts failed: ${err.message}`] };
+    }
+    for (const prompt of prompts) {
+        if (!prompt || typeof prompt.name !== 'string') continue;
+        try {
+            const result = await client.getPrompt(prompt.name, {});
+            const firstUser = (result.messages || []).find((m) => m.role === 'user');
+            const body = firstUser && firstUser.content && typeof firstUser.content.text === 'string'
+                ? firstUser.content.text
+                : '';
+            if (!body.trim()) {
+                errors.push(`${prompt.name}: empty prompt body`);
+                continue;
+            }
+            const slug = `${serverName}-${prompt.name}`
+                .toLowerCase()
+                .replace(/[^a-z0-9-]+/g, '-')
+                .replace(/^-+|-+$/g, '') || 'mcp-prompt';
+            imported.push({
+                name: slug,
+                slash: `/${slug}`,
+                description: prompt.description || `Imported MCP prompt ${prompt.name}`,
+                category: 'chat',
+                scope: 'chat',
+                defaultTemplate: body,
+                imported: true,
+            });
+        } catch (err) {
+            errors.push(`${prompt.name}: ${err.message}`);
+        }
+    }
+    return { imported, errors };
 }

@@ -64,7 +64,9 @@ src/
     mcp-tools.js              # MCP↔tool-loop bridge: name sanitization +
                                #   cross-server namespacing, JSON Schema →
                                #   example args, executor routing (text join,
-                               #   image attachments, isError, truncation)
+                               #   image attachments, isError, truncation);
+                               #   synthetic resource tools (list/read),
+                               #   MCP prompts → skill package convergence
     skill-package.js          # SKILL.md skill package parser/serializer
                                #   (frontmatter name/description/category/scope
                                #   + markdown body → skill descriptor)

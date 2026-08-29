@@ -45,6 +45,7 @@ function splitFrontmatter(text) {
 
     const block = text.slice(3, end).replace(/^\r?\n/, '');
     const body = text.slice(end + 4).replace(/^\r?\n/, '');
+    /** @type {Record<string, string>} */
     const fields = {};
     for (const line of block.split(/\r?\n/)) {
         const idx = line.indexOf(':');

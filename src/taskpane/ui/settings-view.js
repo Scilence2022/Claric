@@ -16,6 +16,8 @@ import { CATEGORIES } from '../../lib/prompt-manager.js';
 import { getProviderPreset } from '../../lib/providers.js';
 import { parseSkillPackage } from '../../lib/skill-package.js';
 import { connectMcpServer } from '../../lib/mcp-client.js';
+import { importServerPrompts } from '../../lib/mcp-tools.js';
+import { TOOL_LOOP_LIMITS } from '../../lib/tool-registry.js';
 import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../../lib/skill-store.js';
 import { appState, getActiveBackendConfig, debounce, persistSettings } from '../app-state.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
@@ -121,6 +123,7 @@ export function initSettings({ onConfigChanged } = {}) {
     updateUIFromConfig();
     initSkillImport();
     initMcpServers();
+    initMcpStepBudget();
     renderAllDropdowns();
 
     // Restore textarea content from the active prompt of each category.
@@ -778,6 +781,29 @@ function renderMcpServerList() {
             renderMcpServerList();
         });
 
+        const importBtn = document.createElement('button');
+        importBtn.type = 'button';
+        importBtn.className = 'btn btn-compact';
+        importBtn.textContent = 'Import prompts';
+        importBtn.addEventListener('click', async () => {
+            addLog(`Importing prompts from MCP "${server.name || server.url}"...`, 'info');
+            try {
+                const client = await connectMcpServer({ url: server.url, token: server.token, log: addLog });
+                const result = await importServerPrompts(server.name || 'mcp', client);
+                let added = 0;
+                for (const descriptor of result.imported) {
+                    const addResult = addImportedSkill(descriptor);
+                    if (addResult.ok) added += 1;
+                    else addLog(`Skipped ${descriptor.slash}: ${addResult.error}`, 'warning');
+                }
+                for (const error of result.errors) addLog(`Skipped an MCP prompt: ${error}`, 'warning');
+                addLog(`Imported ${added} prompt(s) as slash commands from "${server.name || server.url}".`, added ? 'success' : 'info');
+                renderSkillImportList();
+            } catch (err) {
+                addLog(`Prompt import failed: ${err.message}`, 'error');
+            }
+        });
+
         const removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'btn btn-compact';
@@ -789,6 +815,7 @@ function renderMcpServerList() {
         });
 
         row.appendChild(text);
+        row.appendChild(importBtn);
         row.appendChild(toolsBtn);
         row.appendChild(toggleBtn);
         row.appendChild(removeBtn);
@@ -825,4 +852,21 @@ function initMcpServers() {
     });
 
     renderMcpServerList();
+}
+
+/**
+ * Per-turn step budget for MCP tool loops (default: TOOL_LOOP_LIMITS).
+ */
+function initMcpStepBudget() {
+    const input = document.getElementById('mcpStepBudget');
+    if (!input) return;
+    input.value = String(appState.config.mcpStepBudget || TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT);
+    input.addEventListener('change', () => {
+        const value = Number(input.value);
+        appState.config.mcpStepBudget = Number.isFinite(value) && value > 0
+            ? Math.min(Math.round(value), 48)
+            : TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT;
+        input.value = String(appState.config.mcpStepBudget);
+        saveSettings();
+    });
 }
