@@ -251,10 +251,12 @@ module.exports = (env, argv) => {
     performance: {
       // The taskpane bundle legitimately exceeds webpack's 244 KiB default
       // hint: it is served same-origin to WebView2, so there is no cold
-      // network fetch and a single ~280 KiB bundle is acceptable. Keep a
-      // ceiling here to catch accidental size regressions.
-      maxAssetSize: 400 * 1024,
-      maxEntrypointSize: 400 * 1024
+      // network fetch and a single ~430 KiB bundle is acceptable. This is a
+      // hard gate (hints: 'error' fails the build), calibrated just above
+      // the current size, to catch accidental size regressions.
+      hints: 'error',
+      maxAssetSize: 500 * 1024,
+      maxEntrypointSize: 500 * 1024
     },
     devtool: isDev ? 'eval-source-map' : false
   };

@@ -8,9 +8,11 @@
     "build": "node scripts/generate-icons.cjs && webpack --mode production",
     "lint": "eslint .",
     "test": "jest",
+    "coverage": "jest --coverage --coverageReporters=text --coverageReporters=json-summary",
+    "check-coverage": "node scripts/check-coverage.cjs",
     "manifest": "node scripts/generate-manifest.cjs",
     "typecheck": "tsc",
-    "verify": "npm run lint && npm test && npm run typecheck && npm run build",
+    "verify": "npm run lint && npm test && npm run coverage && npm run check-coverage && npm run typecheck && npm run build",
     "icons": "node scripts/generate-icons.cjs"
   },
   "type": "module",
