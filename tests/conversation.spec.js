@@ -14,7 +14,7 @@
  */
 
 const { routeTurn, createConversation, TURN_TYPE, chunkCitation, looksLikeChainedInstruction } = require('../src/taskpane/conversation.js');
-const { BUILTIN_SKILLS } = require('../src/taskpane/skills.js');
+const { BUILTIN_SKILLS, listSkills } = require('../src/taskpane/skills.js');
 
 function makeAppState(overrides = {}) {
   return {
@@ -2048,4 +2048,28 @@ describe('chunkCitation', () => {
     const c = chunkCitation({ id: 'c2', paragraphs: [] });
     expect(c.label).toBe('c2');
   });
+});
+
+describe('/mcp reserved skill routing', () => {
+    test('routeTurn sends /mcp to the reserved tools skill', () => {
+        const turn = routeTurn('/mcp search the web for X', {
+            hasSelection: false,
+            skills: listSkills(makeAppState().promptManager),
+        });
+        expect(turn.type).toBe(TURN_TYPE.SKILL);
+        expect(turn.skill).toEqual(expect.objectContaining({ name: 'mcp', category: 'tools', reserved: true }));
+        expect(turn.args).toBe('search the web for X');
+    });
+
+    test('with no MCP servers configured the turn explains itself instead of failing', async () => {
+        const appState = makeAppState({ config: {} });
+        const view = makeView();
+        const conv = createConversation({
+            appState, view, input: makeInput(), log: jest.fn(),
+            actions: makeActions(), getSelectionText: async () => '',
+        });
+
+        await conv.submit('/mcp hello');
+        expect(view._msg.appendText).toHaveBeenCalledWith(expect.stringContaining('No MCP servers are configured'));
+    });
 });

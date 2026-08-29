@@ -28,6 +28,12 @@
  */
 
 import * as defaultActions from './word-actions.js';
+import { getActiveBackendConfig } from './app-state.js';
+import { sendMessages } from '../lib/llm-client.js';
+import { connectMcpServer } from '../lib/mcp-client.js';
+import { buildLoopTools, createMcpToolExecutor } from '../lib/mcp-tools.js';
+import { runToolLoop } from '../lib/tool-loop.js';
+import { buildToolLoopSystemPrompt, TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
 import * as agentActions from './agent-actions.js';
 import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
@@ -1566,6 +1572,98 @@ export function createConversation(deps) {
     /**
      * Dispatches a skill turn by category and resolved scope.
      */
+    /**
+     * Reserved /mcp turn: a ReAct tool loop over the configured MCP
+     * servers. Read-only contract — tool results render as the chat
+     * answer; nothing writes to the Word document from this path (MCP
+     * tools act on their own external systems).
+     *
+     * @param {string} args - Instruction after /mcp
+     * @param {object} msg - Assistant message view
+     * @param {string} selectionText - Current selection (focus context)
+     * @param {AbortController} turnController - Shared turn controller
+     * @private
+     */
+    async function runMcpToolsTurn(args, msg, selectionText, turnController) {
+        const instruction = (args || '').trim() ||
+            'List the tools available to you and summarize what you can do with them.';
+        const servers = (appState.config.mcpServers || [])
+            .filter((s) => s && s.url && s.enabled !== false);
+        if (servers.length === 0) {
+            msg.appendText('No MCP servers are configured. Add one in Settings → MCP Servers, then run /mcp again.');
+            return;
+        }
+        const budget = Number(appState.config.mcpStepBudget) > 0
+            ? Math.round(Number(appState.config.mcpStepBudget))
+            : TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT;
+
+        log(`Connecting to ${servers.length} MCP server(s)...`, 'info');
+        const connected = [];
+        for (const server of servers) {
+            const label = server.name || server.url;
+            try {
+                const client = await connectMcpServer({ url: server.url, token: server.token, log });
+                const mcpTools = await client.listTools();
+                connected.push({ name: label, client, mcpTools });
+                log(`MCP "${label}": ${mcpTools.length} tool(s) available.`, 'info');
+            } catch (err) {
+                log(`MCP server "${label}" failed: ${err.message}`, 'warning');
+            }
+        }
+        if (connected.length === 0) {
+            msg.appendText('No MCP server could be reached — see the activity log for details.');
+            return;
+        }
+
+        const { loopTools, mapping } = buildLoopTools(connected);
+        if (loopTools.length === 0) {
+            msg.appendText('The configured MCP servers expose no tools.');
+            return;
+        }
+
+        const myController = turnController || new AbortController();
+        appState.isProcessing = true;
+        appState.chatController = myController;
+        input.setProcessing(true);
+        try {
+            const config = getActiveBackendConfig(appState);
+            const taskPrompt = instruction + (selectionText
+                ? `\n\n--- SELECTED TEXT (focus) ---\n${selectionText}`
+                : '');
+            msg.setStatus('Working with MCP tools...');
+
+            const result = await runToolLoop({
+                systemPrompt: buildToolLoopSystemPrompt(loopTools, { maxSteps: budget }),
+                taskPrompt,
+                tools: loopTools,
+                execute: createMcpToolExecutor(mapping),
+                send: (messages) => sendMessages(config, messages, log, myController.signal, 120000),
+                maxSteps: budget,
+                signal: myController.signal,
+                onStep: (step) => {
+                    if (step.call) {
+                        msg.appendLogLine(`MCP step ${step.step}: ${step.call.tool}${step.ok === false ? ' (failed)' : ''}`);
+                    }
+                },
+            });
+            msg.setStatus('');
+            msg.setText(result.summary || 'Done — the tool loop finished without a summary.');
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                msg.setStatus('Cancelled.');
+            } else {
+                log(`MCP tools turn failed: ${error.message}`, 'error');
+                msg.markError(error.message);
+            }
+        } finally {
+            if (appState.chatController === myController && !turnController) {
+                appState.chatController = null;
+                appState.isProcessing = false;
+                input.setProcessing(false);
+            }
+        }
+    }
+
     async function runSkillTurn(skill, args, hasSelection, msg, turnDeps, selectionText, selectionImages, turnController) {
         switch (skill.category) {
             case 'chat':
@@ -1575,6 +1673,12 @@ export function createConversation(deps) {
                 break;
             case 'summary':
                 await runSummaryTurn(skill, args, msg, turnDeps, turnController);
+                break;
+            case 'tools':
+                // Reserved /mcp skill: a ReAct tool loop over the configured
+                // MCP servers. Read-only contract — results render as the
+                // chat answer, never as direct document writes.
+                await runMcpToolsTurn(args, msg, selectionText, turnController);
                 break;
             case 'comment':
                 if (skill.scope === 'selection-first' && hasSelection) {

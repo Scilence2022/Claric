@@ -1476,3 +1476,11 @@ textarea.form-control {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* MCP server add row (Settings → General) */
+.mcp-server-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr 1.4fr auto;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-sm);
+}

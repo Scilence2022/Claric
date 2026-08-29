@@ -110,6 +110,21 @@ export const BUILTIN_SKILLS = Object.freeze([
 ]);
 
 /**
+ * The reserved MCP-tools skill. Always listed; the turn runner explains
+ * itself when no MCP server is configured yet (Settings → MCP Servers).
+ * @type {Readonly<{name: string, slash: string, description: string, category: string, scope: string, defaultTemplate: string, reserved: boolean}>}
+ */
+export const RESERVED_MCP_SKILL = Object.freeze({
+    name: 'mcp',
+    slash: '/mcp',
+    description: 'Run an instruction with tools from your configured MCP servers (Settings → MCP Servers)',
+    category: 'tools',
+    scope: 'tools',
+    defaultTemplate: '',
+    reserved: true,
+});
+
+/**
  * Maps a PromptManager category to the skill scope a custom prompt should get.
  *
  * @param {string} category - One of CATEGORIES
@@ -122,15 +137,16 @@ function scopeForCategory(category) {
 }
 
 /**
- * Lists all available skills: the six built-ins, one skill per prompt
- * saved in PromptManager (slash name derived from the prompt id), and the
- * imported SKILL.md skill packages (from skill-store).
+ * Lists all available skills: the six built-ins, the reserved MCP-tools
+ * skill, one skill per prompt saved in PromptManager (slash name derived
+ * from the prompt id), and the imported SKILL.md skill packages (from
+ * skill-store).
  *
  * @param {object} promptManager - PromptManager instance
  * @returns {Array<object>} Skill descriptors (built-ins first)
  */
 export function listSkills(promptManager) {
-    const skills = [...BUILTIN_SKILLS];
+    const skills = [...BUILTIN_SKILLS, RESERVED_MCP_SKILL];
     if (!promptManager) return skills;
 
     for (const category of CATEGORIES) {

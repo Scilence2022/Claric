@@ -57,6 +57,14 @@ src/
                                #   tracked changes (paragraph-level LCS +
                                #   similarity alignment, blank-paragraph-safe);
                                #   re-anchors drifted staged ranges at apply time
+    mcp-client.js             # Minimal MCP client (Streamable HTTP JSON-RPC):
+                               #   initialize handshake + session-id echo,
+                               #   tools/list, tools/call; JSON and SSE
+                               #   response bodies; injectable fetch
+    mcp-tools.js              # MCP↔tool-loop bridge: name sanitization +
+                               #   cross-server namespacing, JSON Schema →
+                               #   example args, executor routing (text join,
+                               #   image attachments, isError, truncation)
     skill-package.js          # SKILL.md skill package parser/serializer
                                #   (frontmatter name/description/category/scope
                                #   + markdown body → skill descriptor)
