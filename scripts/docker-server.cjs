@@ -252,6 +252,16 @@ function handleProxyRequest(route, req, res, urlPath) {
   const query = req.url.split('?')[1];
   const upstreamPath = urlPath.slice(route.proxyPath.length) + (query ? `?${query}` : '');
   const upstream = new URL(upstreamPath, route.targetUrl);
+  // `new URL(suffix, base)` rebases onto a protocol-relative suffix ("//host"
+  // or "/\\host" after the prefix is stripped), letting a request path pick
+  // an arbitrary authority — an SSRF hole. The suffix may only select a path
+  // on the configured target's own origin; anything else is rejected before
+  // a socket is opened.
+  if (upstream.origin !== route.targetUrl.origin) {
+    console.error(`[${route.proxyPath} Proxy] rejected cross-origin path: ${urlPath}`);
+    sendError(res, 400, 'Invalid proxy path');
+    return;
+  }
 
   const headers = {};
   for (const [name, value] of Object.entries(req.headers)) {
@@ -461,4 +471,11 @@ function startServer() {
   });
 }
 
-startServer();
+// Run directly (`node scripts/docker-server.cjs`): boot the server.
+// Required as a module (tests): export the pieces worth unit-testing and
+// leave the process alone.
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { buildProxyRoutes, handleProxyRequest };
