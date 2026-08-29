@@ -24,9 +24,12 @@ What this project does and does not promise:
   with DOMPurify before insertion into Word documents, mitigating
   prompt-injection turning into live markup in generated summaries.
 - **Static server** — the production server (`scripts/docker-server.cjs`)
-  rejects path traversal, malformed percent-encoded URLs, and non-GET/HEAD
-  methods (except on the LLM proxy paths); it serves files under `dist/`
-  plus the generated manifest.
+  rejects path traversal, malformed percent-encoded URLs, URLs containing
+  control characters (a decoded NUL used to crash the process via
+  `fs.readFile`), and non-GET/HEAD methods (except on the LLM proxy paths);
+  it serves files under `dist/` plus the generated manifest. Unexpected
+  throws are answered per-connection (500) instead of terminating the
+  process.
 - **LLM proxy** — production proxy routes are disabled by default; setting a
   provider's `*_PROXY_PATH` (e.g. `OLLAMA_PROXY_PATH=/ollama`) opts in and
   forwards request bodies and the `Authorization` header to the upstream set
