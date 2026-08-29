@@ -181,7 +181,8 @@ src/
                                #   send/cancel, model pill, selection preview
                                #   chip (text + image thumbnails + +N badge)
       welcome.js               # Welcome empty state with skill chips
-      settings-view.js         # Settings slide-over + prompt management
+      settings-view.js         # Settings slide-over (General / Prompts / Skills tabs)
+                               #   + prompt management
       proposal-card.js         # Staged proposal card: per-change checkboxes,
                                #   locate button, image/table previews,
                                #   selective apply, terminal states

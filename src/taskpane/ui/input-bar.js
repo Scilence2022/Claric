@@ -203,7 +203,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         if (skills.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'skill-picker-desc';
-            empty.textContent = 'No skills available.';
+            empty.textContent = 'No slash commands available.';
             skillsMenu.appendChild(empty);
         }
         for (const skill of skills) {

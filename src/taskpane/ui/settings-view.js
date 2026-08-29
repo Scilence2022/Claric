@@ -153,7 +153,7 @@ export function closeSettings() {
 }
 
 /**
- * Activates a settings tab ("general" or "prompts") and shows its page.
+ * Activates a settings tab ("general", "prompts", or "skills") and shows its page.
  *
  * @param {string} name - The tab's data-tab value
  */

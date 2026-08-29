@@ -1575,10 +1575,10 @@ textarea.form-control {
 .mac-switch-slider::before {
     content: '';
     position: absolute;
-    width: 27px;
-    height: 27px;
-    left: -3px;
-    top: -3px;
+    width: 19px;
+    height: 19px;
+    left: 1px;
+    top: 1px;
     border-radius: 50%;
     background: #ffffff;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 1px 1px rgba(0, 0, 0, 0.12);
