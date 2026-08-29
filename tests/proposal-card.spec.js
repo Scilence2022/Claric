@@ -29,6 +29,24 @@ function makeCard(overrides = {}) {
 }
 
 describe('createProposalCard', () => {
+  test('previewSvg renders inline sanitized SVG (no img, no active content)', () => {
+    // Regression: SVG previews used to ship as base64 data-URL <img>s, which
+    // decode fine in Chromium but fail on some hosts (WKWebView taskpane).
+    // The inline variant renders the sanitized markup directly.
+    const card = makeCard({
+      previewSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80">'
+        + '<rect width="120" height="80" fill="#eef"/><circle cx="60" cy="40" r="20" fill="#2e9e6b"/>'
+        + '<script>alert(1)</' + 'script></svg>',
+    });
+    const holder = card.el.querySelector('.proposal-card-preview-svg');
+    expect(holder).not.toBeNull();
+    expect(holder.querySelector('svg')).not.toBeNull();
+    // Render-time sanitization strips active content even if staged markup
+    // somehow carried it.
+    expect(holder.querySelector('script')).toBeNull();
+    expect(card.el.querySelector('img.proposal-card-preview')).toBeNull();
+  });
+
   test('without items there is no change list (original behavior)', () => {    const card = makeCard();
     expect(card.el.querySelector('.proposal-card-changes')).toBeNull();
   });

@@ -18,6 +18,7 @@
  * @module ui/chat-view
  */
 
+import { sanitizeSvg } from '../../lib/illustration.js';
 import { buildTextDiffElement } from './diff-view.js';
 import { appState } from '../app-state.js';
 import { renderTablePreview, sanitizeTablePreview } from './proposal-card.js';
@@ -54,6 +55,7 @@ function _proposalRecordFromMeta(p) {
         detail: p.detail,
         countsText: p.countsText,
         previewSrc: p.previewSrc || null,
+        previewSvg: p.previewSvg || null,
         tablePreview: sanitizeTablePreview(p.tablePreview),
         items: Array.isArray(p.items) ? p.items.map((it) => ({
             id: it.id,
@@ -430,6 +432,7 @@ function _renderHistoricalAssistant(m) {
  * @param {string} [p.detail] - extra status text for warning/error
  * @param {string} [p.countsText]
  * @param {string} [p.previewSrc]
+ * @param {string} [p.previewSvg] - Sanitized SVG markup, rendered inline
  * @param {object} [p.tablePreview] - Sanitized read-only table preview data
  * @param {Array<object>} [p.items] - { label, before?, after?, searchText? }
  * @returns {HTMLElement|null}
@@ -457,7 +460,14 @@ export function renderStaticProposalCard(p) {
     }
     el.appendChild(head);
 
-    if (p.previewSrc) {
+    if (p.previewSvg) {
+        // Inline sanitized SVG — same host-agnostic reasoning as the live
+        // proposal card: SVG data URLs fail to decode on some hosts.
+        const holder = document.createElement('div');
+        holder.className = 'proposal-card-preview proposal-card-preview-svg';
+        holder.innerHTML = sanitizeSvg(p.previewSvg);
+        el.appendChild(holder);
+    } else if (p.previewSrc) {
         const img = document.createElement('img');
         img.className = 'proposal-card-preview';
         img.alt = 'Proposal preview';

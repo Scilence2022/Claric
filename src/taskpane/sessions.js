@@ -9,7 +9,7 @@
  * Goals:
  *   - Append-only-friendly writes (update bumps updatedAt + keeps createdAt).
  *   - Bounded storage: at most MAX_SESSIONS entries and a soft total byte cap.
- *   - Oversized sessions lose illustration previewSrc before any other field.
+ *   - Oversized sessions lose illustration previews before any other field.
  *   - Corrupt JSON in either store fails closed (returns empty / null)
  *     instead of throwing — the add-in must keep working with no sessions.
  *
@@ -116,7 +116,7 @@ const MAX_MESSAGE_TEXT_CHARS = 100_000;
 /**
  * Degrades a session until it fits under MAX_SESSION_BYTES, cheapest loss
  * first:
- *   1. illustration previewSrc (pure eye-candy, regenerable),
+ *   1. illustration previews (previewSrc/previewSvg — pure eye-candy, regenerable),
  *   2. proposal before/after diff bodies (review metadata stays),
  *   3. whole proposals on a message,
  *   4. pathological message text (keeps the head; only hit by multi-MB
@@ -132,9 +132,10 @@ function trimOversizedSession(session) {
     for (const msg of session.messages) {
         if (!msg || !Array.isArray(msg.proposals)) continue;
         for (const p of msg.proposals) {
-            if (p && p.previewSrc) {
-                bytes -= (p.previewSrc || '').length;
+            if (p && (p.previewSrc || p.previewSvg)) {
+                bytes -= ((p.previewSrc || '').length + (p.previewSvg || '').length);
                 p.previewSrc = null;
+                p.previewSvg = null;
             }
         }
         if (bytes <= MAX_SESSION_BYTES) return session;
