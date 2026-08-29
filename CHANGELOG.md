@@ -4,6 +4,21 @@ All notable changes to Claric are documented here. The format is a loose
 Keep-a-Changelog style; versions track `package.json` and the `v*` git tags
 that drive the GHCR image publish in CI.
 
+## [1.0.1] — 2026-08-29
+
+### Changed
+
+- **Store display name** — `DISPLAY_NAME` default is now "Claric — AI
+  Writing & Editing Assistant for Word": a general capability descriptor
+  (previously "AI Redlining for Word"). Audience scenarios — academic
+  writing first, then contracts/legal and everyday documents — are carried
+  by the store listing and the manifest description instead of the name.
+- Manifest `Description` updated to the general positioning ("Great for
+  papers, theses, contracts, and everyday writing").
+- `docs/store-listing.md` rewritten to the general positioning with
+  academic writing as the lead scenario (EN + 中文); keywords now cover
+  academic-writing search terms alongside legal ones.
+
 ## [1.0.0] — 2026-08-29
 
 First Microsoft Marketplace-ready release (store validation requires a

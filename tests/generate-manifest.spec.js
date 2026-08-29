@@ -192,10 +192,10 @@ describe('store identity generation', () => {
   });
 
   test('DISPLAY_NAME env overrides the display name with a store-style suffix', () => {
-    withEnv({ DISPLAY_NAME: 'Claric — AI Redlining for Word' }, () => {
+    withEnv({ DISPLAY_NAME: 'Claric — AI Writing & Editing Assistant for Word' }, () => {
       generateManifest({ rootDir: projectDir });
       const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
-      expect(xml).toContain('<DisplayName DefaultValue="Claric — AI Redlining for Word"/>');
+      expect(xml).toContain('<DisplayName DefaultValue="Claric — AI Writing &amp; Editing Assistant for Word"/>');
     });
   });
 });
