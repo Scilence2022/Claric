@@ -31,14 +31,14 @@ module.exports = {
     '<rootDir>/src/lib/vendor/',
     '<rootDir>/src/scripts/'
   ],
-  // Ratchets: calibrated just under the measured baseline
-  // (global 73.4/68.0/72.9/74.4, src/lib 90.9/82.8/95.8/93.2) so a
-  // meaningful regression fails CI while normal fluctuation does not.
-  // Only raise these.
-  coverageThreshold: {
-    global: { statements: 70, branches: 65, functions: 70, lines: 72 },
-    'src/lib/': { statements: 88, branches: 80, functions: 93, lines: 91 }
-  },
+  // NOTE: no coverageThreshold here on purpose — jest's threshold check
+  // re-instruments collectCoverageFrom matches it deems uncovered WITHOUT
+  // applying the ignore patterns above, counting the vendored diff-match-
+  // patch copy at 0% and deflating the global numbers ~15 points. The gates
+  // live in scripts/check-coverage.cjs over the json-summary report, whose
+  // numbers match the table: global 70/65/70/72, src/lib 88/80/93/91
+  // (baseline 73.4/68.0/72.9/74.4 and 90.9/82.8/95.8/93.2 — ratchet, only
+  // raise).
   coverageDirectory: 'coverage',
   verbose: true
 };
