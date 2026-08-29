@@ -23,6 +23,13 @@ import { defineTool } from './tool-registry.js';
 /** Max characters of one MCP tool result accepted into an observation. */
 export const MAX_MCP_RESULT_CHARS = 64 * 1024;
 
+// Bound for a single base64 image attachment from an MCP tool result.
+// Text results are truncated at MAX_MCP_RESULT_CHARS; images had no cap at
+// all, so a misbehaving server could inflate the next prompt (and memory)
+// with an arbitrarily large payload. ~1 MB of binary is ample for any
+// diagram a tool legitimately returns.
+export const MAX_MCP_ATTACHMENT_B64_CHARS = 1_400_000;
+
 /**
  * Sanitizes an MCP tool name into the loop's snake_case namespace.
  *
@@ -117,7 +124,11 @@ function observationFromResult(mcpResult, { maxChars = MAX_MCP_RESULT_CHARS } = 
             texts.push(block.text);
         } else if (block && block.type === 'image' && typeof block.data === 'string') {
             const mime = block.mimeType || 'image/png';
-            attachments.push({ dataUrl: `data:${mime};base64,${block.data}` });
+            if (block.data.length > MAX_MCP_ATTACHMENT_B64_CHARS) {
+                texts.push(`[image attachment dropped: ${mime}, ${block.data.length} base64 chars exceeds the ${MAX_MCP_ATTACHMENT_B64_CHARS}-char cap]`);
+            } else {
+                attachments.push({ dataUrl: `data:${mime};base64,${block.data}` });
+            }
         }
     }
     let text = texts.join('\n');

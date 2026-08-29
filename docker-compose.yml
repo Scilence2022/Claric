@@ -11,8 +11,8 @@
 # reachable from the client, e.g. https://llm-host:8026.
 services:
   claric:
-    # The tag tracks the package.json version (currently 0.5.0).
-    image: ghcr.io/scilence2022/claric:0.5.0
+    # The tag tracks the package.json version (currently 1.0.1).
+    image: ghcr.io/scilence2022/claric:1.0.1
     build: . # fallback to a local build when the registry image is absent
     ports:
       - "${HOST_PORT:-3000}:3000"

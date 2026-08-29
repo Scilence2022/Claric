@@ -160,6 +160,20 @@ function setupDevE2eMiddlewares(middlewares, devServer) {
     const traceData = req.body;
     console.log(`[Trace Log] Received trace for test run ${traceData.testRunNumber}`);
 
+    // testRunNumber is interpolated into the output filename: validate it as
+    // a plain number so a crafted body cannot escape the logs directory via
+    // path segments ("../../x"). Combined with the module-wide permissive
+    // CORS, an unvalidated value would let any local page write JSON files
+    // to arbitrary *.json paths when dev endpoints are enabled.
+    if (!/^\d+$/.test(String(traceData.testRunNumber))) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.status(400).json({
+        success: false,
+        error: 'testRunNumber must be a positive integer'
+      });
+      return;
+    }
+
     try {
       // Ensure logs directory exists
       const logsDir = path.join(rootDir, 'logs');
