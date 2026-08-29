@@ -305,14 +305,15 @@ export function saveSession(messages, opts = {}) {
         try { localStorage.removeItem(sessionKey(dropped.id)); } catch (_err) { /* ignore */ }
     }
 
-    writeSession(session);
-
     // Total-size cap: drop oldest non-current sessions until the index +
-    // every remaining blob fits under MAX_TOTAL_BYTES. Protects against
-    // localStorage quota when MAX_SESSIONS × MAX_SESSION_BYTES > MAX_TOTAL_BYTES.
-    // Reads raw stored string lengths instead of JSON.parsing each blob —
-    // estimateBytes is a stringify-length count, so the result is identical
-    // without re-serializing up to MAX_SESSIONS blobs on every committed turn.
+    // every remaining blob fits under MAX_TOTAL_BYTES. Eviction runs BEFORE
+    // the new blob is written: writing first could blow the localStorage
+    // quota while stale blobs were still holding the very space the eviction
+    // was about to free — the current session was lost in exactly the case
+    // the cap was meant to protect against. Reads raw stored string lengths
+    // instead of JSON.parsing each blob — estimateBytes is a stringify-length
+    // count, so the result is identical without re-serializing up to
+    // MAX_SESSIONS blobs on every committed turn.
     let totalBytes = estimateBytes(idx);
     for (const m of idx) {
         if (m.id === id) {
@@ -335,6 +336,20 @@ export function saveSession(messages, opts = {}) {
         const bytes = raw ? raw.length : 0;
         try { localStorage.removeItem(sessionKey(dropped.id)); } catch (_err) { /* ignore */ }
         totalBytes -= bytes + estimateBytes(dropped);
+    }
+
+    // The cap math has now made room when it could. If the write STILL fails
+    // (encoding overhead, other-origin inflation), the last resort is
+    // dropping every other session rather than losing the current one.
+    try {
+        writeSession(session);
+    } catch (_err) {
+        for (const m of idx) {
+            if (m.id !== id) {
+                try { localStorage.removeItem(sessionKey(m.id)); } catch (_err2) { /* ignore */ }
+            }
+        }
+        writeSession(session);
     }
 
     if (!writeIndex(idx)) {

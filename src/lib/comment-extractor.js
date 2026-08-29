@@ -442,18 +442,30 @@ function getHeadingLevel(styleBuiltIn) {
     return match ? parseInt(match[1], 10) : 0;
 }
 
+// Scripts tokenized at roughly one token per character in modern LLM
+// tokenizers (Han, Hiragana/Katakana, Hangul). Counting them at the
+// English 4-chars-per-token rate underestimated CJK documents ~4x, which
+// made "6000-token" chunks carry ~24000 real tokens — tripping context
+// limits and length truncation on Chinese/Japanese contracts.
+const CJK_CHAR_RE = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
+
 /**
  * Estimates token count using a character-based heuristic.
- * Average ~4 characters per token for English text.
- * Accuracy ~80-85% -- sufficient for informational display,
- * not for exact billing or hard limits.
+ * ~4 characters per token for English text; CJK characters count as one
+ * token each. Accuracy ~80-85% -- sufficient for chunk budgeting and
+ * informational display, not for exact billing or hard limits.
  *
  * @param {string} text - The text to estimate tokens for
  * @returns {number} Estimated token count
  */
 export function estimateTokenCount(text) {
     if (!text) return 0;
-    return Math.ceil(text.length / 4);
+    let cjkChars = 0;
+    for (const ch of text) {
+        if (CJK_CHAR_RE.test(ch)) cjkChars++;
+    }
+    const otherChars = text.length - cjkChars;
+    return cjkChars + Math.ceil(otherChars / 4);
 }
 
 /**

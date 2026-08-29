@@ -167,7 +167,7 @@ describe('parseDocument', () => {
             expect(result.paragraphs[2].index).toBe(2);
         });
 
-        test('tokenEstimate is Math.ceil(text.length / 4)', async () => {
+        test('tokenEstimate is Math.ceil(text.length / 4) for non-CJK text', async () => {
             mockParagraphItems = [
                 createMockParagraph({ text: 'A'.repeat(100) })
             ];
@@ -185,6 +185,28 @@ describe('parseDocument', () => {
             const result = await parseDocument();
 
             expect(result.paragraphs[0].tokenEstimate).toBe(2);
+        });
+
+        test('tokenEstimate counts CJK characters at one token each', async () => {
+            mockParagraphItems = [
+                // 20 Han chars ≈ 20 tokens in modern tokenizers, not ceil(20/4)=5
+                createMockParagraph({ text: '合同条款'.repeat(5) })
+            ];
+
+            const result = await parseDocument();
+
+            expect(result.paragraphs[0].tokenEstimate).toBe(20);
+        });
+
+        test('tokenEstimate weights mixed CJK/Latin text per script', async () => {
+            mockParagraphItems = [
+                // 4 Han chars (=4) + ' ab cd' = 6 latin chars (ceil(6/4)=2) -> 6
+                createMockParagraph({ text: '合同条款 ab cd' })
+            ];
+
+            const result = await parseDocument();
+
+            expect(result.paragraphs[0].tokenEstimate).toBe(6);
         });
     });
 
