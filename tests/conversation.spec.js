@@ -1437,9 +1437,13 @@ describe('createConversation.submit', () => {
     expect(actions.prepareDocumentAppend).not.toHaveBeenCalled();
     expect(actions.answerQuestion).not.toHaveBeenCalled();
 
-    // The staged card carries an image preview of the proposed artwork.
+    // The staged card carries an inline SVG preview of the proposed artwork
+    // (inline render — SVG data URLs fail to decode on some hosts).
     const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
-    expect(cardEl.querySelector('img.proposal-card-preview')).not.toBeNull();
+    const preview = cardEl.querySelector('.proposal-card-preview-svg');
+    expect(preview).not.toBeNull();
+    expect(preview.querySelector('svg')).not.toBeNull();
+    expect(preview.querySelector('script')).toBeNull();
 
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));

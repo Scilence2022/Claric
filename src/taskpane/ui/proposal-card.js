@@ -14,6 +14,7 @@
  * @module ui/proposal-card
  */
 
+import { sanitizeSvg } from '../../lib/illustration.js';
 import { buildTextDiffElement } from './diff-view.js';
 
 const TABLE_PREVIEW_MAX_ROWS = 30;
@@ -191,6 +192,12 @@ export function renderTablePreview(preview) {
  * @param {string} [args.countsText] - Overrides the "before → after chars" line
  *   (for non-text proposals such as formatting ops)
  * @param {string} [args.previewSrc] - Optional image data-URL preview shown
+ *   via an <img>. Note: some hosts (notably WKWebView-based taskpanes) fail
+ *   to decode SVG data URLs that other engines render fine — prefer
+ *   previewSvg for SVG previews.
+ * @param {string} [args.previewSvg] - Optional SANITIZED SVG markup rendered
+ *   inline (no data-URL/img decode step). Must already have gone through
+ *   sanitizeSvg; it is sanitized again defensively at render time.
  *   under the heading (illustration proposals)
  * @param {object} [args.tablePreview] - Optional read-only table preview:
  *   { rows: string[][], headerRowCount?: number, style?: string,
@@ -215,7 +222,7 @@ export function renderTablePreview(preview) {
  *   released the busy flags early, letting a second pipeline interleave.
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string), markItemApplied: function(string, object), setPaused: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, tablePreview, items, onLocate, comment, onApply, onReject, registerController, setApplyBusy, isBlocked }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, onApply, onReject, registerController, setApplyBusy, isBlocked }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -231,7 +238,17 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     head.appendChild(counts);
     el.appendChild(head);
 
-    if (previewSrc) {
+    if (previewSvg) {
+        // Inline SVG sidesteps the image-decode path entirely: no data URL,
+        // no <img> decode, no host quirks (WKWebView failed to decode SVG
+        // data URLs that Chromium rendered fine). The markup was sanitized
+        // when the proposal was staged; sanitize again so this render path
+        // never trusts its input.
+        const holder = document.createElement('div');
+        holder.className = 'proposal-card-preview proposal-card-preview-svg';
+        holder.innerHTML = sanitizeSvg(previewSvg);
+        el.appendChild(holder);
+    } else if (previewSrc) {
         const img = document.createElement('img');
         img.className = 'proposal-card-preview';
         img.alt = 'Proposal preview';

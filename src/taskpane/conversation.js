@@ -39,21 +39,6 @@ import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
 import { describeFormatOp } from '../lib/format-ops.js';
 
-/**
- * Builds a base64 SVG data URL. The old form,
- * `btoa(unescape(encodeURIComponent(svg)))`, relied on the deprecated
- * `unescape`; the percent-escape rewrite below is the same UTF-8-safe
- * conversion without it.
- *
- * @param {string} svg
- * @returns {string}
- */
-function svgToDataUrl(svg) {
-    const binary = encodeURIComponent(svg)
-        .replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
-    return `data:image/svg+xml;base64,${btoa(binary)}`;
-}
-
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
     SKILL: 'skill',
@@ -1259,7 +1244,7 @@ export function createConversation(deps) {
             const card = makeProposalCard({
                 title: 'Proposed illustration',
                 countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
-                previewSrc: `data:image/svg+xml;base64,${svgToDataUrl(proposal.svg)}`,
+                previewSvg: proposal.svg,
                 comment: null,
                 onApply: async () => {
                     try {
@@ -1278,7 +1263,7 @@ export function createConversation(deps) {
                 title: 'Proposed illustration',
                 state: 'pending',
                 countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
-                previewSrc: `data:image/svg+xml;base64,${svgToDataUrl(proposal.svg)}`,
+                previewSvg: proposal.svg,
                 items: [],
             });
         } catch (error) {
@@ -1327,16 +1312,17 @@ export function createConversation(deps) {
             msg.setStatus('');
             const title = 'Proposed image changes';
             const svgOps = proposal.items.filter((item) => item.svg);
-            const previewSrc = svgOps.length === 1
-                ? `data:image/svg+xml;base64,${svgToDataUrl(svgOps[0].svg)}`
-                : undefined;
+            // Already sanitized by the image tool loop (design/replace_illustration
+            // ops run sanitizeSvg + ensureSvgDimensions). Inline render avoids the
+            // SVG data-URL decode that fails on some hosts.
+            const previewSvg = svgOps.length === 1 ? svgOps[0].svg : undefined;
             const cardItems = proposal.items.map(({ id, label, before, after }) => ({
                 id, label, before, after,
             }));
             const card = makeProposalCard({
                 title,
                 countsText: `${proposal.ops.length} image operation(s)`,
-                previewSrc,
+                previewSvg,
                 comment: null,
                 items: cardItems,
                 onApply: async (selectedIds) => {
@@ -1367,7 +1353,7 @@ export function createConversation(deps) {
                 title,
                 state: 'pending',
                 countsText: `${proposal.ops.length} image operation(s)`,
-                previewSrc,
+                previewSvg,
                 items: cardItems,
             });
         } catch (error) {
@@ -1907,14 +1893,15 @@ export function createConversation(deps) {
             msg.setStatus('');
             const title = `Document image changes (${proposal.snapshotCount} picture${proposal.snapshotCount === 1 ? '' : 's'})`;
             const svgOps = proposal.items.filter((item) => item.svg);
-            const previewSrc = svgOps.length === 1
-                ? `data:image/svg+xml;base64,${svgToDataUrl(svgOps[0].svg)}`
-                : undefined;
+            // Already sanitized by the image tool loop (design/replace_illustration
+            // ops run sanitizeSvg + ensureSvgDimensions). Inline render avoids the
+            // SVG data-URL decode that fails on some hosts.
+            const previewSvg = svgOps.length === 1 ? svgOps[0].svg : undefined;
             const cardItems = proposal.items.map(({ id, label, before, after }) => ({ id, label, before, after }));
             const card = makeProposalCard({
                 title,
                 countsText: `${proposal.ops.length} image operation(s)`,
-                previewSrc,
+                previewSvg,
                 comment: null,
                 items: cardItems,
                 onApply: async (selectedIds) => {
@@ -1944,7 +1931,7 @@ export function createConversation(deps) {
                 title,
                 state: 'pending',
                 countsText: `${proposal.ops.length} image operation(s)`,
-                previewSrc,
+                previewSvg,
                 items: cardItems,
             });
         } catch (error) {

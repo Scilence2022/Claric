@@ -566,6 +566,22 @@ body {
     border-radius: var(--border-radius-md);
 }
 
+/* Inline-SVG preview variant: the container is a div holding a sanitized
+ * <svg>, so the size clamps live on the svg element (the img variant sizes
+ * itself, this one does not). */
+.proposal-card-preview-svg {
+    max-height: none;
+    overflow: hidden;
+}
+
+.proposal-card-preview-svg svg {
+    display: block;
+    max-width: 100%;
+    max-height: 240px;
+    height: auto;
+    margin: 0 auto;
+}
+
 /* Live and restored (static) proposal cards share the change-list styling. */
 .proposal-card-changes,
 .proposal-card-changes-static {
