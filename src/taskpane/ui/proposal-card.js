@@ -21,6 +21,14 @@ const TABLE_PREVIEW_MAX_COLUMNS = 20;
 const TABLE_PREVIEW_MAX_CELL_CHARS = 400;
 const TABLE_PREVIEW_MAX_META_CHARS = 80;
 
+/**
+ * Module-level cross-card apply mutex. Word writes from two proposal cards
+ * must never interleave — the second card's Apply is refused until the
+ * first settles (and un-checked-but-in-flight document writes would
+ * otherwise race a concurrent patch's re-anchoring).
+ */
+let _anyCardApplyInFlight = false;
+
 function _isPlainObject(value) {
     if (!value || typeof value !== 'object') return false;
     const prototype = Object.getPrototypeOf(value);
@@ -202,7 +210,7 @@ export function renderTablePreview(preview) {
  *   can abort (pause) the in-flight apply; receives null when apply settles
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string), markItemApplied: function(string, object), setPaused: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, tablePreview, items, onLocate, comment, onApply, onReject, registerController }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, tablePreview, items, onLocate, comment, onApply, onReject, registerController, setApplyBusy }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -380,7 +388,15 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
 
     applyBtn.addEventListener('click', async () => {
         if (applyInFlight) return;
+        if (_anyCardApplyInFlight) {
+            // Another card's apply is writing to the document — refuse
+            // instead of interleaving two Word write passes.
+            status.style.display = '';
+            status.textContent = 'Another proposal is currently being applied — wait for it to finish.';
+            return;
+        }
         applyInFlight = true;
+        _anyCardApplyInFlight = true;
         applyBtn.disabled = true;
         rejectBtn.disabled = true;
         const resuming = applyBtn.textContent === 'Continue applying';
@@ -389,6 +405,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         if (resuming) applyBtn.textContent = 'Applying...';
         applyController = new AbortController();
         if (typeof registerController === 'function') registerController(applyController);
+        if (typeof setApplyBusy === 'function') setApplyBusy(true);
         try {
             await onApply(ids, {
                 signal: applyController.signal,
@@ -396,6 +413,8 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             });
         } finally {
             applyInFlight = false;
+            _anyCardApplyInFlight = false;
+            if (typeof setApplyBusy === 'function') setApplyBusy(false);
             if (typeof registerController === 'function') registerController(null);
             // A paused state re-enables the button (setPaused was called by
             // the onApply handler); otherwise the caller settles terminal

@@ -31,6 +31,8 @@
  * @module format-ops
  */
 
+import { extractJsonArray } from './json-utils.js';
+
 /** Font properties: boolean flags. */
 const FONT_BOOL_KEYS = ['bold', 'italic', 'strikeThrough', 'doubleStrikeThrough', 'superscript', 'subscript', 'allCaps', 'smallCaps'];
 /** Font properties: Word enum names (underline, highlightColor). */
@@ -122,23 +124,10 @@ export function buildFormatPrompt(instruction, scopeText, scope) {
  */
 export function parseFormatOps(raw, log = () => {}) {
     if (!raw) return [];
-    let text = String(raw).trim();
 
-    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fence) text = fence[1].trim();
-
-    const start = text.indexOf('[');
-    const end = text.lastIndexOf(']');
-    if (start === -1 || end <= start) {
-        log('Format ops: no JSON array found in the model response', 'warning');
-        return [];
-    }
-
-    let parsed;
-    try {
-        parsed = JSON.parse(text.slice(start, end + 1));
-    } catch (e) {
-        log(`Format ops: response is not valid JSON (${e.message})`, 'warning');
+    const { value: parsed, error } = extractJsonArray(raw);
+    if (error) {
+        log(`Format ops: ${error}`, 'warning');
         return [];
     }
     if (!Array.isArray(parsed)) return [];

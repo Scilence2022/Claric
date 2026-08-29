@@ -23,6 +23,8 @@
  * @module task-planner
  */
 
+import { extractJsonArray } from './json-utils.js';
+
 /** Pipeline task types the planner may emit (allowlist for parsePlan). */
 const TASK_TYPES = [
     'insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa',
@@ -66,7 +68,7 @@ export function buildPlanPrompt(instruction, hasSelection) {
         'fonts, header rows, layout, column widths). Creating a NEW table stays on "table".\n\n' +
         'OUTPUT CONTRACT (strict):\n' +
         '- Output ONLY a JSON array. No markdown, no code fences, no explanations, no commentary.\n' +
-        '- Each item: { "type": "insert|format|edit|append|table|illustration|qa", "instruction": "self-contained ' +
+        '- Each item: { "type": "insert|format|edit|append|table|illustration|qa|image_management|table_management", "instruction": "self-contained ' +
         'sub-instruction in the user\'s language" }.\n' +
         '- One task per distinct request, in the user\'s original order; each instruction must stand alone ' +
         '(include needed context, e.g. which paragraph to edit).\n' +
@@ -89,23 +91,10 @@ export function buildPlanPrompt(instruction, hasSelection) {
  */
 export function parsePlan(raw, log = () => {}) {
     if (!raw) return null;
-    let text = String(raw).trim();
 
-    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fence) text = fence[1].trim();
-
-    const start = text.indexOf('[');
-    const end = text.lastIndexOf(']');
-    if (start === -1 || end <= start) {
-        log('Task planner: no JSON array found in the model response', 'warning');
-        return null;
-    }
-
-    let parsed;
-    try {
-        parsed = JSON.parse(text.slice(start, end + 1));
-    } catch (e) {
-        log(`Task planner: response is not valid JSON (${e.message})`, 'warning');
+    const { value: parsed, error } = extractJsonArray(raw);
+    if (error) {
+        log(`Task planner: ${error}`, 'warning');
         return null;
     }
     if (!Array.isArray(parsed)) return null;

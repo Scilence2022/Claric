@@ -11,6 +11,8 @@
  * @module table-ops
  */
 
+import { balancedJsonCandidates, stripTrailingCommas } from './json-utils.js';
+
 /** Conservative limits for model output and Word/taskpane usability. */
 export const TABLE_CREATION_LIMITS = Object.freeze({
     MAX_ROWS: 50,
@@ -526,15 +528,24 @@ function _extractJsonObject(raw) {
         }
 
         if (source.includes('{') || source.includes('[')) sawContainerMarker = true;
-        for (const candidate of _balancedJsonCandidates(source)) {
+        for (const candidate of balancedJsonCandidates(source)) {
+            // Valid JSON parses as-is; only a failed parse retries once with
+            // string-aware trailing-comma cleanup (valid JSON is never
+            // rewritten, so cell text like "a, b, ]" survives intact).
+            let parsedCandidate;
             try {
-                const parsed = JSON.parse(candidate.text);
-                if (candidate.kind === '[' || Array.isArray(parsed)) return _notObjectExtraction();
-                if (_isObject(parsed)) return { value: parsed, error: null };
-                sawNonObjectJson = true;
-            } catch (error) {
-                parseMessage = error.message;
+                parsedCandidate = JSON.parse(candidate.text);
+            } catch (_error) {
+                try {
+                    parsedCandidate = JSON.parse(stripTrailingCommas(candidate.text));
+                } catch (retryError) {
+                    parseMessage = retryError.message;
+                    continue;
+                }
             }
+            if (candidate.kind === '[' || Array.isArray(parsedCandidate)) return _notObjectExtraction();
+            if (_isObject(parsedCandidate)) return { value: parsedCandidate, error: null };
+            sawNonObjectJson = true;
         }
     }
 
@@ -561,56 +572,6 @@ function _notObjectExtraction() {
         value: null,
         error: _issue('RESPONSE_NOT_OBJECT', '$', 'Table creation response JSON must be an object'),
     };
-}
-
-/** @private */
-function _balancedJsonCandidates(text) {
-    const candidates = [];
-    let start = -1;
-    let stack = [];
-    let inString = false;
-    let escaped = false;
-
-    for (let index = 0; index < text.length; index += 1) {
-        const char = text[index];
-        if (start === -1) {
-            if (char === '{' || char === '[') {
-                start = index;
-                stack = [char];
-            }
-            continue;
-        }
-        if (inString) {
-            if (escaped) {
-                escaped = false;
-            } else if (char === '\\') {
-                escaped = true;
-            } else if (char === '"') {
-                inString = false;
-            }
-            continue;
-        }
-        if (char === '"') {
-            inString = true;
-        } else if (char === '{' || char === '[') {
-            stack.push(char);
-        } else if (char === '}' || char === ']') {
-            const opener = stack[stack.length - 1];
-            const matches = (opener === '{' && char === '}') || (opener === '[' && char === ']');
-            if (!matches) {
-                candidates.push({ text: text.slice(start, index + 1), kind: text[start] });
-                start = -1;
-                stack = [];
-                continue;
-            }
-            stack.pop();
-            if (stack.length === 0) {
-                candidates.push({ text: text.slice(start, index + 1), kind: text[start] });
-                start = -1;
-            }
-        }
-    }
-    return candidates;
 }
 
 /** @private */

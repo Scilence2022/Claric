@@ -69,7 +69,11 @@ function _composeChunkMessages(chunk, documentContext, promptManager, mode, comm
 
   // 1. System message: user's Context prompt (if active) + document context prefix
   const contextPrompt = promptManager.getActivePrompt('context');
-  const docContextPrefix = formatContextPrefixFn(documentContext, chunkText, 4000);
+  // A null/undefined context (e.g. retry runs that skip re-extraction)
+  // contributes no prefix instead of crashing the prefix formatter.
+  const docContextPrefix = documentContext
+    ? formatContextPrefixFn(documentContext, chunkText, 4000)
+    : '';
 
   let systemContent = '';
   if (contextPrompt) {
@@ -339,9 +343,7 @@ export async function processChunksParallel(chunks, options) {
       }
 
       const i = nextIndex++;
-      if (i < chunks.length) {
-        await processChunk(i);
-      }
+      await processChunk(i);
     }
   }
 

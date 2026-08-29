@@ -4,6 +4,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!--
+      Defense-in-depth for the WebView2 taskpane (API keys live in
+      localStorage). script-src pins scripts to the bundle and the Office.js
+      CDN; connect-src must stay open (Custom provider = user-chosen
+      absolute endpoint, local or remote); img-src allows the data:/blob:
+      thumbnails and illustration previews the add-in renders locally.
+    -->
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' https://appsforoffice.microsoft.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: http: ws: wss:; object-src 'none'; base-uri 'self'; form-action 'none'">
     <title>Claric — Word add-in</title>
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <!-- CSS is injected by webpack via taskpane.js import -->

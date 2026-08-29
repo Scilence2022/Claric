@@ -252,3 +252,40 @@ describe('table preview', () => {
       .toBe('No table cells in preview.');
   });
 });
+
+describe('cross-card apply mutex and busy wiring', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  test('a second card refuses to apply while another apply is in flight', async () => {
+    let releaseA;
+    const cardA = makeCard({ onApply: () => new Promise((resolve) => { releaseA = resolve; }) });
+    const onApplyB = jest.fn(async () => {});
+    const cardB = makeCard({ onApply: onApplyB });
+
+    cardA.el.querySelector('.btn-primary').click();
+    await flush(); // A's onApply now pending
+
+    cardB.el.querySelector('.btn-primary').click();
+    await flush();
+    expect(onApplyB).not.toHaveBeenCalled();
+    expect(cardB.el.querySelector('.proposal-card-status').textContent)
+      .toMatch(/Another proposal/);
+
+    releaseA();
+    await flush(); await flush(); // A settles
+    // After A settles, B can apply again.
+    cardB.el.querySelector('.btn-primary').click();
+    await flush();
+    expect(onApplyB).toHaveBeenCalledTimes(1);
+  });
+
+  test('setApplyBusy flips true→false around the apply', async () => {
+    const setApplyBusy = jest.fn();
+    const card = makeCard({ setApplyBusy });
+    card.el.querySelector('.btn-primary').click();
+    await flush();
+    expect(setApplyBusy.mock.calls[0][0]).toBe(true);
+    await flush();
+    expect(setApplyBusy.mock.calls[setApplyBusy.mock.calls.length - 1][0]).toBe(false);
+  });
+});

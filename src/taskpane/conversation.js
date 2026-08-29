@@ -30,7 +30,7 @@
 import * as defaultActions from './word-actions.js';
 import * as agentActions from './agent-actions.js';
 import { listSkills, resolveSkill } from './skills.js';
-import { createProposalCard } from './ui/proposal-card.js';
+import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
 import { describeFormatOp } from '../lib/format-ops.js';
 
 /** Turn types emitted by routeTurn. */
@@ -588,6 +588,44 @@ export function createConversation(deps) {
     }
 
     /**
+     * Wraps every proposal card with the shared apply guards: the card's
+     * apply AbortController registers with app state (so cancel() reaches
+     * it and the busy flags hold) and the input locks for the duration of
+     * the apply. Extracted from the document-amendment card — previously
+     * only that card wired this, so any other card's apply ran with the
+     * busy flags DOWN and could race a new turn's parse → bookmark pass
+     * (or a second card's apply). Cards may still override either hook.
+     *
+     * @param {object} args - createProposalCard args
+     * @returns {object} createProposalCard card api
+     */
+    function makeProposalCard(args) {
+        return _createProposalCardRaw({
+            registerController: (controller) => {
+                const old = appState.processDocController;
+                if (controller === null) {
+                    // Apply settled (either the caller settled terminal state
+                    // or cancel() already freed the controller) — release the
+                    // UI only if we still own it.
+                    if (appState.processDocController === old && old) {
+                        appState.isProcessingDoc = false;
+                        appState.processDocController = null;
+                        input.setProcessing(false);
+                    }
+                } else {
+                    appState.processDocController = controller;
+                    appState.isProcessingDoc = true;
+                    input.setProcessing(true);
+                }
+            },
+            setApplyBusy: (busy) => {
+                input.setProcessing(busy);
+            },
+            ...args,
+        });
+    }
+
+    /**
      * Runs a document-scope skill with progress + citation pills.
      * Amendment runs are gated: the LLM results are staged first and only
      * written to the document when the user applies the proposal card.
@@ -673,7 +711,7 @@ export function createConversation(deps) {
         const afterChars = amendedChunks.reduce((s, r) => s + (r.amendment || '').length, 0);
         msg.setStatus('');
 
-        const card = createProposalCard({
+        const card = makeProposalCard({
             title: `Proposed edits to ${amendedChunks.length} section(s)`,
             beforeChars,
             afterChars,
@@ -691,23 +729,6 @@ export function createConversation(deps) {
                 };
             }),
             onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
-            registerController: (controller) => {
-                const old = appState.processDocController;
-                if (controller === null) {
-                    // Apply settled (either the caller settled terminal state
-                    // or cancel() already freed the controller) — release the
-                    // UI only if we still own it.
-                    if (appState.processDocController === old && old) {
-                        appState.isProcessingDoc = false;
-                        appState.processDocController = null;
-                        input.setProcessing(false);
-                    }
-                } else {
-                    appState.processDocController = controller;
-                    appState.isProcessingDoc = true;
-                    input.setProcessing(true);
-                }
-            },
             onApply: async (selectedChunkIds, applyCtx = {}) => {
                 appState.isProcessingDoc = true;
                 input.setProcessing(true);
@@ -748,8 +769,11 @@ export function createConversation(deps) {
                     log(`Apply failed: ${error.message}`, 'error');
                     card.markError(error.message);
                 } finally {
-                    appState.isProcessingDoc = false;
-                    input.setProcessing(false);
+                    // Busy flags are NOT reset here: the card's apply handler
+                    // releases them via registerController(null), which checks
+                    // that we still own the shared controller — an
+                    // unconditional reset used to clobber a newer run's state
+                    // when cancel() had already freed the UI.
                 }
             },
             onReject: async () => {
@@ -863,7 +887,7 @@ export function createConversation(deps) {
                     searchText: proposal.selectionText.trim().slice(0, 60),
                 }] : undefined);
 
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title,
                 beforeChars,
                 afterChars,
@@ -877,8 +901,14 @@ export function createConversation(deps) {
                         const toApply = (isTable && selectedIds)
                             ? { ...proposal, tablePatch: filterTablePatchBySelection(proposal.tablePatch, selectedIds) }
                             : proposal;
-                        await actions.applySelectionAmendment(turnDeps, toApply);
-                        card.markApplied();
+                        const applied = await actions.applySelectionAmendment(turnDeps, toApply);
+                        if (applied && applied.skipped) {
+                            // Staleness guard refused the write — surface it
+                            // as a card warning, not a success.
+                            card.markWarning(applied.reason);
+                        } else {
+                            card.markApplied();
+                        }
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
                         card.markError(error.message);
@@ -933,7 +963,7 @@ export function createConversation(deps) {
                 return;
             }
             msg.setStatus('');
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title: 'Proposed content to append at the document end',
                 beforeChars: 0,
                 afterChars: proposal.generatedText.length,
@@ -999,7 +1029,7 @@ export function createConversation(deps) {
                 return;
             }
             msg.setStatus('');
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title: `Proposed changes (${turn.scope} scope)`,
                 countsText: `${proposal.ops.length} change op(s)`,
                 comment: null,
@@ -1094,7 +1124,7 @@ export function createConversation(deps) {
                 style: proposal.spec.style,
                 position: proposal.spec.position,
             };
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title,
                 countsText,
                 tablePreview,
@@ -1163,7 +1193,7 @@ export function createConversation(deps) {
             }
             msg.setStatus('');
             const positionLabel = proposal.positionLabel || `document ${proposal.position}`;
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title: 'Proposed illustration',
                 countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
                 previewSrc: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(proposal.svg)))}`,
@@ -1240,7 +1270,7 @@ export function createConversation(deps) {
             const cardItems = proposal.items.map(({ id, label, before, after }) => ({
                 id, label, before, after,
             }));
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title,
                 countsText: `${proposal.ops.length} image operation(s)`,
                 previewSrc,
@@ -1338,7 +1368,7 @@ export function createConversation(deps) {
                 after: item.after,
                 searchText: item.searchText,
             }));
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title,
                 beforeChars,
                 afterChars,
@@ -1402,7 +1432,7 @@ export function createConversation(deps) {
                 return;
             }
             msg.setStatus('');
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title: 'Proposed cleanup',
                 countsText: `Delete ${proposal.emptyCount} empty paragraph(s)`,
                 comment: null,
@@ -1717,7 +1747,7 @@ export function createConversation(deps) {
                 ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgOps[0].svg)))}`
                 : undefined;
             const cardItems = proposal.items.map(({ id, label, before, after }) => ({ id, label, before, after }));
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title,
                 countsText: `${proposal.ops.length} image operation(s)`,
                 previewSrc,
@@ -1817,7 +1847,7 @@ export function createConversation(deps) {
                 after: item.after,
                 searchText: item.searchText,
             }));
-            const card = createProposalCard({
+            const card = makeProposalCard({
                 title,
                 beforeChars,
                 afterChars,
@@ -2103,7 +2133,8 @@ function _normalizeText(s) {
  * @param {object} chunk - DocumentChunk ({ id, paragraphs })
  * @returns {{ label: string, searchText: string }}
  */
-export function chunkCitation(chunk) {    const firstPara = (chunk.paragraphs || []).map((p) => p.text || '').find((t) => t.trim()) || '';
+export function chunkCitation(chunk) {
+    const firstPara = (chunk.paragraphs || []).map((p) => p.text || '').find((t) => t.trim()) || '';
     const words = firstPara.trim().split(/\s+/).filter(Boolean);
     const label = words.slice(0, 6).join(' ') || chunk.id || 'Section';
     return { label, searchText: firstPara.trim() };

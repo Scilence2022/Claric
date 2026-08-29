@@ -91,6 +91,10 @@ const HOP_BY_HOP_HEADERS = new Set([
   'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'
 ]);
 
+// Browser-scope headers stripped before proxying: they carry the add-in
+// origin's session state and are meaningless (at best) to the LLM upstream.
+const STRIPPED_BROWSER_HEADERS = new Set(['cookie', 'referer', 'origin']);
+
 function getContentType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
@@ -252,6 +256,9 @@ function handleProxyRequest(route, req, res, urlPath) {
   const headers = {};
   for (const [name, value] of Object.entries(req.headers)) {
     if (HOP_BY_HOP_HEADERS.has(name)) continue;
+    // Browser-scope headers that carry same-origin session state must not
+    // leak to the LLM upstream. (Authorization — the API key — IS forwarded.)
+    if (STRIPPED_BROWSER_HEADERS.has(name)) continue;
     headers[name] = value;
   }
   headers.host = route.targetUrl.host;

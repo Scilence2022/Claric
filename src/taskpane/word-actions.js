@@ -727,27 +727,6 @@ export async function readCursorContext(deps) {
 }
 
 /**
- * Returns whether the document currently has a non-collapsed selection.
- * Resolves to false when the Word API is unavailable.
- *
- * @returns {Promise<boolean>}
- */
-export async function hasNonEmptySelection() {
-    try {
-        let has = false;
-        await Word.run(async (context) => {
-            const selection = context.document.getSelection();
-            selection.load('text');
-            await context.sync();
-            has = !!(selection.text && selection.text.trim());
-        });
-        return has;
-    } catch (_err) {
-        return false;
-    }
-}
-
-/**
  * Reads the current selection as plain text (no comment enrichment).
  * Returns '' when the selection is empty or the Word API is unavailable.
  * Used for the live selection preview and for QA-turn context.
@@ -1163,7 +1142,9 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
  * @param {object} deps - { appState, log }
  * @param {object} proposal - Result of prepareSelectionAmendment
  * @returns {Promise<object|undefined>} Table patches resolve to
- *   { cellsApplied, cellsSkipped, rowOpsApplied, warnings }; other routes
+ *   { cellsApplied, cellsSkipped, rowOpsApplied, warnings }; the flat text
+ *   route resolves { skipped: true, reason } when the apply-time selection
+ *   no longer matches the staged text (nothing is written); other routes
  *   resolve undefined.
  */
 export async function applySelectionAmendment(deps, proposal) {
@@ -1188,8 +1169,20 @@ export async function applySelectionAmendment(deps, proposal) {
         } else {
         log('Applying changes...', 'info');
         const trackChanges = !!appState.config.trackChangesEnabled;
+        // Staleness guard: the staged amendment is anchored to the selection
+        // text captured at prepare time. If the selection moved on between
+        // staging and Apply, granular diffing would throw and the whole-
+        // selection fallback below would overwrite whatever is selected NOW.
+        // Refuse instead of writing to the wrong range.
+        let stale = false;
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
+            selection.load('text');
+            await context.sync();
+            if (_normalizeSelectionText(selection.text) !== _normalizeSelectionText(selectionText)) {
+                stale = true;
+                return;
+            }
             // Baseline mode per config; the strategies manage tracking from
             // here (and always restore off when they enabled it).
             if (Word.ChangeTrackingMode) {
@@ -1230,6 +1223,13 @@ export async function applySelectionAmendment(deps, proposal) {
                 }
             }
         });
+        if (stale) {
+            const reason = 'Selection changed since this proposal was staged; ' +
+                'apply was skipped to avoid overwriting the wrong text. ' +
+                'Re-run the instruction on the new selection.';
+            log(reason, 'warning');
+            return { skipped: true, reason };
+        }
         log('Changes applied successfully', 'success');
         }
     }
@@ -1253,6 +1253,19 @@ export async function applySelectionAmendment(deps, proposal) {
     } else if (commentText && !appState.supportsComments) {
         log(`Comment generated but Word API 1.4 not available. Comment: "${commentText}"`, 'warning');
     }
+}
+
+/**
+ * Normalizes selection text for staleness comparison: line endings and
+ * whitespace runs are folded so a re-read selection only fails the guard
+ * when the CONTENT actually moved.
+ *
+ * @param {string} text
+ * @returns {string}
+ * @private
+ */
+function _normalizeSelectionText(text) {
+    return String(text || '').replace(/\r\n?/g, '\n').replace(/\s+/g, ' ').trim();
 }
 
 /**
@@ -3108,16 +3121,19 @@ export async function retryFailedChunks(deps, { failedResults, bookmarkMap, back
     appState.processDocController = new AbortController();
 
     try {
-        const retryChunks = failedResults.map(r => ({
-            id: r.chunkId,
-            text: r.originalText || '',
-            tokenCount: r.originalText ? Math.ceil(r.originalText.length / 4) : 0,
-            overlapText: '',
-        }));
+        // Re-drive the ORIGINAL chunk objects. ChunkResult.chunk carries the
+        // full DocumentChunk (paragraphs, overlap, id), which is what the
+        // orchestrator's composer and the reassembler's alignment both need;
+        // rebuilding text-only stubs here used to crash every retry chunk
+        // inside chunk.paragraphs.map and re-reject it instantly.
+        const retryChunks = failedResults.map((r) => r.chunk).filter(Boolean);
 
         const results = await processChunksParallel(retryChunks, {
             config: backendConfig,
             promptManager: promptShim,
+            // No context prefix on retries: rebuilding the full document
+            // context is not worth a re-extraction, and orchestrator treats
+            // a null context as "no prefix" rather than crashing.
             documentContext: null,
             log,
             onProgress,
