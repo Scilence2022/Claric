@@ -36,3 +36,17 @@ export function renderWelcomeChips(skills, onPick) {
         container.appendChild(chip);
     }
 }
+
+
+/**
+ * Selects which skills earn a welcome-screen chip: the built-ins, the
+ * reserved /mcp skill, and imported SKILL.md packages. Prompt-derived
+ * customs are excluded — the user authored those and already knows them;
+ * the welcome list stays a "get started" set.
+ *
+ * @param {Array<object>} skills - Full skill list (from listSkills)
+ * @returns {Array<object>}
+ */
+export function selectWelcomeSkills(skills) {
+    return (skills || []).filter((s) => s && !s.custom && !s.promptId);
+}

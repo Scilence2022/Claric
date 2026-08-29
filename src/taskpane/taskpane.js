@@ -19,12 +19,12 @@
 import './taskpane.css';
 
 import { appState, loadSettings, getActiveBackendConfig } from './app-state.js';
-import { BUILTIN_SKILLS, listSkills } from './skills.js';
+import { listSkills } from './skills.js';
 import { createConversation } from './conversation.js';
 import { watchSelection } from './word-actions.js';
 import { reapOrphanChunkBookmarks } from '../lib/reassembler.js';
 import * as chatView from './ui/chat-view.js';
-import { renderWelcomeChips } from './ui/welcome.js';
+import { renderWelcomeChips, selectWelcomeSkills } from './ui/welcome.js';
 import { initInputBar } from './ui/input-bar.js';
 import { initSettings, openSettings, testConnectionUI } from './ui/settings-view.js';
 import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer } from './ui/status-bar.js';
@@ -124,8 +124,10 @@ function initialize() {
     document.getElementById('newChatBtn').addEventListener('click', () => conversation.newChat());
     document.getElementById('infoBtn').addEventListener('click', showAbout);
 
-    // Welcome skill chips fill the input with the slash command
-    renderWelcomeChips(BUILTIN_SKILLS, (skill) => {
+    // Welcome skill chips fill the input with the slash command. The
+    // built-ins only (hardcoded before) hid the reserved /mcp skill and
+    // imported SKILL.md packages — show the full "get started" set.
+    renderWelcomeChips(selectWelcomeSkills(listSkills(appState.promptManager)), (skill) => {
         input.setValue(`${skill.slash} `);
         input.focus();
     });
