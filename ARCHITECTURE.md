@@ -57,6 +57,12 @@ src/
                                #   tracked changes (paragraph-level LCS +
                                #   similarity alignment, blank-paragraph-safe);
                                #   re-anchors drifted staged ranges at apply time
+    skill-package.js          # SKILL.md skill package parser/serializer
+                               #   (frontmatter name/description/category/scope
+                               #   + markdown body → skill descriptor)
+    skill-store.js            # Imported skill package persistence
+                               #   (localStorage wordAI.skills.imported, cap 24)
+    skill-limits.js           # Shared skill-package size caps
     response-parser.js         # ===AMENDMENT===/===COMMENT=== splitting,
                                #   fallback classification prompt
     json-utils.js              # Shared LLM-JSON extraction: string-aware

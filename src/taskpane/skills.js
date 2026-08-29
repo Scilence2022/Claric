@@ -24,6 +24,7 @@
  */
 
 import { CATEGORIES } from '../lib/prompt-manager.js';
+import { loadImportedSkills } from '../lib/skill-store.js';
 
 /**
  * The six built-in skills.
@@ -121,8 +122,9 @@ function scopeForCategory(category) {
 }
 
 /**
- * Lists all available skills: the six built-ins plus one skill per prompt
- * saved in PromptManager (slash name derived from the prompt id).
+ * Lists all available skills: the six built-ins, one skill per prompt
+ * saved in PromptManager (slash name derived from the prompt id), and the
+ * imported SKILL.md skill packages (from skill-store).
  *
  * @param {object} promptManager - PromptManager instance
  * @returns {Array<object>} Skill descriptors (built-ins first)
@@ -146,6 +148,9 @@ export function listSkills(promptManager) {
             });
         }
     }
+
+    // Imported SKILL.md packages (see lib/skill-package.js / lib/skill-store.js).
+    skills.push(...loadImportedSkills());
     return skills;
 }
 

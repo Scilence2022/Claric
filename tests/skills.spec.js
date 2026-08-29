@@ -143,3 +143,46 @@ describe('listSkills', () => {
     expect(skill.category).toBe('context');
   });
 });
+
+describe('imported SKILL.md packages in the registry', () => {
+    const { addImportedSkill } = require('../src/lib/skill-store.js');
+
+    // jsdom-free localStorage mock; skill-store reads the global lazily.
+    beforeEach(() => {
+        const store = {};
+        global.localStorage = {
+            getItem: (k) => (k in store ? store[k] : null),
+            setItem: (k, v) => { store[k] = String(v); },
+            removeItem: (k) => { delete store[k]; },
+            clear: () => { for (const k of Object.keys(store)) delete store[k]; },
+        };
+    });
+
+    afterEach(() => {
+        delete global.localStorage;
+    });
+
+    function pm() {
+        return { getPrompts: () => [] };
+    }
+
+    test('listSkills appends imported packages after builtins', () => {
+        expect(addImportedSkill({
+            name: 'literature-review', slash: '/literature-review',
+            description: 'Review against the literature', category: 'chat',
+            scope: 'chat', defaultTemplate: 'body', imported: true,
+        }).ok).toBe(true);
+
+        const skills = listSkills(pm());
+        expect(skills[0].name).toBe('check-doc'); // builtins first
+        const imported = skills.find((s) => s.name === 'literature-review');
+        expect(imported).toEqual(expect.objectContaining({
+            slash: '/literature-review', imported: true, category: 'chat',
+        }));
+        expect(resolveSkill('/literature-review focus on methods', skills).args).toBe('focus on methods');
+    });
+
+    test('an empty store yields no imported skills', () => {
+        expect(listSkills(pm()).filter((s) => s.imported)).toHaveLength(0);
+    });
+});

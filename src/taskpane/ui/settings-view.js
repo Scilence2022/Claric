@@ -14,6 +14,8 @@
 import { testConnection as llmTestConnection } from '../../lib/llm-client.js';
 import { CATEGORIES } from '../../lib/prompt-manager.js';
 import { getProviderPreset } from '../../lib/providers.js';
+import { parseSkillPackage } from '../../lib/skill-package.js';
+import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../../lib/skill-store.js';
 import { appState, getActiveBackendConfig, debounce, persistSettings } from '../app-state.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
 
@@ -116,6 +118,7 @@ export function initSettings({ onConfigChanged } = {}) {
     document.getElementById('savePromptCancelBtn').addEventListener('click', hideSavePromptModal);
 
     updateUIFromConfig();
+    initSkillImport();
     renderAllDropdowns();
 
     // Restore textarea content from the active prompt of each category.
@@ -133,6 +136,8 @@ export function initSettings({ onConfigChanged } = {}) {
 /** Opens the settings slide-over. */
 export function openSettings() {
     document.getElementById('settingsOverlay').removeAttribute('hidden');
+    // Re-render on every open so the list reflects imports made elsewhere.
+    renderSkillImportList();
 }
 
 /** Closes the settings slide-over. */
@@ -619,4 +624,95 @@ function handleSavePromptConfirm() {
  */
 function capitalize(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+/**
+ * Imported Skills (SKILL.md) management: import via paste or file, list,
+ * remove. Imported packages surface as slash commands through the skill
+ * registry (skills.js listSkills).
+ */
+function renderSkillImportList() {
+    const list = document.getElementById('skillImportList');
+    if (!list) return;
+    list.textContent = '';
+
+    const skills = loadImportedSkills();
+    if (skills.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'help-text';
+        empty.textContent = 'No imported skills yet.';
+        list.appendChild(empty);
+        return;
+    }
+    for (const skill of skills) {
+        const row = document.createElement('div');
+        row.className = 'skill-import-row';
+
+        const text = document.createElement('div');
+        text.className = 'skill-import-text';
+        const name = document.createElement('div');
+        name.className = 'skill-import-name';
+        name.textContent = `${skill.slash} · ${skill.category} · ${skill.scope}`;
+        const desc = document.createElement('div');
+        desc.className = 'skill-import-desc';
+        desc.textContent = skill.description;
+        text.appendChild(name);
+        text.appendChild(desc);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-compact';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', () => {
+            removeImportedSkill(skill.name);
+            addLog(`Removed imported skill ${skill.slash}.`, 'info');
+            renderSkillImportList();
+        });
+
+        row.appendChild(text);
+        row.appendChild(removeBtn);
+        list.appendChild(row);
+    }
+}
+
+function initSkillImport() {
+    const importText = document.getElementById('skillImportText');
+    const importBtn = document.getElementById('skillImportBtn');
+    const clearBtn = document.getElementById('skillImportClearBtn');
+    const fileInput = document.getElementById('skillImportFile');
+    if (!importText || !importBtn) return; // markup absent — nothing to wire
+
+    fileInput.addEventListener('change', () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        file.text().then((content) => {
+            importText.value = content;
+        }).catch((err) => {
+            addLog(`Could not read ${file.name}: ${err.message}`, 'error');
+        });
+    });
+
+    importBtn.addEventListener('click', () => {
+        const pkg = parseSkillPackage(importText.value, addLog);
+        if (!pkg) {
+            addLog('Skill import failed — see the warning above.', 'error');
+            return;
+        }
+        const result = addImportedSkill(pkg);
+        if (!result.ok) {
+            addLog(`Skill import failed: ${result.error}`, 'error');
+            return;
+        }
+        importText.value = '';
+        fileInput.value = '';
+        addLog(`Imported skill ${pkg.slash} — it now works as a slash command.`, 'success');
+        renderSkillImportList();
+    });
+
+    clearBtn.addEventListener('click', () => {
+        importText.value = '';
+        fileInput.value = '';
+    });
+
+    renderSkillImportList();
 }

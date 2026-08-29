@@ -89,6 +89,11 @@ Every document mutation is staged as a proposal card — nothing is written unti
 - OOXML tracked-changes parsing uses the browser DOMParser (no external dependencies): handles the `pkg:package` wrapper and `w:proofErr` normalization, pairs adjacent `w:del` + `w:ins` from the same author as replacements, detects move operations (`w:moveFrom` / `w:moveTo`), skips table-row revision markers, queries namespace-aware with prefix fallback, and includes author identity in the LLM-formatted output
 - Async comment queue: bookmark-based range persistence, a pending counter with retry-on-error, and WordApi 1.4 detection with graceful degradation
 
+### Skill Packages (SKILL.md)
+
+- Import Claude-style skill packages: YAML frontmatter (name, description, optional `category`/`scope`) over a markdown instruction body — pasted or loaded from a `.md` file in Settings → Prompts
+- Imported skills appear as slash commands alongside built-ins and saved prompts; they persist in localStorage (`wordAI.skills.imported`, capped at 24) and can be removed in Settings
+
 ### Prompt System
 
 - Four independent prompt categories — context, amendment, comment, summary — each with full CRUD, per-category activation, and `{selection}` placeholder replacement

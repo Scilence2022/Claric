@@ -1444,3 +1444,35 @@ textarea.form-control {
     gap: var(--spacing-sm);
     margin-top: var(--spacing-md);
 }
+
+/* Imported skills (SKILL.md) list in Settings → Prompts */
+.skill-import-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-xs) 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.skill-import-row:last-child {
+    border-bottom: none;
+}
+
+.skill-import-text {
+    min-width: 0;
+}
+
+.skill-import-name {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--primary-text);
+}
+
+.skill-import-desc {
+    font-size: var(--font-size-xs);
+    color: var(--secondary-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

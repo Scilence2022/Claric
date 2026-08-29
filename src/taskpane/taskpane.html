@@ -287,6 +287,24 @@
                             <button id="resetPromptBtn-summary" class="btn btn-compact">Clear</button>
                         </div>
                     </div>
+                    <hr class="settings-divider">
+                    <p class="settings-section-label">Imported Skills (SKILL.md)</p>
+                    <p class="help-text">Imported skill packages appear as slash commands alongside built-ins and saved prompts. Paste a SKILL.md document (or load a .md file) and import. Optional frontmatter fields: category (amendment/comment/summary/chat), scope (selection-first/document/chat).</p>
+                    <div class="prompt-block">
+                        <p class="prompt-block-title">Import a skill package</p>
+                        <div class="form-group">
+                            <input type="file" id="skillImportFile" class="form-control" accept=".md,.markdown,text/markdown,text/plain" aria-label="Skill package file">
+                        </div>
+                        <div class="form-group">
+                            <textarea id="skillImportText" class="form-control" rows="5"
+                                placeholder="---&#10;name: literature-review&#10;description: Review a draft against the literature and flag gaps&#10;category: chat&#10;---&#10;Instructions for the model. Use {selection} where the selected text should go." aria-label="Skill package markdown"></textarea>
+                        </div>
+                        <div class="button-group compact-toolbar">
+                            <button id="skillImportBtn" class="btn btn-compact">Import</button>
+                            <button id="skillImportClearBtn" class="btn btn-compact">Clear</button>
+                        </div>
+                        <div id="skillImportList" aria-live="polite"></div>
+                    </div>
                     </div><!-- /settingsPagePrompts -->
                 </div>
             </aside>
