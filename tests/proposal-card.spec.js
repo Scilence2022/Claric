@@ -29,8 +29,7 @@ function makeCard(overrides = {}) {
 }
 
 describe('createProposalCard', () => {
-  test('without items there is no change list (original behavior)', () => {
-    const card = makeCard();
+  test('without items there is no change list (original behavior)', () => {    const card = makeCard();
     expect(card.el.querySelector('.proposal-card-changes')).toBeNull();
   });
 
@@ -317,5 +316,40 @@ describe('applyAll (auto-apply path)', () => {
         expect(onApplyB).not.toHaveBeenCalled();
         release();
         await flush(); await flush();
+    });
+
+    test('isBlocked refusal aborts before onApply and before registering the controller', async () => {
+        // The C-1 regression: a card apply during an in-flight run used to
+        // hijack the run's controller (uncancellable run) and release the
+        // busy flags early (concurrent pipelines). The pre-flight guard must
+        // refuse before either happens.
+        const registerController = jest.fn();
+        const setApplyBusy = jest.fn();
+        const onApply = jest.fn(async () => {});
+        const card = makeCard({
+            items: makeItems(),
+            onApply,
+            registerController,
+            setApplyBusy,
+            isBlocked: () => 'A run is currently processing — wait for it to finish before applying.',
+        });
+
+        card.applyAll();
+        await new Promise((r) => setTimeout(r, 0));
+
+        expect(onApply).not.toHaveBeenCalled();
+        expect(registerController).not.toHaveBeenCalled();
+        expect(setApplyBusy).not.toHaveBeenCalled();
+        const status = card.el.querySelector('.proposal-card-status');
+        expect(status.textContent).toContain('A run is currently processing');
+    });
+
+    test('isBlocked null allows the apply (guard is a no-op when idle)', async () => {
+        const onApply = jest.fn(async () => {});
+        const card = makeCard({ items: makeItems(), onApply, isBlocked: () => null });
+
+        card.applyAll();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(onApply).toHaveBeenCalledTimes(1);
     });
 });
