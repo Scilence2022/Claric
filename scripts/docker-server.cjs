@@ -314,7 +314,12 @@ function handleProxyRequest(route, req, res, urlPath) {
   req.pipe(proxyReq);
 }
 
-function requestHandler(req, res) {
+/**
+ * Handles one request. May throw — requestHandler wraps this so an
+ * unexpected synchronous throw answers 500 on that connection instead of
+ * escaping as an uncaught exception and killing the process.
+ */
+function handleRequest(req, res) {
   let urlPath;
   try {
     urlPath = decodeURIComponent(req.url.split('?')[0]);
@@ -327,6 +332,17 @@ function requestHandler(req, res) {
   res.on('finish', () => {
     console.log(`${new Date().toISOString()} ${req.method} ${req.url} -> ${res.statusCode}`);
   });
+
+  // A decoded control character (NUL, newline, ...) never occurs in a
+  // legitimate asset or API path, and NUL is worse than invalid: fs.readFile
+  // throws synchronously on it (ERR_INVALID_ARG_VALUE), so one crafted
+  // request like GET /%00 used to take the whole process down. Reject
+  // before anything touches the path.
+  // eslint-disable-next-line no-control-regex -- matching control characters is the purpose of this validation
+  if (/[\u0000-\u001f\u007f]/.test(urlPath)) {
+    sendError(res, 400, 'Bad request');
+    return;
+  }
 
   if (urlPath === '/healthz') {
     res.writeHead(200, {
@@ -374,6 +390,24 @@ function requestHandler(req, res) {
 }
 
 /**
+ * Crash-proof entry point wired into the HTTP server: an unexpected
+ * synchronous throw inside request handling answers 500 on that connection
+ * instead of killing the server — and every in-flight LLM stream with it.
+ */
+function requestHandler(req, res) {
+  try {
+    handleRequest(req, res);
+  } catch (err) {
+    console.error('Request handling error:', (err && err.message) || err);
+    if (!res.headersSent) {
+      sendError(res, 500, 'Internal server error');
+    } else {
+      res.end();
+    }
+  }
+}
+
+/**
  * Wires graceful shutdown and top-level error handling on the server.
  *
  * @param {http.Server|https.Server} server
@@ -398,6 +432,19 @@ function configureServer(server) {
       console.error('Server error:', err.message);
     }
     process.exit(1);
+  });
+
+  // Last-resort process guards. This server is stateless and each request
+  // is independent (LLM streams can run for minutes), so an isolated
+  // asynchronous throw costs less as a logged-and-dropped connection than
+  // as a process exit that kills every in-flight stream. requestHandler
+  // already catches throws at the request boundary; these catch whatever
+  // escapes it.
+  process.on('uncaughtException', (err) => {
+    console.error('Uncaught exception (server kept alive):', (err && err.stack) || err);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection (server kept alive):', (reason && reason.stack) || reason);
   });
 
   const shutdown = (signal) => {
@@ -478,4 +525,4 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { buildProxyRoutes, handleProxyRequest };
+module.exports = { buildProxyRoutes, handleProxyRequest, requestHandler, configureServer };
