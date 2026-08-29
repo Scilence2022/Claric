@@ -208,9 +208,14 @@ export function renderTablePreview(preview) {
  * @param {function(AbortController|null)} [args.registerController] - Optional
  *   register/unregister the live apply AbortController so the host Stop button
  *   can abort (pause) the in-flight apply; receives null when apply settles
+ * @param {function(string|null)} [args.isBlocked] - Optional pre-flight guard:
+ *   return a refusal reason string to block the apply (e.g. a turn pipeline
+ *   is still running), or null/undefined to allow it. Without this guard a
+ *   card apply during an in-flight run hijacked the run's controller and
+ *   released the busy flags early, letting a second pipeline interleave.
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string), markItemApplied: function(string, object), setPaused: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, tablePreview, items, onLocate, comment, onApply, onReject, registerController, setApplyBusy }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, tablePreview, items, onLocate, comment, onApply, onReject, registerController, setApplyBusy, isBlocked }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -388,6 +393,18 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
 
     async function runApply() {
         if (applyInFlight) return;
+        if (typeof isBlocked === 'function') {
+            const reason = isBlocked();
+            if (reason) {
+                // A turn pipeline (or anything else owning the busy state) is
+                // running — refuse here, BEFORE registering the apply
+                // controller, so the in-flight run keeps its controller and
+                // its busy flags.
+                status.style.display = '';
+                status.textContent = reason;
+                return;
+            }
+        }
         if (_anyCardApplyInFlight) {
             // Another card's apply is writing to the document — refuse
             // instead of interleaving two Word write passes.

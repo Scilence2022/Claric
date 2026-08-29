@@ -606,23 +606,42 @@ export function createConversation(deps) {
      * @returns {object} createProposalCard card api
      */
     function makeProposalCard(args) {
+        // Tracks the controller this card currently has registered, so a late
+        // settle can never release a controller it does not own (e.g. one a
+        // follow-up run took over after an in-flight apply was cancelled).
+        let ownRegisteredController = null;
         return _createProposalCardRaw({
+            isBlocked: () => (isBusy()
+                ? 'A run is currently processing — wait for it to finish before applying.'
+                : null),
             registerController: (controller) => {
-                const old = appState.processDocController;
                 if (controller === null) {
                     // Apply settled (either the caller settled terminal state
                     // or cancel() already freed the controller) — release the
-                    // UI only if we still own it.
-                    if (appState.processDocController === old && old) {
+                    // UI only if the current controller is one THIS card
+                    // registered; a foreign run's controller must survive a
+                    // late card-apply settle untouched.
+                    if (ownRegisteredController
+                        && appState.processDocController === ownRegisteredController) {
                         appState.isProcessingDoc = false;
                         appState.processDocController = null;
                         input.setProcessing(false);
                     }
-                } else {
-                    appState.processDocController = controller;
-                    appState.isProcessingDoc = true;
-                    input.setProcessing(true);
+                    ownRegisteredController = null;
+                    return;
                 }
+                // Defensive: never clobber a foreign controller. The card's
+                // isBlocked guard should have ensured the busy state was free
+                // before we get here; overwriting a run's controller would
+                // make the run uncancellable.
+                if (appState.processDocController
+                    && appState.processDocController !== controller) {
+                    return;
+                }
+                ownRegisteredController = controller;
+                appState.processDocController = controller;
+                appState.isProcessingDoc = true;
+                input.setProcessing(true);
             },
             setApplyBusy: (busy) => {
                 input.setProcessing(busy);
