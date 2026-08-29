@@ -37,6 +37,7 @@ export function defaultConfig() {
         includeCommentsInSelection: false,
         mcpServers: [],
         mcpStepBudget: TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT,
+        autoApplyChanges: false,
         providers: defaultProviderConfig()
     };
 }
@@ -186,6 +187,9 @@ export function normalizeConfig(defaults, parsed) {
     }
     if (Number.isFinite(parsed.mcpStepBudget) && parsed.mcpStepBudget > 0) {
         out.mcpStepBudget = Math.min(Math.round(parsed.mcpStepBudget), 48);
+    }
+    if (typeof parsed.autoApplyChanges === 'boolean') {
+        out.autoApplyChanges = parsed.autoApplyChanges;
     }
 
     return out;

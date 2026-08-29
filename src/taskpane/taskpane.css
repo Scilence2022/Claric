@@ -1484,3 +1484,171 @@ textarea.form-control {
     gap: var(--spacing-xs);
     margin-bottom: var(--spacing-sm);
 }
+
+/* ── Composer (ChatGPT-style input area) ─────────────────────────────── */
+.composer {
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    background: var(--primary-bg);
+    padding: var(--spacing-sm) var(--spacing-sm) var(--spacing-xs);
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composer:focus-within {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.15);
+}
+
+.composer .chat-input {
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    width: 100%;
+    margin: 0;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    resize: none;
+}
+
+.composer .chat-input:focus {
+    outline: none;
+}
+
+.composer-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: 2px var(--spacing-xs) 0;
+}
+
+.composer-icon-btn {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color);
+    background: var(--primary-bg);
+    color: var(--secondary-text);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.composer-icon-btn:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+.composer-spacer {
+    flex: 1 1 auto;
+}
+
+/* macOS-style switch */
+.mac-switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 21px;
+    flex: 0 0 auto;
+    cursor: pointer;
+}
+
+.mac-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+}
+
+.mac-switch-slider {
+    position: absolute;
+    inset: 0;
+    background: #e9e9ea;
+    border-radius: 999px;
+    transition: background 160ms ease;
+}
+
+.mac-switch-slider::before {
+    content: '';
+    position: absolute;
+    width: 27px;
+    height: 27px;
+    left: -3px;
+    top: -3px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 1px 1px rgba(0, 0, 0, 0.12);
+    transition: transform 160ms ease;
+}
+
+.mac-switch input:checked + .mac-switch-slider {
+    background: #34c759;
+}
+
+.mac-switch input:checked + .mac-switch-slider::before {
+    transform: translateX(15px);
+}
+
+.mac-switch input:focus-visible + .mac-switch-slider {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+}
+
+.auto-apply-label {
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+/* Circular send button */
+.send-btn {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: none;
+    background: #0d0d0d;
+    color: #ffffff;
+    font-size: 15px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 120ms ease, transform 120ms ease;
+}
+
+.send-btn:hover {
+    background: #2d2d2d;
+}
+
+.send-btn:active {
+    transform: scale(0.94);
+}
+
+.send-btn.cancel-mode {
+    background: var(--error-color);
+}
+
+/* Skills menu anchored to the + button */
+.skills-menu {
+    position: absolute;
+    bottom: 92px;
+    left: 16px;
+    z-index: 20;
+    min-width: 260px;
+    max-width: 320px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: var(--primary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+    padding: var(--spacing-xs);
+}
+
+.skills-menu .skill-picker-item {
+    width: 100%;
+}

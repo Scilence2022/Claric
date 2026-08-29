@@ -289,3 +289,33 @@ describe('cross-card apply mutex and busy wiring', () => {
     expect(setApplyBusy.mock.calls[setApplyBusy.mock.calls.length - 1][0]).toBe(false);
   });
 });
+
+describe('applyAll (auto-apply path)', () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+
+    test('applies all checked changes without a button click', async () => {
+        const onApply = jest.fn(async () => {});
+        const card = makeCard({ items: makeItems(), onApply });
+        card.applyAll();
+        await flush();
+        expect(onApply).toHaveBeenCalledWith(['a', 'b', 'c'], expect.anything());
+        // Without a terminal settle (markApplied etc.) the button stays
+        // disabled — the onApply handler owns the terminal state, exactly
+        // as with a manual click.
+    });
+
+    test('respects the cross-card mutex', async () => {
+        let release;
+        const cardA = makeCard({ onApply: () => new Promise((resolve) => { release = resolve; }) });
+        const onApplyB = jest.fn(async () => {});
+        const cardB = makeCard({ onApply: onApplyB });
+
+        cardA.applyAll();
+        await flush();
+        cardB.applyAll();
+        await flush();
+        expect(onApplyB).not.toHaveBeenCalled();
+        release();
+        await flush(); await flush();
+    });
+});

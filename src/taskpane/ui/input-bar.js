@@ -16,13 +16,18 @@
  * @param {function()} deps.onCancel - Called when the morphed Cancel button is clicked
  * @param {function(): Array<object>} deps.getSkills - Returns the current skill list
  * @param {function()} deps.onOpenSettings - Opens the settings slide-over
+ * @param {function(): boolean} [deps.getAutoApply] - Current auto-apply setting
+ * @param {function(boolean)} [deps.setAutoApply] - Persists an auto-apply change
  * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), updateModelPill: function(string), setSelectionPreview: function(object|string) }}
  */
-export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) {
+export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getAutoApply, setAutoApply }) {
     const textarea = document.getElementById('chatInput');
     const sendBtn = document.getElementById('sendBtn');
     const picker = document.getElementById('skillPicker');
     const modelPill = document.getElementById('modelPill');
+    const addSkillBtn = document.getElementById('addSkillBtn');
+    const skillsMenu = document.getElementById('skillsMenu');
+    const autoApplyToggle = document.getElementById('autoApplyToggle');
 
     let processing = false;
     let pickerItems = [];
@@ -140,6 +145,78 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings }) 
             closePicker();
         }
     });
+
+    // "+" opens a menu of all skills (the "/" picker's click-first twin).
+    // Picking one inserts its slash command so the user can add arguments.
+    function openSkillsMenu() {
+        const skills = getSkills() || [];
+        skillsMenu.innerHTML = '';
+        if (skills.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'skill-picker-desc';
+            empty.textContent = 'No skills available.';
+            skillsMenu.appendChild(empty);
+        }
+        for (const skill of skills) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'skill-picker-item';
+            item.setAttribute('role', 'menuitem');
+
+            const name = document.createElement('span');
+            name.className = 'skill-picker-name';
+            name.textContent = skill.slash;
+            const desc = document.createElement('span');
+            desc.className = 'skill-picker-desc';
+            desc.textContent = skill.description;
+
+            item.appendChild(name);
+            item.appendChild(desc);
+            item.addEventListener('click', () => {
+                closeSkillsMenu();
+                pickSkill(skill);
+            });
+            skillsMenu.appendChild(item);
+        }
+        skillsMenu.removeAttribute('hidden');
+        addSkillBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    function closeSkillsMenu() {
+        skillsMenu.setAttribute('hidden', '');
+        addSkillBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    if (addSkillBtn && skillsMenu) {
+        addSkillBtn.addEventListener('click', () => {
+            if (skillsMenu.hasAttribute('hidden')) {
+                closePicker();
+                openSkillsMenu();
+            } else {
+                closeSkillsMenu();
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (!skillsMenu.hasAttribute('hidden') &&
+                !skillsMenu.contains(e.target) && e.target !== addSkillBtn) {
+                closeSkillsMenu();
+            }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !skillsMenu.hasAttribute('hidden')) {
+                closeSkillsMenu();
+            }
+        });
+    }
+
+    if (autoApplyToggle) {
+        if (typeof getAutoApply === 'function') {
+            autoApplyToggle.checked = getAutoApply() === true;
+        }
+        autoApplyToggle.addEventListener('change', () => {
+            if (typeof setAutoApply === 'function') setAutoApply(autoApplyToggle.checked);
+        });
+    }
 
     modelPill.addEventListener('click', () => onOpenSettings());
 
