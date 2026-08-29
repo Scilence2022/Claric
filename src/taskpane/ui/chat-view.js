@@ -187,8 +187,45 @@ export function renderHistory(messages) {
  */
 function _scrollToBottom() {
     if (_messagesEl) {
-        _messagesEl.scrollTop = _messagesEl.scrollHeight;
+        _queueScroll(_messagesEl);
     }
+}
+
+// Streaming callbacks fire per token; every scrollTop write paired with a
+// scrollHeight read forces a layout, so a long stream reflowed the pane
+// hundreds of times per second. Coalesce to one scroll write per animation
+// frame. Falls back to immediate writes where requestAnimationFrame is
+// unavailable (jsdom tests rely on the synchronous write).
+const _pendingScrolls = new Map();
+function _queueScroll(el) {
+    if (typeof requestAnimationFrame !== 'function') {
+        el.scrollTop = el.scrollHeight;
+        return;
+    }
+    if (_pendingScrolls.has(el)) return;
+    _pendingScrolls.set(el, requestAnimationFrame(() => {
+        _pendingScrolls.delete(el);
+        el.scrollTop = el.scrollHeight;
+    }));
+}
+
+/**
+ * Appends text incrementally: a text-node append is O(token), while
+ * `el.textContent = fullString` rewrites the whole accumulated text per
+ * token (O(n²) across a long stream). Falls back to a full render when the
+ * element holds non-text content.
+ * @private
+ */
+function _appendStreamText(el, text) {
+    if (el.childNodes.length === 0) {
+        el.appendChild(document.createTextNode(text));
+        return;
+    }
+    if (el.childNodes.length === 1 && el.firstChild.nodeType === Node.TEXT_NODE) {
+        el.firstChild.appendData(text);
+        return;
+    }
+    el.textContent += text;
 }
 
 /**
@@ -651,7 +688,7 @@ export function createAssistantMessage() {
         },
         appendText(token) {
             streamed += token;
-            _renderText(bodyEl, streamed);
+            _appendStreamText(bodyEl, token);
             _scrollToBottom();
         },
         appendLogLine(text) {
@@ -722,10 +759,13 @@ export function createAssistantMessage() {
                 }
                 target = section.contentEl;
             }
-            target.textContent += token;
+            // Incremental append: `target.textContent += token` re-serializes
+            // the whole accumulated text node per token (O(n²) over a long
+            // stream); appending a text node touches only the new token.
+            target.appendChild(document.createTextNode(token));
             if (!modelCollapsed) {
                 if (modelStickToBottom) {
-                    modelBody.scrollTop = modelBody.scrollHeight;
+                    _queueScroll(modelBody);
                 }
                 _scrollToBottom();
             }

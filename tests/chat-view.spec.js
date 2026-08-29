@@ -28,48 +28,58 @@ function mockScrollMetrics(el, { scrollHeight = 1000, clientHeight = 200 } = {})
 }
 
 describe('model activity auto-scroll', () => {
-  test('follows the stream by default (scrollTop pinned to bottom)', () => {
+  // Scroll writes coalesce to one per animation frame in production; the
+  // tests advance a frame explicitly to observe the coalesced result.
+  const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
+
+  test('follows the stream by default (scrollTop pinned to bottom)', async () => {
     setupDom();
     const msg = createAssistantMessage();
     const modelBody = msg.el.querySelector('.msg-model-body');
     mockScrollMetrics(modelBody);
 
     msg.appendModelToken({ id: 's' }, 'content', 'hello');
+    await nextFrame();
     expect(modelBody.scrollTop).toBe(1000);
 
     msg.appendModelToken({ id: 's' }, 'content', ' world');
+    await nextFrame();
     expect(modelBody.scrollTop).toBe(1000);
   });
 
-  test('stops following when the user scrolls up, resumes near the bottom', () => {
+  test('stops following when the user scrolls up, resumes near the bottom', async () => {
     setupDom();
     const msg = createAssistantMessage();
     const modelBody = msg.el.querySelector('.msg-model-body');
     mockScrollMetrics(modelBody);
 
     msg.appendModelToken({ id: 's' }, 'content', 'one');
+    await nextFrame();
     expect(modelBody.scrollTop).toBe(1000);
 
     // User scrolls up to read earlier output -> follow disengages.
     modelBody.scrollTop = 100;
     modelBody.dispatchEvent(new Event('scroll'));
     msg.appendModelToken({ id: 's' }, 'content', 'two');
+    await nextFrame();
     expect(modelBody.scrollTop).toBe(100);
 
     // User scrolls back near the bottom -> follow re-engages.
     modelBody.scrollTop = 980;
     modelBody.dispatchEvent(new Event('scroll'));
     msg.appendModelToken({ id: 's' }, 'content', 'three');
+    await nextFrame();
     expect(modelBody.scrollTop).toBe(1000);
   });
 
-  test('re-expanding the region jumps to the latest output', () => {
+  test('re-expanding the region jumps to the latest output', async () => {
     setupDom();
     const msg = createAssistantMessage();
     const modelBody = msg.el.querySelector('.msg-model-body');
     mockScrollMetrics(modelBody);
 
     msg.appendModelToken({ id: 's' }, 'content', 'hello');
+    await nextFrame();
     msg.collapseModelOutput();
     expect(modelBody.style.display).toBe('none');
 
@@ -79,17 +89,19 @@ describe('model activity auto-scroll', () => {
     expect(modelBody.scrollTop).toBe(1000);
   });
 
-  test('no auto-scroll while the region is collapsed', () => {
+  test('no auto-scroll while the region is collapsed', async () => {
     setupDom();
     const msg = createAssistantMessage();
     const modelBody = msg.el.querySelector('.msg-model-body');
     mockScrollMetrics(modelBody);
 
     msg.appendModelToken({ id: 's' }, 'content', 'hello');
+    await nextFrame();
     msg.collapseModelOutput();
     modelBody.scrollTop = 0;
 
     msg.appendModelToken({ id: 's' }, 'content', 'more');
+    await nextFrame();
     expect(modelBody.scrollTop).toBe(0);
   });
 });
