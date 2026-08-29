@@ -955,15 +955,20 @@ export async function applyChunkResults(results, bookmarkMap, options) {
 }
 
 /**
- * Removes all chunk bookmarks from the document.
+ * Removes chunk bookmarks from the document.
  * Tolerates individual bookmark deletion failures.
  *
  * @param {Map<string, string>} bookmarkMap - chunkId -> bookmarkName
+ * @param {object} [options]
+ * @param {Set<string>} [options.keep] - Bookmark names to leave in place.
+ *   The apply path keeps FAILED chunks' bookmarks: the retry link re-drives
+ *   exactly those chunks and needs their staged ranges to still exist.
  * @returns {Promise<void>}
  */
-export async function cleanupBookmarks(bookmarkMap) {
+export async function cleanupBookmarks(bookmarkMap, { keep = null } = {}) {
   await Word.run(async (context) => {
     for (const bookmarkName of bookmarkMap.values()) {
+      if (keep && keep.has(bookmarkName)) continue;
       try {
         context.document.deleteBookmark(bookmarkName);
       } catch (_err) {

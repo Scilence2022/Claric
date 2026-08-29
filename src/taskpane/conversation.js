@@ -706,6 +706,29 @@ export function createConversation(deps) {
             && _normalizeText(r.amendment) !== _normalizeText(chunkOriginalText(r)));
 
         if (amendedChunks.length === 0) {
+            if (outcome.failedCount > 0) {
+                // Chunks failed (possibly all of them): report the real cause
+                // with a retry link instead of masquerading as "the model
+                // proposed no changes". The failed chunks' bookmarks stay in
+                // place so the retry can target their staged ranges.
+                const cancelledNote = outcome.cancelledCount > 0
+                    ? ` ${outcome.cancelledCount} section(s) cancelled.`
+                    : '';
+                const firstError = outcome.results.find((r) => r.status === 'rejected' && r.error)?.error;
+                msg.setStatus(
+                    `Processing failed on ${outcome.failedCount} of ${outcome.chunks.length} section(s).` +
+                    `${cancelledNote} No changes were applied.` +
+                    (firstError ? ` Last error: ${firstError}` : '')
+                );
+                if (typeof outcome.retryFailed === 'function' && typeof logWithRetry === 'function') {
+                    logWithRetry(
+                        `${outcome.failedCount} section(s) failed to process. Click to retry.`,
+                        'warning',
+                        () => outcome.retryFailed()
+                    );
+                }
+                return;
+            }
             await outcome.discard();
             msg.setStatus(outcome.cancelledCount > 0
                 ? 'Cancelled — no changes were applied.'

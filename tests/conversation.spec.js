@@ -1178,6 +1178,50 @@ describe('createConversation.submit', () => {
     expect(view._msg.setStatus).toHaveBeenCalledWith('The model proposed no changes.');
   });
 
+  test('all-chunks-failed staged run reports the failure with a retry link, not "no changes"', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const retryFailed = jest.fn(async () => {});
+    const staged = {
+      staged: true,
+      results: [
+        { status: 'rejected', amendment: null, error: 'HTTP 500: backend down', chunk: { id: 'c0' } },
+        { status: 'rejected', amendment: null, error: 'HTTP 500: backend down', chunk: { id: 'c1' } },
+      ],
+      chunks: [{ id: 'c0' }, { id: 'c1' }],
+      apply: jest.fn(),
+      discard: jest.fn(async () => {}),
+      retryFailed,
+      failedCount: 2,
+      cancelledCount: 0,
+    };
+    const actions = makeActions({
+      runDocumentSkill: jest.fn(async () => staged),
+    });
+    const logWithRetry = jest.fn();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(), logWithRetry,
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('please polish the whole document');
+
+    // The systemic failure must not be masqueraded as an empty proposal.
+    expect(staged.discard).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('failed on 2 of 2 section(s)'));
+    expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('backend down'));
+    // The retry link drives the outcome's retryFailed handle.
+    expect(logWithRetry).toHaveBeenCalledWith(
+      expect.stringContaining('retry'),
+      'warning',
+      expect.any(Function)
+    );
+    logWithRetry.mock.calls[0][2]();
+    expect(retryFailed).toHaveBeenCalledTimes(1);
+    expect(staged.apply).not.toHaveBeenCalled();
+  });
+
   test('amendment identical to the original chunk text is discarded (LLM echo)', async () => {
     const appState = makeAppState();
     const view = makeView();
