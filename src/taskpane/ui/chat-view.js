@@ -19,6 +19,7 @@
  */
 
 import { buildTextDiffElement } from './diff-view.js';
+import { appState } from '../app-state.js';
 import { renderTablePreview, sanitizeTablePreview } from './proposal-card.js';
 
 let _messagesEl = null;
@@ -568,6 +569,8 @@ export function createAssistantMessage() {
     let lastStatus = '';
     let lastError = null;
     const trackedProposals = [];
+    /** Card staged with auto-apply on — fired by finalizeForHistory. */
+    let pendingAutoApplyCard = null;
     let finalized = false;
     let finalizedRecord = null;
 
@@ -754,6 +757,16 @@ export function createAssistantMessage() {
             }
             extrasEl.appendChild(card.el);
             _scrollToBottom();
+            // Auto-apply mode: stage the card now, fire its apply once the
+            // turn settles (finalizeForHistory) so the write never races
+            // the turn's own busy-flag teardown.
+            if (
+                appState.config.autoApplyChanges === true &&
+                meta && meta.state === 'pending' &&
+                typeof card.applyAll === 'function'
+            ) {
+                pendingAutoApplyCard = card;
+            }
         },
         addCitationPills(citations, onSelect) {
             if (!citations || citations.length === 0) return;
@@ -787,6 +800,11 @@ export function createAssistantMessage() {
         finalizeForHistory() {
             if (finalized) return;
             finalized = true;
+            if (pendingAutoApplyCard) {
+                const cardToApply = pendingAutoApplyCard;
+                pendingAutoApplyCard = null;
+                setTimeout(() => cardToApply.applyAll(), 0);
+            }
             _currentSessionUpdatedAt = new Date().toISOString();
             const now = new Date().toISOString();
             finalizedRecord = {

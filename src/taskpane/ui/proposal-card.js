@@ -386,7 +386,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         el.classList.add('proposal-paused');
     }
 
-    applyBtn.addEventListener('click', async () => {
+    async function runApply() {
         if (applyInFlight) return;
         if (_anyCardApplyInFlight) {
             // Another card's apply is writing to the document — refuse
@@ -420,7 +420,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             // the onApply handler); otherwise the caller settles terminal
             // state via markApplied/markWarning/markError.
         }
-    });
+    }
+
+    applyBtn.addEventListener('click', runApply);
 
     const api = {
         el,
@@ -433,6 +435,12 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
                 'proposal-applied'
             );
         },
+        /**
+         * Programmatically applies all checked changes — the auto-apply
+         * path. Same guards as the button (per-card + cross-card mutex,
+         * disabled state), so it is a no-op when applying is impossible.
+         */
+        applyAll: runApply,
         /** Terminal state for a rejected proposal (idempotent). */
         markRejected() {
             settle('Rejected — no changes were made.', 'proposal-rejected');

@@ -12,6 +12,9 @@ function setupDom() {
         <textarea id="chatInput"></textarea>
         <button id="sendBtn"></button>
         <div id="skillPicker" hidden></div>
+        <div id="skillsMenu" hidden></div>
+        <button id="addSkillBtn"></button>
+        <input type="checkbox" id="autoApplyToggle">
         <button id="modelPill"></button>
         <div id="selectionPreview" hidden>
             <span class="selection-preview-icon"></span>
@@ -94,5 +97,53 @@ describe('setSelectionPreview', () => {
         // Legacy string form (text-only) renders as before.
         bar.setSelectionPreview('plain string');
         expect(document.getElementById('selectionPreviewText').textContent).toBe('plain string');
+    });
+});
+
+
+describe('skills "+" menu and auto-apply toggle', () => {
+    test('"+" opens a menu of all skills; picking one inserts the slash command', () => {
+        document.body.innerHTML = `
+            <textarea id="chatInput"></textarea>
+            <button id="sendBtn"></button>
+            <div id="skillPicker" hidden></div>
+            <div id="skillsMenu" hidden></div>
+            <button id="addSkillBtn"></button>
+            <input type="checkbox" id="autoApplyToggle">
+            <button id="modelPill"></button>`;
+        const skills = [
+            { name: 'mcp', slash: '/mcp', description: 'Run with MCP tools' },
+            { name: 'copy-edit', slash: '/copy-edit', description: 'Fix errors' },
+        ];
+        initInputBar({
+            onSubmit: jest.fn(), onCancel: jest.fn(), onOpenSettings: jest.fn(),
+            getSkills: () => skills,
+        });
+
+        document.getElementById('addSkillBtn').click();
+        const menu = document.getElementById('skillsMenu');
+        expect(menu.hasAttribute('hidden')).toBe(false);
+        const items = menu.querySelectorAll('.skill-picker-item');
+        expect(items).toHaveLength(2);
+        expect(items[0].textContent).toContain('/mcp');
+
+        items[0].click();
+        expect(menu.hasAttribute('hidden')).toBe(true);
+        expect(document.getElementById('chatInput').value).toBe('/mcp ');
+    });
+
+    test('auto-apply toggle initializes from config and persists changes', () => {
+        let stored = false;
+        initInputBar({
+            onSubmit: jest.fn(), onCancel: jest.fn(), onOpenSettings: jest.fn(),
+            getSkills: () => [],
+            getAutoApply: () => stored,
+            setAutoApply: (v) => { stored = v; },
+        });
+        const toggle = document.getElementById('autoApplyToggle');
+        expect(toggle.checked).toBe(false);
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        expect(stored).toBe(true);
     });
 });

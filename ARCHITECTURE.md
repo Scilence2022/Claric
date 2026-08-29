@@ -176,9 +176,10 @@ src/
       chat-view.js             # Message rendering, streaming text, per-turn
                                #   work log, model activity (auto-scroll),
                                #   progress bar, citation pills
-      input-bar.js             # Textarea, skill picker popup, send/cancel,
-                               #   model pill, selection preview chip (text
-                               #   snippet + image thumbnails + +N badge)
+      input-bar.js             # Composer: textarea, skill picker popup + "+"
+                               #   skills menu, macOS-style auto-apply toggle,
+                               #   send/cancel, model pill, selection preview
+                               #   chip (text + image thumbnails + +N badge)
       welcome.js               # Welcome empty state with skill chips
       settings-view.js         # Settings slide-over + prompt management
       proposal-card.js         # Staged proposal card: per-change checkboxes,

@@ -136,7 +136,7 @@ describe('connectMcpServer', () => {
 
 describe('prompts and resources helpers', () => {
     test('listPrompts/getPrompt/listResources/readResource parse results and default empty', async () => {
-        const { fetchFn, posts } = makeFetchMock([
+        const { fetchFn } = makeFetchMock([
             jsonResponse(INIT_RESULT),
             { ok: true, status: 202, headers: { get: () => null }, text: async () => '' },
             jsonResponse({ jsonrpc: '2.0', id: 2, result: { prompts: [{ name: 'review', description: 'Review a draft' }] } }),

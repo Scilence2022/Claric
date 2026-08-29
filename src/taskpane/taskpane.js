@@ -18,7 +18,7 @@
 // Import CSS for webpack to bundle
 import './taskpane.css';
 
-import { appState, loadSettings, getActiveBackendConfig } from './app-state.js';
+import { appState, loadSettings, getActiveBackendConfig, persistSettings } from './app-state.js';
 import { listSkills } from './skills.js';
 import { createConversation } from './conversation.js';
 import { watchSelection } from './word-actions.js';
@@ -88,6 +88,15 @@ function initialize() {
         onCancel: () => conversation.cancel(),
         getSkills: () => listSkills(appState.promptManager),
         onOpenSettings: openSettings,
+        getAutoApply: () => appState.config.autoApplyChanges === true,
+        setAutoApply: (value) => {
+            appState.config.autoApplyChanges = value === true;
+            persistSettings(appState);
+            addLog(value
+                ? 'Auto-apply enabled — proposed changes will be applied automatically as tracked changes.'
+                : 'Auto-apply disabled — proposed changes will wait for your review.',
+                'info');
+        },
     });
 
     const conversation = createConversation({

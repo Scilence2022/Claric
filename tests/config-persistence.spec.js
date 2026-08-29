@@ -157,3 +157,14 @@ describe('normalizeConfig', () => {
         expect(defaults.providers.ollama.url).toBe('/ollama');
     });
 });
+
+describe('autoApplyChanges normalization', () => {
+    test('persists the boolean and defaults to false', () => {
+        const { normalizeConfig, defaultConfig } = require('../src/taskpane/app-state.js');
+        expect(defaultConfig().autoApplyChanges).toBe(false);
+        const out = normalizeConfig(defaultConfig(), { autoApplyChanges: true });
+        expect(out.autoApplyChanges).toBe(true);
+        const corrupt = normalizeConfig(defaultConfig(), { autoApplyChanges: 'yes' });
+        expect(corrupt.autoApplyChanges).toBe(false);
+    });
+});
