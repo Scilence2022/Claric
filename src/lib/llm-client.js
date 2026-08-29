@@ -288,6 +288,29 @@ function _assertNotLengthTruncated(choice) {
 }
 
 /**
+ * Builds the error message for a non-ok response, including a truncated
+ * slice of the response body: OpenAI-compatible backends put the actionable
+ * detail there (rate-limit reason, unknown model, context-length exceeded),
+ * and HTTP/2 often leaves statusText empty — without the body the user just
+ * sees "HTTP 429: ". The body is server-controlled text shown to the user,
+ * not logged server-side, and never contains the request's credentials.
+ *
+ * @param {Response} response - A response with ok === false
+ * @returns {Promise<string>} e.g. "HTTP 429: {"error":{"message":"rate limited"}}"
+ * @private
+ */
+async function _describeHttpError(response) {
+  let detail = '';
+  try {
+    detail = (await response.text()).slice(0, 300).trim();
+  } catch {
+    // Unreadable body -- the status line alone still beats nothing.
+  }
+  const statusLine = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+  return detail ? `${statusLine}: ${detail}` : statusLine;
+}
+
+/**
  * Sends a prompt to the configured LLM backend.
  * Uses OpenAI-compatible /v1/chat/completions format for both Ollama and vLLM.
  *
@@ -354,7 +377,7 @@ export async function sendPrompt(config, promptText, log, signal, timeoutMs = 12
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      throw new Error(await _describeHttpError(response));
     }
 
     const data = await response.json();
@@ -432,7 +455,7 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      throw new Error(await _describeHttpError(response));
     }
 
     const data = await response.json();
@@ -536,7 +559,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      throw new Error(await _describeHttpError(response));
     }
 
     // Headers arrived: the backend is alive -- restart the idle clock.
@@ -634,6 +657,10 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
         'the output may be truncated. Retry the request.'
       );
     }
+    // A stream that terminates cleanly but with finish_reason=length is
+    // still truncated: the model hit its max token limit mid-amendment.
+    // Same refusal as the non-streaming paths, which the SSE path skipped.
+    _assertNotLengthTruncated({ finish_reason: finishReason });
 
     demux.flush();
     return { content: stripThinkTags(full, log), reasoning: reasoning.trim() };
@@ -677,6 +704,11 @@ export async function sendPromptStream(config, promptText, handlers, log, signal
   return content;
 }
 
+// Bounds the Settings-page connection probe: a hung backend must surface a
+// reportable timeout instead of leaving the status dot on "Connecting"
+// forever. Generous enough for a cold-starting local Ollama.
+const CONNECTION_TEST_TIMEOUT_MS = 30000;
+
 /**
  * Tests connection to the configured LLM backend and retrieves model list.
  * Uses the OpenAI-compatible models endpoint (prefix from config.apiPath,
@@ -688,6 +720,8 @@ export async function sendPromptStream(config, promptText, handlers, log, signal
  * @param {string} config.apiKey - API key (empty string if not required)
  * @returns {Promise<{connected: boolean, models: Array<{id: string}>}>}
  * @throws {Error} On non-ok HTTP response or network failure
+ * @throws {Error} TimeoutError (error.name === 'TimeoutError') when the
+ *   backend does not answer within 30s
  */
 export async function testConnection(config) {
   const url = joinApiUrl(config.url, config.apiPath || '/v1', '/models');
@@ -697,10 +731,27 @@ export async function testConnection(config) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
   }
 
-  const response = await fetch(url, { method: 'GET', headers });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CONNECTION_TEST_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      const timeoutErr = new Error(
+        `Connection test timed out after ${CONNECTION_TEST_TIMEOUT_MS / 1000}s`
+      );
+      timeoutErr.name = 'TimeoutError';
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    throw new Error(await _describeHttpError(response));
   }
 
   const data = await response.json();

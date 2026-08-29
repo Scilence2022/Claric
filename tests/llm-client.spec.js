@@ -168,8 +168,10 @@ describe('stripChunkDelimiters', () => {
 // ============================================================================
 
 describe('sendPrompt', () => {
+  let realAbortController;
   beforeEach(() => {
     global.fetch = jest.fn();
+    realAbortController = global.AbortController;
     global.AbortController = jest.fn().mockImplementation(() => ({
       signal: 'mock-signal',
       abort: jest.fn()
@@ -178,7 +180,10 @@ describe('sendPrompt', () => {
   });
 
   afterEach(() => {
-    delete global.fetch;
+    global.fetch = undefined;
+    // Restore (do not delete): the real AbortController is an own global
+    // property, and later describes (testConnection) need it.
+    global.AbortController = realAbortController;
     jest.useRealTimers();
   });
 
@@ -316,6 +321,31 @@ describe('sendPrompt', () => {
     ).rejects.toThrow('HTTP 500');
   });
 
+  test('HTTP error message includes the backend error body', async () => {
+    global.fetch.mockResolvedValue({
+      ok: false,
+      status: 429,
+      statusText: '',
+      text: async () => '{"error":{"message":"rate limited, retry after 30s"}}'
+    });
+
+    await expect(
+      sendPrompt({ url: '/vllm', apiKey: '', model: 'test' }, 'Hello')
+    ).rejects.toThrow('HTTP 429: {"error":{"message":"rate limited, retry after 30s"}}');
+  });
+
+  test('HTTP error without a readable body still reports the status line', async () => {
+    global.fetch.mockResolvedValue({
+      ok: false,
+      status: 502,
+      statusText: 'Bad Gateway'
+    });
+
+    await expect(
+      sendPrompt({ url: '/vllm', apiKey: '', model: 'test' }, 'Hello')
+    ).rejects.toThrow('HTTP 502 Bad Gateway');
+  });
+
   test('uses AbortController with 120-second timeout', async () => {
     global.fetch.mockResolvedValue({
       ok: true,
@@ -440,6 +470,45 @@ describe('testConnection', () => {
     ).rejects.toThrow('HTTP 401');
   });
 
+  test('HTTP error message includes the backend error body', async () => {
+    global.fetch.mockResolvedValue({
+      ok: false,
+      status: 429,
+      statusText: '',
+      text: async () => '{"error":{"message":"rate limited, retry after 30s"}}'
+    });
+
+    await expect(
+      testConnection({ url: '/vllm', apiKey: '' })
+    ).rejects.toThrow('HTTP 429: {"error":{"message":"rate limited, retry after 30s"}}');
+  });
+
+  test('times out when the backend never answers', async () => {
+    jest.useFakeTimers();
+    global.fetch = jest.fn((_url, opts) => new Promise((_resolve, reject) => {
+      opts.signal.addEventListener('abort', () => {
+        const err = new Error('The operation was aborted.');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    }));
+
+    // Reject path via fake timers: advance past the 30s probe bound.
+    const settled = testConnection({ url: '/ollama', apiKey: '' }).then(
+      () => { throw new Error('expected testConnection to reject'); },
+      (err) => err
+    );
+    jest.advanceTimersByTime(30001);
+    const err = await settled;
+
+    expect(err.name).toBe('TimeoutError');
+    expect(err.message).toMatch(/timed out after 30s/);
+    // The probe is bound: fetch receives an abort signal.
+    expect(global.fetch.mock.calls[0][1].signal).toBeDefined();
+
+    jest.useRealTimers();
+  });
+
   test('handles empty data array', async () => {
     global.fetch.mockResolvedValue({
       ok: true,
@@ -468,9 +537,11 @@ describe('testConnection', () => {
 describe('sendMessages', () => {
   let mockAbortFn;
   let mockSignal;
+  let realAbortController;
 
   beforeEach(() => {
     global.fetch = jest.fn();
+    realAbortController = global.AbortController;
     mockAbortFn = jest.fn();
     mockSignal = { aborted: false, addEventListener: jest.fn(), removeEventListener: jest.fn() };
     global.AbortController = jest.fn().mockImplementation(() => ({
@@ -481,7 +552,8 @@ describe('sendMessages', () => {
   });
 
   afterEach(() => {
-    delete global.fetch;
+    global.fetch = undefined;
+    global.AbortController = realAbortController;
     jest.useRealTimers();
   });
 
