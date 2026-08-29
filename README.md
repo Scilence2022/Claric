@@ -17,7 +17,7 @@ backend, local or hosted.
 
 ### Chat Interface & Turn Routing
 
-- Chat-first taskpane: message list, ChatGPT-style composer (rounded input card with a "+" button that opens a skill menu, model pill and circular send button in the toolbar row), welcome empty state with skill chips
+- Chat-first taskpane: message list, ChatGPT-style composer (rounded input card with a "+" button that opens a skill menu, model pill and circular send button in the toolbar row), welcome empty state with skill chips, ↑/↓ recall of submitted prompts (terminal-style, draft preserved)
 - **Auto-apply toggle** (macOS-style switch in the composer toolbar): when on, staged proposal cards apply automatically as tracked changes the moment the turn settles — proposals are still staged and reviewable, application just stops waiting for the click; the setting persists (`autoApplyChanges`) and the cross-card apply mutex still guards the write
 - Slash-command skill picker — type `/` to filter; Enter/Tab/click to select; the send button morphs into Cancel while a run is processing (AbortController)
 - Built-in skills: `/copy-edit`, `/check-doc`, `/flag-issues`, `/summarize-contract`, `/industry-overview`, `/storylining`; saved prompts register as custom slash commands

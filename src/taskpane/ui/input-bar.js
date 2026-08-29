@@ -33,6 +33,13 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     let pickerItems = [];
     let pickerIndex = 0;
 
+    // Submitted-prompt history for the ↑/↓ recall (terminal-style).
+    // In-memory per taskpane session; duplicates collapse, draft preserved.
+    const inputHistory = [];
+    const MAX_INPUT_HISTORY = 100;
+    let historyIndex = null;
+    let historyDraft = '';
+
     /** Filters skills by the text after '/' and re-renders the picker. */
     function refreshPicker(filter) {
         const skills = (getSkills() || []).filter((s) =>
@@ -94,15 +101,26 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         textarea.style.height = `${Math.min(textarea.scrollHeight, 140)}px`;
     }
 
+    function recordHistory(text) {
+        if (inputHistory[inputHistory.length - 1] !== text) {
+            inputHistory.push(text);
+            if (inputHistory.length > MAX_INPUT_HISTORY) inputHistory.shift();
+        }
+        historyIndex = null;
+        historyDraft = '';
+    }
+
     function submitCurrent() {
         const text = textarea.value;
         if (!text.trim() || processing) return;
         closePicker();
+        recordHistory(text);
         onSubmit(text);
     }
 
     textarea.addEventListener('input', () => {
         autosize();
+        historyIndex = null; // manual edit — ↑ restarts from the newest entry
         const value = textarea.value;
         if (value.startsWith('/')) {
             const spaceIdx = value.indexOf(' ');
@@ -124,6 +142,37 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
                 return;
             }
             if (e.key === 'Escape') { closePicker(); return; }
+        }
+        // ↑/↓ recall submitted prompts (only when the picker is closed and
+        // the caret sits at the very start/end, so multi-line caret moves
+        // keep working).
+        const caretOnFirstLine = textarea.value.slice(0, textarea.selectionStart).indexOf('\n') === -1;
+        const caretOnLastLine = textarea.value.slice(textarea.selectionEnd).indexOf('\n') === -1;
+        if (e.key === 'ArrowUp' && inputHistory.length > 0 && caretOnFirstLine) {
+            e.preventDefault();
+            if (historyIndex === null) {
+                historyDraft = textarea.value;
+                historyIndex = inputHistory.length - 1;
+            } else if (historyIndex > 0) {
+                historyIndex -= 1;
+            }
+            textarea.value = inputHistory[historyIndex];
+            textarea.setSelectionRange(0, 0);
+            autosize();
+            return;
+        }
+        if (e.key === 'ArrowDown' && historyIndex !== null && caretOnLastLine) {
+            e.preventDefault();
+            historyIndex += 1;
+            if (historyIndex >= inputHistory.length) {
+                historyIndex = null;
+                textarea.value = historyDraft;
+            } else {
+                textarea.value = inputHistory[historyIndex];
+                textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+            }
+            autosize();
+            return;
         }
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();

@@ -147,3 +147,86 @@ describe('skills "+" menu and auto-apply toggle', () => {
         expect(stored).toBe(true);
     });
 });
+
+describe('↑/↓ prompt history recall', () => {
+    function setupWithHistory() {
+        document.body.innerHTML = `
+            <textarea id="chatInput"></textarea>
+            <button id="sendBtn"></button>
+            <div id="skillPicker" hidden></div>
+            <div id="skillsMenu" hidden></div>
+            <button id="addSkillBtn"></button>
+            <input type="checkbox" id="autoApplyToggle">
+            <button id="modelPill"></button>`;
+        const onSubmit = jest.fn();
+        initInputBar({ onSubmit, onCancel: jest.fn(), getSkills: () => [], onOpenSettings: jest.fn() });
+        const textarea = document.getElementById('chatInput');
+        const submit = (text) => {
+            textarea.value = text;
+            textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        };
+        return { textarea, submit, onSubmit };
+    }
+
+    test('↑ recalls the newest prompt, ↑↑ walks back, ↓ returns forward', () => {
+        const { textarea, submit } = setupWithHistory();
+        submit('first prompt');
+        submit('second prompt');
+
+        textarea.value = '';
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        expect(textarea.value).toBe('second prompt');
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        expect(textarea.value).toBe('first prompt');
+        // At the oldest entry ↑ is a no-op.
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        expect(textarea.value).toBe('first prompt');
+
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        expect(textarea.value).toBe('second prompt');
+        // Past the newest entry the draft is restored.
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        expect(textarea.value).toBe('');
+    });
+
+    test('an in-progress draft is preserved when recall passes it by', () => {
+        const { textarea, submit } = setupWithHistory();
+        submit('earlier prompt');
+
+        textarea.value = 'my half-written draft';
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        expect(textarea.value).toBe('earlier prompt');
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        expect(textarea.value).toBe('my half-written draft');
+    });
+
+    test('consecutive duplicates collapse; a manual edit restarts from the newest', () => {
+        const { textarea, submit } = setupWithHistory();
+        submit('same text');
+        submit('same text');
+
+        textarea.value = '';
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        expect(textarea.value).toBe('same text');
+
+        // Manual edit exits navigation; ↑ starts from the newest again.
+        textarea.value = 'same text edited';
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.setSelectionRange(0, 0);
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        expect(textarea.value).toBe('same text');
+    });
+
+    test('↑ does not hijack caret movement inside multi-line text', () => {
+        const { textarea, submit } = setupWithHistory();
+        submit('earlier prompt');
+        textarea.value = 'line1\nline2';
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+        // Caret not at position 0 → the browser keeps default caret behavior
+        // and the value is untouched.
+        expect(textarea.value).toBe('line1\nline2');
+    });
+});
