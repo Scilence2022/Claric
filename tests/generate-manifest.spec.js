@@ -12,6 +12,7 @@ const {
   renderTemplate,
   escapeXml,
   resolveGuid,
+  buildAppDomainsBlock,
 } = require('../scripts/generate-manifest.cjs');
 
 const TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -19,8 +20,8 @@ const TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?>
   <Id>\${GUID}</Id>
   <Version>\${VERSION}</Version>
   <DisplayName DefaultValue="\${DISPLAY_NAME}"/>
-  <SupportUrl DefaultValue="\${PROTOCOL}://\${HOST}:\${PORT}/"/>
-</OfficeApp>
+  <SupportUrl DefaultValue="\${SUPPORT_URL}"/>
+  \${APP_DOMAINS_BLOCK}</OfficeApp>
 `;
 
 /**
@@ -120,6 +121,81 @@ describe('generate-manifest.cjs', () => {
     test('throws a clear error when the template is missing', () => {
       fs.rmSync(path.join(projectDir, 'manifest.template.xml'));
       expect(() => generateManifest({ rootDir: projectDir })).toThrow(/Missing manifest template/);
+    });
+  });
+});
+
+describe('store identity generation', () => {
+  let projectDir;
+
+  beforeEach(() => {
+    projectDir = makeProjectDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  function withEnv(env, fn) {
+    const old = { ...process.env };
+    Object.assign(process.env, env);
+    try {
+      return fn();
+    } finally {
+      process.env = old;
+    }
+  }
+
+  test('buildAppDomainsBlock renders an escaped AppDomains element', () => {
+    expect(buildAppDomainsBlock(null)).toBe('');
+    expect(buildAppDomainsBlock('')).toBe('');
+    expect(buildAppDomainsBlock('api.example.com, llm.example.org')).toBe(
+      '<AppDomains>\n' +
+      '    <AppDomain>api.example.com</AppDomain>\n' +
+      '    <AppDomain>llm.example.org</AppDomain>\n' +
+      '  </AppDomains>\n  '
+    );
+    // Env values must not be able to break out of the element.
+    expect(buildAppDomainsBlock('a</AppDomain><script>')).toContain('&lt;/AppDomain&gt;');
+  });
+
+  test('APP_DOMAINS env produces the AppDomains element; unset omits it entirely', () => {
+    withEnv({ APP_DOMAINS: 'api.example.com' }, () => {
+      generateManifest({ rootDir: projectDir });
+      const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
+      expect(xml).toContain('<AppDomains>');
+      expect(xml).toContain('<AppDomain>api.example.com</AppDomain>');
+      expect(xml).not.toContain('${APP_DOMAINS_BLOCK}');
+    });
+    withEnv({}, () => {
+      generateManifest({ rootDir: projectDir });
+      const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
+      expect(xml).not.toContain('<AppDomains>');
+      expect(xml).not.toContain('${');
+    });
+  });
+
+  test('SUPPORT_URL env overrides the support page', () => {
+    withEnv({ SUPPORT_URL: 'https://github.com/Scilence2022/Claric/issues' }, () => {
+      generateManifest({ rootDir: projectDir });
+      const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
+      expect(xml).toContain('<SupportUrl DefaultValue="https://github.com/Scilence2022/Claric/issues"/>');
+    });
+  });
+
+  test('SUPPORT_URL falls back to the add-in root when unset', () => {
+    withEnv({}, () => {
+      generateManifest({ rootDir: projectDir });
+      const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
+      expect(xml).toContain('<SupportUrl DefaultValue="https://localhost:3000/"/>');
+    });
+  });
+
+  test('DISPLAY_NAME env overrides the display name with a store-style suffix', () => {
+    withEnv({ DISPLAY_NAME: 'Claric — AI Redlining for Word' }, () => {
+      generateManifest({ rootDir: projectDir });
+      const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
+      expect(xml).toContain('<DisplayName DefaultValue="Claric — AI Redlining for Word"/>');
     });
   });
 });

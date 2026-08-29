@@ -12,8 +12,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * host-visible port, while a container may listen on a different internal
  * port (docker-compose publishes HOST_PORT -> 3000).
  *
+ * SUPPORT_URL overrides the store-required support page (defaults to the
+ * add-in's own root). APP_DOMAINS is a comma-separated list of extra
+ * domains declared in the manifest's AppDomains element (optional; the
+ * SourceLocation domain is implicitly trusted). DISPLAY_NAME overrides the
+ * store/UI display name (default "Claric — AI Redlining for Word").
+ *
  * @param {string} rootDir - Project root (used to locate .env)
- * @returns {{ HOST: string, PORT: string, PROTOCOL: string, ADDIN_GUID: string|null }}
+ * @returns {{ HOST: string, PORT: string, PROTOCOL: string, ADDIN_GUID: string|null,
+ *   SUPPORT_URL: string|null, APP_DOMAINS: string|null, DISPLAY_NAME: string|null }}
  */
 function getEnv(rootDir) {
   dotenv.config({ path: path.join(rootDir, '.env') });
@@ -22,7 +29,29 @@ function getEnv(rootDir) {
     PORT: process.env.HOST_PORT || process.env.PORT || '3000',
     PROTOCOL: process.env.PROTOCOL || 'https',
     ADDIN_GUID: process.env.ADDIN_GUID || null,
+    SUPPORT_URL: process.env.SUPPORT_URL || null,
+    APP_DOMAINS: process.env.APP_DOMAINS || null,
+    DISPLAY_NAME: process.env.DISPLAY_NAME || null,
   };
+}
+
+/**
+ * Builds the manifest's AppDomains element from a comma-separated env value.
+ * Returns '' when unset (the element is omitted entirely — an empty
+ * AppDomains element is not schema-valid). Each domain is XML-escaped, so
+ * env values cannot break out of the element.
+ *
+ * @param {string|null} raw - Comma-separated domains, e.g. "api.example.com, llm.example.org"
+ * @returns {string} XML block (with trailing indentation) or ''
+ */
+function buildAppDomainsBlock(raw) {
+  const domains = String(raw || '')
+    .split(',')
+    .map((d) => d.trim())
+    .filter(Boolean);
+  if (domains.length === 0) return '';
+  const lines = domains.map((d) => `    <AppDomain>${escapeXml(d)}</AppDomain>`);
+  return `<AppDomains>\n${lines.join('\n')}\n  </AppDomains>\n  `;
 }
 
 /**
@@ -130,7 +159,10 @@ function getIconCache(rootDir) {
  * Generates manifest.xml from manifest.template.xml.
  *
  * Placeholders: ${HOST}, ${PORT}, ${PROTOCOL}, ${VERSION}, ${GUID},
- * ${DISPLAY_NAME}, ${ICON_CACHE}. All substituted values are XML-escaped.
+ * ${DISPLAY_NAME}, ${ICON_CACHE}, ${SUPPORT_URL}. ${APP_DOMAINS_BLOCK} is
+ * substituted raw (after escaping) with either the AppDomains element or an
+ * empty string, so the element is omitted entirely when unset. All other
+ * substituted values are XML-escaped.
  *
  * @param {object} [options]
  * @param {string} [options.rootDir] - Project root override (defaults to repo root)
@@ -162,11 +194,15 @@ function generateManifest(options = {}) {
     PROTOCOL: env.PROTOCOL,
     VERSION: getVersion(rootDir),
     GUID: templateGuid || resolveGuid(rootDir, env.ADDIN_GUID),
-    DISPLAY_NAME: options.displayName || 'Claric',
+    DISPLAY_NAME: options.displayName || env.DISPLAY_NAME || 'Claric — AI Redlining for Word',
     ICON_CACHE: getIconCache(rootDir),
+    SUPPORT_URL: env.SUPPORT_URL || `${env.PROTOCOL}://${env.HOST}:${env.PORT}/`,
   };
 
-  const output = renderTemplate(template, values);
+  let output = renderTemplate(template, values);
+  // The AppDomains element is built (and escaped) as a whole block and
+  // substituted raw: renderTemplate would escape its XML tags away.
+  output = output.replace(/\$\{APP_DOMAINS_BLOCK\}/g, buildAppDomainsBlock(env.APP_DOMAINS));
   fs.writeFileSync(outputPath, output, 'utf8');
   return outputPath;
 }
@@ -181,4 +217,5 @@ module.exports = {
   renderTemplate,
   escapeXml,
   resolveGuid,
+  buildAppDomainsBlock,
 };

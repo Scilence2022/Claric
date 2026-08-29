@@ -7,11 +7,11 @@
   <ProviderName>Claric</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="${DISPLAY_NAME}"/>
-  <Description DefaultValue="AI-powered contract review and editing for Microsoft Word with word-level tracked changes"/>
+  <Description DefaultValue="Draft, polish, and redline documents with AI right in Word — every change lands as native tracked edits you review before anything is applied. Bring your own OpenAI-compatible model (local or cloud)."/>
   <IconUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/assets/icon-64.png?v=${ICON_CACHE}"/>
   <HighResolutionIconUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/assets/icon-80.png?v=${ICON_CACHE}"/>
-  <SupportUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/"/>
-  <Hosts>
+  <SupportUrl DefaultValue="${SUPPORT_URL}"/>
+  ${APP_DOMAINS_BLOCK}<Hosts>
     <Host Name="Document"/>
   </Hosts>
   <!-- WordApi 1.3: table creation (insertTable, table style/headerRowCount).

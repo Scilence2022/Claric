@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claric — Privacy Policy</title>
+<link rel="icon" type="image/png" href="../assets/icon-64.png">
+<style>
+  :root {
+    --bg: #1a1a1a; --bg-alt: #262626; --fg: #d4d4d4; --muted: #a3a3a3;
+    --heading: #fafafa; --accent: #60a5fa; --border: #404040;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7; font-size: 16px;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { color: var(--heading); font-size: 2rem; margin: 0 0 4px; }
+  h2 { color: var(--heading); font-size: 1.25rem; margin-top: 2.2em; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .meta { color: var(--muted); font-size: .9rem; margin-bottom: 2em; }
+  a { color: var(--accent); }
+  strong { color: var(--heading); }
+  ul { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  .card { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin: 1.5em 0; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+  .brand img { width: 40px; height: 40px; border-radius: 8px; }
+  .brand span { font-weight: 700; color: var(--heading); font-size: 1.1rem; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><img src="../assets/icon-64.png" alt="Claric icon"><span>Claric</span></div>
+  <h1>Privacy Policy</h1>
+  <p class="meta">Effective date: 2026-08-29 · Applies to Claric 1.0.0 and later</p>
+
+  <p>Claric is an AI editing assistant for Microsoft Word. This policy explains
+  exactly what data moves, where it goes, and what stays on your machine. The
+  short version: <strong>Claric itself has no servers and collects
+  nothing</strong> — your document text goes only to the AI endpoint
+  <em>you</em> configure, and everything else lives in your browser's local
+  storage on your own machine.</p>
+
+  <h2>1. Who is responsible for your data</h2>
+  <p>Claric is distributed as a self-hosted add-in. The person or organization
+  operating the Claric web service you connect to (your company or your chosen
+  hosting provider) is the operator; Claric's developer does not operate any
+  collection infrastructure. Questions about a specific deployment go to that
+  operator; questions about the software itself go to
+  <a href="https://github.com/Scilence2022/Claric/issues">GitHub Issues</a>.</p>
+
+  <h2>2. What leaves your machine — and only when you send a request</h2>
+  <ul>
+    <li><strong>Document content you ask about.</strong> When you request an
+    edit, review, summary, or answer, the relevant text — your selection, the
+    document sections being processed, document comments, or tracked changes —
+    is sent to the AI endpoint <strong>you configured in Settings</strong>
+    (for example, your local Ollama server, or a cloud provider such as
+    DeepSeek, Zhipu GLM, Moonshot Kimi, or MiniMax).</li>
+    <li><strong>Where it goes is up to you.</strong> If you configure a local
+    model, the document text never leaves your computer. If you configure a
+    cloud provider, the text goes to that provider and is subject to
+    <em>their</em> privacy terms — review them before sending confidential
+    documents.</li>
+  </ul>
+
+  <h2>3. What never leaves your machine</h2>
+  <ul>
+    <li><strong>Your API keys</strong> are stored in the add-in's browser
+    local storage and are sent only to the endpoint you configured (or, when
+    same-origin proxying is enabled by your operator, only through that proxy
+    to the provider you chose). They are never sent to Claric's developers or
+    any third party.</li>
+    <li><strong>Your settings, saved prompts, and chat history</strong> live
+    in local storage on your machine and can be erased at any time (browser
+    site-data controls, or in-app via the history panel).</li>
+    <li><strong>No telemetry.</strong> Claric makes no analytics calls, runs
+    no tracking scripts, and reports no usage statistics.</li>
+  </ul>
+
+  <h2>4. Data handling in organizations</h2>
+  <p>If Claric was deployed by your organization, the operator controls the
+  hosting domain, which AI providers are proxied, and whether requests are
+  logged at their infrastructure. Your organization's own privacy notice
+  applies on top of this one. Users in regulated industries (legal, finance,
+  healthcare) should prefer locally hosted models for confidential material.</p>
+
+  <h2>5. Your choices and controls</h2>
+  <ul>
+    <li>Choose <strong>where your text goes</strong> — local model for full
+    confidentiality, or a cloud provider you trust.</li>
+    <li>Every AI-proposed edit is <strong>staged for your review</strong>;
+    nothing is written into your document until you apply it.</li>
+    <li>Delete saved sessions and prompts from the add-in UI at any time;
+    clearing browser site data removes all locally stored settings and keys.</li>
+  </ul>
+
+  <h2>6. Children</h2>
+  <p>Claric is a professional productivity tool and is not directed at
+  children under 13 (or the equivalent minimum age in your jurisdiction).</p>
+
+  <h2>7. Changes to this policy</h2>
+  <p>Material changes will be reflected in the updated policy published at
+  this URL and noted in the add-in's release notes.</p>
+
+  <h2>8. Contact</h2>
+  <p><a href="https://github.com/Scilence2022/Claric/issues">https://github.com/Scilence2022/Claric/issues</a></p>
+</main>
+</body>
+</html>
