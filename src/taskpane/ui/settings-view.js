@@ -65,13 +65,13 @@ export function initSettings({ onConfigChanged } = {}) {
 
     document.getElementById('backendSelect').addEventListener('change', handleBackendSwitch);
 
-    // Auto-save settings on every change. Free-text inputs (URL, API key) are
-    // debounced so a burst of keystrokes does not fire a save + connection
-    // probe per character. The header Save button is an explicit affordance
-    // for the same saveSettings path.
+    // Auto-save settings on every change. Free-text inputs (URL, API key,
+    // model) are debounced so a burst of keystrokes does not fire a save +
+    // connection probe per character. The header Save button is an explicit
+    // affordance for the same saveSettings path.
     const debouncedSaveSettings = debounce(saveSettings, 400);
     const modelInput = document.getElementById('modelSelect');
-    modelInput.addEventListener('input', saveSettings);
+    modelInput.addEventListener('input', debouncedSaveSettings);
     // Model combobox: clicking/focusing shows the full list, typing filters.
     modelInput.addEventListener('input', () => renderModelDropdown(modelInput.value));
     modelInput.addEventListener('focus', openModelDropdown);
