@@ -293,6 +293,13 @@ export async function processChunksParallel(chunks, options) {
         comment = responseText;
       }
 
+      // An empty response is recorded as fulfilled with no amendment (the
+      // caller treats it as "nothing to change"), but it is not the same
+      // thing as the model deliberately proposing no changes — surface it.
+      if (!responseText || responseText.trim() === '') {
+        log(`Chunk ${chunk.id}: LLM returned an empty response (may indicate a backend or model issue)`, 'warning');
+      }
+
       // Post-process: strip artifacts from amendment text
       if (amendment) {
         amendment = stripMarkdown(amendment, log);

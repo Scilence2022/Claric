@@ -54,6 +54,10 @@ const manifestPath = path.join(rootDir, 'manifest.xml');
 // Requests are held open by Word until the page loads; give slow clients
 // a bounded window instead of the 2-minute node default.
 const REQUEST_TIMEOUT_MS = 60000;
+// Upstream request bodies are streamed through, so only a declared
+// content-length can be capped cheaply. 32 MB is far above any LLM
+// payload this add-in produces (whole-document runs are ~1 MB).
+const MAX_PROXY_BODY_BYTES = 32 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
 // LLM proxy routes, built once in startServer from environment variables.
@@ -278,6 +282,17 @@ function handleProxyRequest(route, req, res, urlPath) {
     route.agent = new AgentCtor({ keepAlive: true, maxSockets: 50, maxFreeSockets: 10 });
   }
 
+  // Bound upstream request bodies: the proxy forwards whatever the client
+  // sends, so without a cap a local client could pin server memory with a
+  // giant streamed body. LLM payloads (whole-document prompts) are large,
+  // hence the generous ceiling.
+  const contentLength = parseInt(req.headers['content-length'] || '0', 10);
+  if (contentLength > MAX_PROXY_BODY_BYTES) {
+    console.error(`[${route.proxyPath} Proxy] rejected ${contentLength}-byte body (cap ${MAX_PROXY_BODY_BYTES})`);
+    sendError(res, 413, 'Request body too large');
+    return;
+  }
+
   const client = route.targetUrl.protocol === 'https:' ? https : http;
   let timedOut = false;
 
@@ -305,7 +320,10 @@ function handleProxyRequest(route, req, res, urlPath) {
     const reason = err.message || err.code || 'unknown upstream error';
     console.error(`[${route.proxyPath} Proxy Error]`, reason);
     if (!res.headersSent) {
-      sendError(res, timedOut ? 504 : 502, timedOut ? 'LLM upstream timed out' : `LLM proxy error: ${reason}`);
+      // Generic wording to the client; the specific reason (which can hint
+      // at internal network topology via DNS/connection errors) stays in
+      // the server log above.
+      sendError(res, timedOut ? 504 : 502, timedOut ? 'LLM upstream timed out' : 'LLM upstream unavailable');
     } else {
       res.end();
     }
@@ -330,7 +348,9 @@ function handleRequest(req, res) {
   }
 
   res.on('finish', () => {
-    console.log(`${new Date().toISOString()} ${req.method} ${req.url} -> ${res.statusCode}`);
+    // Path only, never the query string: a user who pastes a key into a
+    // URL must not find it in the server's persistent logs.
+    console.log(`${new Date().toISOString()} ${req.method} ${req.url.split('?')[0]} -> ${res.statusCode}`);
   });
 
   // A decoded control character (NUL, newline, ...) never occurs in a

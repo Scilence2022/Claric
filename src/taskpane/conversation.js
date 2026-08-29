@@ -39,6 +39,21 @@ import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
 import { describeFormatOp } from '../lib/format-ops.js';
 
+/**
+ * Builds a base64 SVG data URL. The old form,
+ * `btoa(unescape(encodeURIComponent(svg)))`, relied on the deprecated
+ * `unescape`; the percent-escape rewrite below is the same UTF-8-safe
+ * conversion without it.
+ *
+ * @param {string} svg
+ * @returns {string}
+ */
+function svgToDataUrl(svg) {
+    const binary = encodeURIComponent(svg)
+        .replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    return `data:image/svg+xml;base64,${btoa(binary)}`;
+}
+
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
     SKILL: 'skill',
@@ -1244,7 +1259,7 @@ export function createConversation(deps) {
             const card = makeProposalCard({
                 title: 'Proposed illustration',
                 countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
-                previewSrc: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(proposal.svg)))}`,
+                previewSrc: `data:image/svg+xml;base64,${svgToDataUrl(proposal.svg)}`,
                 comment: null,
                 onApply: async () => {
                     try {
@@ -1263,7 +1278,7 @@ export function createConversation(deps) {
                 title: 'Proposed illustration',
                 state: 'pending',
                 countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
-                previewSrc: `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(proposal.svg)))}`,
+                previewSrc: `data:image/svg+xml;base64,${svgToDataUrl(proposal.svg)}`,
                 items: [],
             });
         } catch (error) {
@@ -1313,7 +1328,7 @@ export function createConversation(deps) {
             const title = 'Proposed image changes';
             const svgOps = proposal.items.filter((item) => item.svg);
             const previewSrc = svgOps.length === 1
-                ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgOps[0].svg)))}`
+                ? `data:image/svg+xml;base64,${svgToDataUrl(svgOps[0].svg)}`
                 : undefined;
             const cardItems = proposal.items.map(({ id, label, before, after }) => ({
                 id, label, before, after,
@@ -1893,7 +1908,7 @@ export function createConversation(deps) {
             const title = `Document image changes (${proposal.snapshotCount} picture${proposal.snapshotCount === 1 ? '' : 's'})`;
             const svgOps = proposal.items.filter((item) => item.svg);
             const previewSrc = svgOps.length === 1
-                ? `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgOps[0].svg)))}`
+                ? `data:image/svg+xml;base64,${svgToDataUrl(svgOps[0].svg)}`
                 : undefined;
             const cardItems = proposal.items.map(({ id, label, before, after }) => ({ id, label, before, after }));
             const card = makeProposalCard({

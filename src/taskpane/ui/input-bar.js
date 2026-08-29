@@ -18,7 +18,7 @@
  * @param {function()} deps.onOpenSettings - Opens the settings slide-over
  * @param {function(): boolean} [deps.getAutoApply] - Current auto-apply setting
  * @param {function(boolean)} [deps.setAutoApply] - Persists an auto-apply change
- * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), updateModelPill: function(string), setSelectionPreview: function(object|string) }}
+ * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), setSelectionPreview: function(object|string) }}
  */
 export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getAutoApply, setAutoApply }) {
     const textarea = document.getElementById('chatInput');
@@ -287,10 +287,6 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         /** Focuses the textarea. */
         focus() {
             textarea.focus();
-        },
-        /** Updates the model pill label ("Provider: model"). */
-        updateModelPill(text) {
-            modelPill.textContent = text;
         },
         /**
          * Shows/hides the live selection preview above the input.
