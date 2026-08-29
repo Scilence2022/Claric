@@ -21,6 +21,21 @@ import { applyTokenMapStrategy, applySentenceDiffStrategy } from './word-diff/in
 import { hasCjk, applyCharDiffStrategy } from './word-diff/char-diff.js';
 
 /**
+ * Thrown when an LLM amendment fails the content-length sanity check (the
+ * < 30% of original guard). Distinct from a strategy failure on purpose:
+ * falling back to a range-level strategy with the same truncated text would
+ * still write the truncated content — only more crudely — so the strategy
+ * dispatcher escalates this to the chunk-level error path and leaves the
+ * document untouched instead of downgrading the apply strategy.
+ */
+export class TruncatedOutputError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'TruncatedOutputError';
+  }
+}
+
+/**
  * Generates a unique hidden bookmark name for chunk range persistence.
  * Format: _wdp + lowercase hex timestamp + hex chunk index + 3 random alphanumeric chars.
  * Hidden (underscore prefix), alphanumeric + underscore only.
@@ -362,7 +377,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   const amendedTotalChars = amendedLines.reduce((sum, t) => sum + t.length, 0);
   if (origTotalChars > 0 && amendedTotalChars < origTotalChars * 0.3) {
     log(`Paragraph-level: LLM output appears truncated (${amendedTotalChars} chars vs ${origTotalChars} original), skipping`, 'warning');
-    throw new Error('LLM output appears truncated (< 30% of original length)');
+    throw new TruncatedOutputError('LLM output appears truncated (< 30% of original length)');
   }
 
   log(`Paragraph-level: ${origTexts.length} original paras, ${amendedLines.length} amended paras`);
@@ -837,6 +852,14 @@ export async function applyChunkResults(results, bookmarkMap, options) {
             trackChangesEnabled, lineDiffEnabled, log
           ) !== false;
         } catch (paraErr) {
+          if (paraErr instanceof TruncatedOutputError) {
+            // The amendment text itself is truncated. A range-level strategy
+            // would just write the same truncated text more crudely (and
+            // without per-paragraph formatting protection) — escalate to the
+            // chunk-level error path so the chunk is reported as failed and
+            // the document is left untouched.
+            throw paraErr;
+          }
           log(`Chunk ${result.chunkId}: paragraph-level strategy failed (${paraErr.message}), falling back to range-level`, 'warning');
 
           // Fallback to range-level diff strategies
