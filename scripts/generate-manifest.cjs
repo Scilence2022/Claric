@@ -16,7 +16,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * add-in's own root). APP_DOMAINS is a comma-separated list of extra
  * domains declared in the manifest's AppDomains element (optional; the
  * SourceLocation domain is implicitly trusted). DISPLAY_NAME overrides the
- * store/UI display name (default "Claric — AI Redlining for Word").
+ * store/UI display name (default "Claric — AI Writing & Editing Assistant
+ * for Word").
  *
  * @param {string} rootDir - Project root (used to locate .env)
  * @returns {{ HOST: string, PORT: string, PROTOCOL: string, ADDIN_GUID: string|null,
@@ -194,7 +195,7 @@ function generateManifest(options = {}) {
     PROTOCOL: env.PROTOCOL,
     VERSION: getVersion(rootDir),
     GUID: templateGuid || resolveGuid(rootDir, env.ADDIN_GUID),
-    DISPLAY_NAME: options.displayName || env.DISPLAY_NAME || 'Claric — AI Redlining for Word',
+    DISPLAY_NAME: options.displayName || env.DISPLAY_NAME || 'Claric — AI Writing & Editing Assistant for Word',
     ICON_CACHE: getIconCache(rootDir),
     SUPPORT_URL: env.SUPPORT_URL || `${env.PROTOCOL}://${env.HOST}:${env.PORT}/`,
   };

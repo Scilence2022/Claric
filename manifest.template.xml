@@ -7,7 +7,7 @@
   <ProviderName>Claric</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="${DISPLAY_NAME}"/>
-  <Description DefaultValue="Draft, polish, and redline documents with AI right in Word — every change lands as native tracked edits you review before anything is applied. Bring your own OpenAI-compatible model (local or cloud)."/>
+  <Description DefaultValue="Draft, polish, and revise documents with AI inside Word — every change lands as native tracked edits you review before anything is applied. Great for papers, theses, contracts, and everyday writing. Bring your own OpenAI-compatible model."/>
   <IconUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/assets/icon-64.png?v=${ICON_CACHE}"/>
   <HighResolutionIconUrl DefaultValue="${PROTOCOL}://${HOST}:${PORT}/assets/icon-80.png?v=${ICON_CACHE}"/>
   <SupportUrl DefaultValue="${SUPPORT_URL}"/>

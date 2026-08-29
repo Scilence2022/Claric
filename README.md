@@ -411,7 +411,7 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | `SSL_CERT_FILE` | `server.pem` | Path to SSL certificate |
 | `SSL_KEY_FILE` | `server-key.pem` | Path to SSL private key |
 | `ADDIN_GUID` | *(generated)* | Stable add-in identity; auto-generated and persisted to `.manifest-guid` on first manifest generation. Pin it in Docker so container recreation keeps the identity. |
-| `DISPLAY_NAME` | `Claric — AI Redlining for Word` | Display name shown in Word and the store (store validation policy: no Microsoft/Office/Word branding as the product name; "X for Word" suffixes are fine) |
+| `DISPLAY_NAME` | `Claric — AI Writing & Editing Assistant for Word` | Display name shown in Word and the store (store validation policy: no Microsoft/Office/Word branding as the product name; "X for Word" suffixes are fine) |
 | `SUPPORT_URL` | *(add-in root URL)* | Support page required by store validation — point it at a real support page, e.g. GitHub issues |
 | `APP_DOMAINS` | *(none)* | Comma-separated extra domains for the manifest's `AppDomains` element (the SourceLocation domain is implicitly trusted) |
 | `OLLAMA_PROXY_PATH` | *(disabled)* / `/ollama` (dev) | Proxy path for the Ollama backend (empty disables) |
