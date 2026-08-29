@@ -105,7 +105,9 @@ async function rpcPost(url, { body, token, sessionId, fetchFn, timeoutMs }) {
  * @param {number} [args.timeoutMs=30000] - Per-request timeout
  * @param {string} [args.protocolVersion=MCP_PROTOCOL_VERSION]
  * @returns {Promise<{serverInfo: {name: string, version: string}, protocolVersion: string,
- *   listTools: function(): Promise<Array>, callTool: function(string, object): Promise<object>}>}
+ *   listTools: function(): Promise<Array>, callTool: function(string, object): Promise<object>,
+ *   listPrompts: function(): Promise<Array>, getPrompt: function(string, object=): Promise<object>,
+ *   listResources: function(): Promise<Array>, readResource: function(string): Promise<object>}>}
  * @throws {Error} On HTTP errors, JSON-RPC errors, or handshake failures
  */
 export async function connectMcpServer({
@@ -164,6 +166,38 @@ export async function connectMcpServer({
         callTool: async (name, args) => {
             const message = await request('tools/call', { name, arguments: args || {} });
             return (message && message.result) || { content: [], isError: true };
+        },
+        /** Lists the server's prompt templates; servers without prompt
+         *  support (JSON-RPC "Method not found") degrade to an empty list. */
+        listPrompts: async () => {
+            try {
+                const message = await request('prompts/list', {});
+                return (message && message.result && Array.isArray(message.result.prompts)) ? message.result.prompts : [];
+            } catch (err) {
+                if (/-32601|Method not found/i.test(err.message)) return [];
+                throw err;
+            }
+        },
+        /** Fetches one prompt template (MCP prompts/get); returns the raw result. */
+        getPrompt: async (name, args) => {
+            const message = await request('prompts/get', { name, arguments: args || {} });
+            return (message && message.result) || { messages: [] };
+        },
+        /** Lists the server's resources; servers without resource support
+         *  degrade to an empty list. */
+        listResources: async () => {
+            try {
+                const message = await request('resources/list', {});
+                return (message && message.result && Array.isArray(message.result.resources)) ? message.result.resources : [];
+            } catch (err) {
+                if (/-32601|Method not found/i.test(err.message)) return [];
+                throw err;
+            }
+        },
+        /** Reads one resource (MCP resources/read); returns the raw result. */
+        readResource: async (uri) => {
+            const message = await request('resources/read', { uri });
+            return (message && message.result) || { contents: [] };
         },
     };
 }

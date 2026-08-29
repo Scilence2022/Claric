@@ -133,3 +133,27 @@ describe('connectMcpServer', () => {
             .rejects.toThrow(/401/);
     });
 });
+
+describe('prompts and resources helpers', () => {
+    test('listPrompts/getPrompt/listResources/readResource parse results and default empty', async () => {
+        const { fetchFn, posts } = makeFetchMock([
+            jsonResponse(INIT_RESULT),
+            { ok: true, status: 202, headers: { get: () => null }, text: async () => '' },
+            jsonResponse({ jsonrpc: '2.0', id: 2, result: { prompts: [{ name: 'review', description: 'Review a draft' }] } }),
+            jsonResponse({ jsonrpc: '2.0', id: 3, result: { messages: [{ role: 'user', content: { type: 'text', text: 'Review: {topic}' } }] } }),
+            jsonResponse({ jsonrpc: '2.0', id: 4, result: { resources: [{ uri: 'file:///a.md', name: 'a' }] } }),
+            jsonResponse({ jsonrpc: '2.0', id: 5, result: { contents: [{ uri: 'file:///a.md', text: 'content' }] } }),
+            // Unknown methods (server without prompts/resources) degrade to empty.
+            jsonResponse({ jsonrpc: '2.0', id: 6, error: { code: -32601, message: 'Method not found' } }),
+        ]);
+        const client = await connectMcpServer({ url: 'https://mcp.example/mcp', fetchFn });
+
+        expect(await client.listPrompts()).toEqual([{ name: 'review', description: 'Review a draft' }]);
+        const prompt = await client.getPrompt('review', { topic: 'x' });
+        expect(prompt.messages[0].content.text).toContain('{topic}');
+        expect(await client.listResources()).toEqual([{ uri: 'file:///a.md', name: 'a' }]);
+        expect((await client.readResource('file:///a.md')).contents[0].text).toBe('content');
+        // A server without resource support degrades to an empty list, not a crash.
+        await expect(client.listResources()).resolves.toEqual([]);
+    });
+});

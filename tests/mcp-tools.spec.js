@@ -6,6 +6,9 @@
 const {
     buildLoopTools,
     createMcpToolExecutor,
+    createResourceClient,
+    importServerPrompts,
+    RESOURCE_TOOL_SPECS,
     MAX_MCP_RESULT_CHARS,
 } = require('../src/lib/mcp-tools.js');
 const { defineTool } = require('../src/lib/tool-registry.js');
@@ -134,5 +137,66 @@ describe('createMcpToolExecutor', () => {
         expect(observation.ok).toBe(true);
         expect(observation.result.length).toBeLessThan(big.length);
         expect(observation.result).toMatch(/\[truncated/);
+    });
+});
+
+describe('resource tools and prompt convergence (phase C)', () => {
+    test('resource client lists across servers and reads by server+uri', async () => {
+        const docs = makeClient({});
+        docs.listResources = async () => [{ uri: 'file:///a.md', name: 'a' }];
+        docs.readResource = async (uri) => ({ contents: [{ uri, text: `content of ${uri}` }] });
+        const web = makeClient({});
+        web.listResources = async () => { throw new Error('Method not found'); };
+
+        const resourceClient = createResourceClient([
+            { name: 'docs', client: docs },
+            { name: 'web', client: web },
+        ]);
+        const { loopTools, mapping } = buildLoopTools([
+            { name: 'resources', client: resourceClient, mcpTools: RESOURCE_TOOL_SPECS },
+        ]);
+        const execute = createMcpToolExecutor(mapping);
+
+        expect(loopTools.map((t) => t.name)).toEqual(['mcp_list_resources', 'mcp_read_resource']);
+        const listing = await execute('mcp_list_resources', {});
+        expect(listing.result).toBe('docs | file:///a.md | a');
+        const reading = await execute('mcp_read_resource', { server: 'docs', uri: 'file:///a.md' });
+        expect(reading.result).toBe('content of file:///a.md');
+        const badServer = await execute('mcp_read_resource', { server: 'nope', uri: 'x' });
+        expect(badServer.ok).toBe(false);
+    });
+
+    test('importServerPrompts converts MCP prompts into skill descriptors', async () => {
+        const client = makeClient({});
+        client.listPrompts = async () => [
+            { name: 'review-draft', description: 'Review a draft' },
+            { name: 'empty-one', description: 'no body' },
+            { name: 'Broken!', description: 'bad' },
+        ];
+        client.getPrompt = async (name) => {
+            if (name === 'review-draft') {
+                return { messages: [{ role: 'user', content: { type: 'text', text: 'Review {selection} for gaps.' } }] };
+            }
+            if (name === 'empty-one') return { messages: [] };
+            throw new Error('bad prompt');
+        };
+
+        const { imported, errors } = await importServerPrompts('paper', client);
+        expect(imported).toHaveLength(1);
+        expect(imported[0]).toEqual(expect.objectContaining({
+            name: 'paper-review-draft',
+            slash: '/paper-review-draft',
+            category: 'chat',
+            defaultTemplate: 'Review {selection} for gaps.',
+        }));
+        expect(errors).toHaveLength(2);
+    });
+
+    test('importServerPrompts degrades when the server has no prompts', async () => {
+        const client = makeClient({});
+        client.listPrompts = async () => { throw new Error('Method not found'); };
+        const { imported, errors } = await importServerPrompts('s', client);
+        expect(imported).toEqual([]);
+        expect(errors).toHaveLength(1);
     });
 });

@@ -31,7 +31,7 @@ import * as defaultActions from './word-actions.js';
 import { getActiveBackendConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { connectMcpServer } from '../lib/mcp-client.js';
-import { buildLoopTools, createMcpToolExecutor } from '../lib/mcp-tools.js';
+import { buildLoopTools, createMcpToolExecutor, createResourceClient, RESOURCE_TOOL_SPECS } from '../lib/mcp-tools.js';
 import { runToolLoop } from '../lib/tool-loop.js';
 import { buildToolLoopSystemPrompt, TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
 import * as agentActions from './agent-actions.js';
@@ -1615,8 +1615,11 @@ export function createConversation(deps) {
             return;
         }
 
+        // The resource pseudo-server exposes mcp_list_resources /
+        // mcp_read_resource so the model can pull reference material itself.
+        connected.push({ name: 'resources', client: createResourceClient(connected), mcpTools: RESOURCE_TOOL_SPECS });
         const { loopTools, mapping } = buildLoopTools(connected);
-        if (loopTools.length === 0) {
+        if (loopTools.length <= RESOURCE_TOOL_SPECS.length) {
             msg.appendText('The configured MCP servers expose no tools.');
             return;
         }

@@ -94,6 +94,7 @@ Every document mutation is staged as a proposal card — nothing is written unti
 - Connect HTTP (Streamable) MCP tool servers in Settings → MCP Servers (name, URL, optional bearer token, enable/disable, one-click test)
 - `/mcp <instruction>` runs a ReAct tool loop (the same backend-agnostic loop as table/image sessions) over all enabled servers' tools — tool names are namespaced, results stream into the work log, and the final summary answers in chat
 - Read-only contract: MCP tools act on their own external systems and never write to the Word document directly; oversized results are truncated, image results ride the multimodal attachments channel
+- Resource tools (`mcp_list_resources` / `mcp_read_resource`) let the model pull reference material from servers mid-loop; "Import prompts" converts an MCP server's prompt templates into slash-command skills; the per-turn tool-loop step budget is configurable (Settings → MCP Servers)
 - CORS-bound servers can be proxied same-origin via the generic `CUSTOM_PROXY_PATH`/`CUSTOM_PROXY_TARGET` pair
 
 ### Skill Packages (SKILL.md)
