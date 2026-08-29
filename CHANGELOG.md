@@ -4,7 +4,18 @@ All notable changes to Claric are documented here. The format is a loose
 Keep-a-Changelog style; versions track `package.json` and the `v*` git tags
 that drive the GHCR image publish in CI.
 
-## [Unreleased]
+## [1.0.0] — 2026-08-29
+
+First Microsoft Marketplace-ready release (store validation requires a
+manifest version ≥ 1.0.0.0).
+
+### Added
+
+- Store identity knobs: `DISPLAY_NAME` (default "Claric — AI Redlining for
+  Word"), `SUPPORT_URL`, and `APP_DOMAINS` manifest generation variables
+  (store validation requires a real support page; AppDomains declares extra
+  domains). `docs/store-listing.md` drafts the user-facing store copy;
+  `docs/privacy.html` is the privacy policy page.
 
 ### Fixed
 
@@ -41,12 +52,12 @@ that drive the GHCR image publish in CI.
   flushes the decoder's final multi-byte tail and releases the body after
   `[DONE]`. (`llm-client.js`)
 - **Session persistence on quota pressure** — oversized sessions lost only
-  illustration previews, so a large document run could exceed the per-session
-  cap and silently vanish from history. The trimmer now degrades in stages
-  (previews → proposal diffs → proposals → pathological message text), and
-  a failed history-index write surfaces an error instead of leaving the
-  index and blobs inconsistent. The total-cap check also stopped
-  re-parsing every stored session on each committed turn.
+  illustration previews, so a large document run could exceed the
+  per-session cap and silently vanish from history. The trimmer now
+  degrades in stages (previews → proposal diffs → proposals → pathological
+  message text), and a failed history-index write surfaces an error instead
+  of leaving the index and blobs inconsistent. The total-cap check also
+  stopped re-parsing every stored session on each committed turn.
   (`sessions.js`)
 - **Chunk-bookmark anchors** — `bookmarkChunkRanges` indexed paragraphs from
   a previous `Word.run` without validation; concurrent document changes
@@ -61,10 +72,10 @@ that drive the GHCR image publish in CI.
   the busy flags down (except the document-amendment card), so an apply
   could race a new turn's parse → bookmark pass or a second card's apply.
   Every card now registers its apply controller with app state (so
-  Stop/cancel reaches it), locks the input while applying, and a
-  module-level mutex refuses a second card's Apply while one is in flight.
-  The document card's unconditional busy-flag reset (which could clobber a
-  newer run) is ownership-checked. (`proposal-card.js`, `conversation.js`)
+  cancel() reaches it), locks the input while applying, and a module-level
+  mutex refuses a second card's Apply while one is in flight. The document
+  card's unconditional busy-flag reset (which could clobber a newer run) is
+  ownership-checked. (`proposal-card.js`, `conversation.js`)
 - **Shared JSON extraction** (`src/lib/json-utils.js`) — the five per-layer
   LLM-JSON parsers (tool loop, table patch, table creation, task planner,
   format ops) consolidated onto one implementation with balanced-candidate

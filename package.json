@@ -1,6 +1,6 @@
 {
   "name": "claric",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "description": "Claric — your redlining scribe for Microsoft Word. AI-powered tracked changes, summarization, and comment analysis.",
   "private": true,
   "scripts": {
