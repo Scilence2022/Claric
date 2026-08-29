@@ -311,19 +311,6 @@ async function _describeHttpError(response) {
 }
 
 /**
- * Sends a prompt to the configured LLM backend.
- * Uses OpenAI-compatible /v1/chat/completions format for both Ollama and vLLM.
- *
- * @param {object} config - Backend configuration
- * @param {string} config.url - Base proxy path (e.g., '/ollama' or '/vllm')
- * @param {string} config.apiKey - API key (empty string if not required)
- * @param {string} config.model - Model identifier
- * @param {string} promptText - The prompt text to send
- * @param {function} [log] - Optional logging callback (message, type)
- * @returns {Promise<string>} The LLM response text with think tags stripped
- * @throws {Error} On non-ok HTTP response or network failure
- */
-/**
  * Sends a single-string prompt to the LLM backend as a one-message
  * user-role chat completion. Kept for callers that need the legacy
  * shim shape; new code should prefer {@link sendMessages}.
@@ -591,6 +578,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     let buffer = '';
     let doneReceived = false;
     let finishReason = null;
+    let malformedDataLines = 0;
 
     const handleDataLine = (line) => {
       if (doneReceived) return; // stop honoring deltas after [DONE]
@@ -613,7 +601,10 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
         const token = delta.content ?? '';
         if (token) demux.push(token);
       } catch (_parseErr) {
-        // Incomplete or non-JSON data line -- skip it.
+        // Incomplete or non-JSON data line -- skip it, but count it: a
+        // backend emitting persistent garbage otherwise presents as a
+        // mysterious "stream closed early" with no root cause in sight.
+        malformedDataLines++;
       }
     };
 
@@ -648,13 +639,17 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
       // the reader open.
       Promise.resolve(reader.cancel()).catch(() => {});
     }
+    if (malformedDataLines > 0 && typeof log === 'function') {
+      log(`SSE stream: skipped ${malformedDataLines} malformed data line(s) from the backend`, 'warning');
+    }
     if (!doneReceived && !finishReason) {
       // Neither terminator arrived: the stream was cut short (proxy close,
       // network drop). Returning the partial text would present a half
       // answer — or worse, apply half an amendment — as if complete.
       throw new Error(
         'LLM stream closed before completion (no [DONE] marker or finish_reason) — ' +
-        'the output may be truncated. Retry the request.'
+        'the output may be truncated. Retry the request.' +
+        (malformedDataLines > 0 ? ` (${malformedDataLines} malformed data line(s) were skipped.)` : '')
       );
     }
     // A stream that terminates cleanly but with finish_reason=length is

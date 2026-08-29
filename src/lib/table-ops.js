@@ -494,7 +494,16 @@ function _inferPosition(text) {
     return selected ? selected.position : /** @type {'end'} */ (DEFAULT_TABLE_CREATION_OPTIONS.position);
 }
 
-/** @private */
+/**
+ * Table-creation variant of json-utils' extractJsonObject. NOT delegated to
+ * json-utils on purpose: the caller triages three distinct failure shapes
+ * (NO_JSON_OBJECT / MALFORMED_JSON / non-object reply) into typed issues
+ * that the table-ops spec asserts on, while json-utils throws a single
+ * undifferentiated Error. If json-utils ever exposes that triage, this
+ * wrapper can collapse onto it.
+ *
+ * @private
+ */
 function _extractJsonObject(raw) {
     const text = raw.trim();
     if (!text) {

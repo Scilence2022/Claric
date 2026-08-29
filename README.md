@@ -496,7 +496,7 @@ See `ARCHITECTURE.md` for details.
 ## Testing
 
 ```bash
-npm test          # 708 tests across 29 suites
+npm test          # ~1300 tests across 60 suites
 npm run lint      # ESLint (flat config)
 npm run build     # webpack production build
 npm run verify    # lint + test + build (same as CI)

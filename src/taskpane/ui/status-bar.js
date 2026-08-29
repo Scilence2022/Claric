@@ -110,11 +110,9 @@ export function addLogWithRetry(message, type, retryCallback) {
 
     console.log(`[${type.toUpperCase()}] ${message}`);
 
-    fetch('/log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, type, timestamp: new Date().toISOString() })
-    }).catch(() => { });
+    // Same probe guard as addLog: without it, retry logs fired a doomed POST
+    // on every occurrence in production (the endpoint 404s there).
+    postToDevLog(JSON.stringify({ message, type, timestamp: new Date().toISOString() }));
 }
 
 /**

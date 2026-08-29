@@ -837,8 +837,9 @@ function initMcpServers() {
             return;
         }
         appState.config.mcpServers = appState.config.mcpServers || [];
+        const addedName = (nameInput.value || '').trim();
         appState.config.mcpServers.push({
-            name: (nameInput.value || '').trim(),
+            name: addedName,
             url,
             token: (tokenInput.value || '').trim(),
             enabled: true,
@@ -847,7 +848,7 @@ function initMcpServers() {
         urlInput.value = '';
         tokenInput.value = '';
         saveSettings();
-        addLog(`Added MCP server "${nameInput.value || url}".`, 'success');
+        addLog(`Added MCP server "${addedName || url}".`, 'success');
         renderMcpServerList();
     });
 

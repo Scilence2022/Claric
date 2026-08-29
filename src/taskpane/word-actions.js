@@ -2977,9 +2977,11 @@ export async function fireSelectionComment(deps, { promptTemplate } = {}) {
  * @returns {Promise<{ results: Array, applicationResult?: object, chunks: Array, cancelled?: boolean,
  *   staged?: boolean, apply?: Function, discard?: Function, failedCount?: number, cancelledCount?: number }>}
  */
-export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, onChunkToken, gateApply = false } = {}) {
+export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, onChunkToken, gateApply = false, signal: signalArg } = {}) {
     const { appState, log, logWithRetry } = deps;
-    const signal = appState.processDocController ? appState.processDocController.signal : undefined;
+    // Honor the caller's signal; fall back to the shared processing slot for
+    // legacy callers that rely on it having been set before invocation.
+    const signal = signalArg || (appState.processDocController ? appState.processDocController.signal : undefined);
     const promptShim = makePromptShim(appState.promptManager, category, promptTemplate);
 
     // Step 1: Parse document
@@ -3043,7 +3045,6 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
             trackChangesEnabled: appState.config.trackChangesEnabled,
             lineDiffEnabled: appState.config.lineDiffEnabled,
             log,
-            commentGranularity: appState.config.commentGranularity,
             ...(signal ? { signal } : {}),
             ...(onChunkApplied ? { onChunkApplied } : {}),
         });
@@ -3180,7 +3181,6 @@ export async function retryFailedChunks(deps, { failedResults, bookmarkMap, back
             trackChangesEnabled: appState.config.trackChangesEnabled,
             lineDiffEnabled: appState.config.lineDiffEnabled,
             log,
-            commentGranularity: appState.config.commentGranularity,
             chunkOriginals,
         });
 

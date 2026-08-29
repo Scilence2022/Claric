@@ -192,7 +192,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (1119 tests, 45 suites)
+tests/                         # Jest unit tests (~1300 tests, 60 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -735,7 +735,7 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # 1119 tests, 45 suites, ~1s
+npm test          # ~1300 tests, 60 suites, ~1s
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
 npm run build     # webpack production build
 npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)

@@ -35,7 +35,10 @@ COPY --from=builder /app/dist ./dist
 # Pull current alpine security patches (e.g. libcrypto3/openssl) into the
 # runtime image; the node:22-alpine digest lags the alpine repos.
 RUN apk upgrade --no-cache
-COPY --from=builder /app/scripts ./scripts
+# Only the scripts the runtime server needs — the scripts/ directory also
+# carries dev-only tooling (e2e middlewares, icon generation) that does not
+# belong in the production image.
+COPY --from=builder /app/scripts/docker-server.cjs /app/scripts/generate-manifest.cjs /app/scripts/llm-constants.cjs ./scripts/
 COPY --from=builder /app/manifest.template.xml ./manifest.template.xml
 COPY --from=builder /app/package.json ./package.json
 

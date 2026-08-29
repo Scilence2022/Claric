@@ -159,6 +159,42 @@ describe('docker-server LLM proxy path validation', () => {
         expect(upstream.hits[0].host).toBe(`127.0.0.1:${upstream.port}`);
     });
 
+    test('rejects oversized declared bodies with 413', async () => {
+        const route = makeRoute();
+        const { res, done } = makeRes();
+        const headers = { 'content-length': String(33 * 1024 * 1024) };
+        const hitsBefore = upstream.hits.length;
+
+        handleProxyRequest(route, makeReq('POST', '/ollama/v1/chat/completions', headers), res, '/ollama/v1/chat/completions');
+
+        const result = await done;
+        expect(result.statusCode).toBe(413);
+        expect(result.body).toBe('Request body too large');
+        // The oversized request never reached the upstream.
+        expect(upstream.hits).toHaveLength(hitsBefore);
+    });
+
+    test('reports a generic upstream failure without leaking the cause', async () => {
+        // Nothing listens on port 1: the connect attempt fails fast with
+        // ECONNREFUSED, which must stay in the server log — not in the
+        // response body that reveals local topology.
+        const route = {
+            proxyPath: '/ollama',
+            targetUrl: new URL('http://127.0.0.1:1'),
+            timeoutMs: 2000,
+            agent: null,
+        };
+        routes.push(route);
+        const { res, done } = makeRes();
+
+        handleProxyRequest(route, makeReq('POST', '/ollama/v1/chat/completions'), res, '/ollama/v1/chat/completions');
+
+        const result = await done;
+        expect(result.statusCode).toBe(502);
+        expect(result.body).toBe('LLM upstream unavailable');
+        expect(result.body).not.toContain('ECONNREFUSED');
+    });
+
     test('answers the CORS preflight without touching any upstream', async () => {
         const { res, done } = makeRes();
 
