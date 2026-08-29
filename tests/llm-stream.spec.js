@@ -309,3 +309,52 @@ describe('sendPromptStream idle timeout', () => {
     }
   });
 });
+
+describe('stream / response truncation detection', () => {
+  afterEach(() => { delete global.fetch; });
+
+  test('SSE stream closed without [DONE] and without finish_reason is rejected as truncated', async () => {
+    // Proxy closed early mid-generation: the tokens so far must NOT be
+    // returned as a complete answer (a half-applied amendment is worse
+    // than an error).
+    global.fetch = jest.fn(async () => sseResponse([sseLine('Partial answ')]));
+    await expect(sendPromptStream(CONFIG, 'prompt', () => {}))
+      .rejects.toThrow(/closed before completion|truncat/i);
+  });
+
+  test('SSE stream with finish_reason (no [DONE]) still resolves', async () => {
+    global.fetch = jest.fn(async () => sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: 'Done' }, finish_reason: 'stop' }] })}\n`,
+    ]));
+    const result = await sendPromptStream(CONFIG, 'prompt', () => {});
+    expect(result).toBe('Done');
+  });
+
+  test('non-SSE JSON with finish_reason=length is rejected as truncated', async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ choices: [{ message: { content: 'Half an amend' }, finish_reason: 'length' }] }),
+    }));
+    await expect(sendPromptStream(CONFIG, 'prompt', () => {}))
+      .rejects.toThrow(/truncated|finish_reason/i);
+  });
+
+  test('non-streaming sendPrompt rejects finish_reason=length responses', async () => {
+    const { sendPrompt } = require('../src/lib/llm-client.js');
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'Truncated ans' }, finish_reason: 'length' }] }),
+    }));
+    await expect(sendPrompt(CONFIG, 'prompt')).rejects.toThrow(/truncated/i);
+  });
+
+  test('non-streaming sendPrompt accepts finish_reason=stop', async () => {
+    const { sendPrompt } = require('../src/lib/llm-client.js');
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'Full answer' }, finish_reason: 'stop' }] }),
+    }));
+    await expect(sendPrompt(CONFIG, 'prompt')).resolves.toBe('Full answer');
+  });
+});

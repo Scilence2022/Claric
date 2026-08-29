@@ -64,10 +64,10 @@ function readIndex() {
 function writeIndex(idx) {
     try {
         localStorage.setItem(INDEX_KEY, JSON.stringify(idx));
+        return true;
     } catch (_err) {
-        // Quota exceeded — best effort. The caller has already pruned where
-        // possible, so we silently let this drop on the floor; the user will
-        // see stale history until they free space.
+        // Quota exceeded — the caller decides whether this is fatal.
+        return false;
     }
 }
 
@@ -108,9 +108,22 @@ function estimateBytes(value) {
     return JSON.stringify(value).length;
 }
 
+/** Per-item cap for proposal before/after diffs in persisted sessions. */
+const MAX_PROPOSAL_DIFF_CHARS = 2_000;
+/** Per-message cap for pathological chat text in persisted sessions. */
+const MAX_MESSAGE_TEXT_CHARS = 100_000;
+
 /**
- * Strips illustration previewSrc from proposals until the session fits
- * under MAX_SESSION_BYTES. Mutates the passed object.
+ * Degrades a session until it fits under MAX_SESSION_BYTES, cheapest loss
+ * first:
+ *   1. illustration previewSrc (pure eye-candy, regenerable),
+ *   2. proposal before/after diff bodies (review metadata stays),
+ *   3. whole proposals on a message,
+ *   4. pathological message text (keeps the head; only hit by multi-MB
+ *      single messages).
+ * Mutates the passed object. Without stages 2-4 a large document run
+ * overflowed the per-session cap and the whole session silently vanished
+ * from history on QuotaExceededError.
  * @param {object} session
  */
 function trimOversizedSession(session) {
@@ -124,7 +137,39 @@ function trimOversizedSession(session) {
                 p.previewSrc = null;
             }
         }
-        if (bytes <= MAX_SESSION_BYTES) break;
+        if (bytes <= MAX_SESSION_BYTES) return session;
+    }
+    // Stage 2: truncate proposal diff bodies to reviewable metadata.
+    for (const msg of session.messages) {
+        if (!msg || !Array.isArray(msg.proposals)) continue;
+        for (const p of msg.proposals) {
+            if (!p || !Array.isArray(p.items)) continue;
+            for (const item of p.items) {
+                if (!item) continue;
+                for (const field of ['before', 'after']) {
+                    const value = item[field];
+                    if (typeof value === 'string' && value.length > MAX_PROPOSAL_DIFF_CHARS) {
+                        bytes -= value.length - MAX_PROPOSAL_DIFF_CHARS;
+                        item[field] = value.slice(0, MAX_PROPOSAL_DIFF_CHARS);
+                    }
+                }
+            }
+        }
+        if (bytes <= MAX_SESSION_BYTES) return session;
+    }
+    // Stage 3: drop whole proposals (oldest messages first).
+    for (const msg of session.messages) {
+        if (!msg || !Array.isArray(msg.proposals) || msg.proposals.length === 0) continue;
+        bytes -= estimateBytes({ proposals: msg.proposals });
+        msg.proposals = [];
+        if (bytes <= MAX_SESSION_BYTES) return session;
+    }
+    // Stage 4: truncate pathological message text.
+    for (const msg of session.messages) {
+        if (!msg || typeof msg.text !== 'string' || msg.text.length <= MAX_MESSAGE_TEXT_CHARS) continue;
+        bytes -= msg.text.length - MAX_MESSAGE_TEXT_CHARS;
+        msg.text = msg.text.slice(0, MAX_MESSAGE_TEXT_CHARS);
+        if (bytes <= MAX_SESSION_BYTES) return session;
     }
     return session;
 }
@@ -265,13 +310,16 @@ export function saveSession(messages, opts = {}) {
     // Total-size cap: drop oldest non-current sessions until the index +
     // every remaining blob fits under MAX_TOTAL_BYTES. Protects against
     // localStorage quota when MAX_SESSIONS × MAX_SESSION_BYTES > MAX_TOTAL_BYTES.
+    // Reads raw stored string lengths instead of JSON.parsing each blob —
+    // estimateBytes is a stringify-length count, so the result is identical
+    // without re-serializing up to MAX_SESSIONS blobs on every committed turn.
     let totalBytes = estimateBytes(idx);
     for (const m of idx) {
         if (m.id === id) {
             totalBytes += estimateBytes(session);
         } else {
-            const blob = readSession(m.id);
-            if (blob) totalBytes += estimateBytes(blob);
+            const raw = localStorage.getItem(sessionKey(m.id));
+            if (raw) totalBytes += raw.length;
         }
     }
     // Walk from oldest (tail) toward newest, dropping until under cap.
@@ -283,13 +331,18 @@ export function saveSession(messages, opts = {}) {
             idx.push(dropped);
             break;
         }
-        const blob = readSession(dropped.id);
-        const bytes = blob ? estimateBytes(blob) : 0;
+        const raw = localStorage.getItem(sessionKey(dropped.id));
+        const bytes = raw ? raw.length : 0;
         try { localStorage.removeItem(sessionKey(dropped.id)); } catch (_err) { /* ignore */ }
         totalBytes -= bytes + estimateBytes(dropped);
     }
 
-    writeIndex(idx);
+    if (!writeIndex(idx)) {
+        // The blob is saved but the history index is now stale/inconsistent.
+        // Surface it — the caller logs to the activity log — instead of
+        // silently dropping the failure on the floor.
+        throw new Error('Session saved, but the history index could not be updated (storage quota). History may be stale.');
+    }
     return session;
 }
 

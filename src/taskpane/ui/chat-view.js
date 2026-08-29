@@ -663,6 +663,11 @@ export function createAssistantMessage() {
             line.className = 'msg-worklog-line';
             line.textContent = text;
             worklogLines.appendChild(line);
+            // A chunked document run logs per chunk — cap the DOM rows per
+            // message (the counter still reflects the true step count).
+            while (worklogLines.childElementCount > 100) {
+                worklogLines.removeChild(worklogLines.firstElementChild);
+            }
             if (!logCollapsed) _scrollToBottom();
         },
         collapseLog() {

@@ -110,4 +110,23 @@ describe('buildPlanPrompt', () => {
     expect(buildPlanPrompt('x', true)).toContain('has a text selection');
     expect(buildPlanPrompt('x', false)).toContain('NO text selection');
   });
+
+  test('the OUTPUT CONTRACT enum accepts every TASK_TYPE the parser allows', () => {
+    // Regression: the contract enum used to omit image_management /
+    // table_management while the CAPABILITIES section taught them, so a
+    // contract-obeying model could never emit those two task types and the
+    // corresponding compound sub-tasks misrouted.
+    const p = buildPlanPrompt('x', false);
+    const contract = p.slice(p.indexOf('OUTPUT CONTRACT'));
+    expect(contract).toContain(
+      'insert|format|edit|append|table|illustration|qa|image_management|table_management'
+    );
+    // And no type known to the parser is missing from the enum.
+    for (const type of [
+      'insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa',
+      'image_management', 'table_management',
+    ]) {
+      expect(contract).toContain(type);
+    }
+  });
 });

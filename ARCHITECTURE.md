@@ -59,6 +59,11 @@ src/
                                #   re-anchors drifted staged ranges at apply time
     response-parser.js         # ===AMENDMENT===/===COMMENT=== splitting,
                                #   fallback classification prompt
+    json-utils.js              # Shared LLM-JSON extraction: string-aware
+                               #   trailing-comma cleanup, balanced-candidate
+                               #   scanning, object/array extractors (one
+                               #   implementation behind tool-loop / table-patch
+                               #   / table-ops / task-planner / format-ops)
     format-ops.js              # NL→JSON formatting/insert ops: prompt builder,
                                #   strict allowlist parser, op describer
     illustration.js            # SVG illustration prompt/parse/sanitize

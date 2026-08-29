@@ -13,11 +13,13 @@
  */
 
 import { FINISH_TOOL, TOOL_LOOP_LIMITS } from './tool-registry.js';
+import { extractJsonObject } from './json-utils.js';
 
 /**
  * Extracts the first JSON object from a model reply, tolerating code fences
- * and surrounding prose (both common with smaller models). Trailing commas
- * are cleaned like the table-patch parser.
+ * and surrounding prose (both common with smaller models). Shared
+ * implementation (json-utils): balanced-candidate scanning plus
+ * string-aware trailing-comma recovery.
  *
  * @param {string} raw
  * @returns {object} Parsed object
@@ -25,22 +27,10 @@ import { FINISH_TOOL, TOOL_LOOP_LIMITS } from './tool-registry.js';
  * @private
  */
 function _extractJsonObject(raw) {
-    const text = String(raw || '');
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start === -1 || end <= start) {
-        throw new Error('reply contains no JSON object');
-    }
-    const cleaned = text.slice(start, end + 1).replace(/,\s*([}\]])/g, '$1');
-    try {
-        const parsed = JSON.parse(cleaned);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            throw new Error('not an object');
-        }
-        return parsed;
-    } catch (err) {
-        throw new Error(`JSON parse failed: ${err.message}`);
-    }
+    return extractJsonObject(raw, {
+        noObjectMessage: 'reply contains no JSON object',
+        parseFailedPrefix: 'JSON parse failed: ',
+    });
 }
 
 /**

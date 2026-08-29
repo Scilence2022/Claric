@@ -232,6 +232,26 @@ export function createStreamDemux({ onContent, onReasoning } = {}) {
 }
 
 /**
+ * Joins a base URL, the provider's API prefix, and an endpoint path.
+ * Trailing slashes on the base are stripped, and a base that ALREADY ends
+ * with the API prefix is not suffixed again — users entering the full
+ * endpoint (e.g. https://host/v1 with the default apiPath) get
+ * https://host/v1/chat/completions, not a double /v1/v1 404.
+ *
+ * @param {string} baseUrl - Configured endpoint (proxy path or absolute URL)
+ * @param {string} apiPath - API prefix (e.g. '/v1' or '/api/paas/v4')
+ * @param {string} endpoint - Final path segment (e.g. '/chat/completions')
+ * @returns {string}
+ * @private
+ */
+function joinApiUrl(baseUrl, apiPath, endpoint) {
+  const base = String(baseUrl || '').replace(/\/+$/, '');
+  const prefix = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
+  const withPrefix = base.endsWith(prefix) ? base : base + prefix;
+  return withPrefix + endpoint;
+}
+
+/**
  * Private helper to build the request URL and headers for chat completions.
  *
  * The API prefix comes from config.apiPath (default '/v1'). Most providers
@@ -242,13 +262,29 @@ export function createStreamDemux({ onContent, onReasoning } = {}) {
  * @returns {{ url: string, headers: object }}
  */
 function buildRequestConfig(config) {
-  const apiPath = config.apiPath || '/v1';
-  const url = config.url.replace(/\/+$/, '') + apiPath + '/chat/completions';
+  const url = joinApiUrl(config.url, config.apiPath || '/v1', '/chat/completions');
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) {
     headers['Authorization'] = `Bearer ${config.apiKey}`;
   }
   return { url, headers };
+}
+
+/**
+ * Throws when a finished response was cut off by the model's token limit.
+ * A length-truncated amendment or comment flowing into the diff pipeline
+ * would be applied as if it were complete — refuse instead.
+ *
+ * @param {{finish_reason?: string}} [choice]
+ * @private
+ */
+function _assertNotLengthTruncated(choice) {
+  if (choice && choice.finish_reason === 'length') {
+    throw new Error(
+      'LLM output truncated (finish_reason=length): the response hit the model\'s ' +
+      'max token limit. Reduce the scope or selection and retry.'
+    );
+  }
 }
 
 /**
@@ -322,7 +358,9 @@ export async function sendPrompt(config, promptText, log, signal, timeoutMs = 12
     }
 
     const data = await response.json();
-    const rawText = data.choices?.[0]?.message?.content ?? '';
+    const choice = data.choices?.[0];
+    _assertNotLengthTruncated(choice);
+    const rawText = choice?.message?.content ?? '';
     return stripThinkTags(rawText, log);
   } catch (err) {
     if (timedOut && err.name === 'AbortError') {
@@ -398,7 +436,9 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
     }
 
     const data = await response.json();
-    const rawText = data.choices?.[0]?.message?.content ?? '';
+    const choice = data.choices?.[0];
+    _assertNotLengthTruncated(choice);
+    const rawText = choice?.message?.content ?? '';
     return stripThinkTags(rawText, log);
   } catch (err) {
     // Distinguish timeout aborts from user cancellation aborts
@@ -509,6 +549,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     // Non-SSE fallback: the backend ignored stream:true and sent plain JSON.
     if (!contentType.includes('text/event-stream') || !response.body || typeof response.body.getReader !== 'function') {
       const data = await response.json();
+      _assertNotLengthTruncated(data.choices?.[0]);
       const message = data.choices?.[0]?.message ?? {};
       const reasoningText = message.reasoning_content ?? '';
       if (reasoningText) {
@@ -526,6 +567,42 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     const decoder = new TextDecoder();
     let buffer = '';
     let doneReceived = false;
+    let finishReason = null;
+
+    const handleDataLine = (line) => {
+      if (doneReceived) return; // stop honoring deltas after [DONE]
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') {
+        doneReceived = true;
+        return;
+      }
+      if (!payload) return;
+      try {
+        const json = JSON.parse(payload);
+        const choice = json.choices?.[0];
+        const delta = choice?.delta ?? choice?.message ?? {};
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        const reasoningToken = delta.reasoning_content ?? '';
+        if (reasoningToken) {
+          reasoning += reasoningToken;
+          if (onReasoning) onReasoning(reasoningToken);
+        }
+        const token = delta.content ?? '';
+        if (token) demux.push(token);
+      } catch (_parseErr) {
+        // Incomplete or non-JSON data line -- skip it.
+      }
+    };
+
+    const drainBuffer = () => {
+      let newlineIdx;
+      while (!doneReceived && (newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim();
+        buffer = buffer.slice(newlineIdx + 1);
+        if (!line.startsWith('data:')) continue;
+        handleDataLine(line);
+      }
+    };
 
     while (!doneReceived) {
       const { done, value } = await reader.read();
@@ -533,32 +610,29 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
       // Data is flowing: restart the idle clock on every received chunk.
       armIdleTimeout();
       buffer += decoder.decode(value, { stream: true });
-
-      let newlineIdx;
-      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, newlineIdx).trim();
-        buffer = buffer.slice(newlineIdx + 1);
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') {
-          doneReceived = true;
-          break;
-        }
-        if (!payload) continue;
-        try {
-          const json = JSON.parse(payload);
-          const delta = json.choices?.[0]?.delta ?? json.choices?.[0]?.message ?? {};
-          const reasoningToken = delta.reasoning_content ?? '';
-          if (reasoningToken) {
-            reasoning += reasoningToken;
-            if (onReasoning) onReasoning(reasoningToken);
-          }
-          const token = delta.content ?? '';
-          if (token) demux.push(token);
-        } catch (_parseErr) {
-          // Incomplete or non-JSON data line -- skip it.
-        }
-      }
+      drainBuffer();
+    }
+    // Flush the decoder's multi-byte tail, then drain a final data line
+    // that may arrive without a trailing newline.
+    buffer += decoder.decode();
+    drainBuffer();
+    if (!doneReceived && buffer.startsWith('data:')) {
+      handleDataLine(buffer.trim());
+      buffer = '';
+    }
+    if (doneReceived && typeof reader.cancel === 'function') {
+      // [DONE] received: release the keep-alive body instead of leaving
+      // the reader open.
+      Promise.resolve(reader.cancel()).catch(() => {});
+    }
+    if (!doneReceived && !finishReason) {
+      // Neither terminator arrived: the stream was cut short (proxy close,
+      // network drop). Returning the partial text would present a half
+      // answer — or worse, apply half an amendment — as if complete.
+      throw new Error(
+        'LLM stream closed before completion (no [DONE] marker or finish_reason) — ' +
+        'the output may be truncated. Retry the request.'
+      );
     }
 
     demux.flush();
@@ -616,8 +690,7 @@ export async function sendPromptStream(config, promptText, handlers, log, signal
  * @throws {Error} On non-ok HTTP response or network failure
  */
 export async function testConnection(config) {
-  const apiPath = config.apiPath || '/v1';
-  const url = config.url.replace(/\/+$/, '') + apiPath + '/models';
+  const url = joinApiUrl(config.url, config.apiPath || '/v1', '/models');
 
   const headers = { Accept: 'application/json' };
   if (config.apiKey) {

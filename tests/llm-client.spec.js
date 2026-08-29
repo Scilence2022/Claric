@@ -229,6 +229,29 @@ describe('sendPrompt', () => {
     expect(fetchCall[0]).toBe('/glm/api/paas/v4/chat/completions');
   });
 
+  test('does not double-append the default /v1 prefix when the URL already ends with it', async () => {
+    // Regression: users entering the conventional full endpoint
+    // (https://host/v1) got https://host/v1/v1/chat/completions → 404 with
+    // no hint that the URL, not the endpoint, was wrong.
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'response' } }] })
+    });
+
+    await sendPrompt({ url: 'https://llm.example.com/v1', apiKey: '', model: 'test' }, 'Hello');
+    expect(global.fetch.mock.calls[0][0]).toBe('https://llm.example.com/v1/chat/completions');
+  });
+
+  test('does not double-append a custom apiPath prefix either (GLM full URL)', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'response' } }] })
+    });
+
+    await sendPrompt({ url: 'https://open.bigmodel.cn/api/paas/v4', apiPath: '/api/paas/v4', apiKey: 'k', model: 'glm-4.5' }, 'Hello');
+    expect(global.fetch.mock.calls[0][0]).toBe('https://open.bigmodel.cn/api/paas/v4/chat/completions');
+  });
+
   test('includes Authorization Bearer header when config.apiKey is non-empty', async () => {
     global.fetch.mockResolvedValue({
       ok: true,
@@ -348,6 +371,16 @@ describe('testConnection', () => {
     const fetchCall = global.fetch.mock.calls[0];
     expect(fetchCall[0]).toBe('/ollama/v1/models');
     expect(fetchCall[1].method).toBe('GET');
+  });
+
+  test('models endpoint also avoids double-appending the /v1 prefix', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: 'm' }] })
+    });
+
+    await testConnection({ url: 'https://llm.example.com/v1', apiKey: '' });
+    expect(global.fetch.mock.calls[0][0]).toBe('https://llm.example.com/v1/models');
   });
 
   test('honors config.apiPath for the models endpoint (GLM)', async () => {

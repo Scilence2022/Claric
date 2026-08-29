@@ -21,6 +21,8 @@
  * @module table-patch
  */
 
+import { extractJsonObject } from './json-utils.js';
+
 /** Row-op verbs understood by the protocol. */
 export const ROW_OP = Object.freeze({
     DELETE: 'delete',
@@ -177,7 +179,9 @@ export function planRowOpOrder(rowOps) {
 
 /**
  * Extracts the JSON object from an LLM response, tolerating markdown code
- * fences and trailing commas (both common with smaller models).
+ * fences and trailing commas (both common with smaller models). Shared
+ * implementation (json-utils): balanced-candidate scanning plus
+ * string-aware trailing-comma recovery.
  *
  * @param {string} raw
  * @returns {object}
@@ -185,22 +189,10 @@ export function planRowOpOrder(rowOps) {
  * @private
  */
 function _extractJson(raw) {
-    const text = String(raw || '');
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start === -1 || end <= start) {
-        throw new Error('Table patch response contains no JSON object');
-    }
-    const cleaned = text.slice(start, end + 1).replace(/,\s*([}\]])/g, '$1');
-    try {
-        const parsed = JSON.parse(cleaned);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            throw new Error('not an object');
-        }
-        return parsed;
-    } catch (err) {
-        throw new Error(`Table patch JSON parse failed: ${err.message}`);
-    }
+    return extractJsonObject(raw, {
+        noObjectMessage: 'Table patch response contains no JSON object',
+        parseFailedPrefix: 'Table patch JSON parse failed: ',
+    });
 }
 
 /** @private */

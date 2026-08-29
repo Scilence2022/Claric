@@ -502,10 +502,49 @@ export async function bookmarkChunkRanges(chunks) {
     paragraphs.load('items');
     await context.sync();
 
+    // Boundary validation: the chunk indexes come from a PREVIOUS Word.run
+    // (parseDocument). Any paragraph add/delete in between — a concurrent
+    // card apply, a comment-queue flush, the user typing — silently shifts
+    // them, and amendments would land on the wrong paragraphs. Verify the
+    // boundary paragraphs still hold the chunk's expected texts before
+    // bookmarking anything.
+    const boundaryIndexes = new Set();
+    for (const chunk of chunks) {
+      boundaryIndexes.add(chunk.startIndex);
+      boundaryIndexes.add(chunk.endIndex);
+    }
+    const boundaryParagraphs = new Map();
+    for (const idx of boundaryIndexes) {
+      const para = paragraphs.items[idx];
+      if (!para) {
+        throw new Error(
+          `Document changed while staging: paragraph index ${idx} no longer exists ` +
+          `(document has ${paragraphs.items.length} paragraphs). Re-run the instruction.`
+        );
+      }
+      para.load('text');
+      boundaryParagraphs.set(idx, para);
+    }
+    await context.sync();
+
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const startPara = paragraphs.items[chunk.startIndex];
       const endPara = paragraphs.items[chunk.endIndex];
+
+      if (Array.isArray(chunk.paragraphs) && chunk.paragraphs.length > 0) {
+        const expectedStart = (chunk.paragraphs[0].text || '').trim();
+        const expectedEnd = (chunk.paragraphs[chunk.paragraphs.length - 1].text || '').trim();
+        const actualStart = (boundaryParagraphs.get(chunk.startIndex).text || '').trim();
+        const actualEnd = (boundaryParagraphs.get(chunk.endIndex).text || '').trim();
+        if (actualStart !== expectedStart || actualEnd !== expectedEnd) {
+          throw new Error(
+            'Document changed while staging: chunk boundary paragraphs no longer match ' +
+            `(expected "${expectedStart.slice(0, 40)}…", found "${actualStart.slice(0, 40)}…"). ` +
+            'Re-run the instruction.'
+          );
+        }
+      }
 
       const startRange = startPara.getRange('Start');
       const endRange = endPara.getRange('End');
@@ -521,6 +560,43 @@ export async function bookmarkChunkRanges(chunks) {
   });
 
   return bookmarkMap;
+}
+
+/**
+ * Deletes leftover hidden chunk bookmarks (`_wdp*`) from a previous
+ * session. Chunk bookmarks are normally removed by the in-memory apply/
+ * discard closures of a staged run; when the taskpane reloads mid-run those
+ * closures are gone and the bookmarks would leak into the document forever
+ * (restored proposals render as static cards that can never clean up).
+ * Runs once at startup, before any new run can create its own bookmarks.
+ *
+ * @param {function} [log] - Logging callback (message, type)
+ * @returns {Promise<number>} Number of orphaned bookmarks removed
+ */
+export async function reapOrphanChunkBookmarks(log = () => {}) {
+  let removed = 0;
+  try {
+    await Word.run(async (context) => {
+      const wholeDoc = context.document.body.getRange('Whole');
+      const namesResult = wholeDoc.getBookmarks(true /* includeHidden */);
+      await context.sync();
+      const names = namesResult.value || [];
+      const orphans = names.filter((name) => typeof name === 'string' && name.startsWith('_wdp'));
+      for (const name of orphans) {
+        context.document.deleteBookmark(name);
+      }
+      await context.sync();
+      removed = orphans.length;
+    });
+    if (removed > 0) {
+      log(`Cleaned up ${removed} leftover bookmark(s) from a previous session.`, 'info');
+    }
+  } catch (err) {
+    // Best-effort hygiene: hosts without Range.getBookmarks or with a
+    // protected document just skip reaping — never block startup.
+    log(`Orphan bookmark cleanup skipped: ${err.message}`, 'warning');
+  }
+  return removed;
 }
 
 /**

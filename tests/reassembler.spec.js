@@ -42,6 +42,7 @@ function createMockWordRun(paragraphItems, bookmarkRanges = {}) {
   const items = paragraphItems.map((p, i) => {
     return {
       text: p.text,
+      load: jest.fn(), // real Office.js paragraph proxies all expose load
       // Paragraphs in these mocks live outside tables unless flagged.
       parentTableOrNullObject: { isNullObject: !p.inTable, load: jest.fn() },
       getRange: jest.fn().mockImplementation((position) => {
@@ -133,9 +134,9 @@ const { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _normalizeLine
 function mockChunk(id, index, text, startIndex, endIndex) {
   return {
     id,
-    paragraphs: [
-      { index: startIndex, text, headingLevel: 0 },
-    ],
+    // One ParsedParagraph per line, mirroring the real chunker contract
+    // (bookmarkChunkRanges validates boundary paragraphs against these).
+    paragraphs: text.split('\n').map((t) => ({ text: t, headingLevel: 0 })),
     startIndex,
     endIndex,
     tokenCount: Math.ceil(text.length / 4),
@@ -222,9 +223,9 @@ describe('bookmarkChunkRanges', () => {
     global.Word.run = mock.wordRun;
 
     const chunks = [
-      mockChunk('chunk-0', 0, 'P0', 0, 1),
-      mockChunk('chunk-1', 1, 'P2', 2, 3),
-      mockChunk('chunk-2', 2, 'P4', 4, 5),
+      mockChunk('chunk-0', 0, 'P0\nP1', 0, 1),
+      mockChunk('chunk-1', 1, 'P2\nP3', 2, 3),
+      mockChunk('chunk-2', 2, 'P4\nP5', 4, 5),
     ];
 
     const bookmarkMap = await bookmarkChunkRanges(chunks);

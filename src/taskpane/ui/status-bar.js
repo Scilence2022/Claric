@@ -9,6 +9,36 @@
  * @module ui/status-bar
  */
 
+/** Drawer DOM entries kept before the oldest are dropped. */
+const MAX_LOG_ENTRIES = 200;
+
+/**
+ * Module state for the dev-server log endpoint probe. The POST is dev-only
+ * convenience; in production /log 404s, so after the first failed probe the
+ * client stops hammering the endpoint on every log line.
+ */
+let devLogEndpointAvailable = null; // null = not probed yet
+
+/**
+ * Best-effort POST of one log line to the dev-server /log endpoint. Probes
+ * once: any failure (404 on production, dev server down, CORS) disables
+ * further attempts for the session.
+ *
+ * @private
+ */
+function postToDevLog(body) {
+    if (devLogEndpointAvailable === false) return;
+    fetch('/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+    }).then((res) => {
+        devLogEndpointAvailable = res.ok ? true : false;
+    }).catch(() => {
+        devLogEndpointAvailable = false;
+    });
+}
+
 /**
  * Appends an entry to the activity log drawer.
  *
@@ -25,17 +55,18 @@ export function addLog(message, type = 'info') {
         entry.textContent = `[${timestamp}] ${message}`;
 
         logsDiv.appendChild(entry);
+        // Long document runs log per chunk — cap the drawer so a whole
+        // session's logs cannot grow without bound in the DOM.
+        while (logsDiv.childElementCount > MAX_LOG_ENTRIES) {
+            logsDiv.removeChild(logsDiv.firstElementChild);
+        }
         logsDiv.scrollTop = logsDiv.scrollHeight;
     }
 
     console.log(`[${type.toUpperCase()}] ${message}`);
 
     // Send to server log (best effort)
-    fetch('/log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, type, timestamp: new Date().toISOString() })
-    }).catch(() => { });
+    postToDevLog(JSON.stringify({ message, type, timestamp: new Date().toISOString() }));
 }
 
 /**
@@ -150,13 +181,13 @@ export function setConnectionStatus(state, text) {
  */
 export function initStatusBar() {
     const drawer = document.getElementById('logDrawer');
-    const logBtn = document.getElementById('logBtn');
     const closeBtn = document.getElementById('logDrawerCloseBtn');
     const clearBtn = document.getElementById('clearLogsBtn');
 
-    if (logBtn && drawer) {
-        logBtn.addEventListener('click', () => toggleLogDrawer());
-    }
+    // #logBtn is intentionally NOT bound here: the bootstrap wires it via
+    // this module's exported toggleLogDrawer() so the click handler stays
+    // in one place. Binding it here too made one click toggle the drawer
+    // twice (open then instantly close).
     if (closeBtn && drawer) {
         closeBtn.addEventListener('click', () => closeLogDrawer());
     }

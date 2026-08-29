@@ -22,6 +22,7 @@ import { appState, loadSettings, getActiveBackendConfig } from './app-state.js';
 import { BUILTIN_SKILLS, listSkills } from './skills.js';
 import { createConversation } from './conversation.js';
 import { watchSelection } from './word-actions.js';
+import { reapOrphanChunkBookmarks } from '../lib/reassembler.js';
 import * as chatView from './ui/chat-view.js';
 import { renderWelcomeChips } from './ui/welcome.js';
 import { initInputBar } from './ui/input-bar.js';
@@ -143,6 +144,12 @@ function initialize() {
     // thumbnails; image-bearing selections enter the turn's context via the
     // image tool session at submit time)
     watchSelection((content) => input.setSelectionPreview(content));
+
+    // Startup hygiene: chunk bookmarks from a run interrupted by a reload
+    // (or a crash) are unreferenced — no in-memory apply/discard closure
+    // survives — so reap them before any new run creates its own. Best
+    // effort; never blocks startup.
+    reapOrphanChunkBookmarks(addLog);
 
     // Detect and log supported Word API version (diagnostics only)
     const apiVersions = ['1.8', '1.7', '1.6', '1.5', '1.4', '1.3', '1.2', '1.1'];
