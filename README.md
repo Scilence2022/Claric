@@ -17,9 +17,9 @@ backend, local or hosted.
 
 ### Chat Interface & Turn Routing
 
-- Chat-first taskpane: message list, ChatGPT-style composer (rounded input card with a "+" button that opens a skill menu, model pill and circular send button in the toolbar row), welcome empty state with skill chips, ↑/↓ recall of submitted prompts (terminal-style, draft preserved)
+- Chat-first taskpane: message list, ChatGPT-style composer (rounded input card with a "+" button that opens a slash-command menu, model pill and circular send button in the toolbar row), welcome empty state with slash-command chips, ↑/↓ recall of submitted prompts (terminal-style, draft preserved)
 - **Auto-apply toggle** (macOS-style switch in the composer toolbar): when on, staged proposal cards apply automatically as tracked changes the moment the turn settles — proposals are still staged and reviewable, application just stops waiting for the click; the setting persists (`autoApplyChanges`) and the cross-card apply mutex still guards the write
-- Slash-command skill picker — type `/` to filter; Enter/Tab/click to select; the send button morphs into Cancel while a run is processing (AbortController)
+- Slash-command picker — type `/` to filter; Enter/Tab/click to select; the send button morphs into Cancel while a run is processing (AbortController)
 - Built-in skills: `/copy-edit`, `/check-doc`, `/flag-issues`, `/summarize-contract`, `/industry-overview`, `/storylining`; saved prompts register as custom slash commands
 - Intent routing for free text (English and Chinese): edit, format, append, table, illustration, and empty-paragraph cleanup each route to their own pipeline; questions always go to Q&A
 - Free text with a non-empty selection → amendment pipeline with the text as the edit instruction; `selection-first` skills run on the selection when one exists, otherwise on the whole document
@@ -99,6 +99,8 @@ Every document mutation is staged as a proposal card — nothing is written unti
 - CORS-bound servers can be proxied same-origin via the generic `CUSTOM_PROXY_PATH`/`CUSTOM_PROXY_TARGET` pair
 
 ### Skill Packages (SKILL.md)
+
+- Import UI lives in Settings → Skills (its own tab); imported packages appear as slash commands
 
 - Import Claude-style skill packages: YAML frontmatter (name, description, optional `category`/`scope`) over a markdown instruction body — pasted or loaded from a `.md` file in Settings → Prompts
 - Imported skills appear as slash commands alongside built-ins and saved prompts; they persist in localStorage (`wordAI.skills.imported`, capped at 24) and can be removed in Settings
