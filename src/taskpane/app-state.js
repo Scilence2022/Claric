@@ -14,6 +14,7 @@
 import { PromptManager } from '../lib/prompt-manager.js';
 import { CommentQueue } from '../lib/comment-queue.js';
 import { KNOWN_PROVIDERS, defaultProviderConfig } from '../lib/providers.js';
+import { TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
 
 const KNOWN_RICHNESS = ['plain', 'headings', 'structured'];
 
@@ -34,6 +35,8 @@ export function defaultConfig() {
         trackedChangesExtraction: false,
         commentGranularity: 0,
         includeCommentsInSelection: false,
+        mcpServers: [],
+        mcpStepBudget: TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT,
         providers: defaultProviderConfig()
     };
 }
@@ -166,6 +169,23 @@ export function normalizeConfig(defaults, parsed) {
     }
     if (typeof parsed.includeCommentsInSelection === 'boolean') {
         out.includeCommentsInSelection = parsed.includeCommentsInSelection;
+    }
+
+    // MCP tool servers (lib/mcp-client.js): sanitize field-by-field so a
+    // corrupt entry can never break the add-in.
+    if (Array.isArray(parsed.mcpServers)) {
+        out.mcpServers = parsed.mcpServers
+            .filter((s) => s && typeof s === 'object')
+            .map((s) => ({
+                name: typeof s.name === 'string' ? s.name : '',
+                url: typeof s.url === 'string' ? s.url : '',
+                token: typeof s.token === 'string' ? s.token : '',
+                enabled: s.enabled !== false,
+            }))
+            .slice(0, 10);
+    }
+    if (Number.isFinite(parsed.mcpStepBudget) && parsed.mcpStepBudget > 0) {
+        out.mcpStepBudget = Math.min(Math.round(parsed.mcpStepBudget), 48);
     }
 
     return out;

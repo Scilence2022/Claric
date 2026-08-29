@@ -204,6 +204,18 @@
                             <option value="5">Every 5 paragraphs</option>
                         </select>
                     </div>
+                    <hr class="settings-divider">
+                    <p class="settings-section-label">MCP Servers (Model Context Protocol)</p>
+                    <p class="help-text">Tool servers the /mcp command can use. Point at an HTTP (Streamable) MCP endpoint — an absolute URL, or a same-origin proxy path (set CUSTOM_PROXY_PATH/CUSTOM_PROXY_TARGET in .env to proxy a CORS-bound server).</p>
+                    <div class="prompt-block">
+                        <div class="mcp-server-row">
+                            <input type="text" id="mcpServerName" class="form-control" placeholder="Name" aria-label="MCP server name">
+                            <input type="text" id="mcpServerUrl" class="form-control mcp-server-url" placeholder="https://…/mcp" aria-label="MCP server URL">
+                            <input type="password" id="mcpServerToken" class="form-control" placeholder="Bearer token (optional)" aria-label="MCP server token">
+                            <button type="button" id="mcpServerAddBtn" class="btn btn-compact">Add</button>
+                        </div>
+                        <div id="mcpServerList"></div>
+                    </div>
                     </div><!-- /settingsPageGeneral -->
 
                     <div id="settingsPagePrompts" class="settings-page" role="tabpanel" aria-labelledby="settingsTabPrompts" hidden>

@@ -98,10 +98,11 @@ describe('listSkills', () => {
     };
   }
 
-  test('returns built-ins when promptManager is missing or empty', () => {
-    expect(listSkills(null).length).toBe(6);
+  test('returns built-ins plus the reserved /mcp skill when promptManager is missing or empty', () => {
+    // 6 built-ins + the reserved MCP-tools skill.
+    expect(listSkills(null).length).toBe(7);
     const pm = makePromptManager({});
-    expect(listSkills(pm).length).toBe(6);
+    expect(listSkills(pm).length).toBe(7);
   });
 
   test('registers saved prompts as custom slash commands', () => {
@@ -110,7 +111,7 @@ describe('listSkills', () => {
       summary: [{ id: 'exec-summary', name: 'Exec Summary', template: 'tpl', description: '' }],
     });
     const skills = listSkills(pm);
-    expect(skills.length).toBe(8);
+    expect(skills.length).toBe(9); // 6 built-ins + /mcp + 2 prompt customs
 
     const legal = skills.find((s) => s.slash === '/legal-review');
     expect(legal).toBeDefined();

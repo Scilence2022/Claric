@@ -15,6 +15,7 @@ import { testConnection as llmTestConnection } from '../../lib/llm-client.js';
 import { CATEGORIES } from '../../lib/prompt-manager.js';
 import { getProviderPreset } from '../../lib/providers.js';
 import { parseSkillPackage } from '../../lib/skill-package.js';
+import { connectMcpServer } from '../../lib/mcp-client.js';
 import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../../lib/skill-store.js';
 import { appState, getActiveBackendConfig, debounce, persistSettings } from '../app-state.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
@@ -119,6 +120,7 @@ export function initSettings({ onConfigChanged } = {}) {
 
     updateUIFromConfig();
     initSkillImport();
+    initMcpServers();
     renderAllDropdowns();
 
     // Restore textarea content from the active prompt of each category.
@@ -136,8 +138,9 @@ export function initSettings({ onConfigChanged } = {}) {
 /** Opens the settings slide-over. */
 export function openSettings() {
     document.getElementById('settingsOverlay').removeAttribute('hidden');
-    // Re-render on every open so the list reflects imports made elsewhere.
+    // Re-render on every open so the lists reflect edits made elsewhere.
     renderSkillImportList();
+    renderMcpServerList();
 }
 
 /** Closes the settings slide-over. */
@@ -715,4 +718,111 @@ function initSkillImport() {
     });
 
     renderSkillImportList();
+}
+
+/**
+ * MCP Servers management: add/test/remove tool servers the /mcp command
+ * can use. Persisted through the normal config pipeline (saveSettings →
+ * normalizeConfig → localStorage).
+ */
+function renderMcpServerList() {
+    const list = document.getElementById('mcpServerList');
+    if (!list) return;
+    list.textContent = '';
+
+    const servers = (appState.config.mcpServers || []);
+    if (servers.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'help-text';
+        empty.textContent = 'No MCP servers configured yet. /mcp will explain itself until you add one.';
+        list.appendChild(empty);
+        return;
+    }
+    servers.forEach((server, index) => {
+        const row = document.createElement('div');
+        row.className = 'skill-import-row';
+
+        const text = document.createElement('div');
+        text.className = 'skill-import-text';
+        const name = document.createElement('div');
+        name.className = 'skill-import-name';
+        name.textContent = `${server.name || server.url}${server.enabled === false ? ' (disabled)' : ''}`;
+        const desc = document.createElement('div');
+        desc.className = 'skill-import-desc';
+        desc.textContent = server.url;
+        text.appendChild(name);
+        text.appendChild(desc);
+
+        const toolsBtn = document.createElement('button');
+        toolsBtn.type = 'button';
+        toolsBtn.className = 'btn btn-compact';
+        toolsBtn.textContent = 'Test';
+        toolsBtn.addEventListener('click', async () => {
+            addLog(`Testing MCP server "${server.name || server.url}"...`, 'info');
+            try {
+                const client = await connectMcpServer({ url: server.url, token: server.token, log: addLog });
+                const tools = await client.listTools();
+                addLog(`MCP "${server.name || server.url}" OK: ${tools.length} tool(s) — ${tools.map((t) => t.name).join(', ') || '(none)'}.`, 'success');
+            } catch (err) {
+                addLog(`MCP "${server.name || server.url}" failed: ${err.message}`, 'error');
+            }
+        });
+
+        const toggleBtn = document.createElement('button');
+        toggleBtn.type = 'button';
+        toggleBtn.className = 'btn btn-compact';
+        toggleBtn.textContent = server.enabled === false ? 'Enable' : 'Disable';
+        toggleBtn.addEventListener('click', () => {
+            appState.config.mcpServers[index].enabled = server.enabled === false;
+            saveSettings();
+            renderMcpServerList();
+        });
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-compact';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', () => {
+            appState.config.mcpServers.splice(index, 1);
+            saveSettings();
+            renderMcpServerList();
+        });
+
+        row.appendChild(text);
+        row.appendChild(toolsBtn);
+        row.appendChild(toggleBtn);
+        row.appendChild(removeBtn);
+        list.appendChild(row);
+    });
+}
+
+function initMcpServers() {
+    const addBtn = document.getElementById('mcpServerAddBtn');
+    if (!addBtn) return; // markup absent — nothing to wire
+
+    addBtn.addEventListener('click', () => {
+        const nameInput = document.getElementById('mcpServerName');
+        const urlInput = document.getElementById('mcpServerUrl');
+        const tokenInput = document.getElementById('mcpServerToken');
+        const url = (urlInput.value || '').trim();
+        if (!url) {
+            addLog('MCP server URL is required.', 'warning');
+            return;
+        }
+        appState.config.mcpServers = appState.config.mcpServers || [];
+        appState.config.mcpServers.push({
+            name: (nameInput.value || '').trim(),
+            url,
+            token: (tokenInput.value || '').trim(),
+            enabled: true,
+        });
+        nameInput.value = '';
+        urlInput.value = '';
+        tokenInput.value = '';
+        saveSettings();
+        addLog(`Added MCP server "${nameInput.value || url}".`, 'success');
+        renderMcpServerList();
+    });
+
+    renderMcpServerList();
 }

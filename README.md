@@ -89,6 +89,13 @@ Every document mutation is staged as a proposal card — nothing is written unti
 - OOXML tracked-changes parsing uses the browser DOMParser (no external dependencies): handles the `pkg:package` wrapper and `w:proofErr` normalization, pairs adjacent `w:del` + `w:ins` from the same author as replacements, detects move operations (`w:moveFrom` / `w:moveTo`), skips table-row revision markers, queries namespace-aware with prefix fallback, and includes author identity in the LLM-formatted output
 - Async comment queue: bookmark-based range persistence, a pending counter with retry-on-error, and WordApi 1.4 detection with graceful degradation
 
+### MCP Tools (Model Context Protocol)
+
+- Connect HTTP (Streamable) MCP tool servers in Settings → MCP Servers (name, URL, optional bearer token, enable/disable, one-click test)
+- `/mcp <instruction>` runs a ReAct tool loop (the same backend-agnostic loop as table/image sessions) over all enabled servers' tools — tool names are namespaced, results stream into the work log, and the final summary answers in chat
+- Read-only contract: MCP tools act on their own external systems and never write to the Word document directly; oversized results are truncated, image results ride the multimodal attachments channel
+- CORS-bound servers can be proxied same-origin via the generic `CUSTOM_PROXY_PATH`/`CUSTOM_PROXY_TARGET` pair
+
 ### Skill Packages (SKILL.md)
 
 - Import Claude-style skill packages: YAML frontmatter (name, description, optional `category`/`scope`) over a markdown instruction body — pasted or loaded from a `.md` file in Settings → Prompts
