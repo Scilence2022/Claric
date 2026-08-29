@@ -141,6 +141,8 @@ body {
     align-items: center;
     gap: var(--spacing-xs);
     cursor: default;
+    flex: 0 0 auto;
+    margin-right: var(--spacing-xs);
 }
 
 .status-indicator {
