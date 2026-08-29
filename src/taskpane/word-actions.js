@@ -3050,9 +3050,17 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
 
         // On a pause (interrupted) the not-yet-applied chunks must keep their
         // bookmarks so the "Continue applying" resume can still target them;
-        // only clean up once the whole selection has been applied.
+        // only clean up once the whole selection has been applied. Failed
+        // chunks also keep theirs: the retry link below re-drives exactly
+        // those chunks and needs the staged ranges to still exist.
         if (!applicationResult.interrupted) {
-            await cleanupBookmarks(bookmarkMap);
+            const keepNames = new Set(
+                results
+                    .filter((r) => r.status === 'rejected')
+                    .map((r) => bookmarkMap.get(r.chunkId))
+                    .filter(Boolean)
+            );
+            await cleanupBookmarks(bookmarkMap, { keep: keepNames });
         }
 
         log(
@@ -3065,15 +3073,28 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         );
 
         if (failed > 0 && logWithRetry) {
-            const failedChunks = results.filter(r => r.status === 'rejected');
             logWithRetry(
                 `${failed} chunk(s) failed. Click to retry failed chunks.`,
                 'warning',
-                () => retryFailedChunks(deps, { failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress })
+                retryFailed
             );
         }
 
         return applicationResult;
+    };
+
+    /**
+     * Retries this run's failed chunks with the original bookmark map,
+     * backend config, and prompt shim. Exposed on the gated return too, so
+     * an all-chunks-failed run (where apply() never runs and no card is
+     * staged) can still offer a retry link.
+     */
+    const retryFailed = () => {
+        const failedChunks = results.filter(r => r.status === 'rejected');
+        if (failedChunks.length === 0) {
+            return Promise.resolve();
+        }
+        return retryFailedChunks(deps, { failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress });
     };
 
     /**
@@ -3087,9 +3108,11 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
 
     // Gated mode (amendment pipeline): stop before writing to the document
     // and hand the caller an apply/discard continuation so the chat UI can
-    // stage a proposal card for user confirmation.
+    // stage a proposal card for user confirmation. retryFailed rides along:
+    // when every chunk failed there is nothing to stage, and this is the
+    // only handle the caller has to offer a retry link.
     if (gateApply) {
-        return { staged: true, results, chunks, apply, discard, failedCount: failed, cancelledCount: cancelled };
+        return { staged: true, results, chunks, apply, discard, retryFailed, failedCount: failed, cancelledCount: cancelled };
     }
 
     const applicationResult = await apply();
@@ -3168,6 +3191,18 @@ export async function retryFailedChunks(deps, { failedResults, bookmarkMap, back
             (stillFailed > 0 ? `, ${stillFailed} still failed` : ''),
             stillFailed > 0 ? 'warning' : 'success'
         );
+
+        // The retry is the failed chunks' second chance: clean up their
+        // bookmarks either way so nothing lingers in the document. (The
+        // original apply() kept exactly these bookmarks alive for this call.)
+        const retriedBookmarks = new Map(
+            failedResults
+                .map((r) => [r.chunkId, bookmarkMap.get(r.chunkId)])
+                .filter(([, name]) => name)
+        );
+        if (retriedBookmarks.size > 0) {
+            await cleanupBookmarks(retriedBookmarks);
+        }
     } catch (error) {
         if (error.name === 'AbortError') {
             log('Retry cancelled.', 'warning');

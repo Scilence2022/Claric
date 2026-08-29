@@ -23,7 +23,7 @@ jest.mock('../src/lib/reassembler.js', () => ({
 }));
 
 const { processChunksParallel } = require('../src/lib/orchestrator.js');
-const { applyChunkResults } = require('../src/lib/reassembler.js');
+const { applyChunkResults, cleanupBookmarks } = require('../src/lib/reassembler.js');
 const { retryFailedChunks } = require('../src/taskpane/word-actions.js');
 
 function makeFailedResult(chunk) {
@@ -119,5 +119,35 @@ describe('retryFailedChunks', () => {
             failedResults: [], bookmarkMap: new Map(), backendConfig: {}, promptShim: {},
         });
         expect(processChunksParallel).not.toHaveBeenCalled();
+    });
+
+    it('cleans up the retried chunks\' bookmarks after the retry settles', async () => {
+        // The original apply() keeps FAILED chunks' bookmarks alive precisely
+        // so this retry can target them; once the retry settles they must be
+        // removed again (only the retried subset — unrelated bookmarks stay).
+        const chunk = { id: 'chunk-3', paragraphs: [{ text: 'Body.' }], overlapBefore: '' };
+        processChunksParallel.mockResolvedValue([
+            {
+                chunkId: 'chunk-3', chunkIndex: 0, status: 'fulfilled',
+                amendment: 'New body', comment: null, error: null, chunk,
+            },
+        ]);
+        applyChunkResults.mockResolvedValue({
+            amendmentsApplied: 1, commentsInserted: 0, noChangeCount: 0,
+            errors: [], appliedChunkIds: ['chunk-3'], interrupted: false,
+        });
+
+        const deps = makeDeps();
+        await retryFailedChunks(deps, {
+            failedResults: [makeFailedResult(chunk)],
+            bookmarkMap: new Map([['chunk-3', '_wdp_keep3'], ['chunk-other', '_wdp_other']]),
+            backendConfig: { model: 'm' },
+            promptShim: {},
+        });
+
+        expect(cleanupBookmarks).toHaveBeenCalledTimes(1);
+        const [cleanedMap] = cleanupBookmarks.mock.calls[0];
+        expect([...cleanedMap.keys()]).toEqual(['chunk-3']);
+        expect(cleanedMap.get('chunk-3')).toBe('_wdp_keep3');
     });
 });

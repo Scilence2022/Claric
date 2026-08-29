@@ -316,9 +316,14 @@ export async function processChunksParallel(chunks, options) {
       } else {
         failed++;
         chunkTimings.push(Date.now() - chunkStart);
+        const message = error.message || String(error);
         results[chunkIndex] = makeResult(chunkIndex, chunk, 'rejected', {
-          error: error.message || String(error),
+          error: message,
         });
+        // Log at failure time: when every chunk fails there is no apply()
+        // to carry the failure to the user, so this line is often the only
+        // immediate trace of the backend problem.
+        log(`Chunk ${chunk.id}: ${message}`, 'warning');
       }
     }
 

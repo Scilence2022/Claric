@@ -688,6 +688,20 @@ describe('cleanupBookmarks', () => {
     expect(mock.deletedBookmarks).toHaveLength(3);
   });
 
+  test('keeps bookmarks named in the keep set (failed chunks stay retryable)', async () => {
+    const mock = createMockWordRun([]);
+    global.Word.run = mock.wordRun;
+
+    const bookmarkMap = new Map([
+      ['chunk-0', '_wdpbm0'],
+      ['chunk-1', '_wdpbm1'],
+    ]);
+
+    await cleanupBookmarks(bookmarkMap, { keep: new Set(['_wdpbm1']) });
+
+    expect(mock.deletedBookmarks).toEqual(['_wdpbm0']);
+  });
+
   test('handles errors on individual bookmark deletion without stopping', async () => {
     const paragraphs = [{ text: 'Para 0' }];
     const mock = createMockWordRun(paragraphs);
