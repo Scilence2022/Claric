@@ -357,4 +357,28 @@ describe('stream / response truncation detection', () => {
     }));
     await expect(sendPrompt(CONFIG, 'prompt')).resolves.toBe('Full answer');
   });
+
+  test('SSE stream with finish_reason=length is rejected as truncated', async () => {
+    // The full-document pipelines always stream; a length-terminated SSE
+    // stream must be refused exactly like the non-streaming paths instead
+    // of returning half an amendment as if complete.
+    const lengthLine = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n`;
+    global.fetch = jest.fn(async () =>
+      sseResponse([sseLine('Half an amendment'), lengthLine, 'data: [DONE]\n'])
+    );
+
+    await expect(sendPromptStream(CONFIG, 'prompt', () => {}))
+      .rejects.toThrow(/finish_reason=length/);
+  });
+
+  test('SSE stream with finish_reason=stop completes normally', async () => {
+    const stopLine = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n`;
+    global.fetch = jest.fn(async () =>
+      sseResponse([sseLine('Complete answer'), stopLine, 'data: [DONE]\n'])
+    );
+
+    const tokens = [];
+    await expect(sendPromptStream(CONFIG, 'prompt', (t) => tokens.push(t))).resolves.toBe('Complete answer');
+    expect(tokens).toEqual(['Complete answer']);
+  });
 });
