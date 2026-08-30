@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+coverage/
 
 # Reference library (use npm dependency instead)
 reference - office-word-diff/
