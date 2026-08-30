@@ -58,6 +58,44 @@ describe('auto-apply pipeline', () => {
         expect(card.applyAll).toHaveBeenCalledTimes(1);
     });
 
+    test('with auto-apply ON every pending card applies (multi-card turns)', async () => {
+        appState.config.autoApplyChanges = true;
+        const msg = createAssistantMessage();
+        const first = makeCard();
+        const second = makeCard();
+        // Multi-pipeline runs stage one proposal card per pipeline on the
+        // same assistant message.
+        msg.attachProposal(first, { title: 'T1', state: 'pending', items: [] });
+        msg.attachProposal(second, { title: 'T2', state: 'pending', items: [] });
+
+        msg.finalizeForHistory();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(first.applyAll).toHaveBeenCalledTimes(1);
+        expect(second.applyAll).toHaveBeenCalledTimes(1);
+    });
+
+    test('cards apply sequentially — the next waits for the in-flight one', async () => {
+        appState.config.autoApplyChanges = true;
+        const msg = createAssistantMessage();
+        let releaseFirst;
+        const first = makeCard();
+        // The card's real runApply owns a cross-card mutex while in flight,
+        // so the queue must await each apply before starting the next.
+        first.applyAll = jest.fn(() => new Promise((resolve) => { releaseFirst = resolve; }));
+        const second = makeCard();
+        msg.attachProposal(first, { title: 'T1', state: 'pending', items: [] });
+        msg.attachProposal(second, { title: 'T2', state: 'pending', items: [] });
+
+        msg.finalizeForHistory();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(first.applyAll).toHaveBeenCalledTimes(1);
+        expect(second.applyAll).not.toHaveBeenCalled();
+
+        releaseFirst();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(second.applyAll).toHaveBeenCalledTimes(1);
+    });
+
     test('non-pending metadata is never auto-applied', async () => {
         appState.config.autoApplyChanges = true;
         const msg = createAssistantMessage();

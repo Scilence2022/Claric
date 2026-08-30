@@ -616,8 +616,8 @@ export function createAssistantMessage() {
     let lastStatus = '';
     let lastError = null;
     const trackedProposals = [];
-    /** Card staged with auto-apply on — fired by finalizeForHistory. */
-    let pendingAutoApplyCard = null;
+    /** Cards staged with auto-apply on — drained by finalizeForHistory. */
+    const pendingAutoApplyCards = [];
     let finalized = false;
     let finalizedRecord = null;
 
@@ -815,7 +815,7 @@ export function createAssistantMessage() {
                 meta && meta.state === 'pending' &&
                 typeof card.applyAll === 'function'
             ) {
-                pendingAutoApplyCard = card;
+                pendingAutoApplyCards.push(card);
             }
         },
         addCitationPills(citations, onSelect) {
@@ -850,10 +850,20 @@ export function createAssistantMessage() {
         finalizeForHistory() {
             if (finalized) return;
             finalized = true;
-            if (pendingAutoApplyCard) {
-                const cardToApply = pendingAutoApplyCard;
-                pendingAutoApplyCard = null;
-                setTimeout(() => cardToApply.applyAll(), 0);
+            if (pendingAutoApplyCards.length > 0) {
+                const cardsToApply = pendingAutoApplyCards.splice(0);
+                // Sequential drain: a card's apply owns the cross-card
+                // mutex and the document busy flags while in flight, so
+                // concurrent applyAll calls would refuse each other.
+                setTimeout(async () => {
+                    for (const cardToApply of cardsToApply) {
+                        try {
+                            await cardToApply.applyAll();
+                        } catch (_err) {
+                            // onApply reports its own failure on the card.
+                        }
+                    }
+                }, 0);
             }
             _currentSessionUpdatedAt = new Date().toISOString();
             const now = new Date().toISOString();
