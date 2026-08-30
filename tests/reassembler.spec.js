@@ -589,6 +589,92 @@ describe('applyChunkResults', () => {
     expect(applyTokenMapStrategy).not.toHaveBeenCalled();
   });
 
+  test('comment pass batches lookups into a single Word.run (lost bookmark included)', async () => {
+    const paragraphs = [{ text: 'Para 0' }, { text: 'Para 1' }];
+    // _wdpbm1 was never staged: its lookup comes back isNullObject.
+    const bookmarkRanges = {
+      '_wdpbm0': { text: 'Para 0' },
+    };
+    const mock = createMockWordRun(paragraphs, bookmarkRanges);
+    global.Word.run = mock.wordRun;
+
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', { comment: 'Comment 0' }),
+      makeChunkResult('chunk-1', 1, 'fulfilled', { comment: 'Comment 1' }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0'], ['chunk-1', '_wdpbm1']]);
+
+    const result = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(result.commentsInserted).toBe(1);
+    expect(result.errors).toEqual([
+      'Chunk chunk-1: bookmark range lost for comment',
+    ]);
+    expect(mock.insertedComments.map((c) => c.commentText)).toEqual(['Comment 0']);
+    // One run for the whole pass: no per-comment runs, no restart for the lost one.
+    expect(mock.wordRun).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failing comment insert is isolated; remaining comments re-drive in a fresh run', async () => {
+    const insertedComments = [];
+    let runCount = 0;
+    global.Word.run = jest.fn(async (callback) => {
+      const runIndex = runCount++;
+      const context = {
+        document: {
+          getBookmarkRangeOrNullObject: () => ({
+            isNullObject: false,
+            load: jest.fn(),
+            insertComment: (text) => {
+              // Fail the SECOND comment's insert sync in the first run only.
+              if (runIndex === 0 && text === 'Comment 1') {
+                context.failNextSync = true;
+              }
+              insertedComments.push(text);
+            },
+          }),
+          changeTrackingMode: null,
+        },
+        sync: jest.fn(async () => {
+          if (context.failNextSync) {
+            context.failNextSync = false;
+            throw new Error('AccessDenied');
+          }
+        }),
+      };
+      await callback(context);
+    });
+
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', { comment: 'Comment 0' }),
+      makeChunkResult('chunk-1', 1, 'fulfilled', { comment: 'Comment 1' }),
+      makeChunkResult('chunk-2', 2, 'fulfilled', { comment: 'Comment 2' }),
+    ];
+    const bookmarkMap = new Map([
+      ['chunk-0', '_wdpbm0'],
+      ['chunk-1', '_wdpbm1'],
+      ['chunk-2', '_wdpbm2'],
+    ]);
+
+    const result = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    // Comment 1 failed (its insert may or may not have landed host-side);
+    // Comment 2 was NOT abandoned — it re-drove in a fresh run.
+    expect(result.commentsInserted).toBe(2);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('Chunk chunk-1: comment failed -- AccessDenied');
+    expect(insertedComments).toContain('Comment 2');
+    expect(runCount).toBe(2);
+  });
+
   test('handles amendment application error gracefully (records in errors array)', async () => {
     applyTokenMapStrategy.mockRejectedValueOnce(new Error('Word API error'));
 

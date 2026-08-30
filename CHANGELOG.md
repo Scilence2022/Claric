@@ -4,6 +4,20 @@ All notable changes to Claric are documented here. The format is a loose
 Keep-a-Changelog style; versions track `package.json` and the `v*` git tags
 that drive the GHCR image publish in CI.
 
+## [Unreleased]
+
+### Performance
+
+- **Apply tracked changes** — full-document applies no longer pay a Word host
+  round-trip per diff op. The CJK char-level strategy now locates every edit
+  span in ONE batched search pass (occurrence-indexed mapping, same trick as
+  the token map) instead of a `context.sync` per op; the reassembler
+  pre-reads all changed paragraphs' content ranges in a single sync per
+  chunk; and comment insertion batches its bookmark lookups into one
+  `Word.run` (per-comment error isolation preserved, with a fresh-run retry
+  for the remainder after a failed insert). Behavior, redline granularity,
+  and fallbacks are unchanged.
+
 ## [1.0.1] — 2026-08-29
 
 ### Changed

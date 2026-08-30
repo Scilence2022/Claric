@@ -392,6 +392,25 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   // Align paragraphs
   const alignment = _alignParagraphs(origTexts, amendedLines);
 
+  // Pre-resolve every changed paragraph's content range in ONE batched read
+  // (a single sync for the whole chunk) instead of a load+sync inside the
+  // edit loop — those per-paragraph round-trips dominated full-document
+  // applies. All ranges are resolved against the pristine text, before any
+  // edit is queued, and reverse-order edits never move another paragraph's
+  // own content span, so the proxies stay valid for the whole loop.
+  /** @type {Map<number, Word.Range>} */
+  const changedParaRanges = new Map();
+  for (const op of alignment) {
+    if (op.type === 'keep' && origTexts[op.origIdx].trim() !== amendedLines[op.newIdx].trim()) {
+      const paraRange = paraItems[op.origIdx].getRange('Content');
+      paraRange.load('text');
+      changedParaRanges.set(op.origIdx, paraRange);
+    }
+  }
+  if (changedParaRanges.size > 0) {
+    await context.sync();
+  }
+
   // Set tracked changes explicitly (on OR off) so the whole alignment loop —
   // including the per-paragraph diff strategies — runs under one mode.
   if (Word.ChangeTrackingMode) {
@@ -413,10 +432,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
       const newText = amendedLines[op.newIdx];
 
       if (origText.trim() !== newText.trim()) {
-        const para = paraItems[op.origIdx];
-        const paraRange = para.getRange('Content');
-        paraRange.load('text');
-        await context.sync();
+        const paraRange = changedParaRanges.get(op.origIdx);
 
         // Use word-level token map strategy scoped to single paragraph.
         // At paragraph scope, token map is much more reliable:
@@ -939,38 +955,65 @@ export async function applyChunkResults(results, bookmarkMap, options) {
       }
     }
 
-    const fulfilledWithComments = results
-      .filter((r) => r.status === 'fulfilled' && r.comment);
+    const allCommentResults = results
+      .filter((r) => r.status === 'fulfilled' && r.comment)
+      .filter((r) => bookmarkMap.get(r.chunkId));
 
-    for (const result of fulfilledWithComments) {
-      const bookmarkName = bookmarkMap.get(result.chunkId);
-      if (!bookmarkName) continue;
-
+    // One Word.run for the whole comment pass: bookmark lookups batched into
+    // a single sync, then one insert+sync per comment (the per-comment sync
+    // keeps the old per-comment-run error isolation). A failed insert leaves
+    // the run's remaining queue unreliable, so the loop escapes and re-drives
+    // the remainder in a fresh run; the queue is guaranteed to shrink every
+    // iteration.
+    let commentQueue = allCommentResults;
+    while (commentQueue.length > 0) {
+      let consumed = 0;
       try {
         await Word.run(async (context) => {
-          const range = context.document.getBookmarkRangeOrNullObject(bookmarkName);
-          range.load('isNullObject,text');
+          const pending = commentQueue.map((result) => {
+            const range = context.document.getBookmarkRangeOrNullObject(bookmarkMap.get(result.chunkId));
+            range.load('isNullObject');
+            return { result, range };
+          });
           await context.sync();
 
-          if (range.isNullObject) {
-            errors.push(`Chunk ${result.chunkId}: bookmark range lost for comment`);
-            return;
+          for (let i = 0; i < pending.length; i++) {
+            const { result, range } = pending[i];
+            if (range.isNullObject) {
+              errors.push(`Chunk ${result.chunkId}: bookmark range lost for comment`);
+              consumed = i + 1;
+              continue;
+            }
+            try {
+              range.insertComment(result.comment);
+              await context.sync();
+              commentsInserted++;
+              log(`Chunk ${result.chunkId}: comment inserted`, 'info');
+              consumed = i + 1;
+            } catch (err) {
+              errors.push(`Chunk ${result.chunkId}: comment failed -- ${err.message || String(err)}`);
+              log(`Chunk ${result.chunkId}: comment failed -- ${err.message}`, 'error');
+              consumed = i + 1;
+              throw err; // poisoned context: escape, retry the rest in a fresh run
+            }
+
+            // Yield to event loop between comments to prevent UI freeze and
+            // pace the rapid-fire host writes
+            await _yieldToEventLoop();
           }
-
-          range.insertComment(result.comment);
-          await context.sync();
         });
-
-        commentsInserted++;
-        log(`Chunk ${result.chunkId}: comment inserted`, 'info');
       } catch (err) {
-        errors.push(`Chunk ${result.chunkId}: comment failed -- ${err.message || String(err)}`);
-        log(`Chunk ${result.chunkId}: comment failed -- ${err.message}`, 'error');
+        // Run-level failure (lookup sync, host error): fail the first queue
+        // entry so the loop always makes progress, matching the old
+        // per-comment-run behavior for the rest.
+        if (consumed === 0) {
+          const dropped = commentQueue[0];
+          errors.push(`Chunk ${dropped.chunkId}: comment failed -- ${err.message || String(err)}`);
+          log(`Chunk ${dropped.chunkId}: comment failed -- ${err.message}`, 'error');
+          consumed = 1;
+        }
       }
-
-      // Yield to event loop between comments to prevent UI freeze and
-      // avoid overwhelming the Word document model with rapid-fire Word.run() calls
-      await _yieldToEventLoop();
+      commentQueue = commentQueue.slice(consumed);
     }
   }
 
