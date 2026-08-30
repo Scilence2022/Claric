@@ -1181,6 +1181,35 @@ describe('applyChunkResults re-anchoring', () => {
     expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
   });
 
+  test('no-drift apply reads the range paragraphs once (re-anchor feeds the amendment)', async () => {
+    // The re-anchor pass' batched reads (items, texts, table membership) must
+    // feed the paragraph-level amendment — a second paragraphs read per chunk
+    // was a redundant host round-trip on every applied item.
+    const mock = createParagraphAwareMockRun(['Para one text.', 'Para two text.']);
+    global.Word.run = mock.wordRun;
+
+    const chunk = driftChunk('chunk-0', ['Para one text.', 'Para two text.'], 0, 1);
+    const results = [
+      makeChunkResult('chunk-0', 0, 'fulfilled', {
+        amendment: 'Para one text.\nPara two revised text.',
+        chunk,
+      }),
+    ];
+    const bookmarkMap = new Map([['chunk-0', '_wdpbm0']]);
+
+    const outcome = await applyChunkResults(results, bookmarkMap, {
+      trackChangesEnabled: true,
+      lineDiffEnabled: false,
+      log: jest.fn(),
+    });
+
+    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.amendmentsApplied).toBe(1);
+    expect(mock.bookmarkRange.paragraphs.load).toHaveBeenCalledTimes(1);
+    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+    expect(applyTokenMapStrategy.mock.calls[0][2]).toBe('Para two text.');
+  });
+
   test('chunkOriginals option supplies staged texts when the result chunk has no paragraphs (retry path)', async () => {
     const mock = createParagraphAwareMockRun(['A New Title', 'Para one text.', 'Para two text.']);
     global.Word.run = mock.wordRun;

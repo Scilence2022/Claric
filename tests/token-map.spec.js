@@ -23,6 +23,9 @@ const { applyTokenMapStrategy } = require('../src/lib/word-diff/token-map.js');
 function makeWordWorld(originalText) {
   let docText = originalText;
   const applied = [];
+  let searchCount = 0;
+  let getTextRangesCount = 0;
+  const syncFn = jest.fn(async () => flush());
   // Word queues mutations against a consistent pre-sync coordinate view and
   // applies them atomically at context.sync(). The mock mirrors that: calls
   // are recorded in `applied` (call order) and applied to docText only on
@@ -55,9 +58,11 @@ function makeWordWorld(originalText) {
       get text() { return docText.slice(start, end); },
       load() {},
       getTextRanges() {
+        getTextRangesCount++;
         return { items: [makeSpan(start, end)], load() {} };
       },
       search(needle) {
+        searchCount++;
         const items = [];
         let idx = docText.indexOf(needle, start);
         while (idx !== -1 && idx + needle.length <= end) {
@@ -93,7 +98,10 @@ function makeWordWorld(originalText) {
   return {
     applied,
     get docText() { return docText; },
-    context: { sync: async () => flush(), document: {} },
+    get searchCount() { return searchCount; },
+    get getTextRangesCount() { return getTextRangesCount; },
+    get syncCount() { return syncFn.mock.calls.length; },
+    context: { sync: syncFn, document: {} },
     range: makeSpan(0, originalText.length),
   };
 }
@@ -155,5 +163,49 @@ describe('applyTokenMapStrategy — delete coalescing', () => {
     const deletedText = world.applied.filter((a) => a.type === 'delete').map((a) => a.text).join('');
     expect(deletedText).not.toContain('quick');
     expect(deletedText).not.toContain('jumps');
+  });
+
+  test('locates only the tokens the edits touch (no coarse reads, no full-token searches)', async () => {
+    // Six-word paragraph with one deleted word: the batch must search the
+    // deleted word and its preceding space only — not consult getTextRanges
+    // and not issue one search per document token (upstream behavior).
+    const original = 'alpha beta gamma delta epsilon zeta';
+    const amended = 'alpha beta delta epsilon zeta';
+    const world = makeWordWorld(original);
+
+    const result = await applyTokenMapStrategy(world.context, world.range, original, amended, jest.fn(), { trackChanges: false });
+
+    expect(world.docText).toBe(amended);
+    expect(result.deletions).toBe(2); // 'gamma' + its space, coalesced into one delete op
+    expect(world.getTextRangesCount).toBe(0);
+    expect(world.searchCount).toBe(2); // 'gamma' and ' ', deduped
+    // Batched locate (searches) + commit = 2 syncs; tracking owned by caller.
+    expect(world.syncCount).toBe(2);
+  });
+
+  test('insert anchors map to their own occurrence among repeated words', async () => {
+    // 'big ' is inserted before the SECOND 'cat'; its 'the' anchor must map
+    // to the second 'the' occurrence, not the first.
+    const original = 'the cat sat the cat ran';
+    const amended = 'the cat sat the big cat ran';
+    const world = makeWordWorld(original);
+
+    const result = await applyTokenMapStrategy(world.context, world.range, original, amended, jest.fn(), { trackChanges: false });
+
+    expect(world.docText).toBe(amended);
+    expect(result.insertions).toBe(1);
+    expect(world.applied).toEqual([{ type: 'insert', text: 'big ' }]);
+  });
+
+  test('leading insertion anchors at the range start (no token located for it)', async () => {
+    const original = 'middle text here';
+    const amended = 'start middle text here';
+    const world = makeWordWorld(original);
+
+    const result = await applyTokenMapStrategy(world.context, world.range, original, amended, jest.fn(), { trackChanges: false });
+
+    expect(world.docText).toBe(amended);
+    expect(result.insertions).toBe(1);
+    expect(world.applied).toEqual([{ type: 'insert', text: 'start ' }]);
   });
 });

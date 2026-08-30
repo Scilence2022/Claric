@@ -316,47 +316,66 @@ function _alignParagraphs(origParas, newParas) {
  *   the range-level fallback does too; the default uses token-map for
  *   spaced scripts and char-diff for CJK
  * @param {function} log - Logging callback
+ * @param {{paraItems: Word.Paragraph[], inTable: boolean[]}} [preloaded] -
+ *   Paragraph reads already batched by the re-anchor pass (items with loaded
+ *   texts + table membership). When provided, this function performs no read
+ *   syncs of its own before the alignment. Omit for ranges without a
+ *   paragraphs collection (the reads then run here, and a range without
+ *   paragraphs throws into the caller's range-level fallback).
  * @returns {Promise<boolean>} True when changes were written; false when the
  *   amended text matched the original (nothing to do)
  * @private
  */
-async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log) {
-  // Get paragraphs within the range
-  const rangeParagraphs = range.paragraphs;
-  rangeParagraphs.load('items');
-  await context.sync();
+async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log, preloaded = null) {
+  let allParaItems;
+  let inTable;
+  if (preloaded) {
+    allParaItems = preloaded.paraItems;
+    inTable = preloaded.inTable;
+  } else {
+    // Get paragraphs within the range
+    const rangeParagraphs = range.paragraphs;
+    rangeParagraphs.load('items');
+    await context.sync();
 
-  const allParaItems = rangeParagraphs.items;
-  if (allParaItems.length === 0) {
-    throw new Error('No paragraphs found in range');
-  }
+    allParaItems = rangeParagraphs.items;
+    if (allParaItems.length === 0) {
+      throw new Error('No paragraphs found in range');
+    }
 
-  // Load text for each paragraph
-  for (const para of allParaItems) {
-    para.load('text');
+    // Paragraph texts and table membership in one batched read. Table
+    // membership gates the insert/delete ops below: against a table
+    // paragraph they would add an in-cell paragraph or delete cell content —
+    // never a table row (in-cell 'keep' text edits are safe and still
+    // tracked).
+    for (const para of allParaItems) {
+      para.load('text');
+    }
+    const tableChecks = allParaItems.map((p) => {
+      const t = p.parentTableOrNullObject;
+      t.load('isNullObject');
+      return t;
+    });
+    await context.sync();
+    inTable = tableChecks.map((t) => !t.isNullObject);
   }
-  await context.sync();
 
   // Blank spacer paragraphs never enter the alignment: the amendment text
   // (newline-joined paragraphs) cannot represent them, so aligning them
   // would mark every blank line as LLM-deleted. Leave them untouched.
-  const paraItems = allParaItems.filter((p) => p.text && p.text.trim() !== '');
+  const paraItems = [];
+  const paraInTable = [];
+  allParaItems.forEach((p, i) => {
+    if (p.text && p.text.trim() !== '') {
+      paraItems.push(p);
+      paraInTable.push(inTable[i]);
+    }
+  });
   if (paraItems.length === 0) {
     log('Paragraph-level: range contains only blank paragraphs, nothing to amend');
     return false;
   }
-
-  // Table membership per paragraph. Insert/delete alignment ops against a
-  // table paragraph would add an in-cell paragraph or delete cell content —
-  // never a table row — so those ops are skipped in the loop below (in-cell
-  // 'keep' text edits are safe and still tracked).
-  const tableChecks = paraItems.map((p) => {
-    const t = p.parentTableOrNullObject;
-    t.load('isNullObject');
-    return t;
-  });
-  await context.sync();
-  const inTable = tableChecks.map((t) => !t.isNullObject);
+  inTable = paraInTable;
 
   const origTexts = paraItems.map((p) => p.text);
   const amendedLines = _normalizeLineEndings(amendedText).split('\n');
@@ -693,30 +712,47 @@ function _storedParagraphTexts(result, chunkOriginals) {
  * Empty (blank) paragraphs are ignored: the parser skips them, so the stored
  * sequence never contains them, while range.paragraphs includes them.
  *
+ * The paragraph reads this performs (items, texts, table membership) are
+ * returned alongside the range as `preloaded`, so the paragraph-level
+ * amendment can reuse them instead of re-reading the same data (the
+ * re-anchor + read phase costs two syncs for the whole chunk instead of
+ * five).
+ *
  * @param {Word.RequestContext} context
  * @param {Word.Range} range - The bookmarked chunk range
  * @param {string[]} storedTexts - Paragraph texts captured at staging time
  * @param {function} log
- * @returns {Promise<Word.Range | null>} The (possibly narrowed) range, or
- *   null when the stored sequence is no longer contiguously locatable
+ * @returns {Promise<{range: Word.Range, preloaded: {paraItems: Word.Paragraph[], inTable: boolean[]} | null} | null>}
+ *   The (possibly narrowed) range with its preloaded paragraph reads, or
+ *   null when the stored sequence is no longer contiguously locatable.
+ *   preloaded is null when the range exposes no paragraphs collection
+ *   (test mocks, exotic bookmarks) or has no paragraphs at all.
  * @private
  */
 async function _reanchorChunkRange(context, range, storedTexts, log) {
   // Ranges without a paragraphs collection (test mocks, exotic bookmarks)
   // cannot be re-anchored; use them as-is.
-  if (!range.paragraphs) return range;
+  if (!range.paragraphs) return { range, preloaded: null };
 
   const rangeParagraphs = range.paragraphs;
   rangeParagraphs.load('items');
   await context.sync();
 
   const paraItems = rangeParagraphs.items;
-  if (paraItems.length === 0) return range;
+  if (paraItems.length === 0) return { range, preloaded: null };
 
+  // Paragraph texts (for the drift window match) and table membership (for
+  // the amendment's table guards) in a single batched read.
   for (const para of paraItems) {
     para.load('text');
   }
+  const tableChecks = paraItems.map((p) => {
+    const t = p.parentTableOrNullObject;
+    t.load('isNullObject');
+    return t;
+  });
   await context.sync();
+  const inTable = tableChecks.map((t) => !t.isNullObject);
 
   // Compare on the non-empty paragraphs only: blank spacer paragraphs are
   // absent from the staged sequence but present in the live range.
@@ -735,7 +771,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
   const startItemIdx = nonEmptyIdx[window.start];
   const endItemIdx = nonEmptyIdx[window.end - 1];
   if (startItemIdx === 0 && endItemIdx === paraItems.length - 1) {
-    return range; // No drift: original content still spans the whole range
+    return { range, preloaded: { paraItems, inTable } }; // No drift: original content still spans the whole range
   }
 
   log(
@@ -745,9 +781,37 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
   const startRange = paraItems[startItemIdx].getRange('Start');
   const endRange = paraItems[endItemIdx].getRange('End');
   const narrowed = startRange.expandTo(endRange);
+  // The narrowed range's own paragraph list and its text (for the range-level
+  // fallback) in one batched read, then the items' texts + tables in another.
   narrowed.load('text');
+  if (!narrowed.paragraphs) {
+    // No paragraph collection on the narrowed range (exotic mocks): the
+    // paragraph-level amendment reloads for itself and its failure keeps
+    // flowing into the range-level fallback.
+    await context.sync();
+    return { range: narrowed, preloaded: null };
+  }
+  narrowed.paragraphs.load('items');
   await context.sync();
-  return narrowed;
+
+  const narrowedItems = narrowed.paragraphs.items;
+  for (const para of narrowedItems) {
+    para.load('text');
+  }
+  const narrowedTableChecks = narrowedItems.map((p) => {
+    const t = p.parentTableOrNullObject;
+    t.load('isNullObject');
+    return t;
+  });
+  await context.sync();
+
+  return {
+    range: narrowed,
+    preloaded: {
+      paraItems: narrowedItems,
+      inTable: narrowedTableChecks.map((t) => !t.isNullObject),
+    },
+  };
 }
 
 /**
@@ -840,6 +904,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         // never deletes absorbed content.
         const storedTexts = _storedParagraphTexts(result, chunkOriginals);
         let workRange = range;
+        let preloaded = null;
         if (storedTexts) {
           let anchored;
           try {
@@ -857,7 +922,8 @@ export async function applyChunkResults(results, bookmarkMap, options) {
             log(`Chunk ${result.chunkId}: original content not found contiguously in staged range, skipping to avoid deleting absorbed content`, 'warning');
             return;
           }
-          workRange = anchored;
+          workRange = anchored.range;
+          preloaded = anchored.preloaded;
         }
 
         // Try paragraph-level strategy first (preserves formatting)
@@ -865,7 +931,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         try {
           applied = await _applyParagraphLevelAmendment(
             context, workRange, result.amendment,
-            trackChangesEnabled, lineDiffEnabled, log
+            trackChangesEnabled, lineDiffEnabled, log, preloaded
           ) !== false;
         } catch (paraErr) {
           if (paraErr instanceof TruncatedOutputError) {

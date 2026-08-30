@@ -12,6 +12,13 @@
  *     with coarseRange.search() and always took the FIRST match, so a token
  *     repeated within one coarse range (e.g. "." in "a.b.c") mapped onto the
  *     same range twice. We now take the Nth match for the Nth occurrence.
+ *   - Only the tokens the edits actually touch are located. The token
+ *     sequence is recomputed client-side with the exact regex diff_wordMode
+ *     tokenizes with, so occurrence indices come from counting the token
+ *     sequence — no coarse-range reads (range.getTextRanges) and no search
+ *     per document token (hundreds of host-side searches per paragraph in
+ *     the upstream design). Deleted tokens plus one anchor per insertion
+ *     are located in ONE batched search pass.
  *   - Accepts options.trackChanges (default true); when false the strategy
  *     does not touch the document's changeTrackingMode (caller owns it).
  *   - The fallback reset runs with tracking OFF so it does not show up as a
@@ -23,6 +30,11 @@
 
 import DiffMatchPatch from './diff-wordmode.js';
 import { applySentenceDiffStrategy } from './sentence-diff.js';
+
+/** Word/punctuation/whitespace tokenization — MUST match the regex
+ *  diff_wordMode tokenizes with (diff-wordmode.js), since the diff walk
+ *  consumes token counts against this sequence. */
+const TOKEN_RE = /(\w+|[^\w\s]+|\s+)/g;
 
 /**
  * Applies the "Refined Token Map" strategy to update a range with new text.
@@ -56,126 +68,106 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
         const dmp = /** @type {any} */ (new DiffMatchPatch());
         const diffs = dmp.diff_wordMode(originalText, newText);
 
-        // --- Build Refined Token Map (Batched) ---
+        // The diff's chunks are substrings of originalText, so re-tokenizing
+        // originalText with the same regex yields exactly the token sequence
+        // the diff walk steps through — entirely client-side.
+        const tokenTexts = originalText.match(TOKEN_RE) || [];
 
-        // 1. Get Coarse Ranges
-        const coarseRanges = range.getTextRanges([' '], false);
-        coarseRanges.load('items/text');
-        await context.sync();
-
-        /** @type {Array<{text: string, range: Word.Range, index?: number}>} */
-        const fineTokens = [];
-        const dmpRegex = /(\w+|[^\w\s]+|\s+)/g;
-        const searchProxies = [];
-
-        // 2. Queue all searches. Regex tokens partition each coarse text, so
-        // the k-th regex occurrence of a token corresponds to the k-th search
-        // match in document order — record the occurrence index per coarse
-        // range so repeated tokens do not all map onto the first match.
-        for (let i = 0; i < coarseRanges.items.length; i++) {
-            const coarseRange = coarseRanges.items[i];
-            const coarseText = coarseRange.text;
-            const seen = Object.create(null);
-            let match;
-            dmpRegex.lastIndex = 0;
-
-            while ((match = dmpRegex.exec(coarseText)) !== null) {
-                const tokenText = match[0];
-                if (tokenText.length === 0) continue;
-
-                const occurrence = seen[tokenText] || 0;
-                seen[tokenText] = occurrence + 1;
-
-                // Queue search
-                const searchResults = coarseRange.search(tokenText, { matchCase: true });
-                searchResults.load('items');
-                searchProxies.push({
-                    text: tokenText,
-                    occurrence,
-                    results: searchResults,
-                    coarseText: coarseText,
-                });
-            }
-        }
-
-        // SYNC: Execute all searches
-        await context.sync();
-
-        // 3. Process results
-        for (const proxy of searchProxies) {
-            if (proxy.results.items.length > proxy.occurrence) {
-                fineTokens.push({
-                    text: proxy.text,
-                    range: proxy.results.items[proxy.occurrence],
-                });
-            } else {
-                log(`Could not map token "${proxy.text}" (occurrence ${proxy.occurrence + 1}) inside "${proxy.coarseText}"`, 'warning');
-                throw new Error(`Token mapping failed for "${proxy.text}"`);
-            }
-        }
-
-        fineTokens.forEach((t, i) => t.index = i);
-
-        // --- Pass 1: Identify Deletions ---
-        const deleteTargets = [];
+        // --- Pass 1: Identify Deletions (token indices) ---
+        const deleteIndices = [];
         let tokenIndex = 0;
 
         for (const [op, chunk] of diffs) {
+            const chunkTokens = chunk.match(TOKEN_RE) || [];
             if (op === 0) { // EQUAL
-                const chunkTokens = chunk.match(/(\w+|[^\w\s]+|\s+)/g) || [];
                 tokenIndex += chunkTokens.length;
             } else if (op === -1) { // DELETE
-                const chunkTokens = chunk.match(/(\w+|[^\w\s]+|\s+)/g) || [];
-                const count = chunkTokens.length;
-                for (let i = 0; i < count; i++) {
-                    if (tokenIndex < fineTokens.length) {
-                        deleteTargets.push(fineTokens[tokenIndex]);
+                for (let i = 0; i < chunkTokens.length; i++) {
+                    if (tokenIndex < tokenTexts.length) {
+                        deleteIndices.push(tokenIndex);
                         tokenIndex++;
                     }
                 }
             }
         }
 
-        // --- Pass 2: Identify Insertions ---
-        const deletedIndices = new Set(deleteTargets.map((t) => t.index));
-        const tokensAfterDeletes = fineTokens.filter((t) => !deletedIndices.has(t.index));
+        // --- Pass 2: Identify Insertions (anchor token indices) ---
+        const deletedSet = new Set(deleteIndices);
+        const survivors = [];
+        for (let i = 0; i < tokenTexts.length; i++) {
+            if (!deletedSet.has(i)) survivors.push({ text: tokenTexts[i], index: i });
+        }
 
+        /** @type {Array<{anchorIndex: number, text: string}>} anchorIndex
+         *  -1 = insert at the very start of the range. */
         const insertOps = [];
-        let currentTokenIdx = 0;
-        let lastAnchorRange = null;
+        let currentSurvivorIdx = 0;
+        let lastAnchorIndex = -1;
 
         for (const [op, chunk] of diffs) {
             if (op === 0) { // EQUAL
                 let textToConsume = chunk;
-                while (textToConsume.length > 0 && currentTokenIdx < tokensAfterDeletes.length) {
-                    const token = tokensAfterDeletes[currentTokenIdx];
-                    const tokenText = token.text;
+                while (textToConsume.length > 0 && currentSurvivorIdx < survivors.length) {
+                    const token = survivors[currentSurvivorIdx];
 
-                    if (textToConsume.startsWith(tokenText)) {
-                        textToConsume = textToConsume.slice(tokenText.length);
-                        lastAnchorRange = token.range;
-                        currentTokenIdx++;
+                    if (textToConsume.startsWith(token.text)) {
+                        textToConsume = textToConsume.slice(token.text.length);
+                        lastAnchorIndex = token.index;
+                        currentSurvivorIdx++;
                     } else {
-                        log(`Token mismatch: expected "${textToConsume.slice(0, 10)}..." but found "${tokenText}"`, 'warning');
+                        log(`Token mismatch: expected "${textToConsume.slice(0, 10)}..." but found "${token.text}"`, 'warning');
                         throw new Error('Map lookup failed: Token mismatch.');
                     }
                 }
             } else if (op === 1) { // INSERT
-                if (lastAnchorRange) {
-                    insertOps.push({
-                        anchor: lastAnchorRange,
-                        location: Word.InsertLocation.after,
-                        text: chunk,
-                    });
-                } else {
-                    // Insert at start of range
-                    insertOps.push({
-                        anchor: range.getRange(Word.RangeLocation.start),
-                        location: Word.InsertLocation.before,
-                        text: chunk,
-                    });
-                }
+                insertOps.push({ anchorIndex: lastAnchorIndex, text: chunk });
             }
+        }
+
+        // --- Locate only the tokens the edits touch (one batched sync) ---
+        // The token sequence tiles the range text in document order, so the
+        // k-th occurrence of a token text among earlier tokens corresponds to
+        // the k-th match its search returns.
+        const neededIndices = new Set(deleteIndices);
+        for (const op of insertOps) {
+            if (op.anchorIndex >= 0) neededIndices.add(op.anchorIndex);
+        }
+
+        const occurrenceByIndex = new Map();
+        const seen = new Map();
+        for (let i = 0; i < tokenTexts.length; i++) {
+            const text = tokenTexts[i];
+            const occurrence = seen.get(text) || 0;
+            seen.set(text, occurrence + 1);
+            if (neededIndices.has(i)) occurrenceByIndex.set(i, occurrence);
+        }
+
+        const searchByToken = new Map();
+        for (const index of neededIndices) {
+            const text = tokenTexts[index];
+            if (!searchByToken.has(text)) {
+                const matches = range.search(text, { matchCase: true });
+                matches.load('items');
+                searchByToken.set(text, matches);
+            }
+        }
+
+        // SYNC: execute the searches (the single locate round-trip)
+        if (searchByToken.size > 0) {
+            await context.sync();
+        }
+
+        /** @type {Map<number, Word.Range>} token index -> located range */
+        const rangeByIndex = new Map();
+        for (const index of neededIndices) {
+            const text = tokenTexts[index];
+            const occurrence = occurrenceByIndex.get(index);
+            const matches = searchByToken.get(text);
+            if (!matches.items || matches.items.length <= occurrence) {
+                log(`Could not map token "${text}" (occurrence ${occurrence + 1})`, 'warning');
+                throw new Error(`Token mapping failed for "${text}"`);
+            }
+            rangeByIndex.set(index, matches.items[occurrence]);
         }
 
         // --- Execution Phase ---
@@ -191,24 +183,32 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
         // Per-token deletions inflate Word's session-scoped undo/revision
         // bookkeeping, which survives add-in close and is a known source of
         // post-apply editing lag (cleared only by closing the document).
-        deleteTargets.sort((a, b) => a.index - b.index);
+        deleteIndices.sort((a, b) => a - b);
         const deleteRuns = [];
-        for (const token of deleteTargets) {
+        for (const index of deleteIndices) {
             const run = deleteRuns[deleteRuns.length - 1];
-            if (run && token.index === run.last.index + 1) {
-                run.last = token;
+            if (run && index === run.last + 1) {
+                run.last = index;
             } else {
-                deleteRuns.push({ first: token, last: token });
+                deleteRuns.push({ first: index, last: index });
             }
         }
         for (let i = deleteRuns.length - 1; i >= 0; i--) {
             const { first, last } = deleteRuns[i];
-            (last === first ? first.range : first.range.expandTo(last.range)).delete();
+            const firstRange = rangeByIndex.get(first);
+            (last === first ? firstRange : firstRange.expandTo(rangeByIndex.get(last))).delete();
         }
-        deletions = deleteTargets.length;
+        deletions = deleteIndices.length;
 
         // Apply Inserts
-        insertOps.forEach((op) => op.anchor.insertText(op.text, op.location));
+        insertOps.forEach((op) => {
+            if (op.anchorIndex >= 0) {
+                rangeByIndex.get(op.anchorIndex).insertText(op.text, Word.InsertLocation.after);
+            } else {
+                // Insert at start of range
+                range.getRange(Word.RangeLocation.start).insertText(op.text, Word.InsertLocation.before);
+            }
+        });
         insertions = insertOps.length;
 
         // Commit all edits
