@@ -208,4 +208,32 @@ describe('applyTokenMapStrategy — delete coalescing', () => {
     expect(result.insertions).toBe(1);
     expect(world.applied).toEqual([{ type: 'insert', text: 'start ' }]);
   });
+
+  test('occurrence counts SUBSTRING matches: "the" inside "other"/"there" never shifts the mapping', async () => {
+    // Regression: mapping by earlier identical TOKENS sent the second
+    // standalone "the" to the match inside "other" — the apply deleted
+    // mid-word and every later edit drifted (garbled paragraphs).
+    const original = 'the other there the end';
+    const amended = 'the other there end';
+    const world = makeWordWorld(original);
+
+    const result = await applyTokenMapStrategy(world.context, world.range, original, amended, jest.fn(), { trackChanges: false });
+
+    expect(result.deletions).toBe(2); // 'the' + its space, coalesced    expect(world.applied).toEqual([{ type: 'delete', text: 'the ' }]);
+    expect(world.docText).toBe(amended);
+  });
+
+  test('insert anchor after a word whose text contains an earlier substring match', async () => {
+    // The anchor 'the' (second standalone) must map past the embedded
+    // matches inside "other"; the insertion lands between "the" and "end".
+    const original = 'the other the end';
+    const amended = 'the other the last end';
+    const world = makeWordWorld(original);
+
+    const result = await applyTokenMapStrategy(world.context, world.range, original, amended, jest.fn(), { trackChanges: false });
+
+    expect(result.insertions).toBe(1);
+    expect(world.docText).toBe(amended);
+    expect(world.applied).toEqual([{ type: 'insert', text: 'last ' }]);
+  });
 });
