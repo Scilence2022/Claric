@@ -14,11 +14,13 @@
  *     same range twice. We now take the Nth match for the Nth occurrence.
  *   - Only the tokens the edits actually touch are located. The token
  *     sequence is recomputed client-side with the exact regex diff_wordMode
- *     tokenizes with, so occurrence indices come from counting the token
- *     sequence — no coarse-range reads (range.getTextRanges) and no search
- *     per document token (hundreds of host-side searches per paragraph in
- *     the upstream design). Deleted tokens plus one anchor per insertion
- *     are located in ONE batched search pass.
+ *     tokenizes with, and each needed token's match is picked by occurrence
+ *     index — simulating Word's greedy substring scan (so embedded matches
+ *     like the "the" inside "other" never shift the mapping) — with no
+ *     coarse-range reads (range.getTextRanges) and no search per document
+ *     token (hundreds of host-side searches per paragraph in the upstream
+ *     design). Deleted tokens plus one anchor per insertion are located in
+ *     ONE batched search pass.
  *   - Accepts options.trackChanges (default true); when false the strategy
  *     does not touch the document's changeTrackingMode (caller owns it).
  *   - The fallback reset runs with tracking OFF so it does not show up as a
@@ -30,6 +32,7 @@
 
 import DiffMatchPatch from './diff-wordmode.js';
 import { applySentenceDiffStrategy } from './sentence-diff.js';
+import { _occurrenceIndex } from './char-diff.js';
 
 /** Word/punctuation/whitespace tokenization — MUST match the regex
  *  diff_wordMode tokenizes with (diff-wordmode.js), since the diff walk
@@ -125,21 +128,32 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
         }
 
         // --- Locate only the tokens the edits touch (one batched sync) ---
-        // The token sequence tiles the range text in document order, so the
-        // k-th occurrence of a token text among earlier tokens corresponds to
-        // the k-th match its search returns.
+        // Word's search (matchWholeWord: false) returns SUBSTRING matches, so
+        // the k-th match of "the" includes the one inside "other". The
+        // occurrence index must therefore come from simulating that greedy,
+        // left-to-right, non-overlapping substring scan up to each token's
+        // own position — counting earlier identical TOKENS would map the
+        // second standalone "the" onto the "the" inside "other" and delete
+        // mid-word. An unresolvable position (rare self-overlap) throws into
+        // the sentence-diff fallback below.
         const neededIndices = new Set(deleteIndices);
         for (const op of insertOps) {
             if (op.anchorIndex >= 0) neededIndices.add(op.anchorIndex);
         }
 
+        const tokenStarts = new Array(tokenTexts.length);
+        TOKEN_RE.lastIndex = 0;
+        for (let i = 0, match; (match = TOKEN_RE.exec(originalText)) !== null; i++) {
+            tokenStarts[i] = match.index;
+        }
+
         const occurrenceByIndex = new Map();
-        const seen = new Map();
-        for (let i = 0; i < tokenTexts.length; i++) {
-            const text = tokenTexts[i];
-            const occurrence = seen.get(text) || 0;
-            seen.set(text, occurrence + 1);
-            if (neededIndices.has(i)) occurrenceByIndex.set(i, occurrence);
+        for (const index of neededIndices) {
+            const occurrence = _occurrenceIndex(originalText, tokenStarts[index], tokenTexts[index]);
+            if (occurrence === null) {
+                throw new Error(`Token mapping failed for "${tokenTexts[index]}" (overlapping occurrences)`);
+            }
+            occurrenceByIndex.set(index, occurrence);
         }
 
         const searchByToken = new Map();

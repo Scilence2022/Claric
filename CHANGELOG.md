@@ -6,6 +6,17 @@ that drive the GHCR image publish in CI.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Apply tracked changes (Latin text)** — the token-map optimization
+  (below) mapped repeated words by counting earlier identical *tokens*,
+  but Word's search returns *substring* matches, so a deleted "the" could
+  land on the one inside "other" and delete mid-word, garbling the
+  paragraph (proposal previews looked correct; the document did not).
+  Occurrence indices now simulate Word's greedy substring scan exactly;
+  positions the simulation cannot resolve fall back to the sentence-diff
+  chain as before.
+
 ### Performance
 
 - **Apply tracked changes** — full-document applies no longer pay a Word host
