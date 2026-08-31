@@ -11,6 +11,9 @@
     "coverage": "jest --coverage --coverageReporters=text --coverageReporters=json-summary",
     "check-coverage": "node scripts/check-coverage.cjs",
     "manifest": "node scripts/generate-manifest.cjs",
+    "manifest:local": "node scripts/manifest-mode.cjs local",
+    "manifest:store": "node scripts/manifest-mode.cjs store",
+    "publish:addin": "node scripts/publish-addin.cjs",
     "typecheck": "tsc",
     "verify": "npm run lint && npm test && npm run coverage && npm run check-coverage && npm run typecheck && npm run build",
     "icons": "node scripts/generate-icons.cjs"
