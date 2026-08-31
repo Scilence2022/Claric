@@ -22,6 +22,7 @@ import { importServerPrompts } from '../../lib/mcp-tools.js';
 import { TOOL_LOOP_LIMITS } from '../../lib/tool-registry.js';
 import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../../lib/skill-store.js';
 import { appState, getActiveBackendConfig, debounce, persistSettings } from '../app-state.js';
+import { BUILTIN_SKILLS, RESERVED_MCP_SKILL } from '../skills.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
 
 let _onConfigChanged = () => {};
@@ -695,12 +696,44 @@ function renderSkillImportList() {
     }
 }
 
+/**
+ * Renders the read-only list of built-in slash commands (plus the reserved
+ * /mcp skill) so they are discoverable from Settings, not only by typing /.
+ * Static content — rendered once at init.
+ */
+function renderBuiltinSkillList() {
+    const list = document.getElementById('builtinSkillList');
+    if (!list) return;
+    list.textContent = '';
+
+    for (const skill of [...BUILTIN_SKILLS, RESERVED_MCP_SKILL]) {
+        const row = document.createElement('div');
+        row.className = 'skill-import-row';
+
+        const text = document.createElement('div');
+        text.className = 'skill-import-text';
+        const name = document.createElement('div');
+        name.className = 'skill-import-name';
+        name.textContent = `${skill.slash} · ${skill.category}`;
+        const desc = document.createElement('div');
+        desc.className = 'skill-import-desc';
+        desc.textContent = skill.description;
+        text.appendChild(name);
+        text.appendChild(desc);
+
+        row.appendChild(text);
+        list.appendChild(row);
+    }
+}
+
 function initSkillImport() {
     const importText = document.getElementById('skillImportText');
     const importBtn = document.getElementById('skillImportBtn');
     const clearBtn = document.getElementById('skillImportClearBtn');
     const fileInput = document.getElementById('skillImportFile');
     if (!importText || !importBtn) return; // markup absent — nothing to wire
+
+    renderBuiltinSkillList();
 
     fileInput.addEventListener('change', () => {
         const file = fileInput.files && fileInput.files[0];

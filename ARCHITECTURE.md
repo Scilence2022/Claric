@@ -181,7 +181,7 @@ src/
                                #   send/cancel, model pill, selection preview
                                #   chip (text + image thumbnails + +N badge)
       welcome.js               # Welcome empty state with skill chips
-      settings-view.js         # Settings slide-over (General / Prompts / Skills tabs)
+      settings-view.js         # Settings slide-over (General / Prompts / Skills / MCP Servers tabs)
                                #   + prompt management
       proposal-card.js         # Staged proposal card: per-change checkboxes,
                                #   locate button, image/table previews,
@@ -693,7 +693,7 @@ Chat-driven UI split into focused modules:
 - `ui/chat-view.js` — message list, streaming body, per-turn work log (auto-collapse to "Worked for Ns · M steps"), model activity region (reasoning dimmed, per-section split, pin-to-bottom auto-scroll that disengages when the user scrolls up), progress bar with ETA, citation pills
 - `ui/proposal-card.js` — staged proposals: per-change checkbox list with inline diffs and locate buttons, selective apply ("Applied X of Y"), per-item applied feedback (dimmed + status tag) driven by `markItemApplied`, pause/resume ("Continue applying") via `setPaused`, terminal applied/rejected/warning/error states, optional image preview (illustration)
 - `ui/diff-view.js` — display-only `<del>/<ins>` inline diff via diff-match-patch `diff_cleanupSemantic`
-- Settings auto-save on every input change (no Save button), unchanged localStorage keys
+- Settings auto-save on every input change, with an explicit Save button for visible confirmation; unchanged localStorage keys
 - WordApi version detection and feature gating (1.4 for comments)
 
 ## Configuration

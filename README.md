@@ -127,7 +127,7 @@ Every document mutation is staged as a proposal card — nothing is written unti
 
 ### Settings & UX
 
-- All provider, extraction, and prompt settings live in a slide-over panel with auto-save (no Save button)
+- All provider, extraction, and prompt settings live in a slide-over panel with auto-save (plus an explicit Save button for visible confirmation)
 - Model pill under the input bar shows the active provider:model and opens settings on click
 - Activity log in a slim drawer; connection status and comment-pending indicators in the status bar
 
