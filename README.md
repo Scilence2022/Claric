@@ -121,7 +121,8 @@ Every document mutation is staged as a proposal card — nothing is written unti
 
 - Providers: Ollama, vLLM, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international + China sites), and Custom (any OpenAI-compatible endpoint)
 - Unified OpenAI-compatible chat API; per-provider API prefix handled automatically (GLM uses `/api/paas/v4`)
-- Cloud providers are proxied same-origin (`/deepseek`, `/glm`, `/kimi`, `/minimax`, `/minimax-cn`) by the dev and production servers — no CORS setup; the API key is entered in Settings
+- Cloud provider defaults are origin-adaptive: on statically hosted installs (marketplace/Pages) they point at the absolute API origins (e.g. `https://api.deepseek.com`) and are called directly — all five providers send CORS headers for public origins; behind the local dev/production server they point at same-origin proxy paths, because those providers refuse CORS for localhost/private-IP origins
+- Local models (Ollama/vLLM) default to same-origin proxy paths (`/ollama`, `/vllm`) served by the dev/production server — required because an HTTPS page cannot call `http://localhost` (mixed-content blocking) and to avoid per-user CORS setup
 - Typeable model field with a refreshable suggestion list (Refresh re-queries the provider's models endpoint); configurable endpoint URL and optional API key per provider; Track Changes and Line Diff toggles
 
 ### Settings & UX
@@ -140,6 +141,65 @@ There are **two ways** to run this add-in:
 | **npm** | Development, customization | Node.js 22+ |
 
 Both methods require HTTPS certificates trusted by the machine running Word.
+
+---
+
+## Deployment Routes: Static vs Local Server
+
+Beyond *how you host the server*, the add-in UI itself runs from one of two
+origins. Both are first-class; switching is one command each.
+
+| | **Static route** (GitHub Pages / Microsoft Marketplace) | **Local-server route** (Docker / npm dev) |
+|---|---|---|
+| Taskpane served from | `https://scilence2022.github.io/claric-addin/` | `https://localhost:<HOST_PORT>` (or a LAN IP) |
+| Cloud providers (DeepSeek / GLM / Kimi / MiniMax) | Direct CORS calls to the provider's API origin — no server needed (API key required) | Same-origin proxy paths (`/deepseek`, …) — the providers refuse CORS for localhost/private-IP origins (verified), so direct calls cannot work here |
+| Local models (Ollama / vLLM) | Not reachable: an HTTPS page cannot call `http://localhost` (mixed-content blocking; WebKit has no exemption — bugs.webkit.org 171934/173161). Options: an HTTPS relay in front of Ollama (`OLLAMA_ORIGINS` for CORS), or use the local-server route | ✅ Work out of the box via the default proxy paths |
+| Backend server required | None | `docker compose up -d` or `npm start` |
+| Typical use | Marketplace submission, everyday cloud-LLM use | Local development (hot reload), local-AI setups |
+
+Provider defaults are **origin-adaptive**: on static hosts cloud presets
+default to their absolute API origins; behind the local server they default
+to the proxy paths. Both routes are zero-config for their supported
+backends.
+
+### Switching routes
+
+| Command | Effect |
+|---------|--------|
+| `npm run manifest:local` | Point `manifest.xml` at the local server (`HOST=localhost`, `PORT=3001`) and regenerate it |
+| `npm run manifest:store` | Point `manifest.xml` at the GitHub Pages host (`HOST=scilence2022.github.io`, base path `/claric-addin`) and regenerate it |
+| `npm run sideload` | Copy `manifest.xml` into Word for Mac's `wef/` folder (on Windows/web: prints the manual UI steps instead) |
+| `npm run sideload:remove` | Remove the sideloaded manifest from Word for Mac |
+| `npm run publish:addin` | Build the production bundle, switch to the store manifest, push `dist/` + `manifest.xml` to the Pages repo (`Scilence2022/claric-addin`); GitHub Pages rebuilds in ~30 s |
+
+A typical local session: `npm start` (or `docker compose up -d`) →
+`npm run manifest:local` → `npm run sideload` → restart Word.
+A typical release: bump `package.json` → `npm run publish:addin` →
+`npm run sideload` → restart Word.
+
+### Route-specific notes
+
+- **Settings are per-origin.** Provider choices, endpoints, and API keys live
+  in the add-in's localStorage under the serving origin
+  (`https://localhost:3001` vs `https://scilence2022.github.io`). Switching
+  routes starts from a fresh Settings state — re-enter the API key once per
+  route.
+- **Static installs and local models.** `http://localhost` endpoints are
+  blocked by Word's WebView from an HTTPS page. The supported alternatives
+  are an HTTPS reverse proxy in front of Ollama (plus `OLLAMA_ORIGINS`
+  including the add-in's origin) or a reachable relay of the production
+  container — enter its absolute URL as the endpoint.
+- **Why cloud defaults differ per route (verified, not configurable).** The
+  five providers reflect `Access-Control-Allow-Origin` for public origins
+  (github.io, arbitrary domains) but emit **no CORS headers for localhost
+  or private-IP origins** — a common provider-side policy against local
+  network attacks. Hence: static installs call them directly; the local
+  server must relay. The same asymmetry plus mixed-content blocking rules
+  out direct `http://localhost` calls for local models.
+- **Manifest `BASE_PATH`.** Defaults to `/claric-addin` when
+  `HOST=scilence2022.github.io` (the Pages repository path); empty for any
+  other host. Override explicitly in `.env` if you publish under a
+  different repo name.
 
 ---
 
@@ -399,6 +459,8 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | `curl https://localhost:<PORT>` fails with SSL "wrong version number" or no response | Another local server is bound to that port (e.g. a Next.js dev server on `:3000`). Pick a free port via `HOST_PORT` in `.env` (e.g. `3001`) and re-run `up -d`. The container still listens internally on `3000` |
 | Browser/Word refuses the cert with a hostname mismatch | The `server.pem` must cover the hostname Word connects with. Regenerate with `mkcert <your-host-or-ip>` and copy to `server.pem`/`server-key.pem` (SAN must include the host) |
 | `docker compose build` fails on `npm ci` in the builder stage | Usually a transient npm registry hiccup while pulling 800+ packages. Re-run `docker compose build --no-cache` once; if it persists, check `package-lock.json` vs `package.json` consistency |
+| Model connection fails on the static route (Pages/marketplace) with Ollama/vLLM | A static HTTPS page cannot reach `http://localhost` (mixed-content blocking). Either switch to the local-server route (`npm run manifest:local`), or front the backend with HTTPS + CORS (`OLLAMA_ORIGINS`) and enter its absolute URL as the endpoint |
+| Add-in still shows old behavior after a Pages publish | GitHub Pages assets are cached ~10 minutes. Fully quit and reopen Word; if still stale, delete `~/Library/Containers/com.microsoft.Word/Data/Library/Caches/WebKit` while Word is closed |
 
 ### Deployment footnotes
 

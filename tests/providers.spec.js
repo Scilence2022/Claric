@@ -8,6 +8,7 @@ const {
   KNOWN_PROVIDERS,
   getProviderPreset,
   defaultProviderConfig,
+  isStaticHostOrigin,
 } = require('../src/lib/providers.js');
 
 describe('providers catalog', () => {
@@ -87,13 +88,59 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.vllm.staticOk).toBe(false);
   });
 
+  test('cloud presets default to absolute HTTPS origins on static hosts', () => {
+    // All five providers return Access-Control-Allow-Origin for public
+    // origins (verified), so the statically hosted install (marketplace /
+    // GitHub Pages) calls them directly — no server of our own needed.
+    const cfg = defaultProviderConfig('https://scilence2022.github.io');
+    expect(cfg.deepseek.url).toBe('https://api.deepseek.com');
+    expect(cfg.glm.url).toBe('https://open.bigmodel.cn');
+    expect(cfg.kimi.url).toBe('https://api.moonshot.cn');
+    expect(cfg.minimax.url).toBe('https://api.minimax.io');
+    expect(cfg['minimax-cn'].url).toBe('https://api.minimaxi.com');
+  });
+
+  test('local-served origins default cloud providers to same-origin proxy paths', () => {
+    // The providers REFUSE CORS for localhost/private-IP origins (verified:
+    // no Access-Control-Allow-Origin is emitted), so direct absolute calls
+    // cannot work from a locally served taskpane — the proxy path is the
+    // only mechanism there.
+    for (const origin of ['', 'https://localhost:3001', 'https://192.168.1.63:3001']) {
+      const cfg = defaultProviderConfig(origin);
+      expect(cfg.deepseek.url).toBe('/deepseek');
+      expect(cfg.glm.url).toBe('/glm');
+      expect(cfg['minimax-cn'].url).toBe('/minimax-cn');
+    }
+  });
+
+  test('local-model presets use proxy paths on every origin (mixed content blocks http)', () => {
+    // WebKit (Word on Mac) blocks http://localhost from an HTTPS page with
+    // no exemption (bugs.webkit.org 171934/173161), so there is no usable
+    // absolute default for Ollama/vLLM.
+    for (const origin of ['https://scilence2022.github.io', '']) {
+      const cfg = defaultProviderConfig(origin);
+      expect(cfg.ollama.url).toBe('/ollama');
+      expect(cfg.vllm.url).toBe('/vllm');
+    }
+  });
+
+  test('isStaticHostOrigin classifies hosted vs locally served origins', () => {
+    expect(isStaticHostOrigin('https://scilence2022.github.io')).toBe(true);
+    expect(isStaticHostOrigin('https://user.github.io')).toBe(true);
+    expect(isStaticHostOrigin('https://localhost:3001')).toBe(false);
+    expect(isStaticHostOrigin('https://192.168.1.63:3001')).toBe(false);
+    expect(isStaticHostOrigin('')).toBe(false);
+    expect(isStaticHostOrigin('not a url')).toBe(false);
+  });
+
   test('getProviderPreset returns null for unknown ids', () => {
     expect(getProviderPreset('gpt4all')).toBeNull();
     expect(getProviderPreset('')).toBeNull();
   });
 
   test('defaultProviderConfig yields an editable entry per provider', () => {
-    const config = defaultProviderConfig();
+    // Static origin: entry URLs equal the presets' absolute urls verbatim.
+    const config = defaultProviderConfig('https://scilence2022.github.io');
     expect(Object.keys(config).sort()).toEqual([...KNOWN_PROVIDERS].sort());
     for (const id of KNOWN_PROVIDERS) {
       expect(config[id]).toEqual({

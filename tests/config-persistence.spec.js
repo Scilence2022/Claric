@@ -79,7 +79,8 @@ describe('normalizeConfig', () => {
         // migrated entry gets the preset apiPath
         expect(out.providers.ollama.apiPath).toBe('/v1');
         // cloud providers keep preset defaults
-        expect(out.providers.deepseek.url).toBe(PROVIDER_PRESETS.deepseek.url);
+        // local-served test context → origin-adaptive default is the proxy path
+        expect(out.providers.deepseek.url).toBe('/deepseek');
         expect(out.providers.glm.apiPath).toBe('/api/paas/v4');
     });
 
@@ -95,7 +96,8 @@ describe('normalizeConfig', () => {
         expect(out.backend).toBe('glm');
         expect(out.providers.deepseek.apiKey).toBe('sk-1');
         expect(out.providers.deepseek.model).toBe('deepseek-reasoner');
-        expect(out.providers.deepseek.url).toBe(PROVIDER_PRESETS.deepseek.url);
+        // local-served test context → origin-adaptive default is the proxy path
+        expect(out.providers.deepseek.url).toBe('/deepseek');
         expect(out.providers.glm.model).toBe('glm-4.6');
         expect(out.providers.glm.apiPath).toBe('/api/paas/v4');
         expect(out.providers.kimi.model).toBe(PROVIDER_PRESETS.kimi.model);

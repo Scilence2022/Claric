@@ -5,41 +5,84 @@
  * base URL-to-endpoint mapping differs (Zhipu GLM uses /api/paas/v4, others
  * use /v1).
  *
- * Cloud providers default to their ABSOLUTE API origins: every one of them
- * returns Access-Control-Allow-Origin for the add-in's hosted origins
- * (verified against the Microsoft Marketplace / GitHub Pages origin), so a
- * statically hosted add-in (marketplace install) works with zero server of
- * its own. The same-origin proxy paths (/deepseek, /glm, ...) remain valid
- * endpoints for users running the docker/dev server — the endpoint field is
- * editable, and the docker server's proxy exists mainly for LOCAL model
- * hosts (Ollama/vLLM), which a static HTTPS page cannot reach directly
- * (mixed-content blocking).
+ * Defaults are ORIGIN-ADAPTIVE (see defaultProviderConfig):
+ *  - On a static host (GitHub Pages / marketplace install) cloud providers
+ *    default to their absolute API origins and are called directly — all
+ *    five return CORS headers for public origins (verified). No server of
+ *    our own is needed.
+ *  - When the add-in is served by the local dev/production server, cloud
+ *    providers default to same-origin proxy paths (/deepseek, /glm, ...),
+ *    because those same providers REFUSE CORS for localhost/private-IP
+ *    origins (verified) — direct calls cannot work from a locally served
+ *    page.
+ *  - Local models (Ollama/vLLM) always default to proxy paths: an HTTPS
+ *    page cannot call http://localhost (mixed content — WebKit blocks it
+ *    with no exemption, bugs.webkit.org 171934/173161), so direct local
+ *    calls are not a portable option. A user who prefers direct calls can
+ *    front the backend with HTTPS (OLLAMA_ORIGINS for CORS) and enter the
+ *    absolute URL in Settings.
  *
  * A custom provider lets users point at any OpenAI-compatible endpoint.
  *
  * @module providers
  */
 
+/** Hostnames matching this pattern serve the add-in without our backend. */
+const STATIC_HOST_RE = /(^|\.)github\.io$/i;
+
+/**
+ * True when `origin` is a static hosting origin (no same-origin proxy
+ * available). Pure function — exported for tests.
+ *
+ * @param {string} origin - An origin like 'https://scilence2022.github.io'
+ * @returns {boolean}
+ */
+export function isStaticHostOrigin(origin) {
+    if (!origin) return false;
+    try {
+        return STATIC_HOST_RE.test(new URL(origin).hostname);
+    } catch (_err) {
+        return false;
+    }
+}
+
+/**
+ * The origin the taskpane is being served from ('' outside a browser —
+ * tests, module consumers without a DOM). Callers treat '' as
+ * local-served, which keeps the historical proxy-path defaults.
+ *
+ * @returns {string}
+ */
+function runtimeOrigin() {
+    try {
+        return (typeof window !== 'undefined' && window.location && window.location.origin) || '';
+    } catch (_err) {
+        return '';
+    }
+}
+
 /**
  * Provider presets keyed by backend id.
  *
  * Each entry:
  *   label    - UI display name
- *   url      - default base URL shown in Settings (absolute origin or
- *              same-origin proxy path)
- *   apiPath  - API prefix appended to `url` for OpenAI endpoints
+ *   url      - default base URL on a STATIC host (absolute API origin for
+ *              cloud providers; proxy path for local models, which have no
+ *              usable absolute default)
+ *   proxyUrl - default base URL when served by the local server (same-origin
+ *              proxy path). Cloud presets only; omitted when `url` applies
+ *              everywhere.
+ *   apiPath  - API prefix appended to `url`/`proxyUrl` for OpenAI endpoints
  *              ('' means the url already includes it)
  *   model    - default model id
  *   keyHint  - where to obtain an API key (optional, shown in the UI)
- *   staticOk - true when the default works from a statically hosted origin
- *              (absolute URL, provider sends CORS headers). false marks
- *              local-model presets whose same-origin proxy default only
- *              resolves when the add-in is served by the docker/dev server.
+ *   staticOk - true when the preset is usable from a statically hosted
+ *              install; false marks local-model presets (mixed content)
  *
  * Because webpack DefinePlugin replaces process.env.DEFAULT_* at build
  * time, Ollama/vLLM keep honoring the classic env overrides.
  *
- * @type {Object<string, {label: string, url: string, apiPath: string, model: string, keyHint?: string, staticOk?: boolean}>}
+ * @type {Object<string, {label: string, url: string, proxyUrl?: string, apiPath: string, model: string, keyHint?: string, staticOk?: boolean}>}
  */
 export const PROVIDER_PRESETS = {
   ollama: {
@@ -59,6 +102,7 @@ export const PROVIDER_PRESETS = {
   deepseek: {
     label: 'DeepSeek',
     url: 'https://api.deepseek.com',
+    proxyUrl: '/deepseek',
     apiPath: '/v1',
     model: 'deepseek-chat',
     keyHint: 'platform.deepseek.com',
@@ -67,6 +111,7 @@ export const PROVIDER_PRESETS = {
   glm: {
     label: 'Zhipu GLM',
     url: 'https://open.bigmodel.cn',
+    proxyUrl: '/glm',
     apiPath: '/api/paas/v4',
     model: 'glm-4.5',
     keyHint: 'open.bigmodel.cn',
@@ -75,6 +120,7 @@ export const PROVIDER_PRESETS = {
   kimi: {
     label: 'Moonshot Kimi',
     url: 'https://api.moonshot.cn',
+    proxyUrl: '/kimi',
     apiPath: '/v1',
     model: 'kimi-k2-0905',
     keyHint: 'platform.moonshot.cn',
@@ -85,6 +131,7 @@ export const PROVIDER_PRESETS = {
   minimax: {
     label: 'MiniMax',
     url: 'https://api.minimax.io',
+    proxyUrl: '/minimax',
     apiPath: '/v1',
     model: 'MiniMax-M3',
     keyHint: 'platform.minimax.io',
@@ -93,6 +140,7 @@ export const PROVIDER_PRESETS = {
   'minimax-cn': {
     label: 'MiniMax 中国站',
     url: 'https://api.minimaxi.com',
+    proxyUrl: '/minimax-cn',
     apiPath: '/v1',
     model: 'MiniMax-M3',
     keyHint: 'platform.minimax.cn',
@@ -124,19 +172,28 @@ export function getProviderPreset(providerId) {
  * Builds the default provider config object (used when no saved settings
  * exist and as the base for normalizeConfig).
  *
+ * Cloud provider defaults are origin-adaptive: absolute API origins on
+ * static hosts (direct CORS calls work there — providers reflect public
+ * origins), same-origin proxy paths when served by the local server
+ * (providers refuse CORS for localhost/private-IP origins, so direct calls
+ * cannot work there). Local-model presets always use proxy paths.
+ *
+ * @param {string} [origin] - The serving origin; defaults to the runtime
+ *   window origin ('' outside a browser = local-served, proxy defaults)
  * @returns {Object<string, {url: string, apiKey: string, model: string, apiPath: string}>}
  */
-export function defaultProviderConfig() {
-  /** @type {Object<string, {url: string, apiKey: string, model: string, apiPath: string}>} */
-  const config = {};
-  for (const id of KNOWN_PROVIDERS) {
-    const preset = PROVIDER_PRESETS[id];
-    config[id] = {
-      url: preset.url,
-      apiKey: '',
-      model: preset.model,
-      apiPath: preset.apiPath,
-    };
-  }
-  return config;
+export function defaultProviderConfig(origin = runtimeOrigin()) {
+    const staticHost = isStaticHostOrigin(origin);
+    /** @type {Object<string, {url: string, apiKey: string, model: string, apiPath: string}>} */
+    const config = {};
+    for (const id of KNOWN_PROVIDERS) {
+        const preset = PROVIDER_PRESETS[id];
+        config[id] = {
+            url: !staticHost && preset.proxyUrl ? preset.proxyUrl : preset.url,
+            apiKey: '',
+            model: preset.model,
+            apiPath: preset.apiPath,
+        };
+    }
+    return config;
 }
