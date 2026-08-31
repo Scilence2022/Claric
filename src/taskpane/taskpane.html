@@ -126,7 +126,7 @@
                     <div id="settingsPageGeneral" class="settings-page" role="tabpanel" aria-labelledby="settingsTabGeneral">
                     <p class="settings-section-label">LLM Backend</p>
                     <div class="form-group">
-                        <label for="backendSelect">LLM Backend:</label>
+                        <label for="backendSelect">Provider:</label>
                         <select id="backendSelect" class="form-control">
                             <option value="ollama">Ollama</option>
                             <option value="vllm">vLLM (OpenAI-compatible)</option>
@@ -224,6 +224,7 @@
 
                     <div class="prompt-block" data-category="context">
                         <p class="prompt-block-title">Context</p>
+                        <p class="help-text">Prepended to every request — overall instructions that always apply.</p>
                         <div class="form-group">
                             <select id="promptSelect-context" class="form-control" aria-label="Context prompt selection">
                                 <option value="">(None)</option>
@@ -242,6 +243,7 @@
 
                     <div class="prompt-block" data-category="amendment">
                         <p class="prompt-block-title">Amendment</p>
+                        <p class="help-text">Used for text-revision runs. Each saved prompt also becomes a slash command.</p>
                         <div class="form-group">
                             <select id="promptSelect-amendment" class="form-control" aria-label="Amendment prompt selection">
                                 <option value="">(None)</option>
@@ -266,6 +268,7 @@
 
                     <div class="prompt-block" data-category="comment">
                         <p class="prompt-block-title">Comment</p>
+                        <p class="help-text">Used for margin-comment runs. Each saved prompt also becomes a slash command.</p>
                         <div class="form-group">
                             <select id="promptSelect-comment" class="form-control" aria-label="Comment prompt selection">
                                 <option value="">(None)</option>
@@ -284,6 +287,7 @@
 
                     <div class="prompt-block" data-category="summary">
                         <p class="prompt-block-title">Summary</p>
+                        <p class="help-text">Used when generating a summary document in a new file.</p>
                         <div class="form-group">
                             <select id="promptSelect-summary" class="form-control" aria-label="Summary prompt selection">
                                 <option value="">(None)</option>
@@ -301,8 +305,13 @@
                     </div>
 </div><!-- /settingsPagePrompts -->
                     <div id="settingsPageSkills" class="settings-page" role="tabpanel" aria-labelledby="settingsTabSkills" hidden>
-                    <p class="settings-section-label">Skills — imported packages</p>
+                    <p class="settings-section-label">Skills — slash commands</p>
                     <p class="help-text">Skill packages are portable instruction files in the SKILL.md format. Each imported package appears as a slash command in the chat input, alongside built-ins and saved prompts; remove it here to retire the command. Paste a SKILL.md document (or load a .md file) and import. Optional frontmatter fields: category (amendment/comment/summary/chat), scope (selection-first/document/chat).</p>
+                    <div class="prompt-block">
+                        <p class="prompt-block-title">Built-in slash commands</p>
+                        <p class="help-text">Always available in the chat input — type / to browse.</p>
+                        <div id="builtinSkillList"></div>
+                    </div>
                     <div class="prompt-block">
                         <p class="prompt-block-title">Import a skill package</p>
                         <div class="form-group">
