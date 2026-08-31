@@ -1045,13 +1045,83 @@ body {
     flex-direction: column;
 }
 
+/* Floating geometry: set once the panel is dragged or resized (inline styles
+   carry the exact rect; the docked flex layout resumes when they clear). */
+.settings-panel.floating {
+    position: absolute;
+    right: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+/* The header doubles as the drag handle. */
 .settings-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: var(--spacing-md);
     border-bottom: 1px solid var(--border-color);
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
 }
+
+.settings-header.dragging {
+    cursor: grabbing;
+}
+
+/* Resize handles: invisible while docked, active once floating. Placed just
+   inside the edges so they never poke outside the fixed overlay. */
+.settings-resize-handle {
+    display: none;
+    position: absolute;
+    z-index: 40;
+    touch-action: none;
+}
+
+.settings-panel.floating .settings-resize-handle {
+    display: block;
+}
+
+.settings-panel.floating.resizing {
+    user-select: none;
+}
+
+.settings-resize-n,
+.settings-resize-s {
+    left: 10px;
+    right: 10px;
+    height: 5px;
+    cursor: ns-resize;
+}
+
+.settings-resize-n { top: 0; }
+.settings-resize-s { bottom: 0; }
+
+.settings-resize-e,
+.settings-resize-w {
+    top: 10px;
+    bottom: 10px;
+    width: 5px;
+    cursor: ew-resize;
+}
+
+.settings-resize-e { right: 0; }
+.settings-resize-w { left: 0; }
+
+.settings-resize-ne,
+.settings-resize-nw,
+.settings-resize-se,
+.settings-resize-sw {
+    width: 12px;
+    height: 12px;
+    z-index: 41;
+}
+
+.settings-resize-nw { top: 0; left: 0; cursor: nwse-resize; }
+.settings-resize-ne { top: 0; right: 0; cursor: nesw-resize; }
+.settings-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.settings-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }
 
 .settings-header-left {
     display: flex;

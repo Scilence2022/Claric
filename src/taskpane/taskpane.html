@@ -105,7 +105,7 @@
 
         <!-- Settings slide-over -->
         <div id="settingsOverlay" class="settings-overlay" hidden>
-            <aside class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
+            <aside id="settingsPanel" class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
                 <div class="settings-header">
                     <div class="settings-header-left">
                         <button id="settingsCloseBtn" class="icon-btn" title="Close settings" aria-label="Close settings">&times;</button>
@@ -120,6 +120,7 @@
                     <button id="settingsTabGeneral" class="settings-tab active" role="tab" aria-selected="true" data-tab="general">General</button>
                     <button id="settingsTabPrompts" class="settings-tab" role="tab" aria-selected="false" data-tab="prompts">Prompts</button>
                     <button id="settingsTabSkills" class="settings-tab" role="tab" aria-selected="false" data-tab="skills">Skills</button>
+                    <button id="settingsTabMcp" class="settings-tab" role="tab" aria-selected="false" data-tab="mcp">MCP Servers</button>
                 </div>
                 <div class="settings-body">
                     <div id="settingsPageGeneral" class="settings-page" role="tabpanel" aria-labelledby="settingsTabGeneral">
@@ -214,22 +215,6 @@
                             <option value="2">Every 2 paragraphs</option>
                             <option value="5">Every 5 paragraphs</option>
                         </select>
-                    </div>
-                    <hr class="settings-divider">
-                    <p class="settings-section-label">MCP Servers (Model Context Protocol)</p>
-                    <p class="help-text">Tool servers the /mcp command can use. Point at an HTTP (Streamable) MCP endpoint — an absolute URL, or a same-origin proxy path (set CUSTOM_PROXY_PATH/CUSTOM_PROXY_TARGET in .env to proxy a CORS-bound server).</p>
-                    <div class="prompt-block">
-                        <div class="mcp-server-row">
-                            <input type="text" id="mcpServerName" class="form-control" placeholder="Name" aria-label="MCP server name">
-                            <input type="text" id="mcpServerUrl" class="form-control mcp-server-url" placeholder="https://…/mcp" aria-label="MCP server URL">
-                            <input type="password" id="mcpServerToken" class="form-control" placeholder="Bearer token (optional)" aria-label="MCP server token">
-                            <button type="button" id="mcpServerAddBtn" class="btn btn-compact">Add</button>
-                        </div>
-                        <div id="mcpServerList"></div>
-                        <div class="form-group">
-                            <label for="mcpStepBudget">Tool-loop step budget per /mcp turn:</label>
-                            <input type="number" id="mcpStepBudget" class="form-control" min="1" max="48" step="1" aria-label="MCP step budget">
-                        </div>
                     </div>
                     </div><!-- /settingsPageGeneral -->
 
@@ -334,6 +319,24 @@
                         <div id="skillImportList" aria-live="polite"></div>
                     </div>
 </div><!-- /settingsPageSkills -->
+                    <div id="settingsPageMcp" class="settings-page" role="tabpanel" aria-labelledby="settingsTabMcp" hidden>
+                    <p class="settings-section-label">MCP Servers (Model Context Protocol)</p>
+                    <p class="help-text">Tool servers the /mcp command can use. Point at an HTTP (Streamable) MCP endpoint — an absolute URL, or a same-origin proxy path (set CUSTOM_PROXY_PATH/CUSTOM_PROXY_TARGET in .env to proxy a CORS-bound server).</p>
+                    <div class="prompt-block">
+                        <p class="prompt-block-title">Add a server</p>
+                        <div class="mcp-server-row">
+                            <input type="text" id="mcpServerName" class="form-control" placeholder="Name" aria-label="MCP server name">
+                            <input type="text" id="mcpServerUrl" class="form-control mcp-server-url" placeholder="https://…/mcp" aria-label="MCP server URL">
+                            <input type="password" id="mcpServerToken" class="form-control" placeholder="Bearer token (optional)" aria-label="MCP server token">
+                            <button type="button" id="mcpServerAddBtn" class="btn btn-compact">Add</button>
+                        </div>
+                        <div id="mcpServerList"></div>
+                        <div class="form-group">
+                            <label for="mcpStepBudget">Tool-loop step budget per /mcp turn:</label>
+                            <input type="number" id="mcpStepBudget" class="form-control" min="1" max="48" step="1" aria-label="MCP step budget">
+                        </div>
+                    </div>
+</div><!-- /settingsPageMcp -->
 
                 </div>
             </aside>
