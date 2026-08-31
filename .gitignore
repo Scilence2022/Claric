@@ -62,3 +62,7 @@ reference/
 
 # Project-local dev standards (canonical copy lives in ~/alice/STYLE.md)
 STYLE.md
+
+# Manuscript scratch (untracked notes/figures/render scripts for the
+# project's accompanying manuscript document, not part of the codebase).
+manuscript/

@@ -22,6 +22,9 @@ module.exports = [
       // Vendored third-party library (verbatim upstream copy, CJS) — not
       // held to this repo's lint rules.
       'src/lib/vendor/',
+      // Local scratch directory for manuscript drafting (untracked). Not
+      // part of the add-in codebase; ignore for both git and lint.
+      'manuscript/',
     ],
   },
   js.configs.recommended,
