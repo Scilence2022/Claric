@@ -8,8 +8,8 @@
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="${DISPLAY_NAME}"/>
   <Description DefaultValue="Draft, polish, and revise documents with AI inside Word — every change lands as native tracked edits you review before anything is applied. Great for papers, theses, contracts, and everyday writing. Bring your own OpenAI-compatible model."/>
-  <IconUrl DefaultValue="${PROTOCOL}://${HOST}${PORT_SUFFIX}/assets/icon-64.png?v=${ICON_CACHE}"/>
-  <HighResolutionIconUrl DefaultValue="${PROTOCOL}://${HOST}${PORT_SUFFIX}/assets/icon-80.png?v=${ICON_CACHE}"/>
+  <IconUrl DefaultValue="${PROTOCOL}://${HOST}${PORT_SUFFIX}${BASE_PATH}/assets/icon-64.png?v=${ICON_CACHE}"/>
+  <HighResolutionIconUrl DefaultValue="${PROTOCOL}://${HOST}${PORT_SUFFIX}${BASE_PATH}/assets/icon-80.png?v=${ICON_CACHE}"/>
   <SupportUrl DefaultValue="${SUPPORT_URL}"/>
   ${APP_DOMAINS_BLOCK}<Hosts>
     <Host Name="Document"/>
@@ -23,7 +23,7 @@
     </Sets>
   </Requirements>
   <DefaultSettings>
-    <SourceLocation DefaultValue="${PROTOCOL}://${HOST}${PORT_SUFFIX}/taskpane.html"/>
+    <SourceLocation DefaultValue="${PROTOCOL}://${HOST}${PORT_SUFFIX}${BASE_PATH}/taskpane.html"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
 </OfficeApp>

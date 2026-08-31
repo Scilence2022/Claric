@@ -21,28 +21,37 @@ if (mode !== 'local' && mode !== 'store') {
 }
 
 const PROFILES = {
-  local: { HOST: 'localhost', HOST_PORT: '3001', PROTOCOL: 'https' },
-  store: { HOST: 'scilence2022.github.io', HOST_PORT: '443', PROTOCOL: 'https' },
+  local: { HOST: 'localhost', HOST_PORT: '3001', PROTOCOL: 'https', BASE_PATH: '' },
+  store: { HOST: 'scilence2022.github.io', HOST_PORT: '443', PROTOCOL: 'https', BASE_PATH: '/claric-addin' },
 };
 const target = PROFILES[mode];
 
 let envBody;
 try {
   envBody = fs.readFileSync(envPath, 'utf8');
-} catch (e) {
-  console.error(`.env not found at ${envPath} — copy .env.example first.`);
-  process.exit(1);
-}
+  } catch (_e) {
+    console.error(`.env not found at ${envPath} — copy .env.example first.`);
+    process.exit(1);
+  }
 
 const lines = envBody.split(/\r?\n/);
 const keys = new Set(Object.keys(target));
+const seen = new Set();
 let changed = 0;
 for (let i = 0; i < lines.length; i++) {
   const m = lines[i].match(/^([A-Z0-9_]+)=(.*)$/);
   if (!m || !keys.has(m[1])) continue;
+  seen.add(m[1]);
   if (target[m[1]] === m[2]) continue;
   lines[i] = `${m[1]}=${target[m[1]]}`;
   changed++;
+}
+// Append any profile key missing from .env (e.g. BASE_PATH on first use).
+for (const k of keys) {
+  if (!seen.has(k)) {
+    lines.push(`${k}=${target[k]}`);
+    changed++;
+  }
 }
 
 fs.writeFileSync(envPath, lines.join('\n'));

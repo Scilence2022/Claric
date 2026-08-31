@@ -18,7 +18,6 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { spawnSync } = require('child_process');
 
 const rootDir = path.resolve(__dirname, '..');
 const manifestSrc = path.join(rootDir, 'manifest.xml');

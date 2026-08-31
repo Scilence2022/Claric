@@ -21,7 +21,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { execFileSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 const rootDir = path.resolve(__dirname, '..');
 const ADO_REPO = process.env.CLARIC_ADDIN_REPO || 'Scilence2022/claric-addin';

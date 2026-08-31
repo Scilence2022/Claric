@@ -21,7 +21,12 @@ const TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?>
   <Version>\${VERSION}</Version>
   <DisplayName DefaultValue="\${DISPLAY_NAME}"/>
   <SupportUrl DefaultValue="\${SUPPORT_URL}"/>
-  \${APP_DOMAINS_BLOCK}</OfficeApp>
+  \${APP_DOMAINS_BLOCK}
+  <IconUrl DefaultValue="\${PROTOCOL}://\${HOST}\${PORT_SUFFIX}\${BASE_PATH}/assets/icon-64.png"/>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="\${PROTOCOL}://\${HOST}\${PORT_SUFFIX}\${BASE_PATH}/taskpane.html"/>
+  </DefaultSettings>
+</OfficeApp>
 `;
 
 /**
@@ -188,6 +193,19 @@ describe('store identity generation', () => {
       generateManifest({ rootDir: projectDir });
       const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
       expect(xml).toContain('<SupportUrl DefaultValue="https://localhost:3000/"/>');
+    });
+  });
+
+  test('BASE_PATH is appended to asset and source URLs (GitHub Pages repo path)', () => {
+    withEnv({ HOST: 'example.com', HOST_PORT: '443', BASE_PATH: '/claric-addin' }, () => {
+      generateManifest({ rootDir: projectDir });
+      const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
+      // Icon and source URLs include the base path; the empty default for
+      // localhost is not in effect because HOST is overridden.
+      expect(xml).toContain('https://example.com/claric-addin/assets/');
+      expect(xml).toContain('https://example.com/claric-addin/taskpane.html');
+      // SupportUrl falls back through BASE_PATH too.
+      expect(xml).toContain('<SupportUrl DefaultValue="https://example.com/claric-addin/"/>');
     });
   });
 

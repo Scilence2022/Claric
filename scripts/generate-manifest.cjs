@@ -25,10 +25,20 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 function getEnv(rootDir) {
   dotenv.config({ path: path.join(rootDir, '.env') });
+  const host = process.env.HOST || 'localhost';
+  // GitHub Pages hosts the add-in under /<repo>/; the manifest URLs must
+  // include that path or every asset returns the user's 404 page. Local dev
+  // and other absolute-root hosts leave BASE_PATH empty.
+  // Override: set BASE_PATH=/claric-addin/ to point at a non-default repo.
+  const defaultBasePath = host === 'scilence2022.github.io' ? '/claric-addin' : '';
+  const basePath = process.env.BASE_PATH !== undefined
+    ? process.env.BASE_PATH
+    : defaultBasePath;
   return {
-    HOST: process.env.HOST || 'localhost',
+    HOST: host,
     PORT: process.env.HOST_PORT || process.env.PORT || '3000',
     PROTOCOL: process.env.PROTOCOL || 'https',
+    BASE_PATH: basePath,
     ADDIN_GUID: process.env.ADDIN_GUID || null,
     SUPPORT_URL: process.env.SUPPORT_URL || null,
     APP_DOMAINS: process.env.APP_DOMAINS || null,
@@ -159,11 +169,11 @@ function getIconCache(rootDir) {
 /**
  * Generates manifest.xml from manifest.template.xml.
  *
- * Placeholders: ${HOST}, ${PORT}, ${PROTOCOL}, ${VERSION}, ${GUID},
- * ${DISPLAY_NAME}, ${ICON_CACHE}, ${SUPPORT_URL}. ${APP_DOMAINS_BLOCK} is
- * substituted raw (after escaping) with either the AppDomains element or an
- * empty string, so the element is omitted entirely when unset. All other
- * substituted values are XML-escaped.
+ * Placeholders: ${HOST}, ${PORT}, ${PORT_SUFFIX}, ${PROTOCOL}, ${BASE_PATH},
+ * ${VERSION}, ${GUID}, ${DISPLAY_NAME}, ${ICON_CACHE}, ${SUPPORT_URL}.
+ * ${APP_DOMAINS_BLOCK} is substituted raw (after escaping) with either the
+ * AppDomains element or an empty string, so the element is omitted entirely
+ * when unset. All other substituted values are XML-escaped.
  *
  * @param {object} [options]
  * @param {string} [options.rootDir] - Project root override (defaults to repo root)
@@ -200,11 +210,12 @@ function generateManifest(options = {}) {
     PORT: env.PORT,
     PORT_SUFFIX: portSuffix,
     PROTOCOL: env.PROTOCOL,
+    BASE_PATH: env.BASE_PATH,
     VERSION: getVersion(rootDir),
     GUID: templateGuid || resolveGuid(rootDir, env.ADDIN_GUID),
     DISPLAY_NAME: options.displayName || env.DISPLAY_NAME || 'Claric — AI Writing & Editing Assistant for Word',
     ICON_CACHE: getIconCache(rootDir),
-    SUPPORT_URL: env.SUPPORT_URL || `${env.PROTOCOL}://${env.HOST}${portSuffix}/`,
+    SUPPORT_URL: env.SUPPORT_URL || `${env.PROTOCOL}://${env.HOST}${portSuffix}${env.BASE_PATH}/`,
   };
 
   let output = renderTemplate(template, values);
