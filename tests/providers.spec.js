@@ -55,11 +55,36 @@ describe('providers catalog', () => {
 
   test('MiniMax exposes separate international and China presets', () => {
     // The two platforms have separate API origins and key portals.
-    expect(PROVIDER_PRESETS.minimax.url).toBe('/minimax');
-    expect(PROVIDER_PRESETS['minimax-cn'].url).toBe('/minimax-cn');
+    expect(PROVIDER_PRESETS.minimax.url).toBe('https://api.minimax.io');
+    expect(PROVIDER_PRESETS['minimax-cn'].url).toBe('https://api.minimaxi.com');
     expect(PROVIDER_PRESETS.minimax.model).toBe('MiniMax-M3');
     expect(PROVIDER_PRESETS['minimax-cn'].model).toBe('MiniMax-M3');
     expect(PROVIDER_PRESETS['minimax-cn'].label).toContain('中国站');
+  });
+
+  test('cloud presets default to absolute HTTPS origins (statically hosted installs work serverless)', () => {
+    // All five providers send Access-Control-Allow-Origin for the add-in's
+    // hosted origins (verified), so the store install talks to them directly
+    // instead of relying on same-origin proxy paths that only exist behind
+    // the docker/dev server.
+    expect(PROVIDER_PRESETS.deepseek.url).toBe('https://api.deepseek.com');
+    expect(PROVIDER_PRESETS.glm.url).toBe('https://open.bigmodel.cn');
+    expect(PROVIDER_PRESETS.kimi.url).toBe('https://api.moonshot.cn');
+    expect(PROVIDER_PRESETS.minimax.url).toBe('https://api.minimax.io');
+    expect(PROVIDER_PRESETS['minimax-cn'].url).toBe('https://api.minimaxi.com');
+    for (const id of ['deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn']) {
+      expect(PROVIDER_PRESETS[id].staticOk).toBe(true);
+    }
+  });
+
+  test('local-model presets default to same-origin proxy paths (static-host installs need a relay)', () => {
+    // A static HTTPS page cannot reach http://localhost (mixed-content
+    // blocking), so Ollama/vLLM keep the proxy-path default that resolves
+    // when the add-in is served by the docker/dev server.
+    expect(PROVIDER_PRESETS.ollama.url).toBe('/ollama');
+    expect(PROVIDER_PRESETS.vllm.url).toBe('/vllm');
+    expect(PROVIDER_PRESETS.ollama.staticOk).toBe(false);
+    expect(PROVIDER_PRESETS.vllm.staticOk).toBe(false);
   });
 
   test('getProviderPreset returns null for unknown ids', () => {

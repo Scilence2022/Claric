@@ -281,9 +281,18 @@ function updateProviderHints() {
     const endpointHint = document.getElementById('endpointHint');
     if (endpointHint) {
         const isCustom = config.backend === 'custom';
-        endpointHint.textContent = isCustom
-            ? 'Base URL of any OpenAI-compatible server (proxy path or full https:// URL)'
-            : `Base URL for ${preset ? preset.label : config.backend} — leave the default proxy path unless you host the backend elsewhere`;
+        if (isCustom) {
+            endpointHint.textContent = 'Base URL of any OpenAI-compatible server (proxy path or full https:// URL)';
+        } else if (preset && preset.staticOk === false) {
+            // Local-model presets default to a same-origin proxy path, which
+            // only exists when this add-in is served by the docker/dev
+            // server. A statically hosted install (marketplace) cannot reach
+            // http://localhost at all (mixed-content blocking), so point the
+            // user at the two real options.
+            endpointHint.textContent = `${preset.label} base URL — the default works when this add-in is served by its local server. From a static install (e.g. marketplace), enter an HTTPS ${preset.label} endpoint (CORS enabled, e.g. via OLLAMA_ORIGINS); http://localhost is blocked by Word's WebView.`;
+        } else {
+            endpointHint.textContent = `Base URL for ${preset ? preset.label : config.backend} — the default calls the provider directly; switch to a proxy path (e.g. /${config.backend}) when serving this add-in behind its local server`;
+        }
     }
     const keyHint = document.getElementById('apiKeyHint');
     if (keyHint && preset && preset.keyHint) {
