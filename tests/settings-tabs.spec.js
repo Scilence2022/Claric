@@ -3,8 +3,9 @@
  *
  * switchSettingsTab is generic: a `.settings-tab[data-tab="skills"]`
  * activates `#settingsPageSkills` by id convention. These assertions keep
- * the tab/page pair and the skill-import markup in sync — the import UI
- * moved here out of the Prompts page when it got its own tab.
+ * the tab/page pairs and their section markup in sync — the import UI
+ * moved out of the Prompts page when it got its own tab, and the MCP
+ * server UI moved out of the General page the same way.
  */
 
 const fs = require('fs');
@@ -18,6 +19,32 @@ describe('settings tabs markup contract', () => {
         expect(html).toContain('id="settingsTabSkills"');
         expect(html).toContain('id="settingsPageSkills"');
         expect(html).toContain('aria-labelledby="settingsTabSkills"');
+    });
+
+    test('an MCP Servers tab exists and is paired with its page by id convention', () => {
+        expect(html).toContain('data-tab="mcp"');
+        expect(html).toContain('id="settingsTabMcp"');
+        expect(html).toContain('id="settingsPageMcp"');
+        expect(html).toContain('aria-labelledby="settingsTabMcp"');
+    });
+
+    test('the MCP server UI lives on the MCP page, not the General page', () => {
+        const generalPage = html.slice(
+            html.indexOf('id="settingsPageGeneral"'),
+            html.indexOf('id="settingsPagePrompts"'),
+        );
+        // The MCP page is the last page, right before the overlay closes;
+        // slice from there to the end of the markup.
+        const mcpPage = html.slice(html.indexOf('id="settingsPageMcp"'));
+        expect(mcpPage).toContain('id="mcpServerAddBtn"');
+        expect(mcpPage).toContain('id="mcpServerList"');
+        expect(mcpPage).toContain('id="mcpStepBudget"');
+        expect(generalPage).not.toContain('mcpServerAddBtn');
+        expect(generalPage).not.toContain('mcpStepBudget');
+    });
+
+    test('the settings panel exposes an id so the drag/resize logic can bind to it', () => {
+        expect(html).toContain('id="settingsPanel"');
     });
 
     test('the skill-package import UI lives on the Skills page, not the Prompts page', () => {

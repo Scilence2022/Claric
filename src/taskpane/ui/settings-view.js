@@ -1,9 +1,11 @@
 /**
  * Settings View Module
  *
- * The settings slide-over: LLM provider settings (auto-saved, debounced for
- * free-text fields, connection re-tested on change) and prompt management
- * (per-category list/edit/save/delete/clear plus the save-prompt modal).
+ * The settings slide-over: a tabbed panel (General, Prompts, Skills, MCP
+ * Servers) that can be dragged by its header and resized from any edge or
+ * corner once floated. LLM provider settings auto-save (debounced for
+ * free-text fields, connection re-tested on change); prompts support
+ * per-category list/edit/save/delete/clear plus the save-prompt modal.
  *
  * Element IDs match the pre-refactor markup so the logic stays a straight
  * port; localStorage keys (wordAI.config, wordAI.prompts.*) are unchanged.
@@ -124,6 +126,7 @@ export function initSettings({ onConfigChanged } = {}) {
     initSkillImport();
     initMcpServers();
     initMcpStepBudget();
+    initPanelGeometry();
     renderAllDropdowns();
 
     // Restore textarea content from the active prompt of each category.
@@ -146,14 +149,16 @@ export function openSettings() {
     renderMcpServerList();
 }
 
-/** Closes the settings slide-over. */
+/** Closes the settings slide-over and restores the docked panel layout. */
 export function closeSettings() {
     closeModelDropdown();
+    resetPanelGeometry();
     document.getElementById('settingsOverlay').setAttribute('hidden', '');
 }
 
 /**
- * Activates a settings tab ("general", "prompts", or "skills") and shows its page.
+ * Activates a settings tab ("general", "prompts", "skills", or "mcp") and
+ * shows its page.
  *
  * @param {string} name - The tab's data-tab value
  */
@@ -879,4 +884,157 @@ function initMcpStepBudget() {
         input.value = String(appState.config.mcpStepBudget);
         saveSettings();
     });
+}
+
+// ============================================================================
+// PANEL GEOMETRY (drag & resize)
+// ============================================================================
+
+/** Smallest usable settings panel while resizing. */
+const PANEL_MIN_WIDTH = 320;
+const PANEL_MIN_HEIGHT = 260;
+
+/** Handle directions; corner handles combine two edge letters. */
+const RESIZE_DIRECTIONS = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'];
+
+/**
+ * Makes the settings panel draggable by its header and resizable from any
+ * edge or corner. The panel starts docked (flex right edge, full height);
+ * the first drag or resize gesture floats it with explicit absolute
+ * geometry inside the fixed overlay. Closing resets to the docked layout.
+ */
+function initPanelGeometry() {
+    const overlay = document.getElementById('settingsOverlay');
+    const panel = document.getElementById('settingsPanel');
+    if (!overlay || !panel) return; // markup absent — nothing to wire
+
+    const header = panel.querySelector('.settings-header');
+    header.title = 'Drag to move — double-click to dock';
+    header.classList.add('settings-drag-handle');
+
+    for (const dir of RESIZE_DIRECTIONS) {
+        const handle = document.createElement('div');
+        handle.className = `settings-resize-handle settings-resize-${dir}`;
+        handle.addEventListener('pointerdown', (e) => startPanelResize(e, overlay, panel, dir));
+        panel.appendChild(handle);
+    }
+
+    header.addEventListener('pointerdown', (e) => {
+        // The header chrome drags the panel; its controls still click.
+        if (e.target.closest('button, input, select, textarea, a')) return;
+        e.preventDefault();
+        startPanelDrag(e, overlay, panel, header);
+    });
+    header.addEventListener('dblclick', (e) => {
+        if (e.target.closest('button, input, select, textarea, a')) return;
+        resetPanelGeometry();
+    });
+}
+
+/** Switches the docked panel to floating mode, pinned at its current rect. */
+function floatPanel(panel) {
+    if (panel.classList.contains('floating')) return;
+    const rect = panel.getBoundingClientRect();
+    panel.classList.add('floating');
+    panel.style.left = `${Math.round(rect.left)}px`;
+    panel.style.top = `${Math.round(rect.top)}px`;
+    panel.style.width = `${Math.round(rect.width)}px`;
+    panel.style.height = `${Math.round(rect.height)}px`;
+}
+
+/** Restores the docked layout (on close and on header double-click). */
+function resetPanelGeometry() {
+    const panel = document.getElementById('settingsPanel');
+    if (!panel) return;
+    panel.classList.remove('floating');
+    panel.style.left = '';
+    panel.style.top = '';
+    panel.style.width = '';
+    panel.style.height = '';
+}
+
+/**
+ * Drags the floating panel by the header, clamped to the overlay bounds.
+ * Pointer capture keeps the gesture alive when the cursor leaves the header.
+ */
+function startPanelDrag(e, overlay, panel, header) {
+    floatPanel(panel);
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startLeft = parseFloat(panel.style.left);
+    const startTop = parseFloat(panel.style.top);
+    header.classList.add('dragging');
+    header.setPointerCapture(e.pointerId);
+
+    const onMove = (ev) => {
+        const left = clamp(startLeft + ev.clientX - startX, 0, overlay.clientWidth - panel.offsetWidth);
+        const top = clamp(startTop + ev.clientY - startY, 0, overlay.clientHeight - panel.offsetHeight);
+        panel.style.left = `${left}px`;
+        panel.style.top = `${top}px`;
+    };
+    const onUp = () => {
+        header.classList.remove('dragging');
+        header.removeEventListener('pointermove', onMove);
+        header.removeEventListener('pointerup', onUp);
+        header.removeEventListener('pointercancel', onUp);
+    };
+    header.addEventListener('pointermove', onMove);
+    header.addEventListener('pointerup', onUp);
+    header.addEventListener('pointercancel', onUp);
+}
+
+/**
+ * Resizes the floating panel from the given edge/corner direction. Edges
+ * being pulled from stay fixed: 'w'/'n' move the left/top edge (and origin),
+ * 'e'/'s' grow the box, everything clamped to the minimum size and overlay.
+ */
+function startPanelResize(e, overlay, panel, dir) {
+    e.preventDefault();
+    e.stopPropagation();
+    floatPanel(panel);
+    const handle = e.currentTarget;
+    const start = {
+        x: e.clientX,
+        y: e.clientY,
+        left: parseFloat(panel.style.left),
+        top: parseFloat(panel.style.top),
+        width: panel.offsetWidth,
+        height: panel.offsetHeight,
+    };
+    handle.setPointerCapture(e.pointerId);
+    panel.classList.add('resizing');
+
+    const onMove = (ev) => {
+        const dx = ev.clientX - start.x;
+        const dy = ev.clientY - start.y;
+        let { left, top, width, height } = start;
+        if (dir.includes('e')) width = clamp(start.width + dx, PANEL_MIN_WIDTH, overlay.clientWidth - start.left);
+        if (dir.includes('s')) height = clamp(start.height + dy, PANEL_MIN_HEIGHT, overlay.clientHeight - start.top);
+        if (dir.includes('w')) {
+            width = clamp(start.width - dx, PANEL_MIN_WIDTH, start.left + start.width);
+            left = start.left + start.width - width;
+        }
+        if (dir.includes('n')) {
+            height = clamp(start.height - dy, PANEL_MIN_HEIGHT, start.top + start.height);
+            top = start.top + start.height - height;
+        }
+        panel.style.left = `${left}px`;
+        panel.style.top = `${top}px`;
+        panel.style.width = `${width}px`;
+        panel.style.height = `${height}px`;
+    };
+    const onUp = () => {
+        panel.classList.remove('resizing');
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        handle.removeEventListener('pointercancel', onUp);
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+}
+
+/** Clamps value into [min, max]; tolerates a max below min (degenerate). */
+function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), Math.max(min, max));
 }
