@@ -14,6 +14,8 @@
     "manifest:local": "node scripts/manifest-mode.cjs local",
     "manifest:store": "node scripts/manifest-mode.cjs store",
     "publish:addin": "node scripts/publish-addin.cjs",
+    "sideload": "node scripts/sideload-addin.cjs",
+    "sideload:remove": "node scripts/sideload-addin.cjs --remove",
     "typecheck": "tsc",
     "verify": "npm run lint && npm test && npm run coverage && npm run check-coverage && npm run typecheck && npm run build",
     "icons": "node scripts/generate-icons.cjs"
