@@ -189,15 +189,22 @@ function generateManifest(options = {}) {
     ? templateGuidMatch[1].trim()
     : null;
 
+  // 443 is the standard HTTPS port and must be omitted from URL host:port
+  // forms (otherwise manifest URLs render as "host:443/..." which some
+  // hosts reject). The template can use either ${PORT} (always emitted)
+  // or ${PORT_SUFFIX} (empty for 443, ":port" otherwise).
+  const portSuffix = env.PORT === '443' ? '' : `:${env.PORT}`;
+
   const values = {
     HOST: env.HOST,
     PORT: env.PORT,
+    PORT_SUFFIX: portSuffix,
     PROTOCOL: env.PROTOCOL,
     VERSION: getVersion(rootDir),
     GUID: templateGuid || resolveGuid(rootDir, env.ADDIN_GUID),
     DISPLAY_NAME: options.displayName || env.DISPLAY_NAME || 'Claric — AI Writing & Editing Assistant for Word',
     ICON_CACHE: getIconCache(rootDir),
-    SUPPORT_URL: env.SUPPORT_URL || `${env.PROTOCOL}://${env.HOST}:${env.PORT}/`,
+    SUPPORT_URL: env.SUPPORT_URL || `${env.PROTOCOL}://${env.HOST}${portSuffix}/`,
   };
 
   let output = renderTemplate(template, values);
