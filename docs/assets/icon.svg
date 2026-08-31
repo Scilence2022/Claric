@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Claric mark: a bold geometric "C" — the scribe's clarity — set in a
+       rounded teal square. Rendered by scripts/generate-icons.cjs to the
+       PNG sizes the Office manifest references (16/32/64/80, plus 128). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f766e"/>
+      <stop offset="100%" stop-color="#10a37f"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="128" height="128" rx="30" fill="url(#bg)"/>
+  <path d="M 89.1 25.4 A 46 46 0 1 0 89.1 102.6 L 77.6 85.0 A 25 25 0 1 1 77.6 43.0 Z" fill="#ffffff"/>
+</svg>
