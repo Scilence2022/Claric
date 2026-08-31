@@ -4,7 +4,7 @@ All notable changes to Claric are documented here. The format is a loose
 Keep-a-Changelog style; versions track `package.json` and the `v*` git tags
 that drive the GHCR image publish in CI.
 
-## [Unreleased]
+## [1.0.2] — 2026-08-31
 
 ### Fixed
 
