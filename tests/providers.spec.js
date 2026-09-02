@@ -13,7 +13,7 @@ const {
 
 describe('providers catalog', () => {
   test('exposes the expected provider ids in a stable order', () => {
-    expect(KNOWN_PROVIDERS).toEqual(['ollama', 'vllm', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'custom']);
+    expect(KNOWN_PROVIDERS).toEqual(['ollama', 'vllm', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu', 'custom']);
   });
 
   test('every preset has label, url, apiPath, and model', () => {
@@ -40,6 +40,7 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.kimi.apiPath).toBe('/v1');
     expect(PROVIDER_PRESETS.minimax.apiPath).toBe('/v1');
     expect(PROVIDER_PRESETS['minimax-cn'].apiPath).toBe('/v1');
+    expect(PROVIDER_PRESETS.zhongkeyu.apiPath).toBe('/v1');
     // Zhipu GLM serves OpenAI-compatible endpoints under /api/paas/v4
     expect(PROVIDER_PRESETS.glm.apiPath).toBe('/api/paas/v4');
   });
@@ -50,6 +51,7 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.kimi.keyHint).toContain('moonshot.cn');
     expect(PROVIDER_PRESETS.minimax.keyHint).toContain('minimax.io');
     expect(PROVIDER_PRESETS['minimax-cn'].keyHint).toContain('minimax.cn');
+    expect(PROVIDER_PRESETS.zhongkeyu.keyHint).toContain('zhongkeyu.com');
     expect(PROVIDER_PRESETS.ollama.keyHint).toBeUndefined();
     expect(PROVIDER_PRESETS.vllm.keyHint).toBeUndefined();
   });
@@ -63,8 +65,16 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS['minimax-cn'].label).toContain('中国站');
   });
 
+  test('zhongkeyu preset points at the gateway root with an OpenAI prefix', () => {
+    // zhongkeyu.com is a New API gateway: OpenAI-compatible endpoints live
+    // under /v1, keys are issued on the site itself.
+    expect(PROVIDER_PRESETS.zhongkeyu.url).toBe('https://zhongkeyu.com');
+    expect(PROVIDER_PRESETS.zhongkeyu.model.length).toBeGreaterThan(0);
+    expect(PROVIDER_PRESETS.zhongkeyu.label).toContain('中科大模型');
+  });
+
   test('cloud presets default to absolute HTTPS origins (statically hosted installs work serverless)', () => {
-    // All five providers send Access-Control-Allow-Origin for the add-in's
+    // All six providers send Access-Control-Allow-Origin for the add-in's
     // hosted origins (verified), so the store install talks to them directly
     // instead of relying on same-origin proxy paths that only exist behind
     // the docker/dev server.
@@ -73,7 +83,8 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.kimi.url).toBe('https://api.moonshot.cn');
     expect(PROVIDER_PRESETS.minimax.url).toBe('https://api.minimax.io');
     expect(PROVIDER_PRESETS['minimax-cn'].url).toBe('https://api.minimaxi.com');
-    for (const id of ['deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn']) {
+    expect(PROVIDER_PRESETS.zhongkeyu.url).toBe('https://zhongkeyu.com');
+    for (const id of ['deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu']) {
       expect(PROVIDER_PRESETS[id].staticOk).toBe(true);
     }
   });
@@ -89,7 +100,7 @@ describe('providers catalog', () => {
   });
 
   test('cloud presets default to absolute HTTPS origins on static hosts', () => {
-    // All five providers return Access-Control-Allow-Origin for public
+    // All six providers return Access-Control-Allow-Origin for public
     // origins (verified), so the statically hosted install (marketplace /
     // GitHub Pages) calls them directly — no server of our own needed.
     const cfg = defaultProviderConfig('https://scilence2022.github.io');
@@ -98,6 +109,7 @@ describe('providers catalog', () => {
     expect(cfg.kimi.url).toBe('https://api.moonshot.cn');
     expect(cfg.minimax.url).toBe('https://api.minimax.io');
     expect(cfg['minimax-cn'].url).toBe('https://api.minimaxi.com');
+    expect(cfg.zhongkeyu.url).toBe('https://zhongkeyu.com');
   });
 
   test('local-served origins default cloud providers to same-origin proxy paths', () => {
@@ -110,6 +122,7 @@ describe('providers catalog', () => {
       expect(cfg.deepseek.url).toBe('/deepseek');
       expect(cfg.glm.url).toBe('/glm');
       expect(cfg['minimax-cn'].url).toBe('/minimax-cn');
+      expect(cfg.zhongkeyu.url).toBe('/zhongkeyu');
     }
   });
 
@@ -148,6 +161,8 @@ describe('providers catalog', () => {
         apiKey: '',
         model: PROVIDER_PRESETS[id].model,
         apiPath: PROVIDER_PRESETS[id].apiPath,
+        thinkingLevel: 'default',
+        temperature: 1,
       });
     }
   });

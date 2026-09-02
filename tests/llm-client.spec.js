@@ -202,8 +202,37 @@ describe('sendPrompt', () => {
     expect(body).toEqual({
       model: 'test-model',
       messages: [{ role: 'user', content: 'Hello' }],
-      stream: false
+      stream: false,
+      temperature: 1,
     });
+  });
+
+  test('sends configured temperature and reasoning effort', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'response text' } }] }),
+    });
+
+    await sendPrompt({
+      url: '/vllm', apiKey: '', model: 'test-model', thinkingLevel: 'medium', temperature: 0.4,
+    }, 'Hello');
+
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.temperature).toBe(0.4);
+    expect(body.reasoning_effort).toBe('medium');
+  });
+
+  test('omits reasoning effort for the default thinking level', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'response text' } }] }),
+    });
+
+    await sendPrompt({ url: '/vllm', apiKey: '', model: 'test-model', thinkingLevel: 'default', temperature: 1 }, 'Hello');
+
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.temperature).toBe(1);
+    expect(body).not.toHaveProperty('reasoning_effort');
   });
 
   test('appends /v1/chat/completions to config.url (stripping trailing slashes)', async () => {
@@ -577,6 +606,23 @@ describe('sendMessages', () => {
     expect(body.messages).toEqual(messages);
     expect(body.model).toBe('test-model');
     expect(body.stream).toBe(false);
+    expect(body.temperature).toBe(1);
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  test('sends configured temperature and reasoning effort', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'response text' } }] }),
+    });
+
+    await sendMessages({
+      url: '/vllm', apiKey: '', model: 'test-model', thinkingLevel: 'low', temperature: 1.4,
+    }, [{ role: 'user', content: 'Hello' }]);
+
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.temperature).toBe(1.4);
+    expect(body.reasoning_effort).toBe('low');
   });
 
   test('preserves system and user roles in the messages array', async () => {

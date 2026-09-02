@@ -250,6 +250,15 @@ body {
     color: var(--secondary-text);
 }
 
+/* Static summary shown for a message restored from history: only the step /
+   section counts are persisted, so there is nothing to expand. */
+.msg-worklog-summary,
+.msg-model-summary {
+    padding: 4px var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+}
+
 .msg-worklog-line {
     padding: 1px 0;
     white-space: pre-wrap;
@@ -384,6 +393,89 @@ body {
     flex: 0 0 auto;
     font-size: var(--font-size-sm);
     color: var(--secondary-text);
+}
+
+/* Attachment chips (file uploads pending above the composer) */
+.attachment-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
+    margin-bottom: var(--spacing-xs);
+}
+
+.attachment-chips[hidden] {
+    display: none;
+}
+
+.attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--tertiary-bg);
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+    max-width: 220px;
+}
+
+.attachment-chip-icon {
+    flex: 0 0 auto;
+    font-weight: 600;
+}
+
+.attachment-chip-thumb {
+    height: 20px;
+    max-width: 40px;
+    object-fit: contain;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+    display: block;
+}
+
+.attachment-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attachment-chip-remove {
+    flex: 0 0 auto;
+    border: none;
+    background: transparent;
+    color: var(--secondary-text);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+}
+
+.attachment-chip-remove:hover {
+    color: var(--text-color);
+}
+
+/* Attachment markers inside user bubbles (live + history) */
+.user-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-xs);
+}
+
+.user-attachment {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    font-size: var(--font-size-sm);
+    opacity: 0.9;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .msg-body:empty {

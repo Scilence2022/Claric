@@ -707,7 +707,7 @@
         <span class="hero-tag">Office.js</span>
         <span class="hero-tag">Tracked Changes</span>
         <span class="hero-tag">OpenAI-compatible LLMs</span>
-        <span class="hero-tag">vLLM / Ollama / DeepSeek / GLM / Kimi / MiniMax</span>
+        <span class="hero-tag">vLLM / Ollama / DeepSeek / GLM / Kimi / MiniMax / 中科大模型</span>
         <span class="hero-tag">OOXML</span>
       </div>
     </div>
@@ -837,7 +837,7 @@
     </div>
     <p class="caption">Figure 1: High-level system architecture. The IR pipeline sits between the Word API and the LLM backends.</p>
 
-    <p>The add-in runs as an Office.js taskpane inside Word's WebView2 container. Any OpenAI-compatible <code>/chat/completions</code> backend can be plugged in via provider presets: local vLLM and Ollama instances, plus hosted DeepSeek, Zhipu GLM, Moonshot Kimi, and MiniMax (international and China sites). The webpack dev server and the production container proxy each provider under a same-origin path (<code>/vllm</code>, <code>/ollama</code>, <code>/deepseek</code>, <code>/glm</code>, <code>/kimi</code>, <code>/minimax</code>, <code>/minimax-cn</code>), so the browser sandbox never hits CORS or mixed-content issues and API keys go only to the configured endpoint.</p>
+    <p>The add-in runs as an Office.js taskpane inside Word's WebView2 container. Any OpenAI-compatible <code>/chat/completions</code> backend can be plugged in via provider presets: local vLLM and Ollama instances, plus hosted DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international and China sites), and 中科大模型 (zhongkeyu.com, a New API gateway relaying many upstream models behind one OpenAI-compatible <code>/v1</code> surface). The webpack dev server and the production container proxy each provider under a same-origin path (<code>/vllm</code>, <code>/ollama</code>, <code>/deepseek</code>, <code>/glm</code>, <code>/kimi</code>, <code>/minimax</code>, <code>/minimax-cn</code>, <code>/zhongkeyu</code>), so the browser sandbox never hits CORS or mixed-content issues and API keys go only to the configured endpoint.</p>
   </section>
 
   <!-- 3. Intermediate Representation -->
@@ -1476,7 +1476,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
 <!-- ── Footer ── -->
 <footer class="footer">
   <p><strong>Claric</strong> &mdash; MIT License</p>
-  <p>Diff engine: vendored word-diff layer based on <a href="https://github.com/yuch85/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: any OpenAI-compatible endpoint &mdash; vLLM, Ollama, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax</p>
+  <p>Diff engine: vendored word-diff layer based on <a href="https://github.com/yuch85/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: any OpenAI-compatible endpoint &mdash; vLLM, Ollama, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax, 中科大模型</p>
   <p style="margin-top: 0.75rem;"><a href="https://github.com/Scilence2022/Claric">View on GitHub</a></p>
 </footer>
 

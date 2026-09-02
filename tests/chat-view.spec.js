@@ -14,6 +14,7 @@ const {
   setCurrentSession,
   renderHistory,
   clearSessionMessages,
+  setCitationSelectHandler,
 } = require('../src/taskpane/ui/chat-view.js');
 
 function setupDom() {
@@ -240,6 +241,24 @@ describe('renderHistory / setCurrentSession', () => {
     expect(document.getElementById('welcome').style.display).toBe('none');
   });
 
+  test('user messages render attachment markers, live and from history', () => {
+    addUserMessage('check this file', [{ name: 'a.txt', kind: 'text', size: 5 }]);
+    const live = document.querySelector('#chatMessages .chat-message-user .user-attachment');
+    expect(live).not.toBeNull();
+    expect(live.textContent).toContain('a.txt');
+    // Metadata (never file bytes) lands in the session snapshot.
+    expect(getCurrentSession().messages[0].attachments).toEqual([
+      { name: 'a.txt', kind: 'text', size: 5 },
+    ]);
+
+    renderHistory([
+      { id: 'm-0', role: 'user', text: 'old question', attachments: [{ name: 'p.pdf', kind: 'pdf', size: 9 }], ts: '2026-01-01T00:00:00.000Z' },
+    ]);
+    const restored = document.querySelector('#chatMessages .chat-message-user .user-attachment');
+    expect(restored).not.toBeNull();
+    expect(restored.title).toContain('p.pdf');
+  });
+
   test('renderHistory renders assistant error inline', () => {
     const messages = [
       { id: 'm-0', role: 'user', text: 'q', ts: '2026-01-01T00:00:00.000Z' },
@@ -370,3 +389,92 @@ describe('proposal state persistence', () => {
   });
 });
 
+
+
+describe('citation pills survive a reload', () => {
+  beforeEach(() => {
+    setupDom();
+    clearSessionMessages();
+    setCitationSelectHandler(null);
+  });
+
+  afterEach(() => setCitationSelectHandler(null));
+
+  test('pills added live are snapshotted into the session record', () => {
+    const msg = createAssistantMessage();
+    const onSelect = jest.fn();
+    msg.addCitationPills(
+      [{ label: 'Clause 5 payment terms', searchText: 'Clause 5 payment terms shall' }],
+      onSelect,
+    );
+
+    const pill = msg.el.querySelector('.citation-row .citation-pill');
+    expect(pill).not.toBeNull();
+    pill.click();
+    expect(onSelect).toHaveBeenCalledWith('Clause 5 payment terms shall');
+
+    msg.finalizeForHistory();
+    const record = getCurrentSession().messages.at(-1);
+    expect(record.citations).toEqual([
+      { label: 'Clause 5 payment terms', searchText: 'Clause 5 payment terms shall' },
+    ]);
+  });
+
+  test('restored pills use the registered reveal handler', () => {
+    const reveal = jest.fn();
+    setCitationSelectHandler(reveal);
+
+    renderHistory([
+      {
+        id: 'm-1', role: 'assistant', text: 'answer', status: '', error: null,
+        worklog: null, model: null,
+        citations: [{ label: 'Section 2', searchText: 'Section 2 scope of work' }],
+        proposals: [], ts: '2026-01-01T00:00:01.000Z',
+      },
+    ]);
+
+    const pill = document.querySelector('#chatMessages .citation-pill');
+    expect(pill).not.toBeNull();
+    expect(pill.textContent).toContain('Section 2');
+    pill.click();
+    expect(reveal).toHaveBeenCalledWith('Section 2 scope of work');
+  });
+
+  test('without a reveal handler no inert pills are rendered', () => {
+    renderHistory([
+      {
+        id: 'm-1', role: 'assistant', text: 'answer', status: '', error: null,
+        worklog: null, model: null,
+        citations: [{ label: 'Section 2', searchText: 'Section 2 scope' }],
+        proposals: [], ts: '2026-01-01T00:00:01.000Z',
+      },
+    ]);
+    expect(document.querySelector('#chatMessages .citation-pill')).toBeNull();
+  });
+});
+
+describe('restored worklog / model activity', () => {
+  beforeEach(() => {
+    setupDom();
+    clearSessionMessages();
+  });
+
+  test('history shows static summaries, not toggles that cannot expand', () => {
+    // Only the counts are persisted, so a collapsed toggle would promise an
+    // expansion with no content behind it.
+    renderHistory([
+      {
+        id: 'm-1', role: 'assistant', text: 'answer', status: '', error: null,
+        worklog: { count: 3, durationMs: 4000 },
+        model: { sections: 2 },
+        citations: [], proposals: [], ts: '2026-01-01T00:00:01.000Z',
+      },
+    ]);
+
+    const el = document.querySelector('#chatMessages .chat-message-assistant');
+    expect(el.querySelector('.msg-worklog-toggle')).toBeNull();
+    expect(el.querySelector('.msg-model-toggle')).toBeNull();
+    expect(el.querySelector('.msg-worklog-summary').textContent).toBe('Worked for 4s · 3 steps');
+    expect(el.querySelector('.msg-model-summary').textContent).toBe('Model activity · 2 sections');
+  });
+});

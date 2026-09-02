@@ -98,6 +98,8 @@ export function initSettings({ onConfigChanged } = {}) {
     document.getElementById('apiKey').addEventListener('input', debouncedSaveSettings);
     document.getElementById('trackChangesCheckbox').addEventListener('change', saveSettings);
     document.getElementById('lineDiffCheckbox').addEventListener('change', saveSettings);
+    document.getElementById('thinkingLevelSelect').addEventListener('change', saveSettings);
+    document.getElementById('temperatureInput').addEventListener('change', saveSettings);
     document.getElementById('docRichnessSelect').addEventListener('change', saveSettings);
     document.getElementById('trackedChangesExtraction').addEventListener('change', saveSettings);
     document.getElementById('commentGranularity').addEventListener('change', saveSettings);
@@ -185,6 +187,8 @@ function saveSettings() {
     const endpointUrl = document.getElementById('endpointUrl').value.trim();
     const apiKey = document.getElementById('apiKey').value.trim();
     const selectedModel = document.getElementById('modelSelect').value;
+    const thinkingLevel = document.getElementById('thinkingLevelSelect').value;
+    const temperatureValue = Number(document.getElementById('temperatureInput').value);
 
     config.backend = backend;
     config.providers[backend].url = endpointUrl || config.providers[backend].url;
@@ -192,6 +196,12 @@ function saveSettings() {
     // Every provider's model is editable: users can type a model id not
     // present in the refreshable list (e.g. a newly released one).
     config.providers[backend].model = selectedModel || config.providers[backend].model;
+    config.providers[backend].thinkingLevel = ['default', 'low', 'medium', 'high'].includes(thinkingLevel)
+        ? thinkingLevel
+        : 'default';
+    config.providers[backend].temperature = Number.isFinite(temperatureValue) && temperatureValue >= 0 && temperatureValue <= 2
+        ? temperatureValue
+        : 1;
     config.trackChangesEnabled = document.getElementById('trackChangesCheckbox').checked;
     config.lineDiffEnabled = document.getElementById('lineDiffCheckbox').checked;
     config.docExtraction = {
@@ -254,6 +264,8 @@ export function updateUIFromConfig() {
     // selected values are saved as-is and the list refreshes on demand.
     modelSelect.value = backendConfig.model || '';
     modelSelect.placeholder = backendConfig.model || 'Type a model name or refresh the list';
+    document.getElementById('thinkingLevelSelect').value = backendConfig.thinkingLevel || 'default';
+    document.getElementById('temperatureInput').value = String(Number.isFinite(backendConfig.temperature) ? backendConfig.temperature : 1);
 
     const richnessSelect = document.getElementById('docRichnessSelect');
     if (richnessSelect && config.docExtraction) {

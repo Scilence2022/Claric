@@ -36,6 +36,8 @@ const ENV = {
   MINIMAX_PROXY_TARGET: process.env.MINIMAX_PROXY_TARGET || 'https://api.minimax.io',
   MINIMAX_CN_PROXY_PATH: process.env.MINIMAX_CN_PROXY_PATH || '/minimax-cn',
   MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
+  ZHONGKEYU_PROXY_PATH: process.env.ZHONGKEYU_PROXY_PATH || '/zhongkeyu',
+  ZHONGKEYU_PROXY_TARGET: process.env.ZHONGKEYU_PROXY_TARGET || 'https://zhongkeyu.com',
   // Custom (any OpenAI-compatible endpoint). Path defaults to empty so the
   // dev server does not register a route unless the user opts in.
   CUSTOM_PROXY_PATH: process.env.CUSTOM_PROXY_PATH || '',
@@ -68,6 +70,7 @@ function buildLlmProxies(ENV) {
     ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET', 'Kimi'],
     ['MINIMAX_PROXY_PATH', 'MINIMAX_PROXY_TARGET', 'MiniMax'],
     ['MINIMAX_CN_PROXY_PATH', 'MINIMAX_CN_PROXY_TARGET', 'MiniMax-CN'],
+    ['ZHONGKEYU_PROXY_PATH', 'ZHONGKEYU_PROXY_TARGET', 'ZhongKeYu'],
     ['CUSTOM_PROXY_PATH', 'CUSTOM_PROXY_TARGET', 'Custom'],
   ];
 
@@ -214,6 +217,12 @@ module.exports = (env, argv) => {
             from: 'debug.html',
             to: 'debug.html',
             noErrorOnMissing: true
+          },
+          {
+            // pdf.js worker for .pdf attachments (see src/lib/file-attachments.js).
+            // Loaded on demand by pdf.js itself, never by the app bundle.
+            from: 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs',
+            to: 'pdf.worker.min.mjs'
           }
         ]
       }),
@@ -253,10 +262,14 @@ module.exports = (env, argv) => {
       // hint: it is served same-origin to WebView2, so there is no cold
       // network fetch and a single ~430 KiB bundle is acceptable. This is a
       // hard gate (hints: 'error' fails the build), calibrated just above
-      // the current size, to catch accidental size regressions.
+      // the current size, to catch accidental size regressions. Exempt the
+      // lazily-loaded parser chunks (mammoth/pdf.js for file attachments)
+      // and the pdf.js worker copy: they are fetched on demand, never on
+      // first paint.
       hints: 'error',
-      maxAssetSize: 500 * 1024,
-      maxEntrypointSize: 500 * 1024
+      maxAssetSize: 700 * 1024,
+      maxEntrypointSize: 500 * 1024,
+      assetFilter: (name) => !/pdf\.worker\.min\.mjs$/.test(name)
     },
     devtool: isDev ? 'eval-source-map' : false
   };

@@ -8,19 +8,37 @@
  * @module ui/input-bar
  */
 
+import {
+    ATTACHMENT_KIND,
+    detectAttachmentKind,
+    validateAttachment,
+    parseAttachment,
+    formatBytes,
+} from '../../lib/file-attachments.js';
+
+/** Type icons for attachment chips (text glyphs, matching the composer style). */
+const ATTACHMENT_ICONS = Object.freeze({
+    [ATTACHMENT_KIND.TEXT]: '¶',
+    [ATTACHMENT_KIND.DOCX]: 'W',
+    [ATTACHMENT_KIND.PDF]: '§',
+});
+
 /**
  * Initializes the input bar.
  *
  * @param {object} deps
- * @param {function(string)} deps.onSubmit - Called with the raw input text
+ * @param {function(string, Array<object>)} deps.onSubmit - Called with the raw
+ *   input text and the parsed attachments ({name, kind, size, text?, dataUrl?})
  * @param {function()} deps.onCancel - Called when the morphed Cancel button is clicked
  * @param {function(): Array<object>} deps.getSkills - Returns the current skill list
  * @param {function()} deps.onOpenSettings - Opens the settings slide-over
  * @param {function(): boolean} [deps.getAutoApply] - Current auto-apply setting
  * @param {function(boolean)} [deps.setAutoApply] - Persists an auto-apply change
- * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), setSelectionPreview: function(object|string) }}
+ * @param {function(string, string)} [deps.onLog] - Activity-log sink for
+ *   attachment validation/parse failures
+ * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), setSelectionPreview: function(object|string), clearAttachments: function() }}
  */
-export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getAutoApply, setAutoApply }) {
+export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getAutoApply, setAutoApply, onLog }) {
     const textarea = document.getElementById('chatInput');
     const sendBtn = document.getElementById('sendBtn');
     const picker = document.getElementById('skillPicker');
@@ -28,6 +46,13 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     const addSkillBtn = document.getElementById('addSkillBtn');
     const skillsMenu = document.getElementById('skillsMenu');
     const autoApplyToggle = document.getElementById('autoApplyToggle');
+    const attachBtn = document.getElementById('attachBtn');
+    const attachInput = document.getElementById('attachmentInput');
+    const chipsEl = document.getElementById('attachmentChips');
+
+    // Parsed attachments pending submission ({name, kind, size, text?,
+    // dataUrl?}). Cleared on submit and on new chat.
+    let attachments = [];
 
     let processing = false;
     let pickerItems = [];
@@ -112,10 +137,87 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
 
     function submitCurrent() {
         const text = textarea.value;
-        if (!text.trim() || processing) return;
+        if ((!text.trim() && attachments.length === 0) || processing) return;
         closePicker();
         recordHistory(text);
-        onSubmit(text);
+        const sent = attachments;
+        attachments = [];
+        renderChips();
+        onSubmit(text, sent);
+    }
+
+    /** Re-renders the attachment chip list above the composer. */
+    function renderChips() {
+        if (!chipsEl) return;
+        chipsEl.innerHTML = '';
+        if (attachments.length === 0) {
+            chipsEl.setAttribute('hidden', '');
+            return;
+        }
+        attachments.forEach((att, index) => {
+            const chip = document.createElement('span');
+            chip.className = 'attachment-chip';
+            chip.title = `${att.name} (${formatBytes(att.size)})`;
+
+            if (att.kind === ATTACHMENT_KIND.IMAGE && att.dataUrl) {
+                const thumb = document.createElement('img');
+                thumb.className = 'attachment-chip-thumb';
+                thumb.src = att.dataUrl;
+                thumb.alt = att.name;
+                chip.appendChild(thumb);
+            } else {
+                const icon = document.createElement('span');
+                icon.className = 'attachment-chip-icon';
+                icon.setAttribute('aria-hidden', 'true');
+                icon.textContent = ATTACHMENT_ICONS[att.kind] || '¶';
+                chip.appendChild(icon);
+            }
+
+            const name = document.createElement('span');
+            name.className = 'attachment-chip-name';
+            name.textContent = att.name;
+            chip.appendChild(name);
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'attachment-chip-remove';
+            remove.textContent = '×';
+            remove.title = 'Remove attachment';
+            remove.setAttribute('aria-label', `Remove ${att.name}`);
+            remove.addEventListener('click', () => {
+                attachments.splice(index, 1);
+                renderChips();
+            });
+            chip.appendChild(remove);
+            chipsEl.appendChild(chip);
+        });
+        chipsEl.removeAttribute('hidden');
+    }
+
+    /** Validates and parses each picked file; failures log and skip. */
+    async function addFiles(fileList) {
+        for (const file of Array.from(fileList || [])) {
+            const kind = detectAttachmentKind(file.name, file.type);
+            const verdict = validateAttachment({ name: file.name, size: file.size, kind }, attachments);
+            if (!verdict.ok) {
+                if (typeof onLog === 'function') onLog(verdict.error, 'warning');
+                continue;
+            }
+            try {
+                attachments.push(await parseAttachment(file));
+            } catch (err) {
+                if (typeof onLog === 'function') onLog(err.message, 'error');
+            }
+        }
+        renderChips();
+    }
+
+    if (attachBtn && attachInput) {
+        attachBtn.addEventListener('click', () => attachInput.click());
+        attachInput.addEventListener('change', () => {
+            addFiles(attachInput.files);
+            attachInput.value = ''; // re-picking the same file must re-fire change
+        });
     }
 
     textarea.addEventListener('input', () => {
@@ -287,6 +389,11 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         /** Focuses the textarea. */
         focus() {
             textarea.focus();
+        },
+        /** Drops pending attachments (new chat / history switch). */
+        clearAttachments() {
+            attachments = [];
+            renderChips();
         },
         /**
          * Shows/hides the live selection preview above the input.

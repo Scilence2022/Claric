@@ -119,9 +119,9 @@ Every document mutation is staged as a proposal card — nothing is written unti
 
 ### LLM Backends
 
-- Providers: Ollama, vLLM, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international + China sites), and Custom (any OpenAI-compatible endpoint)
+- Providers: Ollama, vLLM, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international + China sites), 中科大模型 (zhongkeyu.com), and Custom (any OpenAI-compatible endpoint)
 - Unified OpenAI-compatible chat API; per-provider API prefix handled automatically (GLM uses `/api/paas/v4`)
-- Cloud provider defaults are origin-adaptive: on statically hosted installs (marketplace/Pages) they point at the absolute API origins (e.g. `https://api.deepseek.com`) and are called directly — all five providers send CORS headers for public origins; behind the local dev/production server they point at same-origin proxy paths, because those providers refuse CORS for localhost/private-IP origins
+- Cloud provider defaults are origin-adaptive: on statically hosted installs (marketplace/Pages) they point at the absolute API origins (e.g. `https://api.deepseek.com`) and are called directly — all six providers send CORS headers for public origins; behind the local dev/production server they point at same-origin proxy paths, because those providers refuse CORS for localhost/private-IP origins
 - Local models (Ollama/vLLM) default to same-origin proxy paths (`/ollama`, `/vllm`) served by the dev/production server — required because an HTTPS page cannot call `http://localhost` (mixed-content blocking) and to avoid per-user CORS setup
 - Typeable model field with a refreshable suggestion list (Refresh re-queries the provider's models endpoint); configurable endpoint URL and optional API key per provider; Track Changes and Line Diff toggles
 
@@ -152,7 +152,7 @@ origins. Both are first-class; switching is one command each.
 | | **Static route** (GitHub Pages / Microsoft Marketplace) | **Local-server route** (Docker / npm dev) |
 |---|---|---|
 | Taskpane served from | `https://scilence2022.github.io/claric-addin/` | `https://localhost:<HOST_PORT>` (or a LAN IP) |
-| Cloud providers (DeepSeek / GLM / Kimi / MiniMax) | Direct CORS calls to the provider's API origin — no server needed (API key required) | Same-origin proxy paths (`/deepseek`, …) — the providers refuse CORS for localhost/private-IP origins (verified), so direct calls cannot work here |
+| Cloud providers (DeepSeek / GLM / Kimi / MiniMax / 中科大模型) | Direct CORS calls to the provider's API origin — no server needed (API key required) | Same-origin proxy paths (`/deepseek`, …) — the providers refuse CORS for localhost/private-IP origins (verified), so direct calls cannot work here |
 | Local models (Ollama / vLLM) | Not reachable: an HTTPS page cannot call `http://localhost` (mixed-content blocking; WebKit has no exemption — bugs.webkit.org 171934/173161). Options: an HTTPS relay in front of Ollama (`OLLAMA_ORIGINS` for CORS), or use the local-server route | ✅ Work out of the box via the default proxy paths |
 | Backend server required | None | `docker compose up -d` or `npm start` |
 | Typical use | Marketplace submission, everyday cloud-LLM use | Local development (hot reload), local-AI setups |
@@ -467,7 +467,7 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 - **Editing `.env` requires a full recreate, not a restart.** Docker Compose resolves `env_file` at container creation and caches the result; `restart` reuses the cached config. Always use `docker compose down && docker compose up -d` after editing `.env`. The image is not rebuilt, only the container is recreated.
 - **`HOST_PORT` vs `PORT`.** The container always binds `PORT=3000` internally. `HOST_PORT` is the host-side port published by compose. Pick `HOST_PORT` carefully to avoid collisions with other local services (Next.js, dev servers, etc.).
 - **LLM proxy default behavior changed in 0.5.0.** All `*_PROXY_PATH` env vars now default to empty (= disabled). To re-enable a provider, set both `*_PROXY_PATH` and (if non-default) `*_PROXY_TARGET` in `.env`.
-- **API keys live client-side, not in `.env`.** Cloud provider keys (DeepSeek / GLM / Kimi / MiniMax) are entered in the add-in's Settings UI and stored in localStorage. The server-side proxy only forwards requests; it does not read or inject keys.
+- **API keys live client-side, not in `.env`.** Cloud provider keys (DeepSeek / GLM / Kimi / MiniMax / 中科大模型) are entered in the add-in's Settings UI and stored in localStorage. The server-side proxy only forwards requests; it does not read or inject keys.
 - **Rebuild strategy.** If the diff is `src/**` + tests + docs only → `docker compose build` (incremental, ~seconds). If `package.json`, `package-lock.json`, `webpack.config.cjs`, or `Dockerfile` changed → `docker compose build --no-cache` (~minutes).
 
 ---
@@ -506,6 +506,8 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | `MINIMAX_PROXY_TARGET` | `https://api.minimax.io` | Upstream MiniMax API origin |
 | `MINIMAX_CN_PROXY_PATH` | *(disabled)* / `/minimax-cn` (dev) | Proxy path for MiniMax China (empty disables) |
 | `MINIMAX_CN_PROXY_TARGET` | `https://api.minimaxi.com` | Upstream MiniMax China API origin |
+| `ZHONGKEYU_PROXY_PATH` | *(disabled)* / `/zhongkeyu` (dev) | Proxy path for zhongkeyu.com (empty disables) |
+| `ZHONGKEYU_PROXY_TARGET` | `https://zhongkeyu.com` | Upstream zhongkeyu.com API origin |
 | `LLM_PROXY_TIMEOUT_MS` | `300000` | Proxy upstream timeout in ms |
 
 ### Dev server only (webpack)
@@ -586,7 +588,7 @@ Test suites cover:
 - `word-actions-table.spec.js` / `word-actions-table-create.spec.js` — table selection patch route (ordering, tracking split, staleness guards) and table creation route (empty-grid fast path, constrained generation, insertion positions, platform tracking split)
 - `illustration.spec.js` — parseIllustration, SVG sanitizing, dimensions, position heuristic
 - `task-planner.spec.js` — parsePlan caps/truncation, buildPlanPrompt
-- `providers.spec.js` — provider preset catalog, MiniMax pair, default config
+- `providers.spec.js` — provider preset catalog, MiniMax pair, zhongkeyu gateway, default config
 - `char-diff.spec.js` — CJK detection, computeCharEdits, applyCharDiffStrategy
 - `word-diff.spec.js` — word/sentence diff modes, sliceSearchPieces
 - `skills.spec.js` — built-in skill registry, resolveSkill parsing, custom skill registration

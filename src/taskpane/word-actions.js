@@ -21,7 +21,7 @@
 
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from '../lib/word-diff/index.js';
 import { hasCjk, applyCharDiffStrategy } from '../lib/word-diff/char-diff.js';
-import { sendPrompt, sendPromptStream, stripMarkdown } from '../lib/llm-client.js';
+import { sendPrompt, sendPromptStream, sendMessagesStream, stripMarkdown } from '../lib/llm-client.js';
 import { buildTableUserPrompt, parseTablePatchResponse } from '../lib/table-patch.js';
 import {
     inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
@@ -151,6 +151,64 @@ export async function readSelectionText(deps) {
 }
 
 /**
+ * Probes a table's merge layout over a covered coordinate rectangle.
+ *
+ * Word JS has no merge/unmerge surface and row ops assume a uniform grid,
+ * but CONTENT edits are safe on merge anchors — getCell(r, c) resolves a
+ * coordinate inside a merged region to the merged cell, whose
+ * rowIndex/cellIndex are its anchor slot. Probe every covered coordinate
+ * once: a probe resolving to coordinates other than its own is a read-only
+ * shadow of that merge anchor.
+ *
+ * Some hosts throw ItemNotFound for getCell on merge-covered coordinates
+ * instead of resolving to the anchor — the probe sync is guarded, and a
+ * failure degrades to "merged, layout unknown" (edits validated only at
+ * apply) rather than failing the whole read.
+ *
+ * The caller must have already loaded `isUniform` on the table.
+ *
+ * @param {Word.RequestContext} context
+ * @param {Word.Table} table - With isUniform loaded
+ * @param {{startRow: number, endRow: number, startCol: number, endCol: number}} bounds -
+ *   0-based inclusive coordinate rectangle to probe
+ * @param {function} log
+ * @returns {Promise<{merged: boolean, shadowKeys: Set<string>, mergedUnknown: boolean}>}
+ *   shadowKeys holds 1-based "row,col" keys of read-only merge-covered slots.
+ * @private
+ */
+async function _probeMergeShadows(context, table, bounds, log) {
+    const merged = table.isUniform === false;
+    const shadowKeys = new Set();
+    let mergedUnknown = false;
+    if (!merged) return { merged, shadowKeys, mergedUnknown };
+
+    const { startRow, endRow, startCol, endCol } = bounds;
+    const probes = [];
+    for (let r = startRow; r <= endRow; r++) {
+        for (let c = startCol; c <= endCol; c++) {
+            const probe = table.getCell(r, c);
+            probe.load('rowIndex,cellIndex');
+            probes.push({ r, c, probe });
+        }
+    }
+    try {
+        await context.sync();
+    } catch (probeErr) {
+        mergedUnknown = true;
+        log(`Merge layout could not be probed (${probeErr.name || 'Error'}: ${probeErr.message}) — continuing with unknown merge layout; invalid edits will be skipped at apply.`, 'warning');
+    }
+    if (!mergedUnknown) {
+        for (const { r, c, probe } of probes) {
+            if (probe.rowIndex !== r || probe.cellIndex !== c) {
+                shadowKeys.add(`${r + 1},${c + 1}`);
+            }
+        }
+        log(`Table contains merged cells — ${shadowKeys.size} covered slot(s) read-only, row ops disabled; anchor-cell text edits stay available.`, 'warning');
+    }
+    return { merged, shadowKeys, mergedUnknown };
+}
+
+/**
  * Detects whether the current selection spans MULTIPLE table cells and, if
  * so, extracts the covered region as coordinate-addressed cell data for the
  * table patch protocol (lib/table-patch.js).
@@ -234,43 +292,8 @@ export async function readSelectionTableRegion(deps) {
             log('Selection endpoint(s) sat on a table boundary — clamping the region to the table edge.', 'warning');
         }
 
-        // Merged tables: Word JS has no merge/unmerge surface and row ops
-        // assume a uniform grid, but CONTENT edits are safe on merge anchors
-        // — getCell(r, c) resolves a coordinate inside a merged region to the
-        // merged cell, whose rowIndex/cellIndex are its anchor slot. Probe
-        // every covered coordinate once: a probe resolving to coordinates
-        // other than its own is a read-only shadow of that merge anchor.
-        // Some hosts throw ItemNotFound for getCell on merge-covered
-        // coordinates instead of resolving to the anchor — the probe sync is
-        // guarded, and a failure degrades to "merged, layout unknown" (edits
-        // validated only at apply) rather than failing the whole turn.
-        const merged = table.isUniform === false;
-        const shadowKeys = new Set();
-        let mergedUnknown = false;
-        if (merged) {
-            const probes = [];
-            for (let r = startRow; r <= endRow; r++) {
-                for (let c = startCol; c <= endCol; c++) {
-                    const probe = table.getCell(r, c);
-                    probe.load('rowIndex,cellIndex');
-                    probes.push({ r, c, probe });
-                }
-            }
-            try {
-                await context.sync();
-            } catch (probeErr) {
-                mergedUnknown = true;
-                log(`Merge layout could not be probed (${probeErr.name || 'Error'}: ${probeErr.message}) — continuing with unknown merge layout; invalid edits will be skipped at apply.`, 'warning');
-            }
-            if (!mergedUnknown) {
-                for (const { r, c, probe } of probes) {
-                    if (probe.rowIndex !== r || probe.cellIndex !== c) {
-                        shadowKeys.add(`${r + 1},${c + 1}`);
-                    }
-                }
-                log(`Table contains merged cells — ${shadowKeys.size} covered slot(s) read-only, row ops disabled; anchor-cell text edits stay available.`, 'warning');
-            }
-        }
+        const { merged, shadowKeys, mergedUnknown } =
+            await _probeMergeShadows(context, table, { startRow, endRow, startCol, endCol }, log);
 
         const cells = [];
         for (let r = startRow; r <= endRow; r++) {
@@ -340,10 +363,18 @@ export async function readDocumentTableRegions(deps) {
                 continue;
             }
 
+            // Same merge probe as the selection reader: a hard-coded
+            // merged:false would enable row ops on a merged grid and treat
+            // merge-covered coordinates as editable.
+            const { merged, shadowKeys, mergedUnknown } = await _probeMergeShadows(
+                context, table, { startRow: 0, endRow: rowCount - 1, startCol: 0, endCol: colCount - 1 }, log);
+
             const cells = [];
             for (let r = 0; r < rowCount; r++) {
                 for (let c = 0; c < colCount; c++) {
-                    cells.push({ row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' });
+                    const entry = { row: r + 1, col: c + 1, text: (values[r] && values[r][c]) || '' };
+                    if (shadowKeys.has(`${r + 1},${c + 1}`)) entry.merged = true;
+                    cells.push(entry);
                 }
             }
 
@@ -356,8 +387,9 @@ export async function readDocumentTableRegions(deps) {
                 bounds: { startRow: 1, endRow: rowCount, startCol: 1, endCol: colCount },
                 cells,
                 values,
-                merged: false,
+                merged,
                 style,
+                ...(merged ? { shadowKeys, mergedUnknown } : {}),
             });
         }
         regions = found;
@@ -3322,6 +3354,24 @@ export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoni
 }
 
 /**
+ * Renders selected inline pictures as prompt object references (size + alt
+ * text), never bytes — visual reading belongs to the image tool session's
+ * read_image.
+ *
+ * @param {Array<{width: number, height: number, altText: string}>} imageMeta
+ * @param {string} note - Parenthetical describing why the images are listed
+ * @returns {string} A prompt section starting with \n\n
+ * @private
+ */
+function _selectedImagesBlock(imageMeta, note) {
+    return `\n\n--- SELECTED IMAGES (${note}) ---\n` +
+        imageMeta.map((img, i) =>
+            `- image ${i + 1}: ${img.width}x${img.height}pt` +
+            (img.altText ? `, alt "${String(img.altText).slice(0, 80)}"` : '')).join('\n') +
+        '\n(Visual content is not attached here; image instructions can view and edit these pictures.)';
+}
+
+/**
  * Answers a free-text question in chat using the document as context.
  * Streams tokens via sendPromptStream when the backend supports SSE.
  *
@@ -3342,7 +3392,7 @@ export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoni
  * @param {AbortSignal} [args.signal] - Cancellation signal
  * @returns {Promise<string>} The full answer text
  */
-export async function answerQuestion(deps, { question, skillTemplate, selectionText, selectionImages, onToken, onReasoning, onStatus, signal } = {}) {
+export async function answerQuestion(deps, { question, skillTemplate, selectionText, selectionImages, questionImages, onToken, onReasoning, onStatus, signal } = {}) {
     const { appState, log } = deps;
 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
@@ -3379,21 +3429,13 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
             prompt += '\n\n--- SELECTED TEXT (the user is asking about this excerpt) ---\n' + selectionText.trim();
         }
         if (imageMeta.length > 0) {
-            prompt += '\n\n--- SELECTED IMAGES (also inside the selection) ---\n' +
-                imageMeta.map((img, i) =>
-                    `- image ${i + 1}: ${img.width}x${img.height}pt` +
-                    (img.altText ? `, alt "${String(img.altText).slice(0, 80)}"` : '')).join('\n') +
-                '\n(Visual content is not attached here; image instructions can view and edit these pictures.)';
+            prompt += _selectedImagesBlock(imageMeta, 'also inside the selection');
         }
     } else if (imageMeta.length > 0) {
         // Image-only selection reaching QA (defense in depth — routing sends
         // image-only selections to the image tool session; planned qa tasks
         // may still land here): object references, not bytes.
-        prompt += '\n\n--- SELECTED IMAGES (the user is asking about these pictures) ---\n' +
-            imageMeta.map((img, i) =>
-                `- image ${i + 1}: ${img.width}x${img.height}pt` +
-                (img.altText ? `, alt "${String(img.altText).slice(0, 80)}"` : '')).join('\n') +
-            '\n(Visual content is not attached here; image instructions can view and edit these pictures.)';
+        prompt += _selectedImagesBlock(imageMeta, 'the user is asking about these pictures');
     } else {
         // Bare caret: inject where the user is working so document-scope
         // answers can weight the current section (no tool-call path exists;
@@ -3410,7 +3452,31 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
     if (onStatus) onStatus(`Waiting for ${backendConfig.model}...`);
     // Long documents + slow backends can exceed the 120s client default;
     // chat answers get 5 minutes (the doc pipeline uses the same per-chunk).
-    return sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal, 300000);
+    const handlers = { onContent: onToken, onReasoning };
+    const uploaded = (Array.isArray(questionImages) ? questionImages : [])
+        .filter((img) => img && typeof img.dataUrl === 'string' && img.dataUrl);
+    if (uploaded.length > 0) {
+        // Chat file-upload images go as OpenAI image_url parts (same shape
+        // as read_image observations in the tool loop). Text-only backends
+        // answer 4xx — retry once without the images, mirroring
+        // _sendLoopMessages in agent-actions.
+        const parts = [
+            { type: 'text', text: prompt },
+            ...uploaded.map((img) => ({ type: 'image_url', image_url: { url: img.dataUrl } })),
+        ];
+        try {
+            const { content } = await sendMessagesStream(
+                backendConfig, [{ role: 'user', content: parts }], handlers, log, signal, 300000);
+            return content;
+        } catch (err) {
+            if (err.name === 'AbortError' || err.name === 'TimeoutError' || !/^HTTP 4\d\d/.test(err.message || '')) {
+                throw err;
+            }
+            log(`Backend rejected image inputs (${err.message}); retrying without attached images.`, 'warning');
+            if (onStatus) onStatus(`Waiting for ${backendConfig.model}...`);
+        }
+    }
+    return sendPromptStream(backendConfig, prompt, handlers, log, signal, 300000);
 }
 
 /**

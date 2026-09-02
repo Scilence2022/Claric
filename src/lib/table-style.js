@@ -74,6 +74,9 @@ export const VERTICAL_ALIGNMENTS = Object.freeze(['top', 'center', 'bottom']);
 /** Font payload keys the model may set (Word.Font subset). */
 export const FONT_KEYS = Object.freeze(['bold', 'italic', 'underline', 'size', 'name', 'color']);
 
+/** FONT_KEYS as prose for the payload error messages. @private */
+const FONT_KEYS_TEXT = FONT_KEYS.join(', ');
+
 /** Accepted underline values (Word.UnderlineType subset). */
 export const UNDERLINE_TYPES = Object.freeze(['none', 'single', 'double', 'dotted', 'dashed', 'dotDashed', 'words']);
 
@@ -237,7 +240,7 @@ export function normalizeAlignment(value, canonical) {
  */
 export function normalizeFontPayload(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        return { error: '"font" must be an object (bold, italic, underline, size, name, color)' };
+        return { error: `"font" must be an object (${FONT_KEYS_TEXT})` };
     }
     const font = {};
     for (const [key, value] of Object.entries(raw)) {
@@ -281,7 +284,7 @@ export function normalizeFontPayload(raw) {
         }
     }
     if (Object.keys(font).length === 0) {
-        return { error: 'font payload has no supported keys (bold, italic, underline, size, name, color)' };
+        return { error: `font payload has no supported keys (${FONT_KEYS_TEXT})` };
     }
     return { font };
 }

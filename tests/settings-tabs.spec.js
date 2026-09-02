@@ -43,6 +43,24 @@ describe('settings tabs markup contract', () => {
         expect(generalPage).not.toContain('mcpStepBudget');
     });
 
+    test('the General page exposes thinking and temperature controls', () => {
+        const generalPage = html.slice(
+            html.indexOf('id="settingsPageGeneral"'),
+            html.indexOf('id="settingsPagePrompts"'),
+        );
+        expect(generalPage).toContain('id="thinkingLevelSelect"');
+        expect(generalPage).toContain('<option value="default">Default</option>');
+        expect(generalPage).toContain('<option value="low">Low</option>');
+        expect(generalPage).toContain('<option value="medium">Medium</option>');
+        expect(generalPage).toContain('<option value="high">High</option>');
+        expect(generalPage).toContain('id="temperatureInput"');
+        expect(generalPage).toContain('type="number"');
+        expect(generalPage).toContain('min="0"');
+        expect(generalPage).toContain('max="2"');
+        expect(generalPage).toContain('step="0.1"');
+        expect(generalPage).toContain('backends or models may ignore unsupported options');
+    });
+
     test('the settings panel exposes an id so the drag/resize logic can bind to it', () => {
         expect(html).toContain('id="settingsPanel"');
     });

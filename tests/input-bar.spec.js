@@ -230,3 +230,118 @@ describe('↑/↓ prompt history recall', () => {
         expect(textarea.value).toBe('line1\nline2');
     });
 });
+
+describe('file attachment chips', () => {
+    function setupWithAttachments() {
+        document.body.innerHTML = `
+            <textarea id="chatInput"></textarea>
+            <button id="sendBtn"></button>
+            <div id="skillPicker" hidden></div>
+            <div id="skillsMenu" hidden></div>
+            <button id="addSkillBtn"></button>
+            <input type="checkbox" id="autoApplyToggle">
+            <button id="modelPill"></button>
+            <div id="selectionPreview" hidden>
+                <span id="selectionPreviewText"></span>
+                <span id="selectionPreviewImages" hidden></span>
+            </div>
+            <div id="attachmentChips" hidden></div>
+            <button id="attachBtn"></button>
+            <input type="file" id="attachmentInput" hidden multiple>`;
+        const onSubmit = jest.fn();
+        const onLog = jest.fn();
+        const bar = initInputBar({
+            onSubmit, onCancel: jest.fn(), getSkills: () => [], onOpenSettings: jest.fn(), onLog,
+        });
+        const input = document.getElementById('attachmentInput');
+        const pick = (files) => {
+            Object.defineProperty(input, 'files', { value: files, configurable: true });
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        return { bar, onSubmit, onLog, pick };
+    }
+    // FileReader-backed reads (jsdom Blobs lack .text()) settle a macrotask
+    // late — give them a real timeout, not a 0ms tick.
+    const flush = () => new Promise((r) => setTimeout(r, 30));
+
+    test('picked text files render removable chips; submit passes and clears them', async () => {
+        const { onSubmit, pick } = setupWithAttachments();
+        pick([new File(['hello world'], 'notes.txt', { type: 'text/plain' })]);
+        await flush();
+
+        const chips = document.querySelectorAll('.attachment-chip');
+        expect(chips).toHaveLength(1);
+        expect(chips[0].querySelector('.attachment-chip-name').textContent).toBe('notes.txt');
+        expect(document.getElementById('attachmentChips').hasAttribute('hidden')).toBe(false);
+
+        const textarea = document.getElementById('chatInput');
+        textarea.value = 'summarize this';
+        textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+        const [text, attachments] = onSubmit.mock.calls[0];
+        expect(text).toBe('summarize this');
+        expect(attachments).toHaveLength(1);
+        expect(attachments[0]).toMatchObject({ name: 'notes.txt', kind: 'text', text: 'hello world' });
+        // Chips cleared after submit.
+        expect(document.getElementById('attachmentChips').hasAttribute('hidden')).toBe(true);
+    });
+
+    test('attachments allow submitting with an empty input', async () => {
+        const { onSubmit, pick } = setupWithAttachments();
+        pick([new File(['body'], 'a.md')]);
+        await flush();
+
+        document.getElementById('chatInput').value = '   ';
+        document.getElementById('sendBtn').click();
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+        expect(onSubmit.mock.calls[0][1]).toHaveLength(1);
+    });
+
+    test('remove button drops a chip before sending', async () => {
+        const { onSubmit, pick } = setupWithAttachments();
+        pick([new File(['x'], 'a.txt'), new File(['y'], 'b.txt')]);
+        await flush();
+        expect(document.querySelectorAll('.attachment-chip')).toHaveLength(2);
+
+        document.querySelectorAll('.attachment-chip-remove')[0].click();
+        expect(document.querySelectorAll('.attachment-chip')).toHaveLength(1);
+        expect(document.querySelector('.attachment-chip-name').textContent).toBe('b.txt');
+
+        document.getElementById('chatInput').value = 'go';
+        document.getElementById('sendBtn').click();
+        expect(onSubmit.mock.calls[0][1]).toHaveLength(1);
+        expect(onSubmit.mock.calls[0][1][0].name).toBe('b.txt');
+    });
+
+    test('unsupported and oversized files are rejected with a log entry', async () => {
+        const { onLog, pick } = setupWithAttachments();
+        pick([new File(['x'], 'archive.zip', { type: 'application/zip' })]);
+        await flush();
+        expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
+        expect(onLog).toHaveBeenCalledWith(expect.stringContaining('unsupported file type'), 'warning');
+
+        const big = { name: 'huge.txt', type: 'text/plain', size: 3 * 1024 * 1024, text: async () => 'x' };
+        pick([big]);
+        await flush();
+        expect(onLog).toHaveBeenCalledWith(expect.stringContaining('per-file limit'), 'warning');
+    });
+
+    test('image files render a thumbnail chip', async () => {
+        const { pick } = setupWithAttachments();
+        pick([new File([new Uint8Array([1, 2, 3])], 'pic.png', { type: 'image/png' })]);
+        await flush();
+        const thumb = document.querySelector('.attachment-chip-thumb');
+        expect(thumb).not.toBeNull();
+        expect(thumb.src).toMatch(/^data:image\/png;base64,/);
+    });
+
+    test('clearAttachments empties the list', async () => {
+        const { bar, pick } = setupWithAttachments();
+        pick([new File(['x'], 'a.txt')]);
+        await flush();
+        bar.clearAttachments();
+        expect(document.getElementById('attachmentChips').hasAttribute('hidden')).toBe(true);
+    });
+});
+

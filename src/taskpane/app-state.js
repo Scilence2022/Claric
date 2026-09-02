@@ -17,6 +17,8 @@ import { KNOWN_PROVIDERS, defaultProviderConfig } from '../lib/providers.js';
 import { TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
 
 const KNOWN_RICHNESS = ['plain', 'headings', 'structured'];
+const KNOWN_THINKING_LEVELS = ['default', 'low', 'medium', 'high'];
+const DEFAULT_TEMPERATURE = 1;
 
 /**
  * Builds the default configuration object.
@@ -68,7 +70,7 @@ appState.commentQueue = new CommentQueue((message, type) => appState.log(message
  * Returns the config object for the currently selected provider.
  *
  * @param {object} [state] - App state (defaults to the shared appState)
- * @returns {{ url: string, apiKey: string, model: string, apiPath: string }}
+ * @returns {{ url: string, apiKey: string, model: string, apiPath: string, thinkingLevel: string, temperature: number }}
  */
 export function getActiveBackendConfig(state = appState) {
     return state.config.providers[state.config.backend];
@@ -95,7 +97,7 @@ export function debounce(fn, waitMs) {
  *
  * @param {object} defaults - The built-in default entry for this provider
  * @param {object} saved - The persisted entry (possibly partial/corrupt)
- * @returns {{url: string, apiKey: string, model: string, apiPath: string}}
+ * @returns {{url: string, apiKey: string, model: string, apiPath: string, thinkingLevel: string, temperature: number}}
  */
 function normalizeProviderEntry(defaults, saved) {
     return {
@@ -103,6 +105,14 @@ function normalizeProviderEntry(defaults, saved) {
         apiKey: typeof saved.apiKey === 'string' ? saved.apiKey : '',
         model: typeof saved.model === 'string' && saved.model ? saved.model : defaults.model,
         apiPath: typeof saved.apiPath === 'string' && saved.apiPath ? saved.apiPath : defaults.apiPath,
+        thinkingLevel: typeof saved.thinkingLevel === 'string' && KNOWN_THINKING_LEVELS.includes(saved.thinkingLevel)
+            ? saved.thinkingLevel
+            : (KNOWN_THINKING_LEVELS.includes(defaults.thinkingLevel) ? defaults.thinkingLevel : 'default'),
+        temperature: Number.isFinite(saved.temperature) && saved.temperature >= 0 && saved.temperature <= 2
+            ? saved.temperature
+            : (Number.isFinite(defaults.temperature) && defaults.temperature >= 0 && defaults.temperature <= 2
+                ? defaults.temperature
+                : DEFAULT_TEMPERATURE),
     };
 }
 
@@ -123,7 +133,10 @@ function normalizeProviderEntry(defaults, saved) {
  * @returns {object} A fully-populated config
  */
 export function normalizeConfig(defaults, parsed) {
-    const out = { ...defaults };
+    // Copy the providers map too: a bare spread aliases it, so the
+    // per-provider writes below would mutate the caller's defaults object and
+    // leak one call's saved providers into the next call's fallbacks.
+    const out = { ...defaults, providers: { ...(defaults && defaults.providers) } };
 
     if (typeof parsed.backend === 'string' && KNOWN_PROVIDERS.includes(parsed.backend)) {
         out.backend = parsed.backend;
