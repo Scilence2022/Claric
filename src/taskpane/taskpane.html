@@ -78,11 +78,15 @@
                 <span id="selectionPreviewText" class="selection-preview-text"></span>
                 <span id="selectionPreviewImages" class="selection-preview-images" hidden></span>
             </div>
+            <div id="attachmentChips" class="attachment-chips" hidden></div>
             <div class="composer">
                 <textarea id="chatInput" class="chat-input" rows="1"
                     placeholder="Ask for help, or / for commands"
                     aria-label="Chat input"></textarea>
                 <div class="composer-toolbar">
+                    <button type="button" id="attachBtn" class="composer-icon-btn" title="Attach files (text, image, .docx, .pdf)" aria-label="Attach files">&#128206;</button>
+                    <input type="file" id="attachmentInput" hidden multiple
+                        accept=".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.png,.jpg,.jpeg,.gif,.webp,.docx,.pdf">
                     <button type="button" id="addSkillBtn" class="composer-icon-btn" title="Slash commands" aria-label="Slash commands" aria-haspopup="menu" aria-expanded="false">+</button>
                     <label class="mac-switch" id="autoApplyControl" title="Automatically apply proposed tracked changes">
                         <input type="checkbox" id="autoApplyToggle" aria-label="Auto-apply changes">
@@ -136,6 +140,7 @@
                                 <option value="kimi">Moonshot Kimi</option>
                                 <option value="minimax">MiniMax</option>
                                 <option value="minimax-cn">MiniMax 中国站</option>
+                                <option value="zhongkeyu">中科大模型 (zhongkeyu.com)</option>
                             </optgroup>
                             <option value="custom">Custom (OpenAI-compatible)</option>
                         </select>
@@ -162,6 +167,20 @@
                         <label for="apiKey">API Key (Optional):</label>
                         <input type="password" id="apiKey" class="form-control" placeholder="Optional API key">
                         <small class="help-text" id="apiKeyHint">Required for cloud providers; leave blank for local backends</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="thinkingLevelSelect">Thinking level:</label>
+                        <select id="thinkingLevelSelect" class="form-control">
+                            <option value="default">Default</option>
+                            <option value="low">Low</option>
+                            <option value="medium">Medium</option>
+                            <option value="high">High</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="temperatureInput">Temperature:</label>
+                        <input type="number" id="temperatureInput" class="form-control" min="0" max="2" step="0.1">
+                        <small class="help-text">Some backends or models may ignore unsupported options.</small>
                     </div>
                     <div class="form-group checkbox-group">
                         <label>

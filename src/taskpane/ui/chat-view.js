@@ -22,6 +22,7 @@ import { sanitizeSvg } from '../../lib/illustration.js';
 import { buildTextDiffElement } from './diff-view.js';
 import { appState } from '../app-state.js';
 import { renderTablePreview, sanitizeTablePreview } from './proposal-card.js';
+import { newId, normalizeAttachments, normalizeCitations, normalizeMessage } from '../message-shape.js';
 
 let _messagesEl = null;
 let _welcomeEl = null;
@@ -45,6 +46,64 @@ let _proposalStateHandler = null;
  */
 export function setProposalStateChangeHandler(handler) {
     _proposalStateHandler = typeof handler === 'function' ? handler : null;
+}
+
+// Reveal callback for citation pills rebuilt from history. A stored message
+// carries no closures, so the bootstrap supplies the "select this text in the
+// document" action once and every restored pill uses it.
+let _citationSelectHandler = null;
+
+/**
+ * Registers the reveal action for citation pills rendered from history.
+ * Without it, restored pills are omitted rather than rendered inert.
+ *
+ * @param {function(string)|null} handler - Called with a pill's searchText
+ */
+export function setCitationSelectHandler(handler) {
+    _citationSelectHandler = typeof handler === 'function' ? handler : null;
+}
+
+/**
+ * Builds the citation pill row. Shared by the live turn (addCitationPills)
+ * and the history render, so both look and behave the same.
+ *
+ * @param {Array<{label: string, searchText: string}>} citations
+ * @param {function(string)} onSelect
+ * @returns {HTMLElement}
+ * @private
+ */
+function _buildCitationRow(citations, onSelect) {
+    const row = document.createElement('div');
+    row.className = 'citation-row';
+    for (const c of citations) {
+        const pill = document.createElement('button');
+        pill.className = 'citation-pill';
+        pill.type = 'button';
+        pill.textContent = `§ ${c.label}`;
+        pill.title = c.searchText;
+        pill.addEventListener('click', () => onSelect(c.searchText));
+        row.appendChild(pill);
+    }
+    return row;
+}
+
+/**
+ * Renders a static one-line summary block (worklog / model activity) for a
+ * message restored from history, where only the counts were persisted.
+ *
+ * @param {string} className - 'msg-worklog' | 'msg-model'
+ * @param {string} text
+ * @returns {HTMLElement}
+ * @private
+ */
+function _renderStaticSummary(className, text) {
+    const wrap = document.createElement('div');
+    wrap.className = className;
+    const line = document.createElement('div');
+    line.className = `${className}-summary`;
+    line.textContent = text;
+    wrap.appendChild(line);
+    return wrap;
 }
 
 /** Serializes one tracked proposal meta into its history shape. @private */
@@ -175,6 +234,10 @@ export function renderHistory(messages) {
             const bubble = document.createElement('div');
             bubble.className = 'chat-message chat-message-user';
             bubble.textContent = m.text || '';
+            const meta = _normalizeAttachments(m.attachments);
+            if (meta.length > 0) {
+                bubble.appendChild(_renderAttachmentMarkers(meta));
+            }
             _messagesEl.appendChild(bubble);
         } else {
             _messagesEl.appendChild(_renderHistoricalAssistant(m));
@@ -239,14 +302,21 @@ function _renderText(el, text) {
 }
 
 /**
- * Adds a user message bubble.
+ * Adds a user message bubble. attachments (optional) renders a row of file
+ * markers under the text and is snapshotted into the session metadata
+ * (name/kind/size only — never file bytes or data URLs).
  *
  * @param {string} text
+ * @param {Array<{name: string, kind: string, size: number}>} [attachments]
  */
-export function addUserMessage(text) {
+export function addUserMessage(text, attachments) {
+    const meta = _normalizeAttachments(attachments);
     const el = document.createElement('div');
     el.className = 'chat-message chat-message-user';
     _renderText(el, text);
+    if (meta.length > 0) {
+        el.appendChild(_renderAttachmentMarkers(meta));
+    }
     _messagesEl.appendChild(el);
     _scrollToBottom();
 
@@ -265,8 +335,28 @@ export function addUserMessage(text) {
         model: null,
         citations: [],
         proposals: [],
+        attachments: meta,
         ts: new Date().toISOString(),
     });
+}
+
+/** Keeps only display metadata from an attachment list. @private */
+function _normalizeAttachments(attachments) {
+    return normalizeAttachments(attachments);
+}
+
+/** Renders the file-marker row under a user bubble. @private */
+function _renderAttachmentMarkers(attachments) {
+    const row = document.createElement('div');
+    row.className = 'user-attachments';
+    for (const att of attachments) {
+        const chip = document.createElement('span');
+        chip.className = 'user-attachment';
+        chip.textContent = `📎 ${att.name}`;
+        chip.title = `${att.name} (${att.kind})`;
+        row.appendChild(chip);
+    }
+    return row;
 }
 
 /**
@@ -284,41 +374,21 @@ export function addSystemNote(text) {
  * @private
  */
 function _generateSessionId() {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-        return `s-${crypto.randomUUID()}`;
-    }
-    return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return newId('s');
 }
 
 function _generateMessageId() {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-        return `m-${crypto.randomUUID()}`;
-    }
-    return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return newId('m');
 }
 
 /**
  * Normalizes one stored message into the live shape (drops unknown props).
+ * Null entries are filtered by the callers.
  * @private
  */
 function _normalizeMessage(m) {
     if (!m || typeof m !== 'object') return null;
-    return {
-        id: m.id || _generateMessageId(),
-        role: m.role === 'assistant' ? 'assistant' : 'user',
-        text: typeof m.text === 'string' ? m.text : '',
-        status: typeof m.status === 'string' ? m.status : '',
-        error: typeof m.error === 'string' ? m.error : null,
-        worklog: m.worklog && typeof m.worklog === 'object'
-            ? { count: Number(m.worklog.count) || 0, durationMs: Number(m.worklog.durationMs) || 0 }
-            : null,
-        model: m.model && typeof m.model === 'object'
-            ? { sections: Number(m.model.sections) || 0 }
-            : null,
-        citations: Array.isArray(m.citations) ? m.citations.filter((c) => c && typeof c === 'object') : [],
-        proposals: Array.isArray(m.proposals) ? m.proposals : [],
-        ts: typeof m.ts === 'string' ? m.ts : new Date().toISOString(),
-    };
+    return normalizeMessage(m);
 }
 
 /**
@@ -378,33 +448,20 @@ function _renderHistoricalAssistant(m) {
         el.appendChild(status);
     }
 
+    // Only the counts are persisted (the log lines and streamed model output
+    // are not), so history shows a static summary. Rendering a collapsed
+    // toggle here would promise an expansion that has no content behind it.
     if (m.worklog && Number(m.worklog.count) > 0) {
-        const wrap = document.createElement('div');
-        wrap.className = 'msg-worklog';
-        wrap.style.display = '';
-        const toggle = document.createElement('button');
-        toggle.type = 'button';
-        toggle.className = 'msg-worklog-toggle';
-        toggle.setAttribute('aria-expanded', 'false');
         const secs = Math.max(1, Math.round((Number(m.worklog.durationMs) || 0) / 1000));
         const count = Number(m.worklog.count) || 0;
-        toggle.textContent = `▸ Worked for ${secs}s · ${count} step${count === 1 ? '' : 's'}`;
-        wrap.appendChild(toggle);
-        el.appendChild(wrap);
+        el.appendChild(_renderStaticSummary(
+            'msg-worklog', `Worked for ${secs}s · ${count} step${count === 1 ? '' : 's'}`));
     }
 
     if (m.model && Number(m.model.sections) > 0) {
-        const wrap = document.createElement('div');
-        wrap.className = 'msg-model';
-        wrap.style.display = '';
-        const toggle = document.createElement('button');
-        toggle.type = 'button';
-        toggle.className = 'msg-model-toggle';
-        toggle.setAttribute('aria-expanded', 'false');
         const sections = Number(m.model.sections) || 0;
-        toggle.textContent = `▸ Model activity · ${sections} section${sections === 1 ? '' : 's'}`;
-        wrap.appendChild(toggle);
-        el.appendChild(wrap);
+        el.appendChild(_renderStaticSummary(
+            'msg-model', `Model activity · ${sections} section${sections === 1 ? '' : 's'}`));
     }
 
     const body = document.createElement('div');
@@ -417,6 +474,14 @@ function _renderHistoricalAssistant(m) {
             const card = renderStaticProposalCard(p);
             if (card) el.appendChild(card);
         }
+    }
+
+    // Citation pills survive a reload: the searchText is persisted, and the
+    // click handler is re-supplied by the bootstrap (setCitationSelectHandler)
+    // since a stored message carries no closures.
+    const citations = normalizeCitations(m.citations);
+    if (citations.length > 0 && _citationSelectHandler) {
+        el.appendChild(_buildCitationRow(citations, _citationSelectHandler));
     }
 
     return el;
@@ -616,6 +681,8 @@ export function createAssistantMessage() {
     let lastStatus = '';
     let lastError = null;
     const trackedProposals = [];
+    /** Citation pills added this turn — snapshotted by finalizeForHistory. */
+    const trackedCitations = [];
     /** Cards staged with auto-apply on — drained by finalizeForHistory. */
     const pendingAutoApplyCards = [];
     let finalized = false;
@@ -819,19 +886,12 @@ export function createAssistantMessage() {
             }
         },
         addCitationPills(citations, onSelect) {
-            if (!citations || citations.length === 0) return;
-            const row = document.createElement('div');
-            row.className = 'citation-row';
-            citations.forEach((c) => {
-                const pill = document.createElement('button');
-                pill.className = 'citation-pill';
-                pill.type = 'button';
-                pill.textContent = `§ ${c.label}`;
-                pill.title = c.searchText;
-                pill.addEventListener('click', () => onSelect(c.searchText));
-                row.appendChild(pill);
-            });
-            extrasEl.appendChild(row);
+            const list = normalizeCitations(citations);
+            if (list.length === 0) return;
+            // Recorded for finalizeForHistory: the pills are rebuilt on
+            // reload from the persisted label/searchText.
+            trackedCitations.push(...list);
+            extrasEl.appendChild(_buildCitationRow(list, onSelect));
             _scrollToBottom();
         },
         markError(message) {
@@ -877,7 +937,7 @@ export function createAssistantMessage() {
                     ? { count: logLineCount, durationMs: Math.max(0, Date.now() - logStartTime) }
                     : null,
                 model: modelSections.size > 0 ? { sections: modelSections.size } : null,
-                citations: [],
+                citations: trackedCitations.slice(),
                 proposals: trackedProposals.map(_proposalRecordFromMeta),
                 ts: now,
             };

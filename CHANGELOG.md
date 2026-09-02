@@ -4,6 +4,77 @@ All notable changes to Claric are documented here. The format is a loose
 Keep-a-Changelog style; versions track `package.json` and the `v*` git tags
 that drive the GHCR image publish in CI.
 
+## [Unreleased]
+
+### Added
+
+- **中科大模型 (zhongkeyu.com) provider** — new cloud preset for the
+  zhongkeyu.com New API gateway ("中科大模型-企业版"), which relays many
+  upstream models (GLM, DeepSeek, Claude, Gemini, GPT, Kimi, ...) behind one
+  OpenAI-compatible `/v1` surface. Defaults: `https://zhongkeyu.com` +
+  `glm-5.3-flash`; CORS verified for direct calls on statically hosted
+  installs, and the local dev/production servers gain a `/zhongkeyu` proxy
+  path (`ZHONGKEYU_PROXY_PATH` / `ZHONGKEYU_PROXY_TARGET`).
+
+- **Citation pills survive a reload** — the `§` pills under a document-run
+  answer were built but never persisted, so a restored session lost them. The
+  label + search text now ride in the session record, and the bootstrap
+  supplies the reveal action for pills rebuilt from history (a stored message
+  carries no closures).
+
+### Fixed
+
+- **Selection edit could report a write that never happened** — a chained
+  instruction ("检查合计，然后修正表头") enters the table tool loop, which may
+  finish read-only (an answer, no ops). That outcome has no patch and no
+  amended text, but the turn still staged a proposal card whose Apply wrote
+  nothing and then reported "Applied as tracked changes". The read-only
+  outcome now renders as the chat answer, like the other tool-loop turns.
+
+- **Document-scope table turns ignored merged cells** — `table_management`
+  without a selection hard-coded `merged: false`, so row insert/delete stayed
+  enabled on a merged grid and merge-covered coordinates looked editable. Both
+  readers now run the same `getCell` merge probe (and the same degradation to
+  "layout unknown" on hosts that throw for covered slots).
+
+- **Cleanup turns could not be cancelled** — the empty-paragraph cleanup was
+  the one turn that never registered its AbortController, so Stop could not
+  reach it; inside a compound turn it also cleared the busy flag mid-chain.
+  Every chat turn now claims and releases the lifecycle through one pair of
+  helpers, which also fixes the `/mcp` turn leaving `isProcessing` stuck
+  (wedging all later turns) when a compound turn owned the controller.
+
+- **Planning failure lost the table selection** — when the task planner
+  returned no tasks, the fallback re-routed the instruction without the
+  multi-cell-table flag, so a table selection was treated as no selection and
+  the table tool session became unreachable. The flag now travels with the
+  compound turn.
+
+- **Saved provider settings leaked into the defaults** — `normalizeConfig`
+  spread the defaults shallowly, aliasing the `providers` map, so the
+  per-provider merge mutated the caller's object and one call's saved URLs
+  became the next call's fallbacks.
+
+- **History showed dead controls** — a restored assistant message rendered
+  work-log and model-activity toggles with no handler and nothing to expand
+  (only the counts are persisted). They are static one-line summaries now.
+
+### Changed
+
+- **Shared message shape** — the persisted chat message had two independent
+  normalizers, one per leg of the save/load round-trip, validating the same 11
+  fields; a field added to one and forgotten in the other was silently
+  dropped. Both legs now normalize through `taskpane/message-shape.js`, which
+  also owns id generation and re-exports the attachment-metadata reduction
+  from the upload layer (previously implemented three times).
+
+- **Tool-loop turn runners de-duplicated** — the selection-scope and
+  document-scope image and table turns were ~80-line copies differing only in
+  their labels; they now share one staging helper per family. As a side
+  effect, document-scope table applies honor the staleness guard (a refused
+  write reports a warning instead of success), which only the selection path
+  had.
+
 ## [1.0.2] — 2026-08-31
 
 ### Fixed

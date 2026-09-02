@@ -271,6 +271,29 @@ function buildRequestConfig(config) {
 }
 
 /**
+ * Builds optional generation parameters for OpenAI-compatible chat requests.
+ * Invalid or missing settings use the application defaults. `reasoning_effort`
+ * is omitted for the provider-neutral default thinking level because some
+ * compatible backends reject the field entirely.
+ *
+ * @param {object} config - Backend configuration
+ * @returns {{temperature: number, reasoning_effort?: string}}
+ * @private
+ */
+function buildGenerationParams(config) {
+  const temperature = Number.isFinite(config.temperature) && config.temperature >= 0 && config.temperature <= 2
+    ? config.temperature
+    : 1;
+  const thinkingLevel = ['default', 'low', 'medium', 'high'].includes(config.thinkingLevel)
+    ? config.thinkingLevel
+    : 'default';
+  return {
+    temperature,
+    ...(thinkingLevel === 'default' ? {} : { reasoning_effort: thinkingLevel }),
+  };
+}
+
+/**
  * Throws when a finished response was cut off by the model's token limit.
  * A length-truncated amendment or comment flowing into the diff pipeline
  * would be applied as if it were complete — refuse instead.
@@ -320,7 +343,7 @@ async function _describeHttpError(response) {
  * controller, which aborts the fetch. Aborts from timeout and from the
  * external signal are reported with distinct error names.
  *
- * @param {Object} config - { url, apiKey, model }
+ * @param {Object} config - { url, apiKey, model, thinkingLevel, temperature }
  * @param {string} promptText - User-role prompt body
  * @param {function} [log] - Optional logging callback (message, type)
  * @param {AbortSignal} [signal] - Optional abort signal for cancellation
@@ -336,6 +359,7 @@ export async function sendPrompt(config, promptText, log, signal, timeoutMs = 12
     model: config.model,
     messages: [{ role: 'user', content: promptText }],
     stream: false,
+    ...buildGenerationParams(config),
   });
 
   const localController = new AbortController();
@@ -395,7 +419,7 @@ export async function sendPrompt(config, promptText, log, signal, timeoutMs = 12
  * Uses a manual AbortController approach instead of AbortSignal.any() for
  * compatibility with Office's WebView2 runtime.
  *
- * @param {Object} config - { url, apiKey, model }
+ * @param {Object} config - { url, apiKey, model, thinkingLevel, temperature }
  * @param {Array<{role: string, content: string}>} messages - Chat messages
  * @param {function} [log] - Optional logging callback (message, type)
  * @param {AbortSignal} [signal] - Optional abort signal for cancellation
@@ -412,6 +436,7 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
     model: config.model,
     messages: messages,
     stream: false,
+    ...buildGenerationParams(config),
   });
 
   // Create a local AbortController for timeout management
@@ -480,7 +505,7 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
  *
  * Abort/timeout wiring mirrors sendMessages (WebView2-safe, no AbortSignal.any).
  *
- * @param {Object} config - { url, apiKey, model, apiPath }
+ * @param {Object} config - { url, apiKey, model, apiPath, thinkingLevel, temperature }
  * @param {Array<{role: string, content: string}>} messages - Chat messages
  * @param {function|{onContent?: function, onReasoning?: function}} [handlers] -
  *   A plain function is treated as onContent (legacy shorthand)
@@ -510,6 +535,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     model: config.model,
     messages: messages,
     stream: true,
+    ...buildGenerationParams(config),
   });
 
   const localController = new AbortController();
@@ -678,7 +704,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
  * Sends a prompt to the LLM backend with streaming. Thin wrapper over
  * sendMessagesStream for single-string prompts.
  *
- * @param {Object} config - { url, apiKey, model, apiPath }
+ * @param {Object} config - { url, apiKey, model, apiPath, thinkingLevel, temperature }
  * @param {string} promptText - The prompt text to send
  * @param {function|{onContent?: function, onReasoning?: function}} [handlers] -
  *   A plain function is treated as onContent (legacy shorthand)

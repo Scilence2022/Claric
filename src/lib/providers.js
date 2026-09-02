@@ -8,7 +8,7 @@
  * Defaults are ORIGIN-ADAPTIVE (see defaultProviderConfig):
  *  - On a static host (GitHub Pages / marketplace install) cloud providers
  *    default to their absolute API origins and are called directly — all
- *    five return CORS headers for public origins (verified). No server of
+ *    six return CORS headers for public origins (verified). No server of
  *    our own is needed.
  *  - When the add-in is served by the local dev/production server, cloud
  *    providers default to same-origin proxy paths (/deepseek, /glm, ...),
@@ -146,6 +146,19 @@ export const PROVIDER_PRESETS = {
     keyHint: 'platform.minimax.cn',
     staticOk: true,
   },
+  // zhongkeyu.com ("中科大模型-企业版") is a New API gateway that relays
+  // many upstream models (GLM, DeepSeek, Claude, Gemini, GPT, ...) behind
+  // one OpenAI-compatible /v1 surface; the default model is its cheapest
+  // non-preview tier.
+  zhongkeyu: {
+    label: '中科大模型',
+    url: 'https://zhongkeyu.com',
+    proxyUrl: '/zhongkeyu',
+    apiPath: '/v1',
+    model: 'glm-5.3-flash',
+    keyHint: 'zhongkeyu.com',
+    staticOk: true,
+  },
   custom: {
     label: 'Custom (OpenAI-compatible)',
     url: '',
@@ -180,11 +193,11 @@ export function getProviderPreset(providerId) {
  *
  * @param {string} [origin] - The serving origin; defaults to the runtime
  *   window origin ('' outside a browser = local-served, proxy defaults)
- * @returns {Object<string, {url: string, apiKey: string, model: string, apiPath: string}>}
+ * @returns {Object<string, {url: string, apiKey: string, model: string, apiPath: string, thinkingLevel: string, temperature: number}>}
  */
 export function defaultProviderConfig(origin = runtimeOrigin()) {
     const staticHost = isStaticHostOrigin(origin);
-    /** @type {Object<string, {url: string, apiKey: string, model: string, apiPath: string}>} */
+    /** @type {Object<string, {url: string, apiKey: string, model: string, apiPath: string, thinkingLevel: string, temperature: number}>} */
     const config = {};
     for (const id of KNOWN_PROVIDERS) {
         const preset = PROVIDER_PRESETS[id];
@@ -193,6 +206,8 @@ export function defaultProviderConfig(origin = runtimeOrigin()) {
             apiKey: '',
             model: preset.model,
             apiPath: preset.apiPath,
+            thinkingLevel: 'default',
+            temperature: 1,
         };
     }
     return config;

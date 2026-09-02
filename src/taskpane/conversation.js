@@ -38,6 +38,7 @@ import * as agentActions from './agent-actions.js';
 import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
 import { describeFormatOp } from '../lib/format-ops.js';
+import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib/file-attachments.js';
 
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
@@ -416,7 +417,9 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMu
         const docCompound = !hasImageSelection && looksLikeDocumentImageIntent(trimmed) ? 1 : 0;
         const tableDocCompound = !hasMultiCellTableRegion && looksLikeDocumentTableIntent(trimmed) ? 1 : 0;
         if (families + docCompound + tableDocCompound >= 2) {
-            return { type: TURN_TYPE.COMPOUND, instruction: trimmed };
+            // The flag rides along so a planning failure can re-route with the
+            // same selection facts (runCompoundTurn's fallback).
+            return { type: TURN_TYPE.COMPOUND, instruction: trimmed, hasMultiCellTableRegion };
         }
     }
     // Image-management intent wins over the single-illustration branch:
@@ -513,7 +516,7 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMu
     // (a cheap call — the planner never sees document text). Planning
     // failure falls back to single-intent routing (Q&A) in runCompoundTurn.
     if (allowCompound) {
-        return { type: TURN_TYPE.COMPOUND, instruction: trimmed };
+        return { type: TURN_TYPE.COMPOUND, instruction: trimmed, hasMultiCellTableRegion };
     }
     return { type: TURN_TYPE.DOC_QA, question: trimmed };
 }
@@ -591,6 +594,64 @@ export function createConversation(deps) {
      */
     function isBusy() {
         return appState.isProcessing || appState.isProcessingDoc || appState.isProcessingSummary;
+    }
+
+    /**
+     * Claims the chat-turn lifecycle: raises the busy flag, registers the
+     * turn's AbortController so cancel() reaches it, and locks the input.
+     * A compound turn passes its own controller down so one cancel stops the
+     * whole chain; every runner must claim through here, or cancel() cannot
+     * interrupt it.
+     *
+     * @param {AbortController} [turnController] - Shared controller from a
+     *   compound turn; omitted for a standalone turn
+     * @param {'isProcessing'|'isProcessingSummary'} [flag]
+     * @returns {AbortController} The controller this turn must use
+     * @private
+     */
+    function _beginChatTurn(turnController, flag = 'isProcessing') {
+        const myController = turnController || new AbortController();
+        appState[flag] = true;
+        appState.chatController = myController;
+        input.setProcessing(true);
+        return myController;
+    }
+
+    /**
+     * Releases what _beginChatTurn claimed. The busy flag and the input
+     * always clear (an unreleased flag wedges every later turn behind
+     * isBusy()); the shared controller is only nulled when this turn owns
+     * it — a compound sub-task must leave its parent's controller in place.
+     *
+     * @param {AbortController} myController
+     * @param {AbortController} [turnController]
+     * @param {'isProcessing'|'isProcessingSummary'} [flag]
+     * @private
+     */
+    function _endChatTurn(myController, turnController, flag = 'isProcessing') {
+        appState[flag] = false;
+        if (appState.chatController === myController && !turnController) {
+            appState.chatController = null;
+        }
+        input.setProcessing(false);
+    }
+
+    /**
+     * Reports a turn failure on the assistant message. Cancellation and the
+     * "the model produced no changes" outcome are statuses, not errors.
+     *
+     * @param {object} msg - Assistant message handle
+     * @param {Error} error
+     * @private
+     */
+    function _reportTurnError(msg, error) {
+        if (error.name === 'AbortError') {
+            msg.setStatus('Cancelled.');
+        } else if (error.noChanges) {
+            msg.setStatus(error.message);
+        } else {
+            msg.markError(error.message);
+        }
     }
 
     /**
@@ -854,10 +915,7 @@ export function createConversation(deps) {
      * Runs a selection-scope amendment turn and stages the proposal card.
      */
     async function runSelectionEditTurn(promptTemplate, msg, turnDeps, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Drafting edit...');
             const commentInstructions = getCommentInstructions();
@@ -902,6 +960,15 @@ export function createConversation(deps) {
                         throw err;
                     }
                 }
+            }
+            // Read-only tool-loop outcome (the model inspected the table and
+            // answered instead of editing): the summary IS the chat answer.
+            // Staging a card here would have nothing to write, yet report
+            // "Applied as tracked changes" on apply.
+            if (proposal.noOps) {
+                msg.setStatus('');
+                msg.setText(proposal.answer || '(no changes)');
+                return;
             }
             msg.setStatus('');
 
@@ -973,17 +1040,9 @@ export function createConversation(deps) {
                 items: items || [],
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -993,10 +1052,7 @@ export function createConversation(deps) {
      * end as tracked changes; nothing is written before that.
      */
     async function runAppendTurn(instruction, msg, turnDeps, selectionText, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Drafting content to append...');
             const proposal = await actions.prepareDocumentAppend(turnDeps, {
@@ -1036,17 +1092,9 @@ export function createConversation(deps) {
                 items: [],
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1058,10 +1106,7 @@ export function createConversation(deps) {
      * never rewritten by this pipeline.
      */
     async function runFormatTurn(turn, msg, turnDeps, selectionText, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Planning document changes...');
             const proposal = await actions.prepareFormatProposal(turnDeps, {
@@ -1117,17 +1162,9 @@ export function createConversation(deps) {
                 })),
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1145,10 +1182,7 @@ export function createConversation(deps) {
             msg.markError('This Word host does not support the table APIs (WordApi 1.3). Update Word to create tables.');
             return;
         }
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Drafting table...');
             const proposal = await actions.prepareTableProposal(turnDeps, {
@@ -1202,17 +1236,9 @@ export function createConversation(deps) {
                 items: [],
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1223,10 +1249,7 @@ export function createConversation(deps) {
      * document via Word.js (tracked when track-changes is on).
      */
     async function runIllustrationTurn(turn, msg, turnDeps, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Designing illustration...');
             const proposal = await actions.prepareIllustrationProposal(turnDeps, {
@@ -1267,17 +1290,9 @@ export function createConversation(deps) {
                 items: [],
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1288,10 +1303,7 @@ export function createConversation(deps) {
      * one selectable change per op. Apply runs only the checked ops.
      */
     async function runImageToolTurn(turn, msg, turnDeps, selectionImages, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Working through the image task (tool loop)...');
             const proposal = await actions.prepareImageToolEdit(turnDeps, {
@@ -1301,76 +1313,161 @@ export function createConversation(deps) {
                 onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
                     s.text ? `${s.text}\n` : ''),
             });
-            // Read-only outcome (e.g. the model inspected the selected image
-            // with read_image and answered): the finish summary is the chat
-            // answer — no proposal card, nothing to apply.
-            if (proposal.noOps) {
-                msg.setStatus('');
-                msg.setText(proposal.answer || '(no image changes)');
-                return;
-            }
-            msg.setStatus('');
-            const title = 'Proposed image changes';
-            const svgOps = proposal.items.filter((item) => item.svg);
-            // Already sanitized by the image tool loop (design/replace_illustration
-            // ops run sanitizeSvg + ensureSvgDimensions). Inline render avoids the
-            // SVG data-URL decode that fails on some hosts.
-            const previewSvg = svgOps.length === 1 ? svgOps[0].svg : undefined;
-            const cardItems = proposal.items.map(({ id, label, before, after }) => ({
-                id, label, before, after,
-            }));
-            const card = makeProposalCard({
-                title,
-                countsText: `${proposal.ops.length} image operation(s)`,
-                previewSvg,
-                comment: null,
-                items: cardItems,
-                onApply: async (selectedIds) => {
-                    try {
-                        // One checkbox per op — honor the user's unchecking.
-                        const picked = new Set(selectedIds);
-                        const ops = proposal.ops.filter((_, i) => picked.has(i + 1));
-                        if (ops.length === 0) {
-                            card.markWarning('No operations selected.');
-                            return;
-                        }
-                        const result = await actions.applyImageOps(turnDeps, { ...proposal, ops });
-                        if (result && result.warnings && result.warnings.length > 0) {
-                            card.markWarning(`Applied with warning: ${result.warnings[0]}`);
-                        } else {
-                            card.markApplied();
-                        }
-                    } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
-                    }
-                },
-                onReject: () => {
-                    log('Image proposal rejected by user.', 'info');
-                },
-            });
-            msg.attachProposal(card, {
-                title,
-                state: 'pending',
-                countsText: `${proposal.ops.length} image operation(s)`,
-                previewSvg,
-                items: cardItems,
+            _stageImageOpsProposal(proposal, msg, turnDeps, {
+                title: 'Proposed image changes',
+                rejectLog: 'Image proposal rejected by user.',
+                emptyStatus: 'The image snapshot is no longer available — nothing to operate on.',
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else if (error.noChanges) {
-                msg.setStatus(error.message);
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
+    }
+
+    /**
+     * Stages an image tool-loop result: renders a read-only outcome as the
+     * chat answer, else builds the one-checkbox-per-op proposal card whose
+     * apply runs only the checked ops. Shared by the selection-scope and
+     * document-scope image turns — they differ only in the labels.
+     *
+     * @param {object|null} proposal - prepareImageToolEdit result
+     * @param {object} msg - Assistant message handle
+     * @param {object} turnDeps
+     * @param {{title: string, rejectLog: string, emptyStatus: string}} labels
+     * @private
+     */
+    function _stageImageOpsProposal(proposal, msg, turnDeps, labels) {
+        if (!proposal) {
+            msg.setStatus(labels.emptyStatus);
+            return;
+        }
+        // Read-only outcome (e.g. the model inspected the image with
+        // read_image and answered): the finish summary is the chat answer —
+        // no proposal card, nothing to apply.
+        if (proposal.noOps) {
+            msg.setStatus('');
+            msg.setText(proposal.answer || '(no image changes)');
+            return;
+        }
+        msg.setStatus('');
+        const { title } = labels;
+        const countsText = `${proposal.ops.length} image operation(s)`;
+        const svgOps = proposal.items.filter((item) => item.svg);
+        // Already sanitized by the image tool loop (design/replace_illustration
+        // ops run sanitizeSvg + ensureSvgDimensions). Inline render avoids the
+        // SVG data-URL decode that fails on some hosts.
+        const previewSvg = svgOps.length === 1 ? svgOps[0].svg : undefined;
+        const cardItems = proposal.items.map(({ id, label, before, after }) => ({
+            id, label, before, after,
+        }));
+        const card = makeProposalCard({
+            title,
+            countsText,
+            previewSvg,
+            comment: null,
+            items: cardItems,
+            onApply: async (selectedIds) => {
+                try {
+                    // One checkbox per op — honor the user's unchecking.
+                    const picked = new Set(selectedIds);
+                    const ops = proposal.ops.filter((_, i) => picked.has(i + 1));
+                    if (ops.length === 0) {
+                        card.markWarning('No operations selected.');
+                        return;
+                    }
+                    const result = await actions.applyImageOps(turnDeps, { ...proposal, ops });
+                    if (result && result.warnings && result.warnings.length > 0) {
+                        card.markWarning(`Applied with warning: ${result.warnings[0]}`);
+                    } else {
+                        card.markApplied();
+                    }
+                } catch (error) {
+                    log(`Apply failed: ${error.message}`, 'error');
+                    card.markError(error.message);
+                }
+            },
+            onReject: () => {
+                log(labels.rejectLog, 'info');
+            },
+        });
+        msg.attachProposal(card, {
+            title,
+            state: 'pending',
+            countsText,
+            previewSvg,
+            items: cardItems,
+        });
+    }
+
+    /**
+     * Stages a table tool-loop result: renders a read-only outcome as the
+     * chat answer, else builds the per-cell/row/merge/style checkbox card
+     * whose apply filters the patch to the checked items. Shared by the
+     * selection-scope and document-scope table turns.
+     *
+     * @param {object|null} proposal - prepareTableToolEdit result
+     * @param {object} msg - Assistant message handle
+     * @param {object} turnDeps
+     * @param {{title: string, rejectLog: string, emptyStatus: string}} labels
+     * @private
+     */
+    function _stageTablePatchProposal(proposal, msg, turnDeps, labels) {
+        if (!proposal) {
+            msg.setStatus(labels.emptyStatus);
+            return;
+        }
+        if (proposal.noOps) {
+            msg.setStatus('');
+            msg.setText(proposal.answer || '(no table changes)');
+            return;
+        }
+        msg.setStatus('');
+        const { title } = labels;
+        const beforeChars = proposal.tableItems.reduce((sum, item) => sum + (item.before || '').length, 0);
+        const afterChars = proposal.tableItems.reduce((sum, item) => sum + (item.after || '').length, 0);
+        const items = proposal.tableItems.map((item, index) => ({
+            id: index,
+            label: item.label,
+            before: item.before,
+            after: item.after,
+            searchText: item.searchText,
+        }));
+        const card = makeProposalCard({
+            title,
+            beforeChars,
+            afterChars,
+            comment: null,
+            items,
+            onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
+            onApply: async (selectedIds) => {
+                try {
+                    const toApply = selectedIds
+                        ? { ...proposal, tablePatch: filterTablePatchBySelection(proposal.tablePatch, selectedIds) }
+                        : proposal;
+                    const applied = await actions.applySelectionAmendment(turnDeps, toApply);
+                    if (applied && applied.skipped) {
+                        // Staleness guard refused the write — a warning, not
+                        // a success.
+                        card.markWarning(applied.reason);
+                    } else {
+                        card.markApplied();
+                    }
+                } catch (error) {
+                    log(`Apply failed: ${error.message}`, 'error');
+                    card.markError(error.message);
+                }
+            },
+            onReject: () => {
+                log(labels.rejectLog, 'info');
+            },
+        });
+        msg.attachProposal(card, {
+            title,
+            state: 'pending',
+            countsText: `${beforeChars} → ${afterChars} chars`,
+            items,
+        });
     }
 
     /**
@@ -1384,10 +1481,7 @@ export function createConversation(deps) {
      * summary as chat text — no card.
      */
     async function runTableToolTurn(turn, msg, turnDeps, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Working through the table task (tool loop)...');
             const proposal = await actions.prepareTableToolEdit(turnDeps, {
@@ -1396,70 +1490,15 @@ export function createConversation(deps) {
                 onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
                     s.text ? `${s.text}\n` : ''),
             });
-            if (proposal && proposal.noOps) {
-                msg.setStatus('');
-                msg.setText(proposal.answer || '(no table changes)');
-                return;
-            }
-            if (!proposal) {
-                msg.setStatus('The selection is no longer a multi-cell table region — nothing to operate on.');
-                return;
-            }
-            msg.setStatus('');
-
-            const title = 'Proposed table edit';
-            const beforeChars = proposal.tableItems.reduce((sum, item) => sum + (item.before || '').length, 0);
-            const afterChars = proposal.tableItems.reduce((sum, item) => sum + (item.after || '').length, 0);
-            const items = proposal.tableItems.map((item, index) => ({
-                id: index,
-                label: item.label,
-                before: item.before,
-                after: item.after,
-                searchText: item.searchText,
-            }));
-            const card = makeProposalCard({
-                title,
-                beforeChars,
-                afterChars,
-                comment: null,
-                items,
-                onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
-                onApply: async (selectedIds) => {
-                    try {
-                        const toApply = selectedIds
-                            ? { ...proposal, tablePatch: filterTablePatchBySelection(proposal.tablePatch, selectedIds) }
-                            : proposal;
-                        await actions.applySelectionAmendment(turnDeps, toApply);
-                        card.markApplied();
-                    } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
-                    }
-                },
-                onReject: () => {
-                    log('Table proposal rejected.', 'info');
-                },
-            });
-            msg.attachProposal(card, {
-                title,
-                state: 'pending',
-                countsText: `${beforeChars} → ${afterChars} chars`,
-                items,
+            _stageTablePatchProposal(proposal, msg, turnDeps, {
+                title: 'Proposed table edit',
+                rejectLog: 'Table proposal rejected.',
+                emptyStatus: 'The selection is no longer a multi-cell table region — nothing to operate on.',
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else if (error.noChanges) {
-                msg.setStatus(error.message);
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1470,9 +1509,8 @@ export function createConversation(deps) {
      * way to serve this) and stages a proposal card. Apply deletes them as
      * tracked changes.
      */
-    async function runCleanupTurn(msg, turnDeps) {
-        appState.isProcessing = true;
-        input.setProcessing(true);
+    async function runCleanupTurn(msg, turnDeps, turnController) {
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Scanning for empty paragraphs...');
             const proposal = await actions.prepareEmptyParagraphCleanup(turnDeps);
@@ -1509,10 +1547,9 @@ export function createConversation(deps) {
                 items: [],
             });
         } catch (error) {
-            msg.markError(error.message);
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1538,10 +1575,7 @@ export function createConversation(deps) {
      * Runs the summary pipeline (result opens as a new document).
      */
     async function runSummaryTurn(skill, args, msg, turnDeps, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessingSummary = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController, 'isProcessingSummary');
         try {
             msg.setStatus('Generating summary document...');
             const result = await actions.runSummarySkill(turnDeps, {
@@ -1555,17 +1589,9 @@ export function createConversation(deps) {
             });
             msg.setStatus(`Summary document created (${result.chars} chars${result.commentCount ? `, ${result.commentCount} comment(s) included` : ''}).`);
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessingSummary = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController, 'isProcessingSummary');
         }
     }
 
@@ -1574,12 +1600,12 @@ export function createConversation(deps) {
      * selectionText (when non-empty) is added to the prompt as a focused
      * excerpt alongside the full document context; selectionImages metadata
      * rides along as object references for mixed text+image selections.
+     * questionImages (chat file-upload attachments) carry dataUrls and are
+     * sent to the model as image_url parts, with a text-only fallback when
+     * the backend rejects image inputs.
      */
-    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, selectionImages, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, selectionImages, turnController, questionImages) {
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Reading the document...');
             const answer = await actions.answerQuestion(turnDeps, {
@@ -1587,6 +1613,7 @@ export function createConversation(deps) {
                 skillTemplate,
                 selectionText,
                 selectionImages,
+                questionImages,
                 signal: myController.signal,
                 onStatus: (s) => msg.setStatus(s),
                 onToken: (token) => {
@@ -1598,17 +1625,9 @@ export function createConversation(deps) {
             // Re-render with think tags stripped (tokens stream raw).
             msg.setText(answer);
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1667,10 +1686,7 @@ export function createConversation(deps) {
             return;
         }
 
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             const config = getActiveBackendConfig(appState);
             const taskPrompt = instruction + (selectionText
@@ -1695,18 +1711,12 @@ export function createConversation(deps) {
             msg.setStatus('');
             msg.setText(result.summary || 'Done — the tool loop finished without a summary.');
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
+            if (error.name !== 'AbortError') {
                 log(`MCP tools turn failed: ${error.message}`, 'error');
-                msg.markError(error.message);
             }
+            _reportTurnError(msg, error);
         } finally {
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-                appState.isProcessing = false;
-                input.setProcessing(false);
-            }
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1736,7 +1746,7 @@ export function createConversation(deps) {
             case 'amendment':
             default:
                 if (skill.scope === 'selection-first' && hasSelection) {
-                    await runSelectionEditTurn(withArgs(skill.defaultTemplate, args), msg, turnDeps);
+                    await runSelectionEditTurn(withArgs(skill.defaultTemplate, args), msg, turnDeps, turnController);
                 } else {
                     await runDocumentTurn(skill, args, msg, turnDeps);
                 }
@@ -1804,10 +1814,7 @@ export function createConversation(deps) {
     async function runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController) {
         // One shared controller for the whole compound turn: cancel() aborts
         // the in-flight sub-task AND stops the remaining planned tasks.
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Planning tasks...');
             const plan = await actions.planDocumentTasks(turnDeps, {
@@ -1819,12 +1826,17 @@ export function createConversation(deps) {
             });
             if (!plan.tasks || plan.tasks.length === 0) {
                 log('Task planning failed; falling back to single-intent routing.', 'warning');
+                // Same three selection facts submit() routed on — dropping
+                // the table-region flag would re-route a multi-cell table
+                // selection as if nothing were selected.
+                const hasTableRegion = !!turn.hasMultiCellTableRegion;
                 const fallback = routeTurn(turn.instruction, {
-                    hasSelection: !!selectionText || selectionImages.length > 0,
-                    hasImageSelection: !selectionText && selectionImages.length > 0,
+                    hasSelection: !!selectionText || selectionImages.length > 0 || hasTableRegion,
+                    hasImageSelection: !selectionText && !hasTableRegion && selectionImages.length > 0,
+                    hasMultiCellTableRegion: hasTableRegion,
                     skills: [], allowCompound: false,
                 });
-                if (fallback) await dispatchTurn(fallback, msg, turnDeps, selectionText, selectionImages);
+                if (fallback) await dispatchTurn(fallback, msg, turnDeps, selectionText, selectionImages, myController);
                 return;
             }
             log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
@@ -1845,17 +1857,9 @@ export function createConversation(deps) {
             }
             msg.setStatus('');
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1869,10 +1873,7 @@ export function createConversation(deps) {
      * @private
      */
     async function runDocumentImageToolTurn(turn, msg, turnDeps, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Working through document images (tool loop)...');
             const proposal = await actions.prepareImageToolEdit(turnDeps, {
@@ -1881,73 +1882,18 @@ export function createConversation(deps) {
                 onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
                     s.text ? `${s.text}\n` : ''),
             });
-            if (proposal && proposal.noOps) {
-                msg.setStatus('');
-                msg.setText(proposal.answer || '(no image changes)');
-                return;
-            }
-            if (!proposal) {
-                msg.setStatus('Document image snapshot failed.');
-                return;
-            }
-            msg.setStatus('');
-            const title = `Document image changes (${proposal.snapshotCount} picture${proposal.snapshotCount === 1 ? '' : 's'})`;
-            const svgOps = proposal.items.filter((item) => item.svg);
-            // Already sanitized by the image tool loop (design/replace_illustration
-            // ops run sanitizeSvg + ensureSvgDimensions). Inline render avoids the
-            // SVG data-URL decode that fails on some hosts.
-            const previewSvg = svgOps.length === 1 ? svgOps[0].svg : undefined;
-            const cardItems = proposal.items.map(({ id, label, before, after }) => ({ id, label, before, after }));
-            const card = makeProposalCard({
-                title,
-                countsText: `${proposal.ops.length} image operation(s)`,
-                previewSvg,
-                comment: null,
-                items: cardItems,
-                onApply: async (selectedIds) => {
-                    try {
-                        const picked = new Set(selectedIds);
-                        const ops = proposal.ops.filter((_, i) => picked.has(i + 1));
-                        if (ops.length === 0) {
-                            card.markWarning('No operations selected.');
-                            return;
-                        }
-                        const result = await actions.applyImageOps(turnDeps, { ...proposal, ops });
-                        if (result && result.warnings && result.warnings.length > 0) {
-                            card.markWarning(`Applied with warning: ${result.warnings[0]}`);
-                        } else {
-                            card.markApplied();
-                        }
-                    } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
-                    }
-                },
-                onReject: () => {
-                    log('Document image proposal rejected by user.', 'info');
-                },
-            });
-            msg.attachProposal(card, {
-                title,
-                state: 'pending',
-                countsText: `${proposal.ops.length} image operation(s)`,
-                previewSvg,
-                items: cardItems,
+            const pictures = proposal
+                ? `${proposal.snapshotCount} picture${proposal.snapshotCount === 1 ? '' : 's'}`
+                : '';
+            _stageImageOpsProposal(proposal, msg, turnDeps, {
+                title: `Document image changes (${pictures})`,
+                rejectLog: 'Document image proposal rejected by user.',
+                emptyStatus: 'Document image snapshot failed.',
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else if (error.noChanges) {
-                msg.setStatus(error.message);
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1960,10 +1906,7 @@ export function createConversation(deps) {
      * @private
      */
     async function runDocumentTableToolTurn(turn, msg, turnDeps, turnController) {
-        const myController = turnController || new AbortController();
-        appState.isProcessing = true;
-        appState.chatController = myController;
-        input.setProcessing(true);
+        const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Working through document tables (tool loop)...');
             const regions = await actions.readDocumentTableRegions(turnDeps);
@@ -1978,69 +1921,15 @@ export function createConversation(deps) {
                 onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
                     s.text ? `${s.text}\n` : ''),
             });
-            if (proposal && proposal.noOps) {
-                msg.setStatus('');
-                msg.setText(proposal.answer || '(no table changes)');
-                return;
-            }
-            if (!proposal) {
-                msg.setStatus('Document has no tables to manage — nothing to operate on.');
-                return;
-            }
-            msg.setStatus('');
-            const title = 'Document table changes';
-            const beforeChars = proposal.tableItems.reduce((sum, item) => sum + (item.before || '').length, 0);
-            const afterChars = proposal.tableItems.reduce((sum, item) => sum + (item.after || '').length, 0);
-            const items = proposal.tableItems.map((item, index) => ({
-                id: index,
-                label: item.label,
-                before: item.before,
-                after: item.after,
-                searchText: item.searchText,
-            }));
-            const card = makeProposalCard({
-                title,
-                beforeChars,
-                afterChars,
-                comment: null,
-                items,
-                onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
-                onApply: async (selectedIds) => {
-                    try {
-                        const toApply = selectedIds
-                            ? { ...proposal, tablePatch: filterTablePatchBySelection(proposal.tablePatch, selectedIds) }
-                            : proposal;
-                        await actions.applySelectionAmendment(turnDeps, toApply);
-                        card.markApplied();
-                    } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
-                    }
-                },
-                onReject: () => {
-                    log('Document table proposal rejected.', 'info');
-                },
-            });
-            msg.attachProposal(card, {
-                title,
-                state: 'pending',
-                countsText: `${beforeChars} → ${afterChars} chars`,
-                items,
+            _stageTablePatchProposal(proposal, msg, turnDeps, {
+                title: 'Document table changes',
+                rejectLog: 'Document table proposal rejected.',
+                emptyStatus: 'Document has no tables to manage — nothing to operate on.',
             });
         } catch (error) {
-            if (error.name === 'AbortError') {
-                msg.setStatus('Cancelled.');
-            } else if (error.noChanges) {
-                msg.setStatus(error.message);
-            } else {
-                msg.markError(error.message);
-            }
+            _reportTurnError(msg, error);
         } finally {
-            appState.isProcessing = false;
-            if (appState.chatController === myController && !turnController) {
-                appState.chatController = null;
-            }
-            input.setProcessing(false);
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -2072,7 +1961,7 @@ export function createConversation(deps) {
         } else if (turn.type === TURN_TYPE.FORMAT) {
             await runFormatTurn(turn, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.CLEANUP) {
-            await runCleanupTurn(msg, turnDeps);
+            await runCleanupTurn(msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.COMPOUND) {
             await runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController);
         } else if (turn.type === TURN_TYPE.DOC_EDIT) {
@@ -2084,7 +1973,7 @@ export function createConversation(deps) {
                 defaultTemplate: turn.instruction,
             }, undefined, msg, turnDeps);
         } else {
-            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, selectionImages, turnController);
+            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, selectionImages, turnController, turn.questionImages);
         }
     }
 
@@ -2092,10 +1981,18 @@ export function createConversation(deps) {
      * Submits raw chat input as a new turn.
      *
      * @param {string} text
+     * @param {Array<{name: string, kind: string, size: number, text?: string, dataUrl?: string}>} [attachments] -
+     *   Parsed files from the input bar. Extracted text (txt/md/docx/pdf) is
+     *   appended to the routed question/instruction as labeled sections;
+     *   images ride QA turns as image_url parts (turn.questionImages).
      */
-    async function submit(text) {
+    async function submit(text, attachments) {
+        const list = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
         const trimmed = (text || '').trim();
-        if (!trimmed) return;
+        if (!trimmed && list.length === 0) return;
+        // Question lead so attachment-only submissions route to DOC_QA, not
+        // the compound planner.
+        const effective = trimmed || 'What do the attached file(s) say?';
 
         if (isBusy()) {
             log('Already processing. Cancel the current run first.', 'warning');
@@ -2125,7 +2022,7 @@ export function createConversation(deps) {
         const hasSelection = !!selectionText || selectionImages.length > 0 || hasMultiCellTableRegion;
         const hasImageSelection = !selectionText && !hasMultiCellTableRegion && selectionImages.length > 0;
 
-        const turn = routeTurn(trimmed, {
+        const turn = routeTurn(effective, {
             hasSelection,
             hasImageSelection,
             hasMultiCellTableRegion,
@@ -2133,8 +2030,20 @@ export function createConversation(deps) {
         });
         if (!turn) return;
 
+        // Attachments: extracted text joins the routed prompt as labeled
+        // sections; images become image_url parts on QA turns (other
+        // pipelines are text-only — the context block lists them by name).
+        if (list.length > 0) {
+            const context = buildAttachmentContext(list);
+            if (context) {
+                if (typeof turn.question === 'string') turn.question += context;
+                else if (typeof turn.instruction === 'string') turn.instruction += context;
+            }
+            turn.questionImages = splitAttachments(list).imageAttachments;
+        }
+
         view.hideWelcome();
-        view.addUserMessage(trimmed);
+        view.addUserMessage(effective, attachmentMeta(list));
         input.setValue('');
 
         const msg = view.createAssistantMessage();
@@ -2199,6 +2108,7 @@ export function createConversation(deps) {
         view.clearChat();
         view.renderWelcome();
         input.setValue('');
+        if (typeof input.clearAttachments === 'function') input.clearAttachments();
         input.focus();
     }
 

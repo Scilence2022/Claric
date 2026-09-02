@@ -28,11 +28,13 @@
  *   MINIMAX_PROXY_TARGET  - upstream MiniMax API origin (https://api.minimax.io)
  *   MINIMAX_CN_PROXY_PATH - proxy path for MiniMax China (default empty = disabled; set to e.g. /minimax-cn to enable)
  *   MINIMAX_CN_PROXY_TARGET - upstream MiniMax CN API origin (https://api.minimaxi.com)
+ *   ZHONGKEYU_PROXY_PATH  - proxy path for zhongkeyu.com (default empty = disabled; set to e.g. /zhongkeyu to enable)
+ *   ZHONGKEYU_PROXY_TARGET - upstream zhongkeyu.com API origin (https://zhongkeyu.com)
  *   LLM_PROXY_TIMEOUT_MS  - upstream request timeout (default 300000 = 5 min)
  *
  * Why proxy LLM traffic at all: the add-in's UI defaults its backend URLs
  * to same-origin paths ('/ollama', '/vllm', '/deepseek', '/glm', '/kimi',
- * '/minimax', '/minimax-cn').
+ * '/minimax', '/minimax-cn', '/zhongkeyu').
  * Serving those paths from the same HTTPS origin
  * avoids mixed-content blocking (https page fetching http://localhost) and
  * CORS configuration on the backend. This matters most when Word runs on
@@ -83,6 +85,8 @@ function getEnv() {
     MINIMAX_PROXY_TARGET: process.env.MINIMAX_PROXY_TARGET || 'https://api.minimax.io',
     MINIMAX_CN_PROXY_PATH: process.env.MINIMAX_CN_PROXY_PATH || '',
     MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
+    ZHONGKEYU_PROXY_PATH: process.env.ZHONGKEYU_PROXY_PATH || '',
+    ZHONGKEYU_PROXY_TARGET: process.env.ZHONGKEYU_PROXY_TARGET || 'https://zhongkeyu.com',
     CUSTOM_PROXY_PATH: process.env.CUSTOM_PROXY_PATH || '',
     CUSTOM_PROXY_TARGET: process.env.CUSTOM_PROXY_TARGET || '',
     LLM_PROXY_TIMEOUT_MS: parseInt(process.env.LLM_PROXY_TIMEOUT_MS || String(DEFAULT_LLM_PROXY_TIMEOUT_MS), 10)
@@ -197,6 +201,7 @@ function buildProxyRoutes(env) {
     ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET'],
     ['MINIMAX_PROXY_PATH', 'MINIMAX_PROXY_TARGET'],
     ['MINIMAX_CN_PROXY_PATH', 'MINIMAX_CN_PROXY_TARGET'],
+    ['ZHONGKEYU_PROXY_PATH', 'ZHONGKEYU_PROXY_TARGET'],
     ['CUSTOM_PROXY_PATH', 'CUSTOM_PROXY_TARGET'],
   ];
 

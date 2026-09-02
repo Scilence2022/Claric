@@ -20,6 +20,8 @@
  * @module taskpane/sessions
  */
 
+import { newId, normalizeMessage } from './message-shape.js';
+
 const INDEX_KEY = 'wordAI.sessions.index';
 const SESSION_KEY_PREFIX = 'wordAI.session.';
 const MAX_SESSIONS = 50;
@@ -27,15 +29,11 @@ const MAX_SESSION_BYTES = 1_500_000; // ~1.5 MB per session
 const MAX_TOTAL_BYTES = 4_000_000;  // ~4 MB total across sessions + index
 
 /**
- * Returns a stable session id. Uses crypto.randomUUID when available
- * (Office.js WebView2 does), else falls back to timestamp + random suffix.
+ * Returns a stable session id.
  * @returns {string}
  */
 function generateId() {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-        return `s-${crypto.randomUUID()}`;
-    }
-    return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return newId('s');
 }
 
 function nowIso() {
@@ -192,28 +190,15 @@ function makePreview(messages) {
 
 /**
  * Removes unknown fields and normalizes empty values so persisted messages
- * never carry DOM references or transient closures.
+ * never carry DOM references or transient closures. The shape (including the
+ * attachment metadata reduction — image data URLs and extracted text would
+ * blow the localStorage quota) lives in message-shape.js, shared with the
+ * chat view's load path.
  * @param {object} m
  * @returns {object}
  */
 function stripMessage(m) {
-    const safe = m && typeof m === 'object' ? m : {};
-    return {
-        id: safe.id || generateId(),
-        role: safe.role === 'assistant' ? 'assistant' : 'user',
-        text: typeof safe.text === 'string' ? safe.text : '',
-        status: typeof safe.status === 'string' ? safe.status : '',
-        error: typeof safe.error === 'string' ? safe.error : null,
-        worklog: safe.worklog && typeof safe.worklog === 'object'
-            ? { count: Number(safe.worklog.count) || 0, durationMs: Number(safe.worklog.durationMs) || 0 }
-            : null,
-        model: safe.model && typeof safe.model === 'object'
-            ? { sections: Number(safe.model.sections) || 0 }
-            : null,
-        citations: Array.isArray(safe.citations) ? safe.citations.filter((c) => c && typeof c === 'object') : [],
-        proposals: Array.isArray(safe.proposals) ? safe.proposals : [],
-        ts: typeof safe.ts === 'string' ? safe.ts : nowIso(),
-    };
+    return normalizeMessage(m);
 }
 
 /**

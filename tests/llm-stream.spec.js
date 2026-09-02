@@ -61,6 +61,20 @@ describe('sendPromptStream', () => {
     // stream:true was requested
     const body = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(body.stream).toBe(true);
+    expect(body.temperature).toBe(1);
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  test('sends configured temperature and reasoning effort', async () => {
+    global.fetch = jest.fn(async () =>
+      sseResponse([sseLine('ok'), 'data: [DONE]\n'])
+    );
+
+    await sendPromptStream({ ...CONFIG, thinkingLevel: 'high', temperature: 0.6 }, 'prompt', () => {});
+
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.temperature).toBe(0.6);
+    expect(body.reasoning_effort).toBe('high');
   });
 
   test('handles SSE lines split across chunks', async () => {

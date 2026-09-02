@@ -1182,6 +1182,77 @@ describe('readDocumentTableRegions', () => {
     const logged = deps.log.mock.calls.map((c) => c[0]).join('\n');
     expect(logged).toMatch(/3 table\(s\)/);
   });
+
+  test('a uniform table reports merged:false and no shadow keys', async () => {
+    setWordRun(makeDocTablesContext(1));
+    const regions = await readDocumentTableRegions(makeDeps());
+
+    expect(regions[0].merged).toBe(false);
+    expect(regions[0].shadowKeys).toBeUndefined();
+  });
+
+  test('a merged table reports merged:true and marks the covered slots', async () => {
+    // Row 1 carries a horizontal merge: (0,1) resolves to the (0,0) anchor.
+    const anchors = [
+      [{ rowIndex: 0, cellIndex: 0 }, { rowIndex: 0, cellIndex: 0 }],
+      [{ rowIndex: 1, cellIndex: 0 }, { rowIndex: 1, cellIndex: 1 }],
+      [{ rowIndex: 2, cellIndex: 0 }, { rowIndex: 2, cellIndex: 1 }],
+    ];
+    const proxies = {};
+    const table = {
+      isNullObject: false,
+      rowCount: 3,
+      values: [['Wide header', ''], ['old a', 'b'], ['c', 'd']],
+      isUniform: false,
+      load: jest.fn(),
+      getCell: jest.fn((r, c) => {
+        const key = `${r},${c}`;
+        if (!proxies[key]) proxies[key] = { ...anchors[r][c], load: jest.fn() };
+        return proxies[key];
+      }),
+    };
+    setWordRun({
+      document: { body: { tables: { items: [table], load: jest.fn() } } },
+      sync: jest.fn().mockResolvedValue(undefined),
+    });
+
+    const deps = makeDeps();
+    const regions = await readDocumentTableRegions(deps);
+
+    expect(regions[0].merged).toBe(true);
+    expect(regions[0].mergedUnknown).toBe(false);
+    expect([...regions[0].shadowKeys]).toEqual(['1,2']);
+    const shadowCell = regions[0].cells.find((c) => c.row === 1 && c.col === 2);
+    expect(shadowCell.merged).toBe(true);
+    const logged = deps.log.mock.calls.map((c) => c[0]).join('\n');
+    expect(logged).toMatch(/merged cells/);
+  });
+
+  test('a host that throws on merge probes degrades to mergedUnknown', async () => {
+    const table = {
+      isNullObject: false,
+      rowCount: 3,
+      values: TABLE_VALUES,
+      isUniform: false,
+      load: jest.fn(),
+      getCell: jest.fn(() => ({ load: jest.fn() })),
+    };
+    let syncCount = 0;
+    setWordRun({
+      document: { body: { tables: { items: [table], load: jest.fn() } } },
+      sync: jest.fn(async () => {
+        syncCount += 1;
+        // 1: tables.load, 2: table.load, 3: the merge probe.
+        if (syncCount === 3) throw Object.assign(new Error('ItemNotFound'), { name: 'ItemNotFound' });
+      }),
+    });
+
+    const regions = await readDocumentTableRegions(makeDeps());
+
+    expect(regions[0].merged).toBe(true);
+    expect(regions[0].mergedUnknown).toBe(true);
+    expect([...regions[0].shadowKeys]).toEqual([]);
+  });
 });
 
 /**

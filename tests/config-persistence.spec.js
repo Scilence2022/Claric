@@ -57,12 +57,35 @@ describe('normalizeConfig', () => {
         const out = normalizeConfig(makeDefaults(), {
             providers: { vllm: { url: 'http://x:8026' } },
         });
-        // vllm url applied, missing model/apiPath fall back to defaults
+        // vllm url and missing generation settings fall back to defaults
         expect(out.providers.vllm.url).toBe('http://x:8026');
         expect(out.providers.vllm.model).toBe(PROVIDER_PRESETS.vllm.model);
         expect(out.providers.vllm.apiPath).toBe('/v1');
+        expect(out.providers.vllm.thinkingLevel).toBe('default');
+        expect(out.providers.vllm.temperature).toBe(1);
         // ollama untouched
         expect(out.providers.ollama).toEqual(makeDefaults().providers.ollama);
+    });
+
+    test('accepts valid thinking level and temperature values', () => {
+        const out = normalizeConfig(makeDefaults(), {
+            providers: { ollama: { thinkingLevel: 'high', temperature: 0.7 } },
+        });
+        expect(out.providers.ollama.thinkingLevel).toBe('high');
+        expect(out.providers.ollama.temperature).toBe(0.7);
+    });
+
+    test('replaces invalid thinking level and temperature values with defaults', () => {
+        const out = normalizeConfig(makeDefaults(), {
+            providers: {
+                ollama: { thinkingLevel: 'ultra', temperature: 3 },
+                vllm: { thinkingLevel: 'low', temperature: Number.NaN },
+            },
+        });
+        expect(out.providers.ollama.thinkingLevel).toBe('default');
+        expect(out.providers.ollama.temperature).toBe(1);
+        expect(out.providers.vllm.thinkingLevel).toBe('low');
+        expect(out.providers.vllm.temperature).toBe(1);
     });
 
     test('legacy backends shape migrates into providers', () => {
@@ -157,6 +180,29 @@ describe('normalizeConfig', () => {
         expect(defaults.backend).toBe('ollama');
         expect(defaults.docExtraction.richness).toBe('structured');
         expect(defaults.providers.ollama.url).toBe('/ollama');
+    });
+
+    test('a saved provider entry does not leak into the defaults', () => {
+        // A bare spread aliases `providers`, so the per-provider writes landed
+        // in the caller's object: reusing one defaults object across two calls
+        // gave the second call the first call's saved URL as its fallback.
+        const defaults = makeDefaults();
+        const first = normalizeConfig(defaults, {
+            providers: { ollama: { url: 'http://gpu-box:11434', model: 'llama3' } },
+        });
+        expect(first.providers.ollama.url).toBe('http://gpu-box:11434');
+        expect(defaults.providers.ollama.url).toBe('/ollama');
+
+        // Second call over the same defaults sees pristine fallbacks.
+        const second = normalizeConfig(defaults, { providers: { ollama: { model: 'qwen3' } } });
+        expect(second.providers.ollama.url).toBe('/ollama');
+        expect(second.providers.ollama.model).toBe('qwen3');
+    });
+
+    test('the legacy backends shape does not mutate the defaults either', () => {
+        const defaults = makeDefaults();
+        normalizeConfig(defaults, { backends: { vllm: { url: 'http://x:8026' } } });
+        expect(defaults.providers.vllm.url).toBe(PROVIDER_PRESETS.vllm.url);
     });
 });
 

@@ -1900,6 +1900,94 @@ describe('createConversation.submit', () => {
   });
 });
 
+describe('createConversation.submit with file attachments', () => {
+  test('text attachments append labeled sections to the QA question', async () => {
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('what do these files say?', [
+      { name: 'a.txt', kind: 'text', size: 9, text: 'alpha body' },
+      { name: 'b.pdf', kind: 'pdf', size: 8, text: 'beta body' },
+    ]);
+
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    const args = actions.answerQuestion.mock.calls[0][1];
+    expect(args.question).toContain('what do these files say?');
+    expect(args.question).toContain('--- ATTACHED FILE: a.txt ---\nalpha body');
+    expect(args.question).toContain('--- ATTACHED FILE: b.pdf ---\nbeta body');
+    // The user bubble shows the typed text plus display metadata only.
+    expect(view.addUserMessage).toHaveBeenCalledWith('what do these files say?', [
+      { name: 'a.txt', kind: 'text', size: 9 },
+      { name: 'b.pdf', kind: 'pdf', size: 8 },
+    ]);
+  });
+
+  test('image attachments ride the QA turn as image parts', async () => {
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('what is in this picture?', [
+      { name: 'p.png', kind: 'image', size: 3, dataUrl: 'data:image/png;base64,AQID' },
+    ]);
+
+    const args = actions.answerQuestion.mock.calls[0][1];
+    expect(args.questionImages).toEqual([{ name: 'p.png', dataUrl: 'data:image/png;base64,AQID' }]);
+    expect(args.question).toContain('ATTACHED IMAGE: p.png');
+    expect(args.question).not.toContain('data:image');
+  });
+
+  test('attachments alone (no text) submit with a default instruction', async () => {
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('   ', [{ name: 'a.txt', kind: 'text', size: 5, text: 'body' }]);
+
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    expect(actions.answerQuestion.mock.calls[0][1].question).toContain('What do the attached file(s) say?');
+    expect(view.addUserMessage.mock.calls[0][0]).toBe('What do the attached file(s) say?');
+  });
+
+  test('empty text and no attachments is still a no-op', async () => {
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('   ', []);
+    await conv.submit('', undefined);
+
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+    expect(view.addUserMessage).not.toHaveBeenCalled();
+  });
+
+  test('attachment text appends to edit instructions too', async () => {
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'clause text',
+    });
+
+    await conv.submit('make it formal', [{ name: 'style.md', kind: 'text', size: 4, text: 'rules' }]);
+
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
+    expect(actions.prepareSelectionAmendment.mock.calls[0][1].promptTemplate)
+      .toContain('--- ATTACHED FILE: style.md ---\nrules');
+  });
+});
+
 describe('createConversation.newChat', () => {
   test('persists the outgoing session before clearing', async () => {
     const appState = makeAppState();
@@ -2120,4 +2208,152 @@ describe('/mcp reserved skill routing', () => {
         await conv.submit('/mcp hello');
         expect(view._msg.appendText).toHaveBeenCalledWith(expect.stringContaining('No MCP servers are configured'));
     });
+});
+
+describe('turn lifecycle guards', () => {
+  test('a chained-instruction tool loop with a read-only outcome answers in chat (no card)', async () => {
+    // prepareTableToolEdit can resolve to {noOps, answer} — no tablePatch and
+    // no amendedText. Staging a card for it produced an apply that wrote
+    // nothing yet reported "Applied as tracked changes".
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareTableToolEdit: jest.fn(async () => ({
+        noOps: true,
+        answer: 'the table already totals correctly',
+        selectionText: 'header\nrow a',
+        model: 'm',
+        toolLoop: { steps: 2, finished: true },
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'header\nrow a',
+    });
+
+    // "然后" makes this a chained instruction, which takes the tool loop first.
+    await conv.submit('检查合计，然后修正表头');
+
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(view._msg.setText).toHaveBeenCalledWith('the table already totals correctly');
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(actions.applySelectionAmendment).not.toHaveBeenCalled();
+  });
+
+  test('a cleanup turn registers its controller so cancel() reaches it', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const input = makeInput();
+    const actions = makeActions({
+      prepareEmptyParagraphCleanup: jest.fn(() => new Promise(() => {})),
+    });
+    const conv = createConversation({
+      appState, view, input, log: jest.fn(), actions,
+      getSelectionText: async () => '',
+    });
+
+    conv.submit('删除多余的空行');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(appState.chatController).not.toBeNull();
+    conv.cancel();
+    expect(appState.chatController.signal.aborted).toBe(true);
+  });
+
+  test('a compound sub-task keeps the parent controller and busy flag', async () => {
+    // Sub-runners share the compound turn's controller: one must not null it
+    // (nor drop the busy flag) when it finishes, or cancel() loses its grip on
+    // the rest of the chain and a later turn can start mid-chain.
+    const appState = makeAppState();
+    const view = makeView();
+    const input = makeInput();
+    const seen = [];
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({
+        tasks: [
+          { type: 'edit', instruction: '删除多余的空行' },   // → CLEANUP
+          { type: 'format', instruction: '居中全文' },
+        ],
+        model: 'm',
+      })),
+      prepareEmptyParagraphCleanup: jest.fn(async () => ({ emptyCount: 0 })),
+      prepareFormatProposal: jest.fn(async () => {
+        seen.push({
+          controller: appState.chatController,
+          isProcessing: appState.isProcessing,
+        });
+        return { instruction: 'x', scope: 'document', ops: [{ font: { bold: true } }], model: 'm' };
+      }),
+    });
+    const conv = createConversation({
+      appState, view, input, log: jest.fn(), actions,
+      getSelectionText: async () => '',
+    });
+
+    const inFlight = conv.submit('删除多余的空行，并居中全文');
+    await Promise.resolve();
+    await Promise.resolve();
+    const compoundController = appState.chatController;
+    await inFlight;
+
+    // The cleanup sub-task ran first; when task two started, the compound
+    // turn's controller was still registered and the pane still busy.
+    expect(actions.prepareEmptyParagraphCleanup).toHaveBeenCalledTimes(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].controller).toBe(compoundController);
+    expect(seen[0].isProcessing).toBe(true);
+    // The whole chain settled: flag down, controller released.
+    expect(appState.isProcessing).toBe(false);
+    expect(appState.chatController).toBeNull();
+    expect(input.setProcessing).toHaveBeenLastCalledWith(false);
+  });
+
+  test('planning failure re-routes with the table-region flag intact', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      // Planner returns nothing → the fallback re-routes the instruction.
+      planDocumentTasks: jest.fn(async () => ({ tasks: [], model: 'm' })),
+      prepareTableToolEdit: jest.fn(async () => ({
+        noOps: true, answer: 'reviewed', selectionText: 'x', model: 'm',
+        toolLoop: { steps: 1, finished: true },
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionContent: async () => ({
+        text: 'header\nrow a',
+        hasMultiCellTableRegion: true,
+        images: [],
+      }),
+    });
+
+    // Format + edit intents → COMPOUND; planning fails → fallback routing.
+    // With the flag carried, the fallback reaches TABLE_TOOL; with it dropped
+    // the same instruction re-routed to the FORMAT pipeline instead.
+    await conv.submit('表头加粗，并润色');
+
+    expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(view._msg.setText).toHaveBeenCalledWith('reviewed');
+  });
+
+  test('routeTurn carries the table-region flag on compound turns', () => {
+    // Multi-intent instruction with a multi-cell table selection: the planner
+    // decides, and the flag must ride along so a planning failure can
+    // re-route with the same selection facts runCompoundTurn was given.
+    const turn = routeTurn('增加标题，并深度润色修改', {
+      hasSelection: true,
+      hasMultiCellTableRegion: true,
+      skills: BUILTIN_SKILLS,
+    });
+    expect(turn.type).toBe(TURN_TYPE.COMPOUND);
+    expect(turn.hasMultiCellTableRegion).toBe(true);
+
+    // Without a table selection the flag is false, not absent.
+    expect(routeTurn('增加标题，并深度润色修改', { hasSelection: false, skills: BUILTIN_SKILLS })
+      .hasMultiCellTableRegion).toBe(false);
+  });
 });

@@ -21,7 +21,7 @@ import './taskpane.css';
 import { appState, loadSettings, getActiveBackendConfig, persistSettings } from './app-state.js';
 import { listSkills } from './skills.js';
 import { createConversation } from './conversation.js';
-import { watchSelection } from './word-actions.js';
+import { watchSelection, revealTextSnippet } from './word-actions.js';
 import { reapOrphanChunkBookmarks } from '../lib/reassembler.js';
 import * as chatView from './ui/chat-view.js';
 import { renderWelcomeChips, selectWelcomeSkills } from './ui/welcome.js';
@@ -56,6 +56,12 @@ function initialize() {
     // Chat view
     chatView.initChatView();
 
+    // Citation pills rebuilt from a restored session carry no closures — give
+    // them the same reveal action the live turn uses.
+    chatView.setCitationSelectHandler((searchText) => {
+        revealTextSnippet({ log: addLog }, searchText);
+    });
+
     // History slide-over (sessions saved to localStorage; survives reloads).
     initHistoryView({
         onLoadSession: (session) => {
@@ -84,10 +90,11 @@ function initialize() {
 
     // Input bar + conversation orchestration
     const input = initInputBar({
-        onSubmit: (text) => conversation.submit(text),
+        onSubmit: (text, attachments) => conversation.submit(text, attachments),
         onCancel: () => conversation.cancel(),
         getSkills: () => listSkills(appState.promptManager),
         onOpenSettings: openSettings,
+        onLog: addLog,
         getAutoApply: () => appState.config.autoApplyChanges === true,
         setAutoApply: (value) => {
             appState.config.autoApplyChanges = value === true;

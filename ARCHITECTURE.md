@@ -36,7 +36,7 @@ src/
                                #   and idle-timeout (resets per chunk)
     providers.js               # Provider catalog: Ollama, vLLM, DeepSeek,
                                #   Zhipu GLM, Moonshot Kimi, MiniMax (intl + CN),
-                               #   Custom
+                               #   中科大模型 (zhongkeyu.com), Custom
     prompt-manager.js          # 4-category prompt CRUD, activation, composition
     comment-extractor.js       # Comment extraction, document text extraction,
                                #   tracked changes OOXML parsing, token estimation
@@ -73,6 +73,10 @@ src/
     skill-store.js            # Imported skill package persistence
                                #   (localStorage wordAI.skills.imported, cap 24)
     skill-limits.js           # Shared skill-package size caps
+    file-attachments.js        # Chat file uploads: type detection (text/image/
+                               #   docx/pdf), size/count caps, parsing (File API;
+                               #   mammoth + pdf.js legacy lazily imported),
+                               #   prompt context assembly, persistence metadata
     response-parser.js         # ===AMENDMENT===/===COMMENT=== splitting,
                                #   fallback classification prompt
     json-utils.js              # Shared LLM-JSON extraction: string-aware
@@ -160,6 +164,10 @@ src/
                                #   flags, normalizeConfig, debounce
     skills.js                  # Skill registry: 6 built-ins + custom prompts
                                #   exposed as slash commands
+    message-shape.js           # Canonical chat-message shape shared by both
+                               #   legs of the session round-trip (id
+                               #   generation, field validation, attachment
+                               #   and citation metadata)
     conversation.js            # Turn routing (intent regexes + task planner),
                                #   per-pipeline turn runners, proposal staging,
                                #   concurrency guard, cancel
@@ -179,7 +187,10 @@ src/
       input-bar.js             # Composer: textarea, skill picker popup + "+"
                                #   skills menu, macOS-style auto-apply toggle,
                                #   send/cancel, model pill, selection preview
-                               #   chip (text + image thumbnails + +N badge)
+                               #   chip (text + image thumbnails + +N badge),
+                               #   file-upload button + attachment chips
+                               #   (parse/remove/clear, validation via
+                               #   lib/file-attachments.js)
       welcome.js               # Welcome empty state with skill chips
       settings-view.js         # Settings slide-over (General / Prompts / Skills / MCP Servers tabs)
                                #   + prompt management
@@ -192,7 +203,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (~1300 tests, 60 suites)
+tests/                         # Jest unit tests (~1360 tests, 62 suites)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -255,7 +266,12 @@ tests/                         # Jest unit tests (~1300 tests, 60 suites)
                                #   + read_image attachments + selection focus
                                #   + 4xx image-strip retry + noOps answer
   input-bar.spec.js           # @jest-environment jsdom — selection preview
-                               #   chip (text + thumbnails + +N badge)
+                               #   chip (text + thumbnails + +N badge), file-
+                               #   attachment chips (add/remove/submit/clear,
+                               #   validation logging)
+  file-attachments.spec.js     # Type detection, size/count caps, text/image/
+                               #   docx/pdf parsing (mammoth + pdf.js mocked),
+                               #   context assembly + truncation, persist meta
   selection-images.spec.js    # readSelectionContent (text + inline pictures,
                                #   cap + totalImages), imageDataUrl mime
                                #   sniffing, debounced watchSelection
@@ -588,8 +604,15 @@ Question → DOC_QA → answerQuestion()
     + --- SELECTED IMAGES --- (metadata reference when the selection also
       carries image(s); content reading is the read_image tool in the
       image session, not bytes injected here)
+    + --- ATTACHED FILE: name --- sections (chat file uploads — extracted
+      text from .txt/.md/.docx/.pdf, appended by conversation.submit to the
+      routed question/instruction, capped at 200K chars)
     + --- DOCUMENT --- (full text at configured extraction richness)
   → sendPromptStream with 300s idle timeout; tokens stream into the message
+  → uploaded image attachments (questionImages) instead send one multimodal
+    user message (text + image_url parts) via sendMessagesStream; an HTTP 4xx
+    (text-only backend) retries once without the images, mirroring the tool
+    loop's _sendLoopMessages degradation
 ```
 
 ## Core Components
@@ -662,6 +685,16 @@ OOXML tracked changes pipeline:
 - `buildSummaryHtml(summaryText, comments, title)` — converts LLM markdown to HTML via `marked.parse()`, adds inline table border styles for Word rendering, builds annex with numbered source comments
 - `createSummaryDocument(html, title, log)` — creates new Word document via `context.application.createDocument()`, inserts HTML into `newDoc.body`, opens document
 
+### File Attachments (`src/lib/file-attachments.js`)
+
+Chat input file uploads, pure logic (no DOM — the input bar owns the picker and chips):
+
+- `detectAttachmentKind(name, mime)` — extension-first classification into text / image / docx / pdf (MIME fallback)
+- `validateAttachment(file, existing)` — caps: 5 files, 2 MB per text-like file, 4.5 MB per image (mirrors read_image's 6M base64-char ceiling), 10 MB total; rejections carry user-facing messages surfaced via the activity log
+- `parseAttachment(file)` — text via `file.text()`, images as base64 data URLs (chunked `btoa`, FileReader fallback for jsdom), .docx via mammoth's browser bundle, .pdf via pdf.js legacy build — both parsers **dynamically imported** so they stay out of the first-paint bundle (pdf.js worker copied to `dist/pdf.worker.min.mjs` by webpack, exempted from the asset-size gate)
+- `buildAttachmentContext(attachments)` — labeled `--- ATTACHED FILE: name ---` sections appended by `conversation.submit` to the routed question/instruction, capped at 200K chars with an omission note; images are name-listed (their bytes travel as image_url parts on QA turns)
+- `attachmentMeta(attachments)` — name/kind/size only for chat bubbles and session persistence; extracted text and data URLs never enter localStorage
+
 ### Diff Engine (`src/lib/word-diff/` — vendored from office-word-diff, Apache-2.0)
 
 Cascading strategy for applying LLM-suggested text changes:
@@ -689,6 +722,7 @@ Chat-driven UI split into focused modules:
 - `app-state.js` — shared config/state; `normalizeConfig` field-by-field validation
 - `conversation.js` — turn routing (see "Turn Routing" above) and per-pipeline turn runners; every `log()` line is teed into the message's work log; concurrency guard + AbortController cancel (every LLM-bearing turn wires `chatController`; compound turns thread one shared controller into their sub-tasks so a single cancel stops the whole chain)
 - `skills.js` — skill registry: six built-ins plus PromptManager prompts as custom slash commands
+- `message-shape.js` — the single definition of a persisted chat message (id generation, field validation, attachment/citation metadata). `sessions.js` normalizes through it on the way into localStorage and `ui/chat-view.js` on the way back into the DOM, so a new message field cannot be validated on one leg and dropped on the other
 - `word-actions.js` — the pipelines (selection/append/format/illustration/cleanup prepare+apply pairs, gated doc-scope runs, planner, Q&A, summary) with explicit args instead of DOM/active-prompt reads
 - `ui/chat-view.js` — message list, streaming body, per-turn work log (auto-collapse to "Worked for Ns · M steps"), model activity region (reasoning dimmed, per-section split, pin-to-bottom auto-scroll that disengages when the user scrolls up), progress bar with ETA, citation pills
 - `ui/proposal-card.js` — staged proposals: per-change checkbox list with inline diffs and locate buttons, selective apply ("Applied X of Y"), per-item applied feedback (dimmed + status tag) driven by `markItemApplied`, pause/resume ("Continue applying") via `setPaused`, terminal applied/rejected/warning/error states, optional image preview (illustration)
@@ -720,7 +754,7 @@ of crashing the add-in.
 ### Runtime (localStorage)
 
 All user settings persist in `localStorage` under the `wordAI.config` key:
-- `backend` — provider id (`'ollama'`, `'vllm'`, `'deepseek'`, `'glm'`, `'kimi'`, `'minimax'`, `'minimax-cn'`, `'custom'`)
+- `backend` — provider id (`'ollama'`, `'vllm'`, `'deepseek'`, `'glm'`, `'kimi'`, `'minimax'`, `'minimax-cn'`, `'zhongkeyu'`, `'custom'`)
 - `providers.{id}.url` — endpoint URL (same-origin proxy path by default)
 - `providers.{id}.apiKey` — optional API key
 - `providers.{id}.model` — model id (free-text with refreshable suggestions)
@@ -761,7 +795,7 @@ docker compose up -d
 The manifest is regenerated inside the container at startup from
 `HOST`/`PORT`/`PROTOCOL`; a stable add-in GUID is persisted (pin with
 `ADDIN_GUID`). The server also proxies `/ollama`, `/vllm`, `/deepseek`,
-`/glm`, `/kimi`, `/minimax`, `/minimax-cn` to the upstreams configured via
+`/glm`, `/kimi`, `/minimax`, `/minimax-cn`, `/zhongkeyu` to the upstreams configured via
 the corresponding `*_PROXY_TARGET` variables (host.docker.internal from a
 container for local LLMs), keeping LLM traffic same-origin so the add-in's
 default backend URLs work without mixed-content or CORS configuration.

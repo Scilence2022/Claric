@@ -124,6 +124,28 @@ describe('saveSession', () => {
         expect(raw.messages[0].dom).toBeUndefined();
     });
 
+    test('persists attachment display metadata but never file content', () => {
+        const session = saveSession([
+            {
+                id: 'm-0', role: 'user', text: 'see attached',
+                status: '', error: null, worklog: null, model: null,
+                citations: [], proposals: [], ts: '2026-01-01T00:00:00.000Z',
+                attachments: [
+                    { name: 'a.txt', kind: 'text', size: 5, text: 'extracted body' },
+                    { name: 'p.png', kind: 'image', size: 9, dataUrl: 'data:image/png;base64,zz' },
+                ],
+            },
+        ]);
+
+        expect(session.messages[0].attachments).toEqual([
+            { name: 'a.txt', kind: 'text', size: 5 },
+            { name: 'p.png', kind: 'image', size: 9 },
+        ]);
+        const raw = localStorage.getItem(`${SESSION_KEY_PREFIX}${session.id}`);
+        expect(raw).not.toContain('extracted body');
+        expect(raw).not.toContain('data:image');
+    });
+
     test('throws on non-array messages', () => {
         expect(() => saveSession(null)).toThrow(TypeError);
         expect(() => saveSession('not-an-array')).toThrow(TypeError);
