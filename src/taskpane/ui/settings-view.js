@@ -378,6 +378,10 @@ function updateProviderHints() {
         const isCustom = config.backend === 'custom';
         if (isCustom) {
             endpointHint.textContent = 'Base URL of any OpenAI-compatible server (proxy path or full https:// URL)';
+        } else if (preset && preset.staticOk === false && preset.staticHint) {
+            // Provider-specific explanation (e.g. OpenAI's missing CORS
+            // headers) instead of the local-model mixed-content wording.
+            endpointHint.textContent = preset.staticHint;
         } else if (preset && preset.staticOk === false) {
             // Local-model presets default to a same-origin proxy path, which
             // only exists when this add-in is served by the docker/dev

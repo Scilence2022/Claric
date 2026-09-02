@@ -64,6 +64,11 @@ describe('settings tabs markup contract', () => {
         expect(generalPage).toContain('backends or models may ignore unsupported options');
     });
 
+    test('the provider select lists OpenAI and Claude among the cloud providers', () => {
+        expect(html).toContain('<option value="openai">OpenAI</option>');
+        expect(html).toContain('<option value="claude">Claude (Anthropic)</option>');
+    });
+
     test('the settings panel exposes an id so the drag/resize logic can bind to it', () => {
         expect(html).toContain('id="settingsPanel"');
     });

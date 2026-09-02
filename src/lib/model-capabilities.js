@@ -14,6 +14,9 @@
  * - https://docs.z.ai/guides/overview/concept-param
  * - https://platform.moonshot.cn/docs/api/chat
  * - https://platform.minimaxi.com/docs/api-reference/text-openai-api
+ * - https://platform.openai.com/docs/api-reference/chat/create
+ * - https://platform.claude.com/docs/en/build-with-claude/effort
+ * - https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
  *
  * @module model-capabilities
  */
@@ -116,6 +119,70 @@ const PROFILE_OPTIONS = {
         makeOption('default', 'Default (Adaptive)'),
         makeOption('adaptive', 'Adaptive'),
         makeOption('off', 'Off'),
+    ]),
+    openaiGpt56: freezeOptions([
+        makeOption('default', 'Default (Medium)'),
+        makeOption('none', 'None'),
+        makeOption('minimal', 'Minimal'),
+        makeOption('low', 'Low'),
+        makeOption('medium', 'Medium'),
+        makeOption('high', 'High'),
+        makeOption('xhigh', 'Extra high'),
+        makeOption('max', 'Max'),
+    ]),
+    openaiGpt54: freezeOptions([
+        makeOption('default', 'Default (Medium)'),
+        makeOption('none', 'None'),
+        makeOption('minimal', 'Minimal'),
+        makeOption('low', 'Low'),
+        makeOption('medium', 'Medium'),
+        makeOption('high', 'High'),
+        makeOption('xhigh', 'Extra high'),
+    ]),
+    openaiGpt51: freezeOptions([
+        makeOption('default', 'Default (Medium)'),
+        makeOption('none', 'None'),
+        makeOption('minimal', 'Minimal'),
+        makeOption('low', 'Low'),
+        makeOption('medium', 'Medium'),
+        makeOption('high', 'High'),
+    ]),
+    openaiGpt5: freezeOptions([
+        makeOption('default', 'Default (Medium)'),
+        makeOption('minimal', 'Minimal'),
+        makeOption('low', 'Low'),
+        makeOption('medium', 'Medium'),
+        makeOption('high', 'High'),
+    ]),
+    openaiOSeries: freezeOptions([
+        makeOption('default', 'Default (Medium)'),
+        makeOption('low', 'Low'),
+        makeOption('medium', 'Medium'),
+        makeOption('high', 'High'),
+    ]),
+    claudeEffortXhigh: freezeOptions([
+        makeOption('default', 'Default (High)'),
+        makeOption('off', 'Off'),
+        makeOption('low', 'Low'),
+        makeOption('medium', 'Medium'),
+        makeOption('high', 'High'),
+        makeOption('xhigh', 'Extra high'),
+        makeOption('max', 'Max'),
+    ]),
+    claudeEffort: freezeOptions([
+        makeOption('default', 'Default (High)'),
+        makeOption('off', 'Off'),
+        makeOption('low', 'Low'),
+        makeOption('medium', 'Medium'),
+        makeOption('high', 'High'),
+        makeOption('max', 'Max'),
+    ]),
+    claudeBudget: freezeOptions([
+        makeOption('default', 'Default (Off)'),
+        makeOption('off', 'Off'),
+        makeOption('low', 'Low (4K tokens)'),
+        makeOption('medium', 'Medium (8K tokens)'),
+        makeOption('high', 'High (16K tokens)'),
     ]),
 };
 
@@ -301,6 +368,107 @@ const MINIMAX_M2_PROFILE = makeProfile({
     hint: 'MiniMax M2.x always thinks; thinking cannot be disabled.',
 });
 
+// OpenAI reasoning models reject Temperature while reasoning is active;
+// it is accepted only when effort is `none` (openai-python #3073).
+const OPENAI_TEMPERATURE_BY_LEVEL = Object.freeze({
+    default: false, none: true, minimal: false, low: false,
+    medium: false, high: false, xhigh: false, max: false,
+});
+
+const OPENAI_GPT_56_PROFILE = makeProfile({
+    id: 'openai-gpt-5.6',
+    protocol: 'openai-reasoning-effort',
+    options: PROFILE_OPTIONS.openaiGpt56,
+    defaultLevel: 'default',
+    temperatureByLevel: OPENAI_TEMPERATURE_BY_LEVEL,
+    aliases: { off: 'none' },
+    hint: 'GPT-5.6 supports None through Max reasoning effort. Temperature is accepted only at None.',
+});
+
+const OPENAI_GPT_54_PROFILE = makeProfile({
+    id: 'openai-gpt-5.4',
+    protocol: 'openai-reasoning-effort',
+    options: PROFILE_OPTIONS.openaiGpt54,
+    defaultLevel: 'default',
+    temperatureByLevel: OPENAI_TEMPERATURE_BY_LEVEL,
+    aliases: { off: 'none' },
+    hint: 'GPT-5.4/5.5 and Codex-Max support None through Extra high effort. Temperature is accepted only at None.',
+});
+
+const OPENAI_GPT_51_PROFILE = makeProfile({
+    id: 'openai-gpt-5.1',
+    protocol: 'openai-reasoning-effort',
+    options: PROFILE_OPTIONS.openaiGpt51,
+    defaultLevel: 'default',
+    temperatureByLevel: OPENAI_TEMPERATURE_BY_LEVEL,
+    aliases: { off: 'none' },
+    hint: 'GPT-5.1 supports None, Minimal, Low, Medium, and High effort. Temperature is accepted only at None.',
+});
+
+const OPENAI_GPT_5_PROFILE = makeProfile({
+    id: 'openai-gpt-5',
+    protocol: 'openai-reasoning-effort',
+    options: PROFILE_OPTIONS.openaiGpt5,
+    defaultLevel: 'default',
+    temperatureSupported: false,
+    temperatureHint: 'GPT-5 reasoning models do not accept Temperature.',
+    hint: 'GPT-5 supports Minimal, Low, Medium, and High reasoning effort; reasoning cannot be disabled on this generation.',
+});
+
+const OPENAI_O_SERIES_PROFILE = makeProfile({
+    id: 'openai-o-series',
+    protocol: 'openai-reasoning-effort',
+    options: PROFILE_OPTIONS.openaiOSeries,
+    defaultLevel: 'default',
+    temperatureSupported: false,
+    temperatureHint: TEMPERATURE_UNSUPPORTED_HINT,
+    hint: 'o-series reasoning models support Low, Medium, and High effort; sampling parameters are fixed.',
+});
+
+const OPENAI_LEGACY_PROFILE = makeProfile({
+    id: 'openai-legacy',
+    protocol: 'none',
+    options: PROFILE_OPTIONS.legacyDefault,
+    defaultLevel: 'default',
+    hint: 'This OpenAI model has no reasoning dial; only Temperature applies.',
+});
+
+// Claude effort era (4.6+): output_config.effort controls the whole token
+// spend, thinking included; thinking can be disabled explicitly. Claude
+// temperatures are 0-1 (the client clamps the generic 0-2 range).
+const CLAUDE_EFFORT_XHIGH_PROFILE = makeProfile({
+    id: 'claude-effort-xhigh',
+    protocol: 'claude-effort',
+    options: PROFILE_OPTIONS.claudeEffortXhigh,
+    defaultLevel: 'default',
+    hint: 'This Claude supports Off plus Low through Max effort (adaptive thinking). Temperature range is 0-1.',
+});
+
+const CLAUDE_EFFORT_PROFILE = makeProfile({
+    id: 'claude-effort',
+    protocol: 'claude-effort',
+    options: PROFILE_OPTIONS.claudeEffort,
+    defaultLevel: 'default',
+    hint: 'This Claude supports Off plus Low, Medium, High, and Max effort (adaptive thinking). Temperature range is 0-1.',
+});
+
+const CLAUDE_BUDGET_PROFILE = makeProfile({
+    id: 'claude-thinking-budget',
+    protocol: 'claude-thinking-budget',
+    options: PROFILE_OPTIONS.claudeBudget,
+    defaultLevel: 'default',
+    temperatureByLevel: { default: true, off: true, low: false, medium: false, high: false },
+    hint: 'Claude 4.5 uses extended thinking with a token budget; Temperature is unavailable while thinking is enabled.',
+});
+
+const CLAUDE_LEGACY_PROFILE = makeProfile({
+    id: 'claude-legacy',
+    protocol: 'none',
+    options: PROFILE_OPTIONS.legacyDefault,
+    defaultLevel: 'default',
+    hint: 'This Claude model has no thinking dial; only Temperature applies (range 0-1).',
+});
+
 const PROVIDER_ALIASES = Object.freeze({
     'minimax-cn': 'minimax',
 });
@@ -393,7 +561,71 @@ const PROFILE_MATCHERS = [
         profile: MINIMAX_M2_PROFILE,
         matcher: /(?:^|[/:._-])minimax[-_. ]?m2(?:[^0-9a-z]|$)/i,
     },
+    // OpenAI generations, newest first; gateways match these only when the
+    // model id explicitly names a GPT/o-series upstream model.
+    {
+        providers: ['openai', 'custom', 'zhongkeyu'],
+        profile: OPENAI_GPT_54_PROFILE,
+        matcher: /(?:^|[/:._-])gpt[-_. ]?5[._-]?1[-_. ]?codex[-_. ]?max(?:[^0-9a-z]|$)/i,
+    },
+    {
+        providers: ['openai', 'custom', 'zhongkeyu'],
+        profile: OPENAI_GPT_56_PROFILE,
+        matcher: /(?:^|[/:._-])gpt[-_. ]?5[._-]?6(?:[^0-9a-z]|$)/i,
+    },
+    {
+        providers: ['openai', 'custom', 'zhongkeyu'],
+        profile: OPENAI_GPT_54_PROFILE,
+        matcher: /(?:^|[/:._-])gpt[-_. ]?5[._-]?[45](?:[^0-9a-z]|$)/i,
+    },
+    {
+        providers: ['openai', 'custom', 'zhongkeyu'],
+        profile: OPENAI_GPT_51_PROFILE,
+        matcher: /(?:^|[/:._-])gpt[-_. ]?5[._-]?1(?:[^0-9a-z]|$)/i,
+    },
+    {
+        providers: ['openai', 'custom', 'zhongkeyu'],
+        profile: OPENAI_GPT_5_PROFILE,
+        matcher: /(?:^|[/:._-])gpt[-_. ]?5(?:[^0-9a-z]|$)/i,
+    },
+    {
+        providers: ['openai', 'custom', 'zhongkeyu'],
+        profile: OPENAI_O_SERIES_PROFILE,
+        matcher: /(?:^|[/:._-])o[134](?:[^0-9a-z]|$)/i,
+    },
+    // Claude generations. The wire fields are Anthropic-specific, so these
+    // profiles never apply to gateway providers.
+    {
+        providers: ['claude'],
+        profile: CLAUDE_BUDGET_PROFILE,
+        matcher: /(?:^|[/:._-])(?:opus|sonnet|haiku)[-_. ]?4[._-]?5(?:[^0-9a-z]|$)/i,
+    },
+    {
+        providers: ['claude'],
+        profile: CLAUDE_EFFORT_XHIGH_PROFILE,
+        matcher: /(?:^|[/:._-])(?:opus|sonnet)[-_. ]?4[._-]?[78](?:[^0-9a-z]|$)|(?:opus|sonnet|fable|mythos)[-_. ]?5(?:[^0-9a-z]|$)/i,
+    },
+    {
+        providers: ['claude'],
+        profile: CLAUDE_EFFORT_PROFILE,
+        matcher: /(?:^|[/:._-])(?:opus|sonnet|haiku)[-_. ]?4[._-]?6(?:[^0-9a-z]|$)|mythos[-_. ]?preview/i,
+    },
+    {
+        providers: ['claude'],
+        profile: CLAUDE_LEGACY_PROFILE,
+        matcher: /(?:^|[/:._-])claude[-_. ]?3(?:[^0-9a-z]|$)/i,
+    },
 ];
+
+/**
+ * Provider-level fallbacks for first-party APIs whose unknown/newer models
+ * share the provider's parameter family. Gateway and local providers keep
+ * the generic profile for anything unrecognized.
+ */
+const PROVIDER_FALLBACK_PROFILES = Object.freeze({
+    openai: OPENAI_LEGACY_PROFILE,
+    claude: CLAUDE_EFFORT_PROFILE,
+});
 
 /**
  * Returns the capability profile for a provider/model pair.
@@ -408,7 +640,8 @@ export function getModelCapabilities(provider, model) {
     const match = PROFILE_MATCHERS.find((entry) => (
         entry.providers.includes(normalizedProvider) && entry.matcher.test(normalizedModel)
     ));
-    return match ? match.profile : GENERIC_PROFILE;
+    if (match) return match.profile;
+    return PROVIDER_FALLBACK_PROFILES[normalizedProvider] || GENERIC_PROFILE;
 }
 
 /**
@@ -514,6 +747,21 @@ export function buildThinkingRequest(capabilities, value) {
                 : {};
     case 'minimax-forced-thinking':
         return level === 'always' ? { reasoning_split: true } : {};
+    case 'openai-reasoning-effort':
+        // Canonical values are wire-identical for OpenAI (none/minimal/…/max).
+        return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(level)
+            ? { reasoning_effort: level }
+            : {};
+    case 'claude-effort':
+        if (level === 'off') return { thinking: { type: 'disabled' } };
+        return ['low', 'medium', 'high', 'xhigh', 'max'].includes(level)
+            ? { output_config: { effort: level } }
+            : {};
+    case 'claude-thinking-budget':
+        if (level === 'off') return { thinking: { type: 'disabled' } };
+        return ['low', 'medium', 'high'].includes(level)
+            ? { thinking: { type: 'enabled', budget_tokens: { low: 4096, medium: 8192, high: 16384 }[level] } }
+            : {};
     case 'none':
     default:
         return {};

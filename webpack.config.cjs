@@ -26,6 +26,10 @@ const ENV = {
   DEFAULT_VLLM_URL: process.env.DEFAULT_VLLM_URL || '/vllm',
   DEFAULT_VLLM_MODEL: process.env.VLLM_MODEL || 'qwen3.5-35b-a3b',
   // Cloud provider proxies (same-origin paths for the add-in)
+  OPENAI_PROXY_PATH: process.env.OPENAI_PROXY_PATH || '/openai',
+  OPENAI_PROXY_TARGET: process.env.OPENAI_PROXY_TARGET || 'https://api.openai.com',
+  CLAUDE_PROXY_PATH: process.env.CLAUDE_PROXY_PATH || '/claude',
+  CLAUDE_PROXY_TARGET: process.env.CLAUDE_PROXY_TARGET || 'https://api.anthropic.com',
   DEEPSEEK_PROXY_PATH: process.env.DEEPSEEK_PROXY_PATH || '/deepseek',
   DEEPSEEK_PROXY_TARGET: process.env.DEEPSEEK_PROXY_TARGET || 'https://api.deepseek.com',
   GLM_PROXY_PATH: process.env.GLM_PROXY_PATH || '/glm',
@@ -65,6 +69,8 @@ function buildLlmProxies(ENV) {
   const providers = [
     ['OLLAMA_PROXY_PATH', 'OLLAMA_PROXY_TARGET', 'Ollama'],
     ['VLLM_PROXY_PATH', 'VLLM_PROXY_TARGET', 'vLLM'],
+    ['OPENAI_PROXY_PATH', 'OPENAI_PROXY_TARGET', 'OpenAI'],
+    ['CLAUDE_PROXY_PATH', 'CLAUDE_PROXY_TARGET', 'Claude'],
     ['DEEPSEEK_PROXY_PATH', 'DEEPSEEK_PROXY_TARGET', 'DeepSeek'],
     ['GLM_PROXY_PATH', 'GLM_PROXY_TARGET', 'GLM'],
     ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET', 'Kimi'],
@@ -105,7 +111,9 @@ function buildLlmProxies(ENV) {
         if (req.method === 'OPTIONS') {
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
+          // The Anthropic headers matter for the Claude proxy route; the
+          // rest of the providers never send them.
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access');
           res.setHeader('Access-Control-Max-Age', '86400');
           res.statusCode = 204;
           res.end();
@@ -123,7 +131,7 @@ function buildLlmProxies(ENV) {
         console.log(`[${label} Proxy Response]`, req.url, '←', proxyRes.statusCode);
         proxyRes.headers['Access-Control-Allow-Origin'] = '*';
         proxyRes.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-        proxyRes.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, X-Requested-With';
+        proxyRes.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, X-Requested-With, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access';
       },
       onError: function (err, req, res) {
         console.error(`[${label} Proxy Error]`, req.url, err.message);

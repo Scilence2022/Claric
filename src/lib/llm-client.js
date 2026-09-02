@@ -1,9 +1,11 @@
 /**
  * Unified LLM Client Module
  *
- * Provides a shared abstraction for both Ollama and vLLM backends using the
- * OpenAI-compatible /v1/chat/completions format. All functions are pure --
- * they accept config objects and return promises with no global state.
+ * Provides a shared abstraction over the configured LLM backend. Most
+ * providers speak the OpenAI-compatible /v1/chat/completions format; the
+ * Claude (Anthropic) preset uses the native /v1/messages API, dispatched
+ * internally per request. All functions are pure -- they accept config
+ * objects and return promises with no global state.
  *
  * @module llm-client
  */
@@ -14,6 +16,7 @@ import {
   buildThinkingRequest,
   isTemperatureSupported,
 } from './model-capabilities.js';
+import { getProviderPreset } from './providers.js';
 
 /**
  * Strips <think>...</think> tags and reasoning artifacts from LLM responses.
@@ -259,8 +262,52 @@ function joinApiUrl(baseUrl, apiPath, endpoint) {
   return withPrefix + endpoint;
 }
 
+/** Anthropic Messages API protocol version header value. */
+const ANTHROPIC_VERSION = '2023-06-01';
+
 /**
- * Private helper to build the request URL and headers for chat completions.
+ * True when this config targets the Anthropic Messages API rather than an
+ * OpenAI-compatible endpoint: either the provider preset declares
+ * apiFormat 'anthropic' (the `claude` preset) or the caller passes it
+ * explicitly (tests, custom relays).
+ *
+ * @param {object} config - Backend configuration
+ * @returns {boolean}
+ * @private
+ */
+function isAnthropicConfig(config) {
+  if (config && config.apiFormat === 'anthropic') return true;
+  const preset = config && config.provider ? getProviderPreset(config.provider) : null;
+  return !!(preset && preset.apiFormat === 'anthropic');
+}
+
+/**
+ * Builds the auth/version headers for one request. Anthropic authenticates
+ * with `x-api-key` plus a pinned `anthropic-version`;
+ * `anthropic-dangerous-direct-browser-access` opts the API into browser CORS
+ * (the user entered the key into this add-in deliberately). Every other
+ * provider uses a Bearer token.
+ *
+ * @param {object} config - Backend configuration
+ * @param {object} base - Headers to start from
+ * @returns {object}
+ * @private
+ */
+function _buildAuthHeaders(config, base) {
+  const headers = { ...base };
+  if (isAnthropicConfig(config)) {
+    headers['anthropic-version'] = ANTHROPIC_VERSION;
+    headers['anthropic-dangerous-direct-browser-access'] = 'true';
+    if (config.apiKey) headers['x-api-key'] = config.apiKey;
+  } else if (config.apiKey) {
+    headers['Authorization'] = `Bearer ${config.apiKey}`;
+  }
+  return headers;
+}
+
+/**
+ * Private helper to build the request URL and headers for chat completions
+ * (or the Anthropic messages endpoint for the Claude preset).
  *
  * The API prefix comes from config.apiPath (default '/v1'). Most providers
  * serve OpenAI-compatible endpoints under /v1, but some use a different
@@ -270,11 +317,9 @@ function joinApiUrl(baseUrl, apiPath, endpoint) {
  * @returns {{ url: string, headers: object }}
  */
 function buildRequestConfig(config) {
-  const url = joinApiUrl(config.url, config.apiPath || '/v1', '/chat/completions');
-  const headers = { 'Content-Type': 'application/json' };
-  if (config.apiKey) {
-    headers['Authorization'] = `Bearer ${config.apiKey}`;
-  }
+  const endpoint = isAnthropicConfig(config) ? '/messages' : '/chat/completions';
+  const url = joinApiUrl(config.url, config.apiPath || '/v1', endpoint);
+  const headers = _buildAuthHeaders(config, { 'Content-Type': 'application/json' });
   return { url, headers };
 }
 
@@ -390,6 +435,9 @@ async function _describeHttpError(response) {
  * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
  */
 export async function sendPrompt(config, promptText, log, signal, timeoutMs = 120000) {
+  if (isAnthropicConfig(config)) {
+    return _anthropicSend(config, [{ role: 'user', content: promptText }], log, signal, timeoutMs);
+  }
   const { url, headers } = buildRequestConfig(config);
 
   const body = JSON.stringify({
@@ -467,6 +515,9 @@ export async function sendPrompt(config, promptText, log, signal, timeoutMs = 12
  * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
  */
 export async function sendMessages(config, messages, log, signal, timeoutMs = 120000) {
+  if (isAnthropicConfig(config)) {
+    return _anthropicSend(config, messages, log, signal, timeoutMs);
+  }
   const { url, headers } = buildRequestConfig(config);
 
   const body = JSON.stringify({
@@ -558,6 +609,9 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
  * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
  */
 export async function sendMessagesStream(config, messages, handlers, log, signal, timeoutMs = 120000) {
+  if (isAnthropicConfig(config)) {
+    return _anthropicSendMessagesStream(config, messages, handlers, log, signal, timeoutMs);
+  }
   const { url, headers } = buildRequestConfig(config);
   const onContent = typeof handlers === 'function' ? handlers : handlers?.onContent;
   const onReasoning = typeof handlers === 'function' ? undefined : handlers?.onReasoning;
@@ -762,6 +816,405 @@ export async function sendPromptStream(config, promptText, handlers, log, signal
   return content;
 }
 
+// ============================================================================
+// Anthropic Messages API transport (the `claude` provider preset)
+// ============================================================================
+//
+// The Messages API differs from chat completions in five ways that matter
+// here: `max_tokens` is required, `system` is a top-level field, responses
+// are `content` block arrays (text/thinking blocks instead of a message
+// string), streaming arrives as typed block events rather than chat deltas,
+// and the temperature range is 0-1. Tool USE is not translated: the agent
+// loop describes tools in the system prompt (tool-registry.js) instead of
+// using a body field, so plain text exchange is all the loop needs.
+
+/** Default completion budget; Anthropic requires max_tokens explicitly. */
+const ANTHROPIC_DEFAULT_MAX_TOKENS = 16384;
+/** Budget-era thinking reserves room for the answer on top of the budget. */
+const ANTHROPIC_ANSWER_TOKEN_FLOOR = 8192;
+/** xhigh/max effort needs headroom for long adaptive thinking (docs: 64k). */
+const ANTHROPIC_HIGH_EFFORT_MAX_TOKENS = 65536;
+
+/**
+ * Picks max_tokens for an Anthropic request from the capability mapping:
+ * thinking budgets must leave room for the visible answer, and the two
+ * highest effort levels get the documented 64k headroom.
+ *
+ * @param {object} thinkingRequest - Output of buildThinkingRequest
+ * @returns {number}
+ * @private
+ */
+function _anthropicMaxTokens(thinkingRequest) {
+  const budget = thinkingRequest && thinkingRequest.thinking
+    ? thinkingRequest.thinking.budget_tokens
+    : undefined;
+  if (Number.isFinite(budget)) {
+    return Math.max(ANTHROPIC_DEFAULT_MAX_TOKENS, budget + ANTHROPIC_ANSWER_TOKEN_FLOOR);
+  }
+  const effort = thinkingRequest && thinkingRequest.output_config
+    ? thinkingRequest.output_config.effort
+    : undefined;
+  if (effort === 'xhigh' || effort === 'max') return ANTHROPIC_HIGH_EFFORT_MAX_TOKENS;
+  return ANTHROPIC_DEFAULT_MAX_TOKENS;
+}
+
+/**
+ * Translates one OpenAI-style message content (string or parts array) into
+ * Anthropic form. Text parts pass through; image_url parts become Anthropic
+ * image blocks (base64 data URLs are unpacked, remote URLs referenced).
+ *
+ * @param {string|Array} content
+ * @returns {string|Array}
+ * @private
+ */
+function _anthropicContent(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((part) => {
+    if (!part || typeof part !== 'object') return null;
+    if (part.type === 'text') return { type: 'text', text: part.text || '' };
+    if (part.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string') {
+      const url = part.image_url.url;
+      const dataMatch = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/is.exec(url);
+      if (dataMatch) {
+        return { type: 'image', source: { type: 'base64', media_type: dataMatch[1], data: dataMatch[2] } };
+      }
+      return { type: 'image', source: { type: 'url', url } };
+    }
+    return null;
+  }).filter(Boolean);
+}
+
+/** Extracts concatenated text from an array-valued system message. */
+function _anthropicTextOnly(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((part) => part && part.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n');
+}
+
+/**
+ * Builds an Anthropic Messages request body from OpenAI-style messages.
+ * System messages join into the top-level `system` field; user/assistant
+ * roles pass through (anything else becomes a user turn). Thinking/effort
+ * fields come from the model capability profile; temperature is clamped to
+ * Anthropic's 0-1 range and only sent when the profile allows it.
+ *
+ * @param {object} config - Backend configuration
+ * @param {Array<{role: string, content: string|Array}>} messages
+ * @param {boolean} stream
+ * @returns {string} JSON body
+ * @private
+ */
+function _buildAnthropicBody(config, messages, stream) {
+  const profile = getModelCapabilities(config.provider, config.model);
+  const level = resolveThinkingLevel(profile, config.thinkingLevel);
+  const thinkingRequest = buildThinkingRequest(profile, level);
+
+  const systemParts = [];
+  const outMessages = [];
+  for (const message of messages) {
+    if (message.role === 'system') {
+      const text = _anthropicTextOnly(message.content);
+      if (text) systemParts.push(text);
+      continue;
+    }
+    outMessages.push({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: _anthropicContent(message.content),
+    });
+  }
+
+  const body = {
+    model: config.model,
+    max_tokens: _anthropicMaxTokens(thinkingRequest),
+    messages: outMessages,
+    stream,
+    ...thinkingRequest,
+  };
+  if (systemParts.length > 0) body.system = systemParts.join('\n\n');
+  if (isTemperatureSupported(profile, level)) {
+    const temperature = Number.isFinite(config.temperature) ? config.temperature : 1;
+    body.temperature = Math.min(Math.max(temperature, 0), 1);
+  }
+  return JSON.stringify(body);
+}
+
+/**
+ * Splits an Anthropic response (or message payload) into answer text and
+ * thinking text by content block type.
+ *
+ * @param {object} data - Anthropic message object ({ content: [...] })
+ * @returns {{ text: string, reasoning: string }}
+ * @private
+ */
+function _anthropicExtract(data) {
+  const blocks = data && Array.isArray(data.content) ? data.content : [];
+  let text = '';
+  let reasoning = '';
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue;
+    if (block.type === 'text') text += block.text || '';
+    else if (block.type === 'thinking') reasoning += block.thinking || '';
+  }
+  return { text, reasoning };
+}
+
+/**
+ * Anthropic's truncation signal is stop_reason 'max_tokens' (the
+ * finish_reason 'length' equivalent): refuse half output the same way.
+ *
+ * @param {{stop_reason?: string}} [data]
+ * @private
+ */
+function _assertAnthropicNotTruncated(data) {
+  if (data && data.stop_reason === 'max_tokens') {
+    throw new Error(
+      'LLM output truncated (stop_reason=max_tokens): the response hit the ' +
+      'token limit. Reduce the scope or selection and retry.'
+    );
+  }
+}
+
+/**
+ * Non-streaming Anthropic messages call, used by sendPrompt/sendMessages.
+ * Abort/timeout wiring mirrors sendMessages (WebView2-safe).
+ *
+ * @returns {Promise<string>} Cleaned answer text
+ * @private
+ */
+async function _anthropicSend(config, messages, log, signal, timeoutMs) {
+  const { url, headers } = buildRequestConfig(config);
+  const body = _buildAnthropicBody(config, messages, false);
+
+  const localController = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    localController.abort();
+  }, timeoutMs);
+
+  let onExternalAbort;
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+    onExternalAbort = () => localController.abort();
+    signal.addEventListener('abort', onExternalAbort);
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+      signal: localController.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(await _describeHttpError(response));
+    }
+
+    const data = await response.json();
+    _assertAnthropicNotTruncated(data);
+    return stripThinkTags(_anthropicExtract(data).text, log);
+  } catch (err) {
+    if (timedOut && err.name === 'AbortError') {
+      const timeoutErr = new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      timeoutErr.name = 'TimeoutError';
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    if (signal && onExternalAbort) {
+      signal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+}
+
+/**
+ * Streaming Anthropic messages call, dispatched from sendMessagesStream.
+ * Parses the typed block events (`content_block_delta` with text_delta /
+ * thinking_delta, `message_delta.stop_reason`, `message_stop`), tolerating
+ * an OpenAI-style `[DONE]` terminator for translated relays. Idle-timeout
+ * and abort wiring mirror the OpenAI-compatible stream path.
+ *
+ * @returns {Promise<{content: string, reasoning: string}>}
+ * @private
+ */
+async function _anthropicSendMessagesStream(config, messages, handlers, log, signal, timeoutMs) {
+  const { url, headers } = buildRequestConfig(config);
+  const onContent = typeof handlers === 'function' ? handlers : handlers?.onContent;
+  const onReasoning = typeof handlers === 'function' ? undefined : handlers?.onReasoning;
+  let full = '';
+  let reasoning = '';
+  const demux = createStreamDemux({
+    onContent: (t) => { full += t; if (onContent) onContent(t); },
+    onReasoning: (t) => { reasoning += t; if (onReasoning) onReasoning(t); },
+  });
+
+  const body = _buildAnthropicBody(config, messages, true);
+
+  const localController = new AbortController();
+  let timedOut = false;
+  let timeoutId;
+  const armIdleTimeout = () => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      localController.abort();
+    }, timeoutMs);
+  };
+  armIdleTimeout();
+
+  let onExternalAbort;
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+    onExternalAbort = () => localController.abort();
+    signal.addEventListener('abort', onExternalAbort);
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+      signal: localController.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(await _describeHttpError(response));
+    }
+
+    armIdleTimeout();
+
+    const contentType = response.headers && typeof response.headers.get === 'function'
+      ? (response.headers.get('content-type') || '')
+      : '';
+
+    // Non-SSE fallback: a relay answered with a plain JSON message object.
+    if (!contentType.includes('text/event-stream') || !response.body || typeof response.body.getReader !== 'function') {
+      const data = await response.json();
+      _assertAnthropicNotTruncated(data);
+      const extracted = _anthropicExtract(data);
+      if (extracted.reasoning) {
+        reasoning += extracted.reasoning;
+        if (onReasoning) onReasoning(extracted.reasoning);
+      }
+      demux.push(extracted.text);
+      demux.flush();
+      return { content: stripThinkTags(full, log), reasoning: reasoning.trim() };
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let doneReceived = false;
+    let stopReason = null;
+    let malformedDataLines = 0;
+
+    const handleDataLine = (line) => {
+      if (doneReceived) return;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') { // translated relays may keep the OpenAI marker
+        doneReceived = true;
+        return;
+      }
+      if (!payload) return;
+      try {
+        const json = JSON.parse(payload);
+        switch (json.type) {
+        case 'content_block_delta': {
+          const delta = json.delta || {};
+          if (delta.type === 'text_delta' && delta.text) demux.push(delta.text);
+          else if (delta.type === 'thinking_delta' && delta.thinking) {
+            reasoning += delta.thinking;
+            if (onReasoning) onReasoning(delta.thinking);
+          }
+          break;
+        }
+        case 'message_delta':
+          if (json.delta && json.delta.stop_reason) stopReason = json.delta.stop_reason;
+          break;
+        case 'message_stop':
+          doneReceived = true;
+          break;
+        case 'error':
+          throw new Error(`Anthropic stream error: ${(json.error && json.error.message) || 'unknown'}`);
+        default:
+          break; // message_start, content_block_start/stop, ping, signatures
+        }
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          malformedDataLines++;
+        } else {
+          throw err;
+        }
+      }
+    };
+
+    const drainBuffer = () => {
+      let newlineIdx;
+      while (!doneReceived && (newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim();
+        buffer = buffer.slice(newlineIdx + 1);
+        if (!line.startsWith('data:')) continue;
+        handleDataLine(line);
+      }
+    };
+
+    while (!doneReceived) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      armIdleTimeout();
+      buffer += decoder.decode(value, { stream: true });
+      drainBuffer();
+    }
+    buffer += decoder.decode();
+    drainBuffer();
+    if (!doneReceived && buffer.startsWith('data:')) {
+      handleDataLine(buffer.trim());
+      buffer = '';
+    }
+    if (doneReceived && typeof reader.cancel === 'function') {
+      Promise.resolve(reader.cancel()).catch(() => {});
+    }
+    if (malformedDataLines > 0 && typeof log === 'function') {
+      log(`SSE stream: skipped ${malformedDataLines} malformed data line(s) from the backend`, 'warning');
+    }
+    if (!doneReceived && !stopReason) {
+      throw new Error(
+        'LLM stream closed before completion (no message_stop or stop_reason) — ' +
+        'the output may be truncated. Retry the request.' +
+        (malformedDataLines > 0 ? ` (${malformedDataLines} malformed data line(s) were skipped.)` : '')
+      );
+    }
+    _assertAnthropicNotTruncated({ stop_reason: stopReason });
+
+    demux.flush();
+    return { content: stripThinkTags(full, log), reasoning: reasoning.trim() };
+  } catch (err) {
+    if (timedOut && err.name === 'AbortError') {
+      const timeoutErr = new Error(`LLM request timed out: no output from the model for ${Math.round(timeoutMs / 1000)}s`);
+      timeoutErr.name = 'TimeoutError';
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    if (signal && onExternalAbort) {
+      signal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+}
+
 // Bounds the Settings-page connection probe: a hung backend must surface a
 // reportable timeout instead of leaving the status dot on "Connecting"
 // forever. Generous enough for a cold-starting local Ollama.
@@ -784,10 +1237,7 @@ const CONNECTION_TEST_TIMEOUT_MS = 30000;
 export async function testConnection(config) {
   const url = joinApiUrl(config.url, config.apiPath || '/v1', '/models');
 
-  const headers = { Accept: 'application/json' };
-  if (config.apiKey) {
-    headers['Authorization'] = `Bearer ${config.apiKey}`;
-  }
+  const headers = _buildAuthHeaders(config, { Accept: 'application/json' });
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), CONNECTION_TEST_TIMEOUT_MS);
