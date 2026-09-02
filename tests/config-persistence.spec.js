@@ -75,6 +75,28 @@ describe('normalizeConfig', () => {
         expect(out.providers.ollama.temperature).toBe(0.7);
     });
 
+    test('accepts the extended canonical thinking values persisted per provider', () => {
+        // Model-specific profiles use values beyond low/medium/high (off, on,
+        // adaptive, always, minimal, xhigh, max); a saved value must survive
+        // normalizeConfig so the active provider keeps its own dial setting.
+        const out = normalizeConfig(makeDefaults(), {
+            providers: {
+                deepseek: { thinkingLevel: 'max' },
+                glm: { thinkingLevel: 'xhigh' },
+                kimi: { thinkingLevel: 'on' },
+                minimax: { thinkingLevel: 'adaptive' },
+                'minimax-cn': { thinkingLevel: 'off' },
+                zhongkeyu: { thinkingLevel: 'minimal' },
+            },
+        });
+        expect(out.providers.deepseek.thinkingLevel).toBe('max');
+        expect(out.providers.glm.thinkingLevel).toBe('xhigh');
+        expect(out.providers.kimi.thinkingLevel).toBe('on');
+        expect(out.providers.minimax.thinkingLevel).toBe('adaptive');
+        expect(out.providers['minimax-cn'].thinkingLevel).toBe('off');
+        expect(out.providers.zhongkeyu.thinkingLevel).toBe('minimal');
+    });
+
     test('replaces invalid thinking level and temperature values with defaults', () => {
         const out = normalizeConfig(makeDefaults(), {
             providers: {

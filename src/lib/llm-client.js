@@ -8,6 +8,13 @@
  * @module llm-client
  */
 
+import {
+  getModelCapabilities,
+  resolveThinkingLevel,
+  buildThinkingRequest,
+  isTemperatureSupported,
+} from './model-capabilities.js';
+
 /**
  * Strips <think>...</think> tags and reasoning artifacts from LLM responses.
  * Applied to ALL backends as a universal safety net.
@@ -169,8 +176,9 @@ export function stripChunkDelimiters(text, log) {
  * Incremental <think>...</think> demultiplexer for streamed tokens.
  *
  * Reasoning models emit their chain-of-thought either in a separate
- * `reasoning_content` field (handled by the SSE parsers) or inline in the
- * content wrapped in <think> tags. This demux routes streamed content tokens
+ * reasoning field (`reasoning_content`, `reasoning`, or `reasoning_details`
+ * — handled by the SSE parsers) or inline in the content wrapped in
+ * <think> tags. This demux routes streamed content tokens
  * to onContent and inline think-tag content to onReasoning as they arrive,
  * holding back partial tag suffixes across token boundaries.
  *
@@ -272,25 +280,54 @@ function buildRequestConfig(config) {
 
 /**
  * Builds optional generation parameters for OpenAI-compatible chat requests.
- * Invalid or missing settings use the application defaults. `reasoning_effort`
- * is omitted for the provider-neutral default thinking level because some
- * compatible backends reject the field entirely.
+ * Invalid or missing settings use the application defaults.
  *
- * @param {object} config - Backend configuration
- * @returns {{temperature: number, reasoning_effort?: string}}
+ * Thinking and Temperature are translated through the model capability
+ * profile (model-capabilities.js): each known provider/model pair maps the
+ * canonical level to its documented wire fields (reasoning_effort,
+ * thinking.type, enable_thinking + thinking_token_budget, ...), and
+ * Temperature is only sent when the profile says the model accepts it at
+ * the selected level. Unknown models keep the generic behavior: Temperature
+ * plus reasoning_effort for explicit low/medium/high levels, and no
+ * reasoning field at the neutral default (some backends reject it).
+ *
+ * @param {object} config - Backend configuration (provider, model, thinkingLevel, temperature)
+ * @returns {object} Generation fields to merge into the request body
  * @private
  */
 function buildGenerationParams(config) {
-  const temperature = Number.isFinite(config.temperature) && config.temperature >= 0 && config.temperature <= 2
-    ? config.temperature
-    : 1;
-  const thinkingLevel = ['default', 'low', 'medium', 'high'].includes(config.thinkingLevel)
-    ? config.thinkingLevel
-    : 'default';
-  return {
-    temperature,
-    ...(thinkingLevel === 'default' ? {} : { reasoning_effort: thinkingLevel }),
-  };
+  const profile = getModelCapabilities(config.provider, config.model);
+  const level = resolveThinkingLevel(profile, config.thinkingLevel);
+  const params = { ...buildThinkingRequest(profile, level) };
+  if (isTemperatureSupported(profile, level)) {
+    params.temperature = Number.isFinite(config.temperature) && config.temperature >= 0 && config.temperature <= 2
+      ? config.temperature
+      : 1;
+  }
+  return params;
+}
+
+/**
+ * Reads the reasoning text from a chat-completion message or streaming
+ * delta. Backends disagree on the field: DeepSeek/Qwen emit
+ * `reasoning_content`, vLLM's newer parser emits `reasoning`, and some
+ * gateways use an OpenAI-style `reasoning_details` array of
+ * { type: 'reasoning.text', text } entries.
+ *
+ * @param {object} [message] - Response message or streaming delta
+ * @returns {string} Reasoning text ('' when absent)
+ * @private
+ */
+function _extractReasoning(message) {
+  if (!message || typeof message !== 'object') return '';
+  if (typeof message.reasoning_content === 'string') return message.reasoning_content;
+  if (typeof message.reasoning === 'string') return message.reasoning;
+  if (Array.isArray(message.reasoning_details)) {
+    return message.reasoning_details
+      .map((detail) => (detail && typeof detail.text === 'string' ? detail.text : ''))
+      .join('');
+  }
+  return '';
 }
 
 /**
@@ -494,9 +531,9 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
 /**
  * Sends a messages array to the LLM backend with OpenAI-compatible streaming
  * (`stream: true`), preserving system/user roles. Content deltas are demuxed
- * through createStreamDemux: reasoning (the `reasoning_content` field plus
- * inline <think> blocks) streams to handlers.onReasoning, answer text to
- * handlers.onContent.
+ * through createStreamDemux: reasoning (the `reasoning_content`/`reasoning`/
+ * `reasoning_details` fields plus inline <think> blocks) streams to
+ * handlers.onReasoning, answer text to handlers.onContent.
  *
  * If the server ignores `stream: true` and answers with a plain JSON body
  * (non-SSE content type), falls back to reading the whole response and
@@ -587,7 +624,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
       const data = await response.json();
       _assertNotLengthTruncated(data.choices?.[0]);
       const message = data.choices?.[0]?.message ?? {};
-      const reasoningText = message.reasoning_content ?? '';
+      const reasoningText = _extractReasoning(message);
       if (reasoningText) {
         reasoning += reasoningText;
         if (onReasoning) onReasoning(reasoningText);
@@ -619,7 +656,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
         const choice = json.choices?.[0];
         const delta = choice?.delta ?? choice?.message ?? {};
         if (choice?.finish_reason) finishReason = choice.finish_reason;
-        const reasoningToken = delta.reasoning_content ?? '';
+        const reasoningToken = _extractReasoning(delta);
         if (reasoningToken) {
           reasoning += reasoningToken;
           if (onReasoning) onReasoning(reasoningToken);

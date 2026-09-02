@@ -788,3 +788,151 @@ describe('sendPrompt backward compatibility', () => {
     expect(body.messages).toEqual([{ role: 'user', content: 'Hello' }]);
   });
 });
+
+// ============================================================================
+// Model-specific generation parameters (model-capabilities.js integration)
+// ============================================================================
+
+describe('model-specific generation parameters', () => {
+  let realAbortController;
+  beforeEach(() => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'ok' } }] }),
+    });
+    realAbortController = global.AbortController;
+    global.AbortController = jest.fn().mockImplementation(() => ({
+      signal: 'mock-signal',
+      abort: jest.fn()
+    }));
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    global.fetch = undefined;
+    global.AbortController = realAbortController;
+    jest.useRealTimers();
+  });
+
+  async function bodyFor(config) {
+    await sendPrompt(config, 'Hello');
+    return JSON.parse(global.fetch.mock.calls[0][1].body);
+  }
+
+  test('vLLM Qwen3 sends enable_thinking and a token budget', async () => {
+    const body = await bodyFor({
+      url: '/vllm', apiKey: '', provider: 'vllm', model: 'qwen3.5-35b-a3b',
+      thinkingLevel: 'high', temperature: 0.3,
+    });
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: true });
+    expect(body.thinking_token_budget).toBe(16384);
+    expect(body.temperature).toBe(0.3);
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  test('vLLM Qwen3 Off disables thinking via the chat template', async () => {
+    const body = await bodyFor({
+      url: '/vllm', apiKey: '', provider: 'vllm', model: 'qwen3.5-35b-a3b',
+      thinkingLevel: 'off',
+    });
+    expect(body).toEqual(expect.objectContaining({
+      chat_template_kwargs: { enable_thinking: false },
+    }));
+    expect(body).not.toHaveProperty('thinking_token_budget');
+  });
+
+  test('DeepSeek V4 sends thinking.type plus reasoning_effort, no temperature while thinking', async () => {
+    const body = await bodyFor({
+      url: '/deepseek', apiKey: '', provider: 'deepseek', model: 'deepseek-v4-flash',
+      thinkingLevel: 'low', temperature: 0.2,
+    });
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('low');
+    expect(body).not.toHaveProperty('temperature');
+  });
+
+  test('DeepSeek V4 Off restores temperature and disables thinking', async () => {
+    const body = await bodyFor({
+      url: '/deepseek', apiKey: '', provider: 'deepseek', model: 'deepseek-v4-flash',
+      thinkingLevel: 'off', temperature: 0.2,
+    });
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body.temperature).toBe(0.2);
+  });
+
+  test('GLM-5.2 maps canonical levels to thinking + effort', async () => {
+    const body = await bodyFor({
+      url: '/glm', apiPath: '/api/paas/v4', apiKey: 'k', provider: 'glm', model: 'glm-5.2',
+      thinkingLevel: 'xhigh', temperature: 1.2,
+    });
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('xhigh');
+    expect(body.temperature).toBe(1.2);
+  });
+
+  test('GLM 4.x exposes only the thinking toggle', async () => {
+    const body = await bodyFor({
+      url: '/glm', apiPath: '/api/paas/v4', apiKey: 'k', provider: 'glm', model: 'glm-4.6',
+      thinkingLevel: 'on',
+    });
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  test('Kimi K3 sends top-level reasoning_effort and no temperature', async () => {
+    const body = await bodyFor({
+      url: '/kimi', apiKey: 'k', provider: 'kimi', model: 'kimi-k3',
+      thinkingLevel: 'max', temperature: 0.7,
+    });
+    expect(body.reasoning_effort).toBe('max');
+    expect(body).not.toHaveProperty('temperature');
+  });
+
+  test('Kimi K2.6 uses the thinking toggle, unsupported legacy values resolve safely', async () => {
+    const body = await bodyFor({
+      url: '/kimi', apiKey: 'k', provider: 'kimi', model: 'kimi-k2.6',
+      thinkingLevel: 'medium',
+    });
+    // 'medium' is not a K2.6 level: resolves to the profile default, which
+    // sends no thinking field at all.
+    expect(body).not.toHaveProperty('thinking');
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  test('MiniMax M3 adaptive sends the adaptive toggle and reasoning split', async () => {
+    const body = await bodyFor({
+      url: '/minimax', apiKey: 'k', provider: 'minimax', model: 'MiniMax-M3',
+      thinkingLevel: 'adaptive',
+    });
+    expect(body.thinking).toEqual({ type: 'adaptive' });
+    expect(body.reasoning_split).toBe(true);
+  });
+
+  test('Ollama GPT-OSS explicit levels send reasoning_effort', async () => {
+    const body = await bodyFor({
+      url: '/ollama', apiKey: '', provider: 'ollama', model: 'gpt-oss:20b',
+      thinkingLevel: 'medium',
+    });
+    expect(body.reasoning_effort).toBe('medium');
+    expect(body.temperature).toBe(1);
+  });
+
+  test('unknown models keep generic behavior', async () => {
+    const body = await bodyFor({
+      url: '/custom', apiKey: '', provider: 'custom', model: 'some-future-model',
+      thinkingLevel: 'high', temperature: 0.9,
+    });
+    expect(body.reasoning_effort).toBe('high');
+    expect(body.temperature).toBe(0.9);
+    expect(body).not.toHaveProperty('thinking');
+  });
+
+  test('a gateway model id that names a known upstream model uses that profile', async () => {
+    const body = await bodyFor({
+      url: '/zhongkeyu', apiKey: 'k', provider: 'zhongkeyu', model: 'glm-5.3-flash',
+      thinkingLevel: 'low',
+    });
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('low');
+  });
+});

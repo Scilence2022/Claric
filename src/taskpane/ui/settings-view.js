@@ -16,6 +16,13 @@
 import { testConnection as llmTestConnection } from '../../lib/llm-client.js';
 import { CATEGORIES } from '../../lib/prompt-manager.js';
 import { getProviderPreset } from '../../lib/providers.js';
+import {
+    getModelCapabilities,
+    resolveThinkingLevel,
+    isTemperatureSupported,
+    getThinkingHint,
+    getTemperatureHint,
+} from '../../lib/model-capabilities.js';
 import { parseSkillPackage } from '../../lib/skill-package.js';
 import { connectMcpServer } from '../../lib/mcp-client.js';
 import { importServerPrompts } from '../../lib/mcp-tools.js';
@@ -27,6 +34,9 @@ import { addLog, setConnectionStatus } from './status-bar.js';
 
 let _onConfigChanged = () => {};
 let _lastFocusedElement = null;
+let _availableModels = [];
+const _modelsByProvider = new Map();
+let _connectionSequence = 0;
 
 /**
  * Wires the settings slide-over and prompt management UI. Called once at startup.
@@ -74,9 +84,12 @@ export function initSettings({ onConfigChanged } = {}) {
     // affordance for the same saveSettings path.
     const debouncedSaveSettings = debounce(saveSettings, 400);
     const modelInput = document.getElementById('modelSelect');
-    modelInput.addEventListener('input', debouncedSaveSettings);
     // Model combobox: clicking/focusing shows the full list, typing filters.
-    modelInput.addEventListener('input', () => renderModelDropdown(modelInput.value));
+    modelInput.addEventListener('input', () => {
+        updateGenerationControls(modelInput.value);
+        renderModelDropdown(modelInput.value);
+        debouncedSaveSettings();
+    });
     modelInput.addEventListener('focus', openModelDropdown);
     modelInput.addEventListener('click', openModelDropdown);
     modelInput.addEventListener('blur', () => {
@@ -98,7 +111,12 @@ export function initSettings({ onConfigChanged } = {}) {
     document.getElementById('apiKey').addEventListener('input', debouncedSaveSettings);
     document.getElementById('trackChangesCheckbox').addEventListener('change', saveSettings);
     document.getElementById('lineDiffCheckbox').addEventListener('change', saveSettings);
-    document.getElementById('thinkingLevelSelect').addEventListener('change', saveSettings);
+    document.getElementById('thinkingLevelSelect').addEventListener('change', (e) => {
+        // The just-picked level drives the hint/temperature refresh; reading
+        // the still-unsaved config here would snap the select back.
+        updateGenerationControls(undefined, e.target.value);
+        saveSettings();
+    });
     document.getElementById('temperatureInput').addEventListener('change', saveSettings);
     document.getElementById('docRichnessSelect').addEventListener('change', saveSettings);
     document.getElementById('trackedChangesExtraction').addEventListener('change', saveSettings);
@@ -189,6 +207,7 @@ function saveSettings() {
     const selectedModel = document.getElementById('modelSelect').value;
     const thinkingLevel = document.getElementById('thinkingLevelSelect').value;
     const temperatureValue = Number(document.getElementById('temperatureInput').value);
+    const profile = getModelCapabilities(backend, selectedModel || config.providers[backend].model);
 
     config.backend = backend;
     config.providers[backend].url = endpointUrl || config.providers[backend].url;
@@ -196,9 +215,7 @@ function saveSettings() {
     // Every provider's model is editable: users can type a model id not
     // present in the refreshable list (e.g. a newly released one).
     config.providers[backend].model = selectedModel || config.providers[backend].model;
-    config.providers[backend].thinkingLevel = ['default', 'low', 'medium', 'high'].includes(thinkingLevel)
-        ? thinkingLevel
-        : 'default';
+    config.providers[backend].thinkingLevel = resolveThinkingLevel(profile, thinkingLevel);
     config.providers[backend].temperature = Number.isFinite(temperatureValue) && temperatureValue >= 0 && temperatureValue <= 2
         ? temperatureValue
         : 1;
@@ -264,8 +281,11 @@ export function updateUIFromConfig() {
     // selected values are saved as-is and the list refreshes on demand.
     modelSelect.value = backendConfig.model || '';
     modelSelect.placeholder = backendConfig.model || 'Type a model name or refresh the list';
-    document.getElementById('thinkingLevelSelect').value = backendConfig.thinkingLevel || 'default';
     document.getElementById('temperatureInput').value = String(Number.isFinite(backendConfig.temperature) ? backendConfig.temperature : 1);
+    // Restore this provider's cached suggestions, then rebuild the
+    // capability-aware thinking options before selecting the saved level.
+    _availableModels = _modelsByProvider.get(config.backend) || [];
+    updateGenerationControls(modelSelect.value, backendConfig.thinkingLevel);
 
     const richnessSelect = document.getElementById('docRichnessSelect');
     if (richnessSelect && config.docExtraction) {
@@ -280,11 +300,68 @@ export function updateUIFromConfig() {
 }
 
 /**
+ * Rebuilds the thinking-level dropdown and Temperature state from the
+ * capability profile of the currently selected provider/model.
+ *
+ * The persisted thinking value may name a level another provider supports
+ * but this one does not; it is then normalized to the profile's default (or
+ * its documented alias) so the visible selection always maps to a request
+ * this model understands.
+ *
+ * @param {string} [modelOverride] - In-flight model input value (typing)
+ * @param {string} [preferredLevel] - Level to select instead of the saved one
+ */
+function updateGenerationControls(modelOverride, preferredLevel) {
+    const config = appState.config;
+    const backendConfig = config.providers[config.backend];
+    const model = (modelOverride !== undefined ? modelOverride : document.getElementById('modelSelect').value)
+        || backendConfig.model;
+    const profile = getModelCapabilities(config.backend, model);
+    const savedLevel = preferredLevel !== undefined ? preferredLevel : backendConfig.thinkingLevel;
+    const level = resolveThinkingLevel(profile, savedLevel);
+
+    const select = document.getElementById('thinkingLevelSelect');
+    if (select) {
+        select.innerHTML = '';
+        for (const option of profile.options) {
+            const el = document.createElement('option');
+            el.value = option.value;
+            el.textContent = option.label;
+            if (option.description) el.title = option.description;
+            select.appendChild(el);
+        }
+        select.value = level;
+    }
+
+    const thinkingHint = document.getElementById('thinkingLevelHint');
+    if (thinkingHint) {
+        thinkingHint.textContent = getThinkingHint(profile);
+    }
+
+    // Temperature is disabled — never silently overwritten — when the
+    // profile/level cannot accept it; the stored value survives for the
+    // models and levels that do support it.
+    const temperatureInput = document.getElementById('temperatureInput');
+    const temperatureOk = isTemperatureSupported(profile, level);
+    if (temperatureInput) {
+        temperatureInput.disabled = !temperatureOk;
+    }
+    const temperatureHint = document.getElementById('temperatureHint');
+    if (temperatureHint) {
+        temperatureHint.textContent = getTemperatureHint(profile, level);
+    }
+}
+
+/**
  * Handles switching between providers: restores the selected provider's saved
  * settings, refreshes hints, and re-tests the connection.
  */
 function handleBackendSwitch() {
     appState.config.backend = document.getElementById('backendSelect').value;
+    // Any in-flight connection probe belongs to the previous provider now;
+    // its results must not repopulate this provider's model list or status.
+    _connectionSequence += 1;
+    closeModelDropdown();
     updateUIFromConfig();
     saveSettings();
 }
@@ -321,11 +398,17 @@ function updateProviderHints() {
 /**
  * Tests connection to the active LLM backend and populates the model
  * suggestion list. Updates the header status dot.
+ *
+ * The probe is asynchronous, so it captures the provider id and a sequence
+ * number up front: a response that arrives after the user switched provider
+ * (or re-saved settings) belongs to the old configuration and is dropped.
  */
 export async function testConnectionUI() {
+    const backend = appState.config.backend;
     const backendConfig = getActiveBackendConfig(appState);
-    const preset = getProviderPreset(appState.config.backend);
-    const backendLabel = preset ? preset.label : appState.config.backend;
+    const preset = getProviderPreset(backend);
+    const backendLabel = preset ? preset.label : backend;
+    const sequence = ++_connectionSequence;
 
     setConnectionStatus('connecting', `${backendLabel}: Connecting...`);
 
@@ -337,10 +420,13 @@ export async function testConnectionUI() {
 
     try {
         const result = await llmTestConnection(backendConfig);
+        _modelsByProvider.set(backend, result.models.map((m) => m.id));
+        if (sequence !== _connectionSequence || backend !== appState.config.backend) return;
         setConnectionStatus('connected', `${backendLabel}: Connected`);
         addLog(`Connected to ${backendLabel}! Found ${result.models.length} model(s).`, 'success');
         populateModels(result.models);
     } catch (error) {
+        if (sequence !== _connectionSequence || backend !== appState.config.backend) return;
         if (error.message && (error.message.includes('401') || error.message.includes('403'))) {
             setConnectionStatus('error', `${backendLabel}: API key required`);
             addLog(`${backendLabel} authentication failed: ${error.message}`, 'error');
@@ -371,15 +457,15 @@ function populateModels(models) {
     if (current && !ids.has(current)) {
         _availableModels.unshift(current);
     }
+    _modelsByProvider.set(appState.config.backend, [..._availableModels]);
 
     const dropdown = document.getElementById('modelDropdown');
     if (dropdown && !dropdown.hidden) {
         renderModelDropdown(document.getElementById('modelSelect').value);
     }
+    // A newly listed model can activate a model-specific capability profile.
+    updateGenerationControls();
 }
-
-/** Model ids from the last successful refresh, plus the configured model. */
-let _availableModels = [];
 
 /**
  * Renders the model dropdown items, filtered by the given substring
@@ -446,6 +532,7 @@ function closeModelDropdown() {
 function selectModel(id) {
     document.getElementById('modelSelect').value = id;
     closeModelDropdown();
+    updateGenerationControls(id);
     saveSettings();
 }
 
