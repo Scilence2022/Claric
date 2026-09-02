@@ -18,6 +18,10 @@
  *   OLLAMA_PROXY_TARGET   - upstream Ollama base URL (default http://localhost:11434)
  *   VLLM_PROXY_PATH       - proxy path for vLLM (default empty = disabled; set to e.g. /vllm to enable)
  *   VLLM_PROXY_TARGET     - upstream vLLM base URL (default http://localhost:8026)
+ *   OPENAI_PROXY_PATH     - proxy path for OpenAI (default empty = disabled; set to e.g. /openai to enable)
+ *   OPENAI_PROXY_TARGET   - upstream OpenAI API origin (https://api.openai.com)
+ *   CLAUDE_PROXY_PATH     - proxy path for Claude/Anthropic (default empty = disabled; set to e.g. /claude to enable)
+ *   CLAUDE_PROXY_TARGET   - upstream Anthropic API origin (https://api.anthropic.com)
  *   DEEPSEEK_PROXY_PATH   - proxy path for DeepSeek (default empty = disabled; set to e.g. /deepseek to enable)
  *   DEEPSEEK_PROXY_TARGET - upstream DeepSeek API origin (https://api.deepseek.com)
  *   GLM_PROXY_PATH        - proxy path for Zhipu GLM (default empty = disabled; set to e.g. /glm to enable)
@@ -33,8 +37,8 @@
  *   LLM_PROXY_TIMEOUT_MS  - upstream request timeout (default 300000 = 5 min)
  *
  * Why proxy LLM traffic at all: the add-in's UI defaults its backend URLs
- * to same-origin paths ('/ollama', '/vllm', '/deepseek', '/glm', '/kimi',
- * '/minimax', '/minimax-cn', '/zhongkeyu').
+ * to same-origin paths ('/ollama', '/vllm', '/openai', '/claude', '/deepseek',
+ * '/glm', '/kimi', '/minimax', '/minimax-cn', '/zhongkeyu').
  * Serving those paths from the same HTTPS origin
  * avoids mixed-content blocking (https page fetching http://localhost) and
  * CORS configuration on the backend. This matters most when Word runs on
@@ -75,6 +79,10 @@ function getEnv() {
     OLLAMA_PROXY_TARGET: process.env.OLLAMA_PROXY_TARGET || 'http://localhost:11434',
     VLLM_PROXY_PATH: process.env.VLLM_PROXY_PATH || '',
     VLLM_PROXY_TARGET: process.env.VLLM_PROXY_TARGET || 'http://localhost:8026',
+    OPENAI_PROXY_PATH: process.env.OPENAI_PROXY_PATH || '',
+    OPENAI_PROXY_TARGET: process.env.OPENAI_PROXY_TARGET || 'https://api.openai.com',
+    CLAUDE_PROXY_PATH: process.env.CLAUDE_PROXY_PATH || '',
+    CLAUDE_PROXY_TARGET: process.env.CLAUDE_PROXY_TARGET || 'https://api.anthropic.com',
     DEEPSEEK_PROXY_PATH: process.env.DEEPSEEK_PROXY_PATH || '',
     DEEPSEEK_PROXY_TARGET: process.env.DEEPSEEK_PROXY_TARGET || 'https://api.deepseek.com',
     GLM_PROXY_PATH: process.env.GLM_PROXY_PATH || '',
@@ -196,6 +204,8 @@ function buildProxyRoutes(env) {
   const backends = [
     ['OLLAMA_PROXY_PATH', 'OLLAMA_PROXY_TARGET'],
     ['VLLM_PROXY_PATH', 'VLLM_PROXY_TARGET'],
+    ['OPENAI_PROXY_PATH', 'OPENAI_PROXY_TARGET'],
+    ['CLAUDE_PROXY_PATH', 'CLAUDE_PROXY_TARGET'],
     ['DEEPSEEK_PROXY_PATH', 'DEEPSEEK_PROXY_TARGET'],
     ['GLM_PROXY_PATH', 'GLM_PROXY_TARGET'],
     ['KIMI_PROXY_PATH', 'KIMI_PROXY_TARGET'],
@@ -251,7 +261,8 @@ function handleProxyRequest(route, req, res, urlPath) {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+      // x-api-key/anthropic-* are the Claude route's auth headers.
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access',
       'Access-Control-Max-Age': '86400',
     });
     res.end();

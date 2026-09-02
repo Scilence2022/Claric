@@ -205,8 +205,129 @@ describe('model capabilities', () => {
       ['glm', 'glm-5.2'],
       ['kimi', 'kimi-k3'],
       ['minimax', 'MiniMax-M3'],
+      ['openai', 'gpt-5.1'],
+      ['claude', 'claude-sonnet-4-6'],
     ]) {
       expect(getThinkingHint(getModelCapabilities(provider, model)).length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('OpenAI model capabilities', () => {
+  test.each([
+    ['gpt-5.6', 'openai-gpt-5.6', ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-5.4', 'openai-gpt-5.4', ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']],
+    ['gpt-5.1-codex-max', 'openai-gpt-5.4', ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']],
+    ['gpt-5.1', 'openai-gpt-5.1', ['default', 'none', 'minimal', 'low', 'medium', 'high']],
+    ['gpt-5', 'openai-gpt-5', ['default', 'minimal', 'low', 'medium', 'high']],
+    ['gpt-5-mini-2025-08-07', 'openai-gpt-5', ['default', 'minimal', 'low', 'medium', 'high']],
+    ['o3', 'openai-o-series', ['default', 'low', 'medium', 'high']],
+    ['o4-mini', 'openai-o-series', ['default', 'low', 'medium', 'high']],
+    ['gpt-4o', 'openai-legacy', ['default']],
+    ['gpt-4.1-mini', 'openai-legacy', ['default']],
+  ])('matches %s', (model, id, values) => {
+    const profile = getModelCapabilities('openai', model);
+    expect(profile.id).toBe(id);
+    expect(profile.options.map((option) => option.value)).toEqual(values);
+  });
+
+  test('reasoning effort is wire-identical and none disables reasoning', () => {
+    const profile = getModelCapabilities('openai', 'gpt-5.6');
+    expect(buildThinkingRequest(profile, 'none')).toEqual({ reasoning_effort: 'none' });
+    expect(buildThinkingRequest(profile, 'minimal')).toEqual({ reasoning_effort: 'minimal' });
+    expect(buildThinkingRequest(profile, 'xhigh')).toEqual({ reasoning_effort: 'xhigh' });
+    expect(buildThinkingRequest(profile, 'max')).toEqual({ reasoning_effort: 'max' });
+    expect(buildThinkingRequest(profile, 'default')).toEqual({});
+  });
+
+  test('the canonical off value aliases to none', () => {
+    const profile = getModelCapabilities('openai', 'gpt-5.1');
+    expect(resolveThinkingLevel(profile, 'off')).toBe('none');
+    expect(buildThinkingRequest(profile, 'off')).toEqual({ reasoning_effort: 'none' });
+  });
+
+  test('temperature is accepted only at none for reasoning models', () => {
+    const profile = getModelCapabilities('openai', 'gpt-5.1');
+    expect(isTemperatureSupported(profile, 'none')).toBe(true);
+    expect(isTemperatureSupported(profile, 'low')).toBe(false);
+    expect(isTemperatureSupported(profile, 'default')).toBe(false);
+    // GPT-5.0 has no none level, so it never accepts temperature.
+    const gpt5 = getModelCapabilities('openai', 'gpt-5');
+    expect(isTemperatureSupported(gpt5, 'minimal')).toBe(false);
+    // o-series fix sampling entirely.
+    const o3 = getModelCapabilities('openai', 'o3');
+    expect(isTemperatureSupported(o3, 'low')).toBe(false);
+  });
+
+  test('legacy models keep temperature and have no reasoning dial', () => {
+    const legacy = getModelCapabilities('openai', 'gpt-4o');
+    expect(isTemperatureSupported(legacy, 'default')).toBe(true);
+    expect(buildThinkingRequest(legacy, 'high')).toEqual({});
+  });
+
+  test('unknown models on the openai provider fall back to the legacy profile', () => {
+    expect(getModelCapabilities('openai', 'some-future-model').id).toBe('openai-legacy');
+  });
+
+  test('gateways pick up GPT profiles only for explicit GPT model ids', () => {
+    expect(getModelCapabilities('zhongkeyu', 'gpt-5.1').id).toBe('openai-gpt-5.1');
+    expect(getModelCapabilities('custom', 'openai/gpt-5.6').id).toBe('openai-gpt-5.6');
+    expect(getModelCapabilities('zhongkeyu', 'some-new-model').id).toBe('generic');
+  });
+});
+
+describe('Claude model capabilities', () => {
+  test.each([
+    ['claude-opus-4-7', 'claude-effort-xhigh', ['default', 'off', 'low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-opus-4-8-20260715', 'claude-effort-xhigh', ['default', 'off', 'low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-sonnet-5', 'claude-effort-xhigh', ['default', 'off', 'low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-fable-5', 'claude-effort-xhigh', ['default', 'off', 'low', 'medium', 'high', 'xhigh', 'max']],
+    ['claude-sonnet-4-6', 'claude-effort', ['default', 'off', 'low', 'medium', 'high', 'max']],
+    ['claude-opus-4-6', 'claude-effort', ['default', 'off', 'low', 'medium', 'high', 'max']],
+    ['claude-opus-4-5', 'claude-thinking-budget', ['default', 'off', 'low', 'medium', 'high']],
+    ['claude-haiku-4-5-20251001', 'claude-thinking-budget', ['default', 'off', 'low', 'medium', 'high']],
+    ['claude-3-5-sonnet-20241022', 'claude-legacy', ['default']],
+  ])('matches %s', (model, id, values) => {
+    const profile = getModelCapabilities('claude', model);
+    expect(profile.id).toBe(id);
+    expect(profile.options.map((option) => option.value)).toEqual(values);
+  });
+
+  test('effort levels map to output_config.effort', () => {
+    const profile = getModelCapabilities('claude', 'claude-opus-4-7');
+    expect(buildThinkingRequest(profile, 'low')).toEqual({ output_config: { effort: 'low' } });
+    expect(buildThinkingRequest(profile, 'xhigh')).toEqual({ output_config: { effort: 'xhigh' } });
+    expect(buildThinkingRequest(profile, 'max')).toEqual({ output_config: { effort: 'max' } });
+    expect(buildThinkingRequest(profile, 'default')).toEqual({});
+    expect(buildThinkingRequest(profile, 'off')).toEqual({ thinking: { type: 'disabled' } });
+  });
+
+  test('xhigh is only offered on the models that support it', () => {
+    const effort = getModelCapabilities('claude', 'claude-sonnet-4-6');
+    expect(resolveThinkingLevel(effort, 'xhigh')).toBe('default');
+    expect(buildThinkingRequest(effort, 'xhigh')).toEqual({});
+  });
+
+  test('budget-era models map levels to thinking budgets', () => {
+    const profile = getModelCapabilities('claude', 'claude-opus-4-5');
+    expect(buildThinkingRequest(profile, 'low')).toEqual({ thinking: { type: 'enabled', budget_tokens: 4096 } });
+    expect(buildThinkingRequest(profile, 'high')).toEqual({ thinking: { type: 'enabled', budget_tokens: 16384 } });
+    expect(buildThinkingRequest(profile, 'off')).toEqual({ thinking: { type: 'disabled' } });
+    expect(isTemperatureSupported(profile, 'low')).toBe(false);
+    expect(isTemperatureSupported(profile, 'off')).toBe(true);
+  });
+
+  test('adaptive-era models accept temperature at every effort level', () => {
+    const profile = getModelCapabilities('claude', 'claude-sonnet-5');
+    expect(isTemperatureSupported(profile, 'xhigh')).toBe(true);
+    expect(isTemperatureSupported(profile, 'off')).toBe(true);
+  });
+
+  test('unknown models on the claude provider fall back to the effort profile', () => {
+    expect(getModelCapabilities('claude', 'claude-future-9').id).toBe('claude-effort');
+  });
+
+  test('claude profiles never leak onto gateway providers', () => {
+    expect(getModelCapabilities('zhongkeyu', 'claude-opus-4-7').id).toBe('generic');
   });
 });

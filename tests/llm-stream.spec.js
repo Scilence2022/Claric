@@ -302,6 +302,92 @@ describe('sendPromptStream reasoning demux', () => {
   });
 });
 
+describe('Anthropic streaming transport (claude provider)', () => {
+  const { sendMessagesStream } = require('../src/lib/llm-client.js');
+  const CLAUDE = {
+    url: '/claude', apiKey: 'sk-ant-test', provider: 'claude', model: 'claude-sonnet-4-6',
+  };
+
+  /** Anthropic SSE event: an `event:` line plus a `data:` line. */
+  function anthropicEvent(type, payload) {
+    return `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+  }
+
+  test('streams text_delta to content and thinking_delta to reasoning', async () => {
+    global.fetch = jest.fn(async () => sseResponse([
+      anthropicEvent('message_start', { message: { model: 'claude-sonnet-4-6' } }),
+      anthropicEvent('content_block_start', { index: 0, content_block: { type: 'thinking' } }),
+      anthropicEvent('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: '思考' } }),
+      anthropicEvent('content_block_stop', { index: 0 }),
+      anthropicEvent('content_block_start', { index: 1, content_block: { type: 'text' } }),
+      anthropicEvent('content_block_delta', { index: 1, delta: { type: 'text_delta', text: '你好' } }),
+      anthropicEvent('content_block_delta', { index: 1, delta: { type: 'text_delta', text: '世界' } }),
+      anthropicEvent('content_block_stop', { index: 1 }),
+      anthropicEvent('message_delta', { delta: { stop_reason: 'end_turn' } }),
+      anthropicEvent('message_stop', {}),
+    ]));
+
+    const content = [];
+    const reasoning = [];
+    const result = await sendMessagesStream(CLAUDE, [{ role: 'user', content: 'Hi' }], {
+      onContent: (t) => content.push(t),
+      onReasoning: (t) => reasoning.push(t),
+    });
+
+    expect(result).toEqual({ content: '你好世界', reasoning: '思考' });
+    expect(content).toEqual(['你好', '世界']);
+    expect(reasoning).toEqual(['思考']);
+
+    // The request went to the Messages endpoint with stream: true.
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe('/claude/v1/messages');
+    expect(JSON.parse(init.body).stream).toBe(true);
+  });
+
+  test('rejects a stream that ends with stop_reason max_tokens', async () => {
+    global.fetch = jest.fn(async () => sseResponse([
+      anthropicEvent('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'half' } }),
+      anthropicEvent('message_delta', { delta: { stop_reason: 'max_tokens' } }),
+      anthropicEvent('message_stop', {}),
+    ]));
+
+    await expect(sendMessagesStream(CLAUDE, [{ role: 'user', content: 'Hi' }], {}))
+      .rejects.toThrow(/stop_reason=max_tokens|truncated/);
+  });
+
+  test('a closed stream without message_stop or stop_reason is rejected', async () => {
+    global.fetch = jest.fn(async () => sseResponse([
+      anthropicEvent('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'partial' } }),
+    ]));
+
+    await expect(sendMessagesStream(CLAUDE, [{ role: 'user', content: 'Hi' }], {}))
+      .rejects.toThrow(/closed before completion|truncat/i);
+  });
+
+  test('non-SSE fallback parses the Anthropic message shape', async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({
+        stop_reason: 'end_turn',
+        content: [
+          { type: 'thinking', thinking: '想一下' },
+          { type: 'text', text: '正文' },
+        ],
+      }),
+    }));
+
+    const reasoning = [];
+    const result = await sendMessagesStream(CLAUDE, [{ role: 'user', content: 'Hi' }], {
+      onContent: () => {},
+      onReasoning: (t) => reasoning.push(t),
+    });
+
+    expect(result.content).toBe('正文');
+    expect(reasoning.join('')).toBe('想一下');
+  });
+});
+
 describe('sendMessagesStream', () => {
   const { sendMessagesStream } = require('../src/lib/llm-client.js');
 

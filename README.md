@@ -119,9 +119,10 @@ Every document mutation is staged as a proposal card ? nothing is written until 
 
 ### LLM Backends
 
-- Providers: Ollama, vLLM, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international + China sites), and Custom (any OpenAI-compatible endpoint)
-- Unified OpenAI-compatible chat API; per-provider API prefix handled automatically (GLM uses `/api/paas/v4`)
-- Cloud provider defaults are origin-adaptive: on statically hosted installs (marketplace/Pages) they point at the absolute API origins (e.g. `https://api.deepseek.com`) and are called directly ? all five providers send CORS headers for public origins; behind the local dev/production server they point at same-origin proxy paths, because those providers refuse CORS for localhost/private-IP origins
+- Providers: Ollama, vLLM, OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international + China sites), and Custom (any OpenAI-compatible endpoint)
+- Unified OpenAI-compatible chat API; per-provider API prefix handled automatically (GLM uses `/api/paas/v4`); the Claude provider speaks Anthropic's native Messages API (auth via `x-api-key` + `anthropic-version`, browser access via `anthropic-dangerous-direct-browser-access`)
+- Thinking level and Temperature settings adapt to the selected model (model-capabilities.js): each provider's documented controls only — e.g. OpenAI `reasoning_effort` scales per GPT-5 generation, Claude `output_config.effort`/`thinking.budget_tokens`, DeepSeek `thinking.type` + `reasoning_effort`; Temperature is disabled where the model rejects it
+- Cloud provider defaults are origin-adaptive: on statically hosted installs (marketplace/Pages) they point at the absolute API origins (e.g. `https://api.deepseek.com`) and are called directly — all CORS-capable providers send CORS headers for public origins; behind the local dev/production server they point at same-origin proxy paths, because those providers refuse CORS for localhost/private-IP origins. OpenAI is the exception: `api.openai.com` sends no CORS headers at all, so it defaults to the `/openai` proxy path everywhere
 - Local models (Ollama/vLLM) default to same-origin proxy paths (`/ollama`, `/vllm`) served by the dev/production server ? required because an HTTPS page cannot call `http://localhost` (mixed-content blocking) and to avoid per-user CORS setup
 - Typeable model field with a refreshable suggestion list (Refresh re-queries the provider's models endpoint); configurable endpoint URL and optional API key per provider; Track Changes and Line Diff toggles
 
@@ -152,7 +153,8 @@ origins. Both are first-class; switching is one command each.
 | | **Static route** (GitHub Pages / Microsoft Marketplace) | **Local-server route** (Docker / npm dev) |
 |---|---|---|
 | Taskpane served from | `https://scilence2022.github.io/claric-addin/` | `https://localhost:<HOST_PORT>` (or a LAN IP) |
-| Cloud providers (DeepSeek / GLM / Kimi / MiniMax) | Direct CORS calls to the provider's API origin ? no server needed (API key required) | Same-origin proxy paths (`/deepseek`, ?) ? the providers refuse CORS for localhost/private-IP origins (verified), so direct calls cannot work here |
+| Cloud providers (Claude / DeepSeek / GLM / Kimi / MiniMax) | Direct CORS calls to the provider's API origin ? no server needed (API key required) | Same-origin proxy paths (`/deepseek`, ?) ? the providers refuse CORS for localhost/private-IP origins (verified), so direct calls cannot work here |
+| OpenAI | Not reachable: `api.openai.com` sends no CORS headers for any origin. Options: an HTTPS OpenAI-compatible relay, or use the local-server route | ? Works via the default `/openai` proxy path |
 | Local models (Ollama / vLLM) | Not reachable: an HTTPS page cannot call `http://localhost` (mixed-content blocking; WebKit has no exemption ? bugs.webkit.org 171934/173161). Options: an HTTPS relay in front of Ollama (`OLLAMA_ORIGINS` for CORS), or use the local-server route | ? Work out of the box via the default proxy paths |
 | Backend server required | None | `docker compose up -d` or `npm start` |
 | Typical use | Marketplace submission, everyday cloud-LLM use | Local development (hot reload), local-AI setups |
@@ -190,11 +192,13 @@ A typical release: bump `package.json` ? `npm run publish:addin` ?
   including the add-in's origin) or a reachable relay of the production
   container ? enter its absolute URL as the endpoint.
 - **Why cloud defaults differ per route (verified, not configurable).** The
-  five providers reflect `Access-Control-Allow-Origin` for public origins
+  CORS-capable providers (Claude, DeepSeek, GLM, Kimi, MiniMax, zhongkeyu)
+  reflect `Access-Control-Allow-Origin` for public origins
   (github.io, arbitrary domains) but emit **no CORS headers for localhost
   or private-IP origins** ? a common provider-side policy against local
   network attacks. Hence: static installs call them directly; the local
-  server must relay. The same asymmetry plus mixed-content blocking rules
+  server must relay. OpenAI emits no CORS headers at all, so it always uses
+  the proxy path or a relay. The same asymmetry plus mixed-content blocking rules
   out direct `http://localhost` calls for local models.
 - **Manifest `BASE_PATH`.** Defaults to `/claric-addin` when
   `HOST=scilence2022.github.io` (the Pages repository path); empty for any
@@ -524,6 +528,10 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama base URL (`http://host.docker.internal:11434` in Docker) |
 | `VLLM_PROXY_PATH` | *(disabled)* / `/vllm` (dev) | Proxy path for the vLLM backend (empty disables) |
 | `VLLM_PROXY_TARGET` | `http://localhost:8026` | Upstream vLLM base URL (`http://host.docker.internal:8026` in Docker) |
+| `OPENAI_PROXY_PATH` | *(disabled)* / `/openai` (dev) | Proxy path for OpenAI (empty disables; the only way to reach `api.openai.com` from the browser, since it sends no CORS headers) |
+| `OPENAI_PROXY_TARGET` | `https://api.openai.com` | Upstream OpenAI API origin |
+| `CLAUDE_PROXY_PATH` | *(disabled)* / `/claude` (dev) | Proxy path for Claude/Anthropic (empty disables) |
+| `CLAUDE_PROXY_TARGET` | `https://api.anthropic.com` | Upstream Anthropic API origin |
 | `DEEPSEEK_PROXY_PATH` | *(disabled)* / `/deepseek` (dev) | Proxy path for DeepSeek (empty disables) |
 | `DEEPSEEK_PROXY_TARGET` | `https://api.deepseek.com` | Upstream DeepSeek API origin |
 | `GLM_PROXY_PATH` | *(disabled)* / `/glm` (dev) | Proxy path for Zhipu GLM (empty disables) |

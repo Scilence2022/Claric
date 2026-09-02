@@ -29,13 +29,21 @@ src/
     commands.js
     commands.html
   lib/                         # Core modules
-    llm-client.js              # OpenAI-compatible LLM client: non-streaming
-                               #   (sendMessages/sendPrompt) + SSE streaming
-                               #   (sendMessagesStream) with think-tag demux,
-                               #   reasoning_content support, non-SSE fallback,
-                               #   and idle-timeout (resets per chunk)
-    providers.js               # Provider catalog: Ollama, vLLM, DeepSeek,
-                               #   Zhipu GLM, Moonshot Kimi, MiniMax (intl + CN),
+    llm-client.js              # LLM client: OpenAI-compatible chat completions
+                               #   (non-streaming sendMessages/sendPrompt + SSE
+                               #   streaming with think-tag demux,
+                               #   reasoning_content/reasoning/reasoning_details
+                               #   support, non-SSE fallback, idle timeout) plus
+                               #   the Anthropic Messages API transport for the
+                               #   Claude preset (x-api-key auth, content-block
+                               #   parsing, typed SSE events)
+    model-capabilities.js      # Per-model thinking/effort profiles and wire
+                               #   mappings (reasoning_effort, thinking.type,
+                               #   output_config.effort, budget_tokens, ...),
+                               #   temperature support rules, UI option lists
+    providers.js               # Provider catalog: Ollama, vLLM, OpenAI,
+                               #   Claude (Anthropic), DeepSeek, Zhipu GLM,
+                               #   Moonshot Kimi, MiniMax (intl + CN),
                                #   中科大模型 (zhongkeyu.com), Custom
     prompt-manager.js          # 4-category prompt CRUD, activation, composition
     comment-extractor.js       # Comment extraction, document text extraction,
@@ -754,11 +762,13 @@ of crashing the add-in.
 ### Runtime (localStorage)
 
 All user settings persist in `localStorage` under the `wordAI.config` key:
-- `backend` — provider id (`'ollama'`, `'vllm'`, `'deepseek'`, `'glm'`, `'kimi'`, `'minimax'`, `'minimax-cn'`, `'zhongkeyu'`, `'custom'`)
+- `backend` — provider id (`'ollama'`, `'vllm'`, `'openai'`, `'claude'`, `'deepseek'`, `'glm'`, `'kimi'`, `'minimax'`, `'minimax-cn'`, `'zhongkeyu'`, `'custom'`)
 - `providers.{id}.url` — endpoint URL (same-origin proxy path by default)
 - `providers.{id}.apiKey` — optional API key
 - `providers.{id}.model` — model id (free-text with refreshable suggestions)
 - `providers.{id}.apiPath` — OpenAI API prefix (`/v1`, or `/api/paas/v4` for GLM)
+- `providers.{id}.thinkingLevel` — canonical level (`default`, `off`, `on`, `adaptive`, `always`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), interpreted per model by `model-capabilities.js`
+- `providers.{id}.temperature` — 0–2 (clamped to 0–1 for Claude; omitted where the model rejects it)
 
 Older `backends.{...}` entries (v0.3.x) migrate into `providers` on load.
 - `docExtraction.richness` — `'plain'` | `'headings'` | `'structured'`
@@ -794,7 +804,8 @@ docker compose up -d
 
 The manifest is regenerated inside the container at startup from
 `HOST`/`PORT`/`PROTOCOL`; a stable add-in GUID is persisted (pin with
-`ADDIN_GUID`). The server also proxies `/ollama`, `/vllm`, `/deepseek`,
+`ADDIN_GUID`). The server also proxies `/ollama`, `/vllm`, `/openai`,
+`/claude`, `/deepseek`,
 `/glm`, `/kimi`, `/minimax`, `/minimax-cn`, `/zhongkeyu` to the upstreams configured via
 the corresponding `*_PROXY_TARGET` variables (host.docker.internal from a
 container for local LLMs), keeping LLM traffic same-origin so the add-in's

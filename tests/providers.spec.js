@@ -13,7 +13,7 @@ const {
 
 describe('providers catalog', () => {
   test('exposes the expected provider ids in a stable order', () => {
-    expect(KNOWN_PROVIDERS).toEqual(['ollama', 'vllm', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu', 'custom']);
+    expect(KNOWN_PROVIDERS).toEqual(['ollama', 'vllm', 'openai', 'claude', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu', 'custom']);
   });
 
   test('every preset has label, url, apiPath, and model', () => {
@@ -36,6 +36,8 @@ describe('providers catalog', () => {
   });
 
   test('cloud presets point at their documented API prefixes', () => {
+    expect(PROVIDER_PRESETS.openai.apiPath).toBe('/v1');
+    expect(PROVIDER_PRESETS.claude.apiPath).toBe('/v1');
     expect(PROVIDER_PRESETS.deepseek.apiPath).toBe('/v1');
     expect(PROVIDER_PRESETS.kimi.apiPath).toBe('/v1');
     expect(PROVIDER_PRESETS.minimax.apiPath).toBe('/v1');
@@ -46,6 +48,8 @@ describe('providers catalog', () => {
   });
 
   test('cloud presets reference a key portal and local ones do not', () => {
+    expect(PROVIDER_PRESETS.openai.keyHint).toContain('openai.com');
+    expect(PROVIDER_PRESETS.claude.keyHint).toContain('anthropic.com');
     expect(PROVIDER_PRESETS.deepseek.keyHint).toContain('deepseek.com');
     expect(PROVIDER_PRESETS.glm.keyHint).toContain('bigmodel.cn');
     expect(PROVIDER_PRESETS.kimi.keyHint).toContain('moonshot.cn');
@@ -54,6 +58,23 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.zhongkeyu.keyHint).toContain('zhongkeyu.com');
     expect(PROVIDER_PRESETS.ollama.keyHint).toBeUndefined();
     expect(PROVIDER_PRESETS.vllm.keyHint).toBeUndefined();
+  });
+
+  test('OpenAI and Claude presets carry their origins, defaults, and formats', () => {
+    // api.openai.com sends no CORS headers: browser calls must go through
+    // the local-server proxy, so the preset defaults to the proxy path on
+    // every origin and carries the hint explaining why.
+    expect(PROVIDER_PRESETS.openai.url).toBe('/openai');
+    expect(PROVIDER_PRESETS.openai.model.length).toBeGreaterThan(0);
+    expect(PROVIDER_PRESETS.openai.staticOk).toBe(false);
+    expect(PROVIDER_PRESETS.openai.staticHint).toContain('CORS');
+
+    expect(PROVIDER_PRESETS.claude.url).toBe('https://api.anthropic.com');
+    expect(PROVIDER_PRESETS.claude.proxyUrl).toBe('/claude');
+    expect(PROVIDER_PRESETS.claude.model).toContain('claude');
+    // The Messages API is a different wire format from chat completions.
+    expect(PROVIDER_PRESETS.claude.apiFormat).toBe('anthropic');
+    expect(PROVIDER_PRESETS.claude.staticOk).toBe(true);
   });
 
   test('MiniMax exposes separate international and China presets', () => {
@@ -74,17 +95,20 @@ describe('providers catalog', () => {
   });
 
   test('cloud presets default to absolute HTTPS origins (statically hosted installs work serverless)', () => {
-    // All six providers send Access-Control-Allow-Origin for the add-in's
-    // hosted origins (verified), so the store install talks to them directly
-    // instead of relying on same-origin proxy paths that only exist behind
-    // the docker/dev server.
+    // These providers send Access-Control-Allow-Origin for the add-in's
+    // hosted origins (verified; Claude via the browser-access header), so
+    // the store install talks to them directly instead of relying on
+    // same-origin proxy paths that only exist behind the docker/dev server.
+    // api.openai.com is the exception: no CORS headers, so it keeps its
+    // absolute URL here but is marked staticOk:false like the local presets.
+    expect(PROVIDER_PRESETS.claude.url).toBe('https://api.anthropic.com');
     expect(PROVIDER_PRESETS.deepseek.url).toBe('https://api.deepseek.com');
     expect(PROVIDER_PRESETS.glm.url).toBe('https://open.bigmodel.cn');
     expect(PROVIDER_PRESETS.kimi.url).toBe('https://api.moonshot.cn');
     expect(PROVIDER_PRESETS.minimax.url).toBe('https://api.minimax.io');
     expect(PROVIDER_PRESETS['minimax-cn'].url).toBe('https://api.minimaxi.com');
     expect(PROVIDER_PRESETS.zhongkeyu.url).toBe('https://zhongkeyu.com');
-    for (const id of ['deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu']) {
+    for (const id of ['claude', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu']) {
       expect(PROVIDER_PRESETS[id].staticOk).toBe(true);
     }
   });
@@ -100,16 +124,20 @@ describe('providers catalog', () => {
   });
 
   test('cloud presets default to absolute HTTPS origins on static hosts', () => {
-    // All six providers return Access-Control-Allow-Origin for public
+    // CORS-capable providers return Access-Control-Allow-Origin for public
     // origins (verified), so the statically hosted install (marketplace /
     // GitHub Pages) calls them directly — no server of our own needed.
+    // OpenAI has no browser CORS, so even on a static host its entry points
+    // at the proxy path (dead there, but honest about needing a relay).
     const cfg = defaultProviderConfig('https://scilence2022.github.io');
+    expect(cfg.claude.url).toBe('https://api.anthropic.com');
     expect(cfg.deepseek.url).toBe('https://api.deepseek.com');
     expect(cfg.glm.url).toBe('https://open.bigmodel.cn');
     expect(cfg.kimi.url).toBe('https://api.moonshot.cn');
     expect(cfg.minimax.url).toBe('https://api.minimax.io');
     expect(cfg['minimax-cn'].url).toBe('https://api.minimaxi.com');
     expect(cfg.zhongkeyu.url).toBe('https://zhongkeyu.com');
+    expect(cfg.openai.url).toBe('/openai');
   });
 
   test('local-served origins default cloud providers to same-origin proxy paths', () => {
@@ -119,6 +147,8 @@ describe('providers catalog', () => {
     // only mechanism there.
     for (const origin of ['', 'https://localhost:3001', 'https://192.168.1.63:3001']) {
       const cfg = defaultProviderConfig(origin);
+      expect(cfg.openai.url).toBe('/openai');
+      expect(cfg.claude.url).toBe('/claude');
       expect(cfg.deepseek.url).toBe('/deepseek');
       expect(cfg.glm.url).toBe('/glm');
       expect(cfg['minimax-cn'].url).toBe('/minimax-cn');

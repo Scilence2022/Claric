@@ -935,4 +935,174 @@ describe('model-specific generation parameters', () => {
     expect(body.thinking).toEqual({ type: 'enabled' });
     expect(body.reasoning_effort).toBe('low');
   });
+
+  test('OpenAI GPT-5.6 sends reasoning_effort and omits temperature while reasoning', async () => {
+    const body = await bodyFor({
+      url: '/openai', apiKey: 'k', provider: 'openai', model: 'gpt-5.6',
+      thinkingLevel: 'xhigh', temperature: 0.4,
+    });
+    expect(body.reasoning_effort).toBe('xhigh');
+    expect(body).not.toHaveProperty('temperature');
+  });
+
+  test('OpenAI GPT-5.1 at none disables reasoning and restores temperature', async () => {
+    const body = await bodyFor({
+      url: '/openai', apiKey: 'k', provider: 'openai', model: 'gpt-5.1',
+      thinkingLevel: 'none', temperature: 0.4,
+    });
+    expect(body.reasoning_effort).toBe('none');
+    expect(body.temperature).toBe(0.4);
+  });
+
+  test('OpenAI GPT-4o has no reasoning dial and keeps temperature', async () => {
+    const body = await bodyFor({
+      url: '/openai', apiKey: 'k', provider: 'openai', model: 'gpt-4o',
+      thinkingLevel: 'high', temperature: 1.3,
+    });
+    expect(body).not.toHaveProperty('reasoning_effort');
+    expect(body.temperature).toBe(1.3);
+  });
+});
+
+// ============================================================================
+// Anthropic Messages API transport (claude provider)
+// ============================================================================
+
+describe('Anthropic transport (claude provider)', () => {
+  let realAbortController;
+  const CLAUDE = {
+    url: '/claude', apiKey: 'sk-ant-test', provider: 'claude', model: 'claude-sonnet-4-6',
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        stop_reason: 'end_turn',
+        content: [
+          { type: 'thinking', thinking: 'hmm' },
+          { type: 'text', text: 'Hello ' },
+          { type: 'text', text: 'there' },
+        ],
+      }),
+    });
+    realAbortController = global.AbortController;
+    global.AbortController = jest.fn().mockImplementation(() => ({
+      signal: 'mock-signal',
+      abort: jest.fn()
+    }));
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    global.fetch = undefined;
+    global.AbortController = realAbortController;
+    jest.useRealTimers();
+  });
+
+  test('posts to /v1/messages with Anthropic auth headers', async () => {
+    await sendMessages(CLAUDE, [{ role: 'user', content: 'Hi' }]);
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe('/claude/v1/messages');
+    expect(init.headers['x-api-key']).toBe('sk-ant-test');
+    expect(init.headers['anthropic-version']).toBe('2023-06-01');
+    expect(init.headers['anthropic-dangerous-direct-browser-access']).toBe('true');
+    expect(init.headers.Authorization).toBeUndefined();
+  });
+
+  test('translates system messages, defaults max_tokens, and concatenates text blocks', async () => {
+    const result = await sendMessages(CLAUDE, [
+      { role: 'system', content: 'You edit documents.' },
+      { role: 'user', content: 'Hi' },
+    ]);
+    expect(result).toBe('Hello there');
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.system).toBe('You edit documents.');
+    expect(body.messages).toEqual([{ role: 'user', content: 'Hi' }]);
+    expect(body.max_tokens).toBe(16384);
+    expect(body.stream).toBe(false);
+    expect(body).not.toHaveProperty('output_config');
+  });
+
+  test('sends output_config.effort for effort-era models', async () => {
+    await sendMessages({ ...CLAUDE, thinkingLevel: 'low' }, [{ role: 'user', content: 'Hi' }]);
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.output_config).toEqual({ effort: 'low' });
+    expect(body).not.toHaveProperty('thinking');
+  });
+
+  test('xhigh effort raises the max_tokens headroom', async () => {
+    await sendMessages({ ...CLAUDE, model: 'claude-opus-4-7', thinkingLevel: 'xhigh' },
+      [{ role: 'user', content: 'Hi' }]);
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.output_config).toEqual({ effort: 'xhigh' });
+    expect(body.max_tokens).toBe(65536);
+  });
+
+  test('budget-era models send thinking budgets and no temperature', async () => {
+    await sendMessages({
+      ...CLAUDE, model: 'claude-opus-4-5', thinkingLevel: 'high', temperature: 0.5,
+    }, [{ role: 'user', content: 'Hi' }]);
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 16384 });
+    // budget + answer floor: 16384 + 8192
+    expect(body.max_tokens).toBe(24576);
+    expect(body).not.toHaveProperty('temperature');
+  });
+
+  test('clamps temperature to the Anthropic 0-1 range', async () => {
+    await sendMessages({ ...CLAUDE, thinkingLevel: 'off', temperature: 1.8 },
+      [{ role: 'user', content: 'Hi' }]);
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.temperature).toBe(1);
+    expect(body.thinking).toEqual({ type: 'disabled' });
+  });
+
+  test('translates image_url parts into Anthropic image blocks', async () => {
+    const dataUrl = 'data:image/png;base64,QUJD';
+    await sendMessages(CLAUDE, [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'What is this?' },
+        { type: 'image_url', image_url: { url: dataUrl } },
+        { type: 'image_url', image_url: { url: 'https://example.com/pic.png' } },
+      ],
+    }]);
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.messages[0].content).toEqual([
+      { type: 'text', text: 'What is this?' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'QUJD' } },
+      { type: 'image', source: { type: 'url', url: 'https://example.com/pic.png' } },
+    ]);
+  });
+
+  test('rejects stop_reason=max_tokens as truncated', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ stop_reason: 'max_tokens', content: [{ type: 'text', text: 'half' }] }),
+    });
+    await expect(sendMessages(CLAUDE, [{ role: 'user', content: 'Hi' }]))
+      .rejects.toThrow(/truncated/);
+  });
+
+  test('an explicit apiFormat dispatches without the provider id', async () => {
+    await sendMessages({ url: 'https://relay.example.com', apiKey: 'k', apiFormat: 'anthropic', model: 'claude-x' },
+      [{ role: 'user', content: 'Hi' }]);
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe('https://relay.example.com/v1/messages');
+    expect(init.headers['x-api-key']).toBe('k');
+  });
+
+  test('testConnection uses Anthropic headers against /v1/models', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: 'claude-sonnet-4-6' }], has_more: false }),
+    });
+    const result = await testConnection(CLAUDE);
+    expect(result.models).toEqual([{ id: 'claude-sonnet-4-6' }]);
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe('/claude/v1/models');
+    expect(init.headers['x-api-key']).toBe('sk-ant-test');
+    expect(init.headers.Authorization).toBeUndefined();
+  });
 });

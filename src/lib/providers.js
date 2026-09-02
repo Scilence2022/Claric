@@ -77,12 +77,17 @@ function runtimeOrigin() {
  *   model    - default model id
  *   keyHint  - where to obtain an API key (optional, shown in the UI)
  *   staticOk - true when the preset is usable from a statically hosted
- *              install; false marks local-model presets (mixed content)
+ *              install; false marks providers the browser cannot call
+ *              directly (local models: mixed content; OpenAI: no CORS)
+ *   staticHint - optional endpoint-hint override for staticOk:false
+ *              providers whose restriction is not the local-model one
+ *   apiFormat - 'anthropic' switches the LLM client to the Claude Messages
+ *              API; omitted means OpenAI-compatible chat completions
  *
  * Because webpack DefinePlugin replaces process.env.DEFAULT_* at build
  * time, Ollama/vLLM keep honoring the classic env overrides.
  *
- * @type {Object<string, {label: string, url: string, proxyUrl?: string, apiPath: string, model: string, keyHint?: string, staticOk?: boolean}>}
+ * @type {Object<string, {label: string, url: string, proxyUrl?: string, apiPath: string, model: string, keyHint?: string, staticOk?: boolean, staticHint?: string, apiFormat?: string}>}
  */
 export const PROVIDER_PRESETS = {
   ollama: {
@@ -98,6 +103,31 @@ export const PROVIDER_PRESETS = {
     apiPath: '/v1',
     model: process.env.DEFAULT_VLLM_MODEL || 'qwen3.5-35b-a3b',
     staticOk: false,
+  },
+  openai: {
+    label: 'OpenAI',
+    // api.openai.com emits no Access-Control-Allow-Origin, so direct browser
+    // calls fail on every origin — like the local-model presets, the default
+    // is the same-origin proxy path on every install, and the hint explains
+    // that a CORS-enabled relay URL is the alternative.
+    url: '/openai',
+    apiPath: '/v1',
+    model: 'gpt-5.1',
+    keyHint: 'platform.openai.com',
+    staticOk: false,
+    staticHint: 'OpenAI base URL — the default proxy path works when this add-in is served by its local server (api.openai.com allows no direct browser calls: it sends no CORS headers). From a static install (e.g. marketplace), enter an HTTPS OpenAI-compatible relay URL.',
+  },
+  claude: {
+    label: 'Claude (Anthropic)',
+    url: 'https://api.anthropic.com',
+    proxyUrl: '/claude',
+    apiPath: '/v1',
+    model: 'claude-sonnet-4-6',
+    keyHint: 'console.anthropic.com',
+    // The client sends anthropic-dangerous-direct-browser-access, which opts
+    // the API into browser CORS, so static installs can call it directly.
+    staticOk: true,
+    apiFormat: 'anthropic',
   },
   deepseek: {
     label: 'DeepSeek',
@@ -175,7 +205,7 @@ export const KNOWN_PROVIDERS = Object.keys(PROVIDER_PRESETS);
  * Returns the preset entry for a provider id (or null for unknown ids).
  *
  * @param {string} providerId
- * @returns {{label: string, url: string, apiPath: string, model: string, keyHint?: string}|null}
+ * @returns {{label: string, url: string, apiPath: string, model: string, keyHint?: string, proxyUrl?: string, staticOk?: boolean, staticHint?: string, apiFormat?: string}|null}
  */
 export function getProviderPreset(providerId) {
   return PROVIDER_PRESETS[providerId] || null;
