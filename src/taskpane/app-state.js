@@ -14,10 +14,11 @@
 import { PromptManager } from '../lib/prompt-manager.js';
 import { CommentQueue } from '../lib/comment-queue.js';
 import { KNOWN_PROVIDERS, defaultProviderConfig } from '../lib/providers.js';
+import { THINKING_LEVEL_VALUES } from '../lib/model-capabilities.js';
 import { TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
 
 const KNOWN_RICHNESS = ['plain', 'headings', 'structured'];
-const KNOWN_THINKING_LEVELS = ['default', 'low', 'medium', 'high'];
+const KNOWN_THINKING_LEVELS = THINKING_LEVEL_VALUES;
 const DEFAULT_TEMPERATURE = 1;
 
 /**
@@ -67,13 +68,16 @@ export const appState = {
 appState.commentQueue = new CommentQueue((message, type) => appState.log(message, type));
 
 /**
- * Returns the config object for the currently selected provider.
+ * Returns a request-ready copy of the currently selected provider config.
+ * `provider` is derived at read time so model capability detection has the
+ * backend id without adding non-user data to the persisted provider entry.
  *
  * @param {object} [state] - App state (defaults to the shared appState)
- * @returns {{ url: string, apiKey: string, model: string, apiPath: string, thinkingLevel: string, temperature: number }}
+ * @returns {{ provider: string, url: string, apiKey: string, model: string, apiPath: string, thinkingLevel: string, temperature: number }}
  */
 export function getActiveBackendConfig(state = appState) {
-    return state.config.providers[state.config.backend];
+    const provider = state.config.backend;
+    return { ...state.config.providers[provider], provider };
 }
 
 /**

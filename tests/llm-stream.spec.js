@@ -223,6 +223,83 @@ describe('sendPromptStream reasoning demux', () => {
     expect(reasoning.join('')).toContain('想');
     expect(content.join('')).toBe('正文');
   });
+
+  test('vLLM-style delta.reasoning streams to onReasoning', async () => {
+    global.fetch = jest.fn(async () =>
+      sseResponse([
+        sseLineFull({ reasoning: 'thinking ' }),
+        sseLineFull({ reasoning: 'hard' }),
+        sseLineFull({ content: 'done' }),
+        'data: [DONE]\n',
+      ])
+    );
+
+    const content = [];
+    const reasoning = [];
+    const result = await sendPromptStream(CONFIG, 'prompt', {
+      onContent: (t) => content.push(t),
+      onReasoning: (t) => reasoning.push(t),
+    });
+
+    expect(content.join('')).toBe('done');
+    expect(reasoning.join('')).toBe('thinking hard');
+    expect(result).toBe('done');
+  });
+
+  test('gateway-style delta.reasoning_details entries stream to onReasoning', async () => {
+    global.fetch = jest.fn(async () =>
+      sseResponse([
+        sseLineFull({ reasoning_details: [{ type: 'reasoning.text', text: 'step 1' }] }),
+        sseLineFull({ reasoning_details: [{ type: 'reasoning.text', text: ', step 2' }] }),
+        sseLineFull({ content: 'answer' }),
+        'data: [DONE]\n',
+      ])
+    );
+
+    const reasoning = [];
+    const result = await sendPromptStream(CONFIG, 'prompt', {
+      onContent: () => {},
+      onReasoning: (t) => reasoning.push(t),
+    });
+
+    expect(reasoning.join('')).toBe('step 1, step 2');
+    expect(result).toBe('answer');
+  });
+
+  test('non-SSE fallback surfaces message.reasoning (vLLM) and reasoning_details', async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({
+        choices: [{ message: { content: '正文', reasoning: '想清楚了' } }],
+      }),
+    }));
+
+    const reasoning = [];
+    const result = await sendPromptStream(CONFIG, 'prompt', {
+      onContent: () => {},
+      onReasoning: (t) => reasoning.push(t),
+    });
+
+    expect(result).toBe('正文');
+    expect(reasoning.join('')).toBe('想清楚了');
+  });
+
+  test('streams send the model-specific thinking parameters', async () => {
+    global.fetch = jest.fn(async () =>
+      sseResponse([sseLine('ok'), 'data: [DONE]\n'])
+    );
+
+    await sendPromptStream({
+      ...CONFIG, provider: 'deepseek', model: 'deepseek-v4-flash',
+      thinkingLevel: 'high', temperature: 0.5,
+    }, 'prompt', () => {});
+
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('high');
+    expect(body).not.toHaveProperty('temperature');
+  });
 });
 
 describe('sendMessagesStream', () => {

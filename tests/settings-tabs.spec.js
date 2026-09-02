@@ -53,7 +53,10 @@ describe('settings tabs markup contract', () => {
         expect(generalPage).toContain('<option value="low">Low</option>');
         expect(generalPage).toContain('<option value="medium">Medium</option>');
         expect(generalPage).toContain('<option value="high">High</option>');
+        // Model-aware explanations sit next to the two generation controls.
+        expect(generalPage).toContain('id="thinkingLevelHint"');
         expect(generalPage).toContain('id="temperatureInput"');
+        expect(generalPage).toContain('id="temperatureHint"');
         expect(generalPage).toContain('type="number"');
         expect(generalPage).toContain('min="0"');
         expect(generalPage).toContain('max="2"');
