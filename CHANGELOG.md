@@ -8,78 +8,23 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
-- **中科大模型 (zhongkeyu.com) provider** — new cloud preset for the
-  zhongkeyu.com New API gateway ("中科大模型-企业版"), which relays many
-  upstream models (GLM, DeepSeek, Claude, Gemini, GPT, Kimi, ...) behind one
-  OpenAI-compatible `/v1` surface. Defaults: `https://zhongkeyu.com` +
-  `glm-5.3-flash`; CORS verified for direct calls on statically hosted
-  installs, and the local dev/production servers gain a `/zhongkeyu` proxy
-  path (`ZHONGKEYU_PROXY_PATH` / `ZHONGKEYU_PROXY_TARGET`).
+- **Windows one-click installer** (`installer/windows/`) ? `Install-Claric.ps1`
+  registers any Claric manifest (the static GitHub Pages build by default, or
+  a self-hosted one via `-ManifestPath`) as a Word developer add-in under
+  `HKCU\SOFTWARE\Microsoft\Office\16.0\Wef\Developer` ? the same registry
+  mechanism `office-addin-dev-settings` uses ? and generates
+  `Claric-Launch.docx`, which opens Word with the taskpane mounted. Works on
+  consumer Microsoft 365 builds where "Upload My Add-in" was removed, and
+  without the UNC share the trusted-catalog route requires; no admin rights.
+  `Uninstall-Claric.ps1` reverses it. `npm run install:windows` /
+  `uninstall:windows` wrap both, and `npm run sideload` now installs on
+  Windows instead of printing manual menu paths.
 
-- **Citation pills survive a reload** — the `§` pills under a document-run
-  answer were built but never persisted, so a restored session lost them. The
-  label + search text now ride in the session record, and the bootstrap
-  supplies the reveal action for pills rebuilt from history (a stored message
-  carries no closures).
-
-### Fixed
-
-- **Selection edit could report a write that never happened** — a chained
-  instruction ("检查合计，然后修正表头") enters the table tool loop, which may
-  finish read-only (an answer, no ops). That outcome has no patch and no
-  amended text, but the turn still staged a proposal card whose Apply wrote
-  nothing and then reported "Applied as tracked changes". The read-only
-  outcome now renders as the chat answer, like the other tool-loop turns.
-
-- **Document-scope table turns ignored merged cells** — `table_management`
-  without a selection hard-coded `merged: false`, so row insert/delete stayed
-  enabled on a merged grid and merge-covered coordinates looked editable. Both
-  readers now run the same `getCell` merge probe (and the same degradation to
-  "layout unknown" on hosts that throw for covered slots).
-
-- **Cleanup turns could not be cancelled** — the empty-paragraph cleanup was
-  the one turn that never registered its AbortController, so Stop could not
-  reach it; inside a compound turn it also cleared the busy flag mid-chain.
-  Every chat turn now claims and releases the lifecycle through one pair of
-  helpers, which also fixes the `/mcp` turn leaving `isProcessing` stuck
-  (wedging all later turns) when a compound turn owned the controller.
-
-- **Planning failure lost the table selection** — when the task planner
-  returned no tasks, the fallback re-routed the instruction without the
-  multi-cell-table flag, so a table selection was treated as no selection and
-  the table tool session became unreachable. The flag now travels with the
-  compound turn.
-
-- **Saved provider settings leaked into the defaults** — `normalizeConfig`
-  spread the defaults shallowly, aliasing the `providers` map, so the
-  per-provider merge mutated the caller's object and one call's saved URLs
-  became the next call's fallbacks.
-
-- **History showed dead controls** — a restored assistant message rendered
-  work-log and model-activity toggles with no handler and nothing to expand
-  (only the counts are persisted). They are static one-line summaries now.
-
-### Changed
-
-- **Shared message shape** — the persisted chat message had two independent
-  normalizers, one per leg of the save/load round-trip, validating the same 11
-  fields; a field added to one and forgotten in the other was silently
-  dropped. Both legs now normalize through `taskpane/message-shape.js`, which
-  also owns id generation and re-exports the attachment-metadata reduction
-  from the upload layer (previously implemented three times).
-
-- **Tool-loop turn runners de-duplicated** — the selection-scope and
-  document-scope image and table turns were ~80-line copies differing only in
-  their labels; they now share one staging helper per family. As a side
-  effect, document-scope table applies honor the staleness guard (a refused
-  write reports a warning instead of success), which only the selection path
-  had.
-
-## [1.0.2] — 2026-08-31
+## [1.0.2] ? 2026-08-31
 
 ### Fixed
 
-- **Apply tracked changes (Latin text)** — the token-map optimization
+- **Apply tracked changes (Latin text)** ? the token-map optimization
   (below) mapped repeated words by counting earlier identical *tokens*,
   but Word's search returns *substring* matches, so a deleted "the" could
   land on the one inside "other" and delete mid-word, garbling the
@@ -90,13 +35,13 @@ that drive the GHCR image publish in CI.
 
 ### Performance
 
-- **Apply tracked changes** — full-document applies no longer pay a Word host
+- **Apply tracked changes** ? full-document applies no longer pay a Word host
   round-trip per diff op. The CJK char-level strategy now locates every edit
   span in ONE batched search pass (occurrence-indexed mapping, same trick as
   the token map) instead of a `context.sync` per op; the Latin token-map
   strategy locates only the tokens the edits actually touch (deleted tokens
   plus one anchor per insertion) instead of reading coarse word ranges and
-  searching every token in the paragraph — hundreds of host-side searches
+  searching every token in the paragraph ? hundreds of host-side searches
   per paragraph before; the reassembler pre-reads all changed paragraphs'
   content ranges in a single sync per chunk and reuses the re-anchor pass'
   paragraph reads instead of re-loading them; and comment insertion batches
@@ -104,29 +49,29 @@ that drive the GHCR image publish in CI.
   preserved, with a fresh-run retry for the remainder after a failed
   insert). Behavior, redline granularity, and fallbacks are unchanged.
 
-## [1.0.1] — 2026-08-29
+## [1.0.1] ? 2026-08-29
 
 ### Changed
 
-- **Store display name** — `DISPLAY_NAME` default is now "Claric — AI
+- **Store display name** ? `DISPLAY_NAME` default is now "Claric ? AI
   Writing & Editing Assistant for Word": a general capability descriptor
-  (previously "AI Redlining for Word"). Audience scenarios — academic
-  writing first, then contracts/legal and everyday documents — are carried
+  (previously "AI Redlining for Word"). Audience scenarios ? academic
+  writing first, then contracts/legal and everyday documents ? are carried
   by the store listing and the manifest description instead of the name.
 - Manifest `Description` updated to the general positioning ("Great for
   papers, theses, contracts, and everyday writing").
 - `docs/store-listing.md` rewritten to the general positioning with
-  academic writing as the lead scenario (EN + 中文); keywords now cover
+  academic writing as the lead scenario (EN + ??); keywords now cover
   academic-writing search terms alongside legal ones.
 
-## [1.0.0] — 2026-08-29
+## [1.0.0] ? 2026-08-29
 
 First Microsoft Marketplace-ready release (store validation requires a
-manifest version ≥ 1.0.0.0).
+manifest version ? 1.0.0.0).
 
 ### Added
 
-- Store identity knobs: `DISPLAY_NAME` (default "Claric — AI Redlining for
+- Store identity knobs: `DISPLAY_NAME` (default "Claric ? AI Redlining for
   Word"), `SUPPORT_URL`, and `APP_DOMAINS` manifest generation variables
   (store validation requires a real support page; AppDomains declares extra
   domains). `docs/store-listing.md` drafts the user-facing store copy;
@@ -134,47 +79,47 @@ manifest version ≥ 1.0.0.0).
 
 ### Fixed
 
-- **retryFailedChunks** — "Click to retry failed chunks" could never
+- **retryFailedChunks** ? "Click to retry failed chunks" could never
   succeed: retry chunks were rebuilt as text-only stubs without a
   `paragraphs` field (crashing the orchestrator's composer) and were handed
   a null document context. Retries now re-drive the original chunk objects,
   and the orchestrator treats a null context as "no context prefix" instead
   of crashing. (`word-actions.js`, `orchestrator.js`)
-- **Selection-staleness guard on Apply** — applying a staged selection
+- **Selection-staleness guard on Apply** ? applying a staged selection
   amendment re-read the live selection without verifying it still matched
   the staged text; a moved selection made granular diffing throw and the
   old fallback overwrote whatever was *currently* selected with the stale
   amendment. The apply now refuses with a card warning when the selection
   drifted (whitespace/line-ending normalization tolerated).
   (`word-actions.js`, `conversation.js`)
-- **Activity-log drawer could never open** — `#logBtn` was bound twice
+- **Activity-log drawer could never open** ? `#logBtn` was bound twice
   (bootstrap + `initStatusBar`), so one click toggled the drawer open and
   instantly closed. (`status-bar.js`, `taskpane.js`)
-- **Task-planner output contract** — the strict OUTPUT CONTRACT enum omitted
+- **Task-planner output contract** ? the strict OUTPUT CONTRACT enum omitted
   `image_management`/`table_management` while the CAPABILITIES section
   taught them, so a contract-obeying model could never emit those task
   types and the corresponding compound sub-tasks misrouted.
   (`task-planner.js`)
-- **Trailing-comma JSON cleanup corrupted string contents** — the shared
+- **Trailing-comma JSON cleanup corrupted string contents** ? the shared
   `,\s*([}\]])` regex also fired *inside* JSON string literals, silently
   deleting characters from cell text / tool args before they reached the
   document. Replaced by a string-aware, parse-failure-only recovery.
   (`tool-loop.js`, `table-patch.js`, `table-ops.js`)
-- **Truncation detection** — streams that closed without `[DONE]` and
+- **Truncation detection** ? streams that closed without `[DONE]` and
   without `finish_reason` were returned as complete answers, and
   non-streaming responses with `finish_reason=length` flowed into the diff
   pipeline as if complete. Both now fail loudly; the SSE reader also
   flushes the decoder's final multi-byte tail and releases the body after
   `[DONE]`. (`llm-client.js`)
-- **Session persistence on quota pressure** — oversized sessions lost only
+- **Session persistence on quota pressure** ? oversized sessions lost only
   illustration previews, so a large document run could exceed the
   per-session cap and silently vanish from history. The trimmer now
-  degrades in stages (previews → proposal diffs → proposals → pathological
+  degrades in stages (previews ? proposal diffs ? proposals ? pathological
   message text), and a failed history-index write surfaces an error instead
   of leaving the index and blobs inconsistent. The total-cap check also
   stopped re-parsing every stored session on each committed turn.
   (`sessions.js`)
-- **Chunk-bookmark anchors** — `bookmarkChunkRanges` indexed paragraphs from
+- **Chunk-bookmark anchors** ? `bookmarkChunkRanges` indexed paragraphs from
   a previous `Word.run` without validation; concurrent document changes
   between parse and bookmark made amendments land on the wrong paragraphs.
   Boundary paragraph texts are now verified before bookmarking, and
@@ -183,28 +128,28 @@ manifest version ≥ 1.0.0.0).
 
 ### Changed
 
-- **Apply concurrency guards** — proposal-card applies previously ran with
+- **Apply concurrency guards** ? proposal-card applies previously ran with
   the busy flags down (except the document-amendment card), so an apply
-  could race a new turn's parse → bookmark pass or a second card's apply.
+  could race a new turn's parse ? bookmark pass or a second card's apply.
   Every card now registers its apply controller with app state (so
   cancel() reaches it), locks the input while applying, and a module-level
   mutex refuses a second card's Apply while one is in flight. The document
   card's unconditional busy-flag reset (which could clobber a newer run) is
   ownership-checked. (`proposal-card.js`, `conversation.js`)
-- **Shared JSON extraction** (`src/lib/json-utils.js`) — the five per-layer
+- **Shared JSON extraction** (`src/lib/json-utils.js`) ? the five per-layer
   LLM-JSON parsers (tool loop, table patch, table creation, task planner,
   format ops) consolidated onto one implementation with balanced-candidate
   scanning, so prose containing a second brace pair no longer poisons the
-  greedy first-`{`…last-`}` slice.
-- **Log drawer bounds** — the activity drawer caps at 200 DOM entries,
+  greedy first-`{`?last-`}` slice.
+- **Log drawer bounds** ? the activity drawer caps at 200 DOM entries,
   per-message work logs cap at 100 rows, and the dev-only `/log` POST
   probes once and disables itself after a failure instead of one 404 per
   log line in production. (`status-bar.js`, `chat-view.js`)
-- **CSP** — the taskpane ships a Content-Security-Policy meta tag
+- **CSP** ? the taskpane ships a Content-Security-Policy meta tag
   (defense-in-depth around the localStorage-held API key): scripts pinned
   to the bundle + Office.js CDN, `object-src 'none'`, `connect-src` left
   open for user-configured Custom endpoints. (`taskpane.html`)
-- **Production proxy hygiene** — the LLM proxy no longer forwards
+- **Production proxy hygiene** ? the LLM proxy no longer forwards
   `cookie`/`referer`/`origin` to upstreams. (`docker-server.cjs`)
 
 ### Removed

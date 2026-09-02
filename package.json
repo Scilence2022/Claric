@@ -1,7 +1,7 @@
 {
   "name": "claric",
   "version": "1.0.2",
-  "description": "Claric — your redlining scribe for Microsoft Word. AI-powered tracked changes, summarization, and comment analysis.",
+  "description": "Claric ? your redlining scribe for Microsoft Word. AI-powered tracked changes, summarization, and comment analysis.",
   "private": true,
   "scripts": {
     "start": "webpack serve --mode development",
@@ -16,6 +16,8 @@
     "publish:addin": "node scripts/publish-addin.cjs",
     "sideload": "node scripts/sideload-addin.cjs",
     "sideload:remove": "node scripts/sideload-addin.cjs --remove",
+    "install:windows": "node scripts/sideload-addin.cjs",
+    "uninstall:windows": "node scripts/sideload-addin.cjs --remove",
     "typecheck": "tsc",
     "verify": "npm run lint && npm test && npm run coverage && npm run check-coverage && npm run typecheck && npm run build",
     "icons": "node scripts/generate-icons.cjs"
@@ -37,9 +39,7 @@
   "dependencies": {
     "dompurify": "^3.4.14",
     "dotenv": "^17.2.3",
-    "mammoth": "^1.12.2",
-    "marked": "^17.0.4",
-    "pdfjs-dist": "^6.3.289"
+    "marked": "^17.0.4"
   },
   "devDependencies": {
     "@babel/core": "^7.28.5",
