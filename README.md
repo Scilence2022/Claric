@@ -462,6 +462,35 @@ For full details, see the [Microsoft sideloading guide](https://learn.microsoft.
 
 ### Word on Mac
 
+**Method 1: One-click installer (recommended)**
+
+No admin rights, no Node.js. Uses Word's developer sideload folder
+(`~/Library/Containers/com.microsoft.Word/Data/Documents/wef`) -- the same
+registration mechanism `office-addin-dev-settings` employs on macOS, and it
+works on every Word for Mac build.
+
+- **Static build (GitHub Pages)** ? run in Terminal:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/macos/Install-Claric.sh | bash
+  ```
+
+- **Self-hosted build (Docker / npm)** ? from a checkout, after generating the
+  manifest for your server:
+
+  ```
+  npm run install:macos          # wraps installer/macos/Install-Claric.sh --manifest manifest.xml
+  ```
+
+The installer copies the manifest into Word's `wef` sideload folder, builds
+`Claric-Launch.docx`, and opens Word with the taskpane mounted. Reopen that
+document whenever you need Claric, or find it under
+**Home ? Add-ins ? Claric**. Undo with `Uninstall-Claric.sh` or
+`npm run uninstall:macos`. Details and troubleshooting:
+[installer/macos/README.md](installer/macos/README.md).
+
+**Method 2: Manual wef-folder sideload**
+
 Mac's Word has no "Add from file" dialog -- sideloading uses the `wef`
 container folder (see [Microsoft's Mac sideloading guide](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/sideload-an-office-add-in-on-mac)):
 
