@@ -352,4 +352,91 @@ describe('fireCommentRequest and resumeCommentFromBookmark', () => {
     // The test completes immediately without waiting for the promise
     // If fireCommentRequest blocked (awaited), this test would hang
   });
+
+  // Stop must actually stop this pipeline. It used to receive no signal at
+  // all, so a cancelled turn still wrote its comment into the document once
+  // the request came back.
+  describe('cancellation', () => {
+    test('the abort signal reaches the LLM send call', async () => {
+      const controller = new AbortController();
+      fireCommentRequest('test selection text', makeDeps({ signal: controller.signal }));
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(mockSendPrompt).toHaveBeenCalled();
+      expect(mockSendPrompt.mock.calls[0][3]).toBe(controller.signal);
+    });
+
+    test('an abort landing before the response suppresses the insert', async () => {
+      const controller = new AbortController();
+      // Resolves only after the abort, mimicking a fetch that already
+      // completed when Stop was pressed.
+      const lateSendPrompt = jest.fn(() => new Promise(resolve => {
+        setTimeout(() => resolve('analysis that must not be inserted'), 20);
+      }));
+
+      fireCommentRequest('test selection text', makeDeps({
+        sendPromptFn: lateSendPrompt,
+        signal: controller.signal,
+      }));
+      controller.abort();
+
+      await new Promise(resolve => setTimeout(resolve, 60));
+
+      expect(commentQueue.insertCommentOnBookmark).not.toHaveBeenCalled();
+      expect(commentQueue.getPendingCount()).toBe(0);
+      expect(mockUpdateStatusBar).toHaveBeenCalledWith(0);
+    });
+
+    test('an AbortError is reported as a status, not a retryable failure', async () => {
+      const abortError = new Error('The operation was aborted.');
+      abortError.name = 'AbortError';
+      const abortingSendPrompt = jest.fn().mockRejectedValue(abortError);
+
+      fireCommentRequest('test selection text', makeDeps({ sendPromptFn: abortingSendPrompt }));
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // No Retry link: the user asked for the stop.
+      expect(mockAddLogWithRetry).not.toHaveBeenCalled();
+      expect(commentQueue.insertCommentOnBookmark).not.toHaveBeenCalled();
+      expect(commentQueue.getPendingCount()).toBe(0);
+      expect(mockLog.mock.calls.some(c => c[0].includes('cancelled'))).toBe(true);
+    });
+
+    test('a real failure still offers a retry when a signal is present', async () => {
+      const controller = new AbortController();
+      const failingSendPrompt = jest.fn().mockRejectedValue(new Error('LLM timeout'));
+
+      fireCommentRequest('test selection text', makeDeps({
+        sendPromptFn: failingSendPrompt,
+        signal: controller.signal,
+      }));
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(mockAddLogWithRetry).toHaveBeenCalled();
+      expect(mockAddLogWithRetry.mock.calls[0][0]).toContain('LLM timeout');
+    });
+
+    test('the retry does not inherit the aborted signal', async () => {
+      const controller = new AbortController();
+      const failingSendPrompt = jest.fn().mockRejectedValue(new Error('LLM timeout'));
+      const deps = makeDeps({ sendPromptFn: failingSendPrompt, signal: controller.signal });
+
+      fireCommentRequest('test selection text', deps);
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // The turn is over and its controller aborted; a later manual retry must
+      // not be dead on arrival because it reused that signal.
+      controller.abort();
+      const retryCallback = mockAddLogWithRetry.mock.calls[0][2];
+      failingSendPrompt.mockClear();
+      retryCallback();
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(failingSendPrompt).toHaveBeenCalled();
+      expect(failingSendPrompt.mock.calls[0][3]).toBeUndefined();
+    });
+  });
 });

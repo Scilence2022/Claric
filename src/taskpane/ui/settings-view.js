@@ -16,6 +16,8 @@
 import { testConnection as llmTestConnection } from '../../lib/llm-client.js';
 import { CATEGORIES } from '../../lib/prompt-manager.js';
 import { getProviderPreset } from '../../lib/providers.js';
+import { getImageProviderPreset, imageSizesFor, DEFAULT_IMAGE_SIZE } from '../../lib/image-providers.js';
+import { testImageConnection } from '../../lib/image-client.js';
 import {
     getModelCapabilities,
     resolveThinkingLevel,
@@ -28,7 +30,7 @@ import { connectMcpServer } from '../../lib/mcp-client.js';
 import { importServerPrompts } from '../../lib/mcp-tools.js';
 import { TOOL_LOOP_LIMITS } from '../../lib/tool-registry.js';
 import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../../lib/skill-store.js';
-import { appState, getActiveBackendConfig, debounce, persistSettings } from '../app-state.js';
+import { appState, getActiveBackendConfig, getActiveImageConfig, debounce, persistSettings } from '../app-state.js';
 import { BUILTIN_SKILLS, RESERVED_MCP_SKILL } from '../skills.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
 
@@ -37,6 +39,10 @@ let _lastFocusedElement = null;
 let _availableModels = [];
 const _modelsByProvider = new Map();
 let _connectionSequence = 0;
+// Provider whose values are currently shown in the image form. The select
+// changes before the three text inputs are re-rendered, so this separate
+// value lets a change handler commit the old form to the old provider first.
+let _imageFormProvider = null;
 
 /**
  * Wires the settings slide-over and prompt management UI. Called once at startup.
@@ -122,6 +128,36 @@ export function initSettings({ onConfigChanged } = {}) {
     document.getElementById('trackedChangesExtraction').addEventListener('change', saveSettings);
     document.getElementById('commentGranularity').addEventListener('change', saveSettings);
     document.getElementById('includeCommentsInSelectionCheckbox').addEventListener('change', saveSettings);
+
+    // Image generation. The whole block is guarded: reduced DOM fixtures in
+    // tests render the LLM section without this one.
+    const imageProviderEl = document.getElementById('imageProviderSelect');
+    if (imageProviderEl) {
+        imageProviderEl.addEventListener('change', () => {
+            // The select changes before the text inputs are re-rendered. Commit
+            // the old form to the provider it belonged to before switching;
+            // otherwise the old key/URL/model would be copied to the new entry.
+            syncImageFormToProvider(_imageFormProvider);
+            if (appState.config.imageGeneration) {
+                appState.config.imageGeneration.provider = imageProviderEl.value;
+            }
+            updateImageUIFromConfig();
+            saveSettings();
+        });
+        document.getElementById('imageGenEnabledCheckbox').addEventListener('change', saveSettings);
+        document.getElementById('imageSizeSelect').addEventListener('change', saveSettings);
+        const onImageTextInput = () => {
+            // Keep in-memory state current immediately. The debounced call is
+            // only for localStorage persistence and the connection side effect;
+            // it must not be the sole owner of the user's latest keystroke.
+            syncImageFormToProvider();
+            debouncedSaveSettings();
+        };
+        document.getElementById('imageEndpointUrl').addEventListener('input', onImageTextInput);
+        document.getElementById('imageModelInput').addEventListener('input', onImageTextInput);
+        document.getElementById('imageApiKey').addEventListener('input', onImageTextInput);
+        document.getElementById('testImageConnectionBtn').addEventListener('click', handleTestImageConnection);
+    }
 
     // Per-category prompt controls
     for (const category of CATEGORIES) {
@@ -227,6 +263,7 @@ function saveSettings() {
     config.trackedChangesExtraction = document.getElementById('trackedChangesExtraction').checked;
     config.commentGranularity = parseInt(document.getElementById('commentGranularity').value || '0', 10);
     config.includeCommentsInSelection = document.getElementById('includeCommentsInSelectionCheckbox').checked;
+    saveImageSettings(config);
 
     try {
         persistSettings(appState);
@@ -264,6 +301,145 @@ function showSaveConfirmation(ok) {
 let _saveStatusTimer = null;
 
 /**
+ * Commits the image text fields currently shown in the form to one provider
+ * entry. `provider` is explicit because a select change fires while the text
+ * inputs still display the previous provider's values.
+ *
+ * @param {string} [provider] - Provider represented by the visible fields
+ * @param {object} [config] - Config to mutate (defaults to appState.config)
+ * @returns {boolean} Whether an entry was updated
+ */
+export function syncImageFormToProvider(provider, config = appState.config) {
+    const providerEl = document.getElementById('imageProviderSelect');
+    const image = config && config.imageGeneration;
+    if (!providerEl || !image || !image.providers) return false;
+
+    const formProvider = provider || _imageFormProvider || providerEl.value;
+    const entry = image.providers[formProvider];
+    if (!entry) return false;
+
+    const endpointEl = document.getElementById('imageEndpointUrl');
+    const modelEl = document.getElementById('imageModelInput');
+    const keyEl = document.getElementById('imageApiKey');
+    const sizeEl = document.getElementById('imageSizeSelect');
+    // Empty strings are intentional: clearing a custom URL/model must remain
+    // cleared instead of silently resurrecting the previous value.
+    if (endpointEl) entry.url = endpointEl.value.trim();
+    if (modelEl) entry.model = modelEl.value.trim();
+    if (keyEl) entry.apiKey = keyEl.value.trim();
+    if (sizeEl && imageSizesFor(formProvider).includes(sizeEl.value)) {
+        entry.size = sizeEl.value;
+    }
+    return true;
+}
+
+/**
+ * Reads the Image Generation form into `config.imageGeneration`.
+ *
+ * Per-provider fields are written under the SELECTED provider only, mirroring
+ * how saveSettings treats `config.providers[backend]`: switching providers must
+ * not carry one provider's key or endpoint onto another.
+ *
+ * @param {object} config - appState.config (mutated in place)
+ */
+function saveImageSettings(config) {
+    const providerEl = document.getElementById('imageProviderSelect');
+    // The section is absent in reduced test fixtures; leave config untouched.
+    if (!providerEl || !config.imageGeneration) return;
+
+    const provider = providerEl.value;
+    const image = config.imageGeneration;
+    const enabledEl = document.getElementById('imageGenEnabledCheckbox');
+    if (enabledEl) image.enabled = enabledEl.checked;
+    if (!image.providers || !image.providers[provider]) return;
+    image.provider = provider;
+    _imageFormProvider = provider;
+    syncImageFormToProvider(provider, config);
+}
+
+/**
+ * Pushes `config.imageGeneration` into the Image Generation form, including
+ * rebuilding the size list for the selected provider.
+ */
+function updateImageUIFromConfig() {
+    const providerEl = document.getElementById('imageProviderSelect');
+    const image = appState.config.imageGeneration;
+    if (!providerEl || !image) return;
+
+    document.getElementById('imageGenEnabledCheckbox').checked = !!image.enabled;
+    providerEl.value = image.provider;
+    _imageFormProvider = image.provider;
+
+    const entry = image.providers[image.provider] || {};
+    document.getElementById('imageEndpointUrl').value = entry.url || '';
+    document.getElementById('imageModelInput').value = entry.model || '';
+    document.getElementById('imageApiKey').value = entry.apiKey || '';
+
+    const sizeSelect = document.getElementById('imageSizeSelect');
+    sizeSelect.innerHTML = '';
+    for (const size of imageSizesFor(image.provider)) {
+        const option = document.createElement('option');
+        option.value = size;
+        option.textContent = size === 'auto' ? 'Auto (provider default)' : size;
+        sizeSelect.appendChild(option);
+    }
+    sizeSelect.value = entry.size || DEFAULT_IMAGE_SIZE;
+
+    updateImageProviderHints();
+}
+
+/**
+ * Refreshes the endpoint/key hints for the selected image provider, using the
+ * preset's own keyHint and staticOk flags (same reasoning as
+ * updateProviderHints for chat providers).
+ */
+function updateImageProviderHints() {
+    const providerEl = document.getElementById('imageProviderSelect');
+    if (!providerEl) return;
+    const preset = getImageProviderPreset(providerEl.value);
+    const endpointHint = document.getElementById('imageEndpointHint');
+    const keyHint = document.getElementById('imageApiKeyHint');
+    if (!preset || !endpointHint || !keyHint) return;
+
+    endpointHint.textContent = preset.staticOk === false
+        ? `${preset.label} base URL — the default proxy path works when this add-in is served by its own server; this API allows no direct browser calls.`
+        : `${preset.label} base URL`;
+    keyHint.textContent = preset.keyHint
+        ? `Get a key at ${preset.keyHint}`
+        : 'API key for the image endpoint';
+}
+
+/**
+ * Runs a real (tiny) generation against the current image settings and reports
+ * the outcome inline. There is no cheap ping on these APIs — see
+ * testImageConnection.
+ */
+async function handleTestImageConnection() {
+    const statusEl = document.getElementById('imageTestStatus');
+    const button = document.getElementById('testImageConnectionBtn');
+    if (!statusEl || !button) return;
+
+    // Save first so the test uses exactly what the user sees in the form.
+    saveImageSettings(appState.config);
+    const config = getActiveImageConfig(appState);
+    if (!config) {
+        statusEl.textContent = 'Enable image generation and set an endpoint plus model first.';
+        return;
+    }
+
+    button.disabled = true;
+    statusEl.textContent = 'Generating a test image...';
+    try {
+        const result = await testImageConnection(config, addLog);
+        statusEl.textContent = result.ok ? `OK — ${result.detail}` : `Failed — ${result.detail}`;
+    } catch (error) {
+        statusEl.textContent = `Failed — ${error.message}`;
+    } finally {
+        button.disabled = false;
+    }
+}
+
+/**
  * Pushes appState.config into the settings form.
  */
 export function updateUIFromConfig() {
@@ -296,6 +472,7 @@ export function updateUIFromConfig() {
     document.getElementById('commentGranularity').value = String(config.commentGranularity || 0);
     document.getElementById('includeCommentsInSelectionCheckbox').checked = !!config.includeCommentsInSelection;
 
+    updateImageUIFromConfig();
     updateProviderHints();
 }
 

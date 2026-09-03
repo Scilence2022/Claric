@@ -11,6 +11,7 @@
  */
 
 import { estimateTokenCount } from './comment-extractor.js';
+import { defangProtocolMarkers } from './response-parser.js';
 
 /**
  * @typedef {Object} DocumentContext
@@ -252,9 +253,13 @@ export function formatContextPrefix(context, chunkText, maxTokens = 4000) {
 
   let body = sections.join('\n\n');
 
-  // Defang any document text that reproduces a fence marker, wherever it
-  // appears, so the fenced block cannot be closed early.
+  // Defang any document text that reproduces a fence marker or one of the
+  // amendment protocol markers, wherever it appears, so neither the system
+  // data fence nor a downstream response parser can be closed by document
+  // content. The fence replacement remains visible as inert data; protocol
+  // markers use a zero-width split and are restored after response parsing.
   body = body.replace(FENCE_MARKER_RE, '[redacted fence marker]');
+  body = defangProtocolMarkers(body);
 
   // Enforce the token budget on the body with the CJK-aware estimator (a
   // chars/4 cut would overshoot ~4x on CJK-heavy documents), leaving room

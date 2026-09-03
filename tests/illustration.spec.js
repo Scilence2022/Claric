@@ -10,7 +10,7 @@
 const {
   buildIllustrationPrompt, parseIllustration, sanitizeSvg,
   svgDimensions, ensureSvgDimensions, illustrationPositionFromInstruction,
-  illustrationPositionLabel,
+  illustrationPositionLabel, buildImagePrompt, illustrationRenderer,
 } = require('../src/lib/illustration.js');
 
 const SIMPLE_SVG = '<svg width="1200" height="800" viewBox="0 0 1200 800"><rect width="1200" height="800" fill="#123"/></svg>';
@@ -156,5 +156,107 @@ describe('buildIllustrationPrompt', () => {
     expect(p).toContain('Output ONLY the SVG markup');
     expect(p).toContain('self-contained');
     expect(p).toContain('viewBox');
+  });
+});
+
+
+// ============================================================================
+// Image-model route (buildImagePrompt / illustrationRenderer)
+// ============================================================================
+
+describe('buildImagePrompt', () => {
+  test('leads with the subject and carries the document context', () => {
+    const p = buildImagePrompt('设计一张光合作用示意图', '本章讨论叶绿体与光反应。');
+    expect(p).toContain('设计一张光合作用示意图');
+    expect(p).toContain('本章讨论叶绿体与光反应。');
+  });
+
+  test('instructs the model to render no text', () => {
+    // Every current image model garbles lettering; a labelled diagram full of
+    // gibberish is worse than an unlabelled one.
+    const p = buildImagePrompt('示意图', '正文');
+    expect(p).toMatch(/Do not render any words, letters, numbers, labels, or captions/);
+  });
+
+  test('omits the SVG output contract wording entirely', () => {
+    // An image model has no notion of an output contract: these rules would be
+    // noise at best, and rendered as literal text in the picture at worst.
+    const p = buildImagePrompt('设计并插入一张插图', '正文内容');
+    expect(p).not.toMatch(/svg/i);
+    expect(p).not.toMatch(/viewBox/i);
+    expect(p).not.toContain('Output ONLY');
+    expect(p).not.toMatch(/foreignObject/i);
+    expect(p).not.toMatch(/markup/i);
+    expect(p).not.toMatch(/code fences/i);
+  });
+
+  test('truncates an over-long context to keep the image prompt within API caps', () => {
+    const longContext = 'x'.repeat(3000);
+    const p = buildImagePrompt('示意图', longContext);
+
+    expect(p).toContain('x'.repeat(1500));
+    expect(p).not.toContain('x'.repeat(1501));
+  });
+
+  test('drops the context line when no document text is available', () => {
+    const p = buildImagePrompt('设计一张插图', '');
+    expect(p).not.toContain('Document topic for context');
+    expect(p).toContain('设计一张插图');
+  });
+
+  test('drops the subject line when the instruction is empty, keeping a usable brief', () => {
+    const p = buildImagePrompt('', '正文内容');
+    expect(p).not.toContain('Subject:');
+    expect(p).toContain('正文内容');
+    expect(p).toMatch(/professional illustration/);
+  });
+
+  test('tolerates nullish arguments', () => {
+    const p = buildImagePrompt(null, undefined);
+    expect(typeof p).toBe('string');
+    expect(p).toMatch(/professional illustration/);
+    expect(p).not.toContain('null');
+    expect(p).not.toContain('undefined');
+  });
+});
+
+describe('illustrationRenderer', () => {
+  test('explicit SVG/vector wording always picks the SVG route', () => {
+    // Rule 1: an image model cannot deliver vector markup, so this wins even
+    // when an image provider is configured and ready.
+    for (const instruction of [
+      '设计并增加SVG插图',
+      'add an svg illustration',
+      '画一张矢量图',
+      '用矢量风格重画',
+      '来一张向量图',
+      'draw some line art',
+      'a vector diagram please',
+    ]) {
+      expect(illustrationRenderer(instruction, true)).toBe('svg');
+      expect(illustrationRenderer(instruction, false)).toBe('svg');
+    }
+  });
+
+  test('a configured image model handles ordinary illustration requests', () => {
+    expect(illustrationRenderer('设计示意图并插入', true)).toBe('image');
+    expect(illustrationRenderer('给文章配一张插图', true)).toBe('image');
+    expect(illustrationRenderer('insert an illustration at the top', true)).toBe('image');
+  });
+
+  test('without an image model everything falls back to SVG', () => {
+    // Rule 3: existing installs keep working exactly as before.
+    expect(illustrationRenderer('设计示意图并插入', false)).toBe('svg');
+    expect(illustrationRenderer('给文章配一张插图', false)).toBe('svg');
+  });
+
+  test('a word merely containing the letters "svg" does not force the SVG route', () => {
+    expect(illustrationRenderer('draw an svgish thing', true)).toBe('image');
+  });
+
+  test('nullish instructions follow the image-model readiness flag', () => {
+    expect(illustrationRenderer(undefined, true)).toBe('image');
+    expect(illustrationRenderer(null, false)).toBe('svg');
+    expect(illustrationRenderer('', true)).toBe('image');
   });
 });

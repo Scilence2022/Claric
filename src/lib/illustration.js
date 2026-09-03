@@ -49,6 +49,43 @@ export function buildIllustrationPrompt(instruction, scopeText) {
 }
 
 /**
+ * Max characters of document context fed to an image model. Image APIs cap
+ * the prompt hard (OpenAI's images endpoint rejects very long prompts), and
+ * a diagram brief needs the subject, not the whole document.
+ */
+const MAX_IMAGE_CONTEXT_CHARS = 1500;
+
+/**
+ * Builds the prompt for a TEXT-TO-IMAGE model (image-client.js), as opposed to
+ * buildIllustrationPrompt which asks a chat LLM for SVG markup.
+ *
+ * The two differ in kind, not degree: an image model takes a description of
+ * the picture and has no notion of an output contract, so the SVG rules
+ * ("output only markup", "no foreignObject") would be noise at best and end up
+ * rendered as literal text at worst. What matters here is a compact subject
+ * description plus enough document context to match the topic, with an
+ * explicit instruction to avoid lettering — every current image model renders
+ * text unreliably, and a diagram full of garbled labels is worse than one with
+ * none.
+ *
+ * @param {string} instruction - The user's request ("设计示意图并插入")
+ * @param {string} scopeText - Document text for subject/topic context
+ * @returns {string} A single prompt string for the image endpoint
+ */
+export function buildImagePrompt(instruction, scopeText) {
+    const brief = (instruction || '').trim();
+    const context = (scopeText || '').trim().slice(0, MAX_IMAGE_CONTEXT_CHARS);
+    const parts = [
+        'A clean, professional illustration suitable for inclusion in a formal document.',
+        brief ? `Subject: ${brief}` : '',
+        context ? `Document topic for context: ${context}` : '',
+        'Style: clear, uncluttered, high contrast, neutral background, suitable for printing in a report.',
+        'Do not render any words, letters, numbers, labels, or captions in the image.',
+    ];
+    return parts.filter(Boolean).join('\n\n');
+}
+
+/**
  * Extracts the SVG document from the model's raw output. Tolerates code
  * fences and surrounding prose by slicing from the first "<svg" to the
  * first "</svg>". Returns null (with a warning) when nothing usable is
@@ -142,6 +179,40 @@ export function ensureSvgDimensions(svg) {
     if (/<svg\b[^>]*\swidth\s*=/i.test(text) && /<svg\b[^>]*\sheight\s*=/i.test(text)) return text;
     const dims = svgDimensions(text) || { width: 1200, height: 800 };
     return text.replace(/<svg\b/i, `<svg width="${dims.width}" height="${dims.height}"`);
+}
+
+/**
+ * Wording that pins the request to the SVG (chat-LLM) route regardless of
+ * whether an image model is configured. A user asking for a vector graphic or
+ * naming SVG explicitly wants markup — an image model cannot produce it.
+ */
+const SVG_REQUEST_RE = /\bsvg\b|矢量图?|向量图|line art|\bvector\b/i;
+
+/**
+ * Chooses which renderer designs an illustration.
+ *
+ * Two engines exist and they are good at different things: the chat LLM emits
+ * SVG markup (crisp, tiny, but visibly synthetic for anything organic), while a
+ * text-to-image model returns raster artwork (photographic or painterly, but
+ * unreliable with text and heavier). The rule:
+ *
+ *   1. Explicit SVG/vector wording  -> 'svg' (an image model cannot deliver it)
+ *   2. Image generation configured  -> 'image'
+ *   3. Otherwise                    -> 'svg'
+ *
+ * Rule 2 makes configuring an image provider the switch that turns
+ * "设计示意图并插入" into a real generated picture, with no extra syntax for
+ * the user to remember, and rule 3 keeps every existing install working
+ * exactly as before.
+ *
+ * @param {string} instruction - The user's illustration instruction
+ * @param {boolean} imageModelReady - True when an image provider is enabled
+ *   AND has an endpoint plus model configured
+ * @returns {'svg' | 'image'}
+ */
+export function illustrationRenderer(instruction, imageModelReady) {
+    if (SVG_REQUEST_RE.test(instruction || '')) return 'svg';
+    return imageModelReady ? 'image' : 'svg';
 }
 
 /**

@@ -65,6 +65,35 @@ const REQUEST_TIMEOUT_MS = 60000;
 // payload this add-in produces (whole-document runs are ~1 MB).
 const MAX_PROXY_BODY_BYTES = 32 * 1024 * 1024;
 const SHUTDOWN_TIMEOUT_MS = 10000;
+const LOCAL_HTTP_PROXY_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  'host.docker.internal'
+]);
+
+/**
+ * Parses an upstream proxy target. HTTPS may reach a configured remote host;
+ * cleartext HTTP is limited to loopback or Docker's host bridge alias.
+ *
+ * @param {*} value
+ * @returns {URL|null}
+ */
+function parseProxyTarget(value) {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  if (!/^https?:\/\//i.test(candidate) || candidate.includes('\\')) return null;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (!parsed.hostname || parsed.username || parsed.password) return null;
+  if (parsed.protocol === 'https:') return parsed;
+  if (parsed.protocol !== 'http:') return null;
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  return LOCAL_HTTP_PROXY_HOSTS.has(hostname) ? parsed : null;
+}
 
 // LLM proxy routes, built once in startServer from environment variables.
 let PROXY_ROUTES = [];
@@ -193,8 +222,9 @@ function serveFile(res, filePath) {
 /**
  * Builds LLM proxy routes from environment variables.
  *
- * A route is created only when both a path and a reachable http(s) target
- * are configured; an empty path disables that backend entirely.
+ * A route is created only when both a path and an allowed target are
+ * configured; HTTPS targets may be remote, while HTTP targets must be local.
+ * An empty path disables that backend entirely.
  *
  * @param {object} env - Result of getEnv()
  * @returns {Array<{proxyPath: string, targetUrl: URL, timeoutMs: number, agent: object|null}>}
@@ -220,15 +250,9 @@ function buildProxyRoutes(env) {
     const target = env[targetKey];
     if (!proxyPath || !target) continue;
 
-    let targetUrl;
-    try {
-      targetUrl = new URL(target);
-    } catch {
-      console.error(`Ignoring ${targetKey} (invalid URL): ${target}`);
-      continue;
-    }
-    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-      console.error(`Ignoring ${targetKey} (must be http or https): ${target}`);
+    const targetUrl = parseProxyTarget(target);
+    if (!targetUrl) {
+      console.error(`Ignoring ${targetKey}: target must use HTTPS or local HTTP`);
       continue;
     }
 
@@ -515,8 +539,8 @@ function startServer() {
   PROXY_ROUTES = buildProxyRoutes(env);
   if (PROXY_ROUTES.length > 0) {
     console.log(
-      'LLM proxy: ' +
-      PROXY_ROUTES.map((r) => `${r.proxyPath} -> ${r.targetUrl.href} (${r.timeoutMs}ms timeout)`).join(', ')
+      'LLM proxy routes enabled: ' +
+      PROXY_ROUTES.map((r) => `${r.proxyPath} (${r.timeoutMs}ms timeout)`).join(', ')
     );
   }
   const port = Number(env.PORT);
@@ -561,4 +585,10 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { buildProxyRoutes, handleProxyRequest, requestHandler, configureServer };
+module.exports = {
+  buildProxyRoutes,
+  handleProxyRequest,
+  requestHandler,
+  configureServer,
+  parseProxyTarget,
+};

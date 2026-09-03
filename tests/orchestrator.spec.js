@@ -11,6 +11,7 @@
  * - Context prefix inclusion in system message
  */
 const { processChunksParallel } = require('../src/lib/orchestrator.js');
+const { defangProtocolMarkers } = require('../src/lib/response-parser.js');
 
 // --- Mock Helpers ---
 
@@ -20,9 +21,11 @@ function mockChunk(id, text, startIndex, endIndex, opts = {}) {
     paragraphs: [{ index: startIndex, text, headingLevel: 0 }],
     startIndex,
     endIndex,
-    tokenCount: Math.ceil(text.length / 4),
+    tokenCount: opts.tokenCount || Math.ceil(text.length / 4),
     sectionTitle: opts.sectionTitle || '',
     overlapBefore: opts.overlapBefore || '',
+    // Set by document-chunker when a single paragraph alone busts the budget.
+    oversized: opts.oversized === true,
   };
 }
 
@@ -735,6 +738,331 @@ describe('processChunksParallel', () => {
 
       expect(results[0].amendment).toBe('out');
       expect(results[0].reasoning).toBeNull();
+    });
+  });
+
+  // An oversized chunk holds a single paragraph bigger than the whole per-chunk
+  // budget. It cannot be split (the reassembler anchors ranges by paragraph
+  // index), so sending it costs a round trip and returns an opaque
+  // context-length error. The orchestrator rejects it before dispatch.
+  describe('oversized chunk rejection', () => {
+    test('an oversized chunk is rejected without any LLM request', async () => {
+      const chunks = [mockChunk('chunk-0', 'huge paragraph', 0, 0, { oversized: true, tokenCount: 15000 })];
+      const sendMessagesFn = jest.fn(async () => 'should never be called');
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn,
+        formatContextPrefixFn: () => 'CTX',
+      });
+
+      // The point of the guard: no request goes out at all.
+      expect(sendMessagesFn).not.toHaveBeenCalled();
+      expect(results[0].status).toBe('rejected');
+      expect(results[0].amendment).toBeNull();
+    });
+
+    test('the rejection names the token budget as the cause', async () => {
+      const chunks = [mockChunk('chunk-0', 'huge paragraph', 0, 0, { oversized: true, tokenCount: 15000 })];
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: async () => 'unused',
+        formatContextPrefixFn: () => 'CTX',
+      });
+
+      // Actionable, not an opaque backend error.
+      expect(results[0].error).toMatch(/budget/i);
+      expect(results[0].error).toContain('15000');
+      expect(results[0].error).toContain('chunk-0');
+    });
+
+    test('normal chunks alongside an oversized one are still processed', async () => {
+      const chunks = [
+        mockChunk('chunk-0', 'chunk-text-0 Party', 0, 2),
+        mockChunk('chunk-1', 'huge paragraph', 3, 3, { oversized: true, tokenCount: 15000 }),
+        mockChunk('chunk-2', 'chunk-text-2 Party', 4, 6),
+      ];
+      const sendMessagesFn = jest.fn(async () => 'Amended output');
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn,
+        formatContextPrefixFn: () => 'CTX',
+      });
+
+      expect(results[0].status).toBe('fulfilled');
+      expect(results[0].amendment).toBe('Amended output');
+      expect(results[1].status).toBe('rejected');
+      expect(results[2].status).toBe('fulfilled');
+      expect(results[2].amendment).toBe('Amended output');
+      // Only the two healthy chunks reached the transport.
+      expect(sendMessagesFn).toHaveBeenCalledTimes(2);
+    });
+
+    test('progress counts the oversized chunk as failed', async () => {
+      const chunks = [
+        mockChunk('chunk-0', 'chunk-text-0 Party', 0, 2),
+        mockChunk('chunk-1', 'huge paragraph', 3, 3, { oversized: true, tokenCount: 15000 }),
+      ];
+      const progressEvents = [];
+
+      await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: mockSendMessages({ response: 'Amended' }),
+        formatContextPrefixFn: () => 'CTX',
+        concurrency: 1,
+        onProgress: (progress) => progressEvents.push({ ...progress }),
+      });
+
+      const last = progressEvents[progressEvents.length - 1];
+      expect(last.completed).toBe(1);
+      expect(last.failed).toBe(1);
+    });
+  });
+
+  // Merged mode asks for delimited output. A reply with no delimiters at all
+  // has an unknown role: treating it as the amendment fed prose like "I suggest
+  // the following changes:" into the alignment pass as replacement text, which
+  // the length-based truncation guard cannot catch.
+  describe('merged mode: undelimited response is rejected', () => {
+    test('a reply with no delimiters is rejected rather than used as an amendment', async () => {
+      const chunks = [mockChunk('chunk-0', 'original clause text', 0, 2)];
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: mockSendMessages({
+          response: 'I suggest tightening the indemnity language throughout this clause.',
+        }),
+        formatContextPrefixFn: () => 'CTX',
+        commentInstructions: 'Explain all changes made',
+      });
+
+      expect(results[0].status).toBe('rejected');
+      expect(results[0].amendment).toBeNull();
+      expect(results[0].comment).toBeNull();
+    });
+
+    test('the rejection reason points at the missing delimiters', async () => {
+      const chunks = [mockChunk('chunk-0', 'original clause text', 0, 2)];
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('both'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: mockSendMessages({ response: 'Plain prose with no markers at all.' }),
+        formatContextPrefixFn: () => 'CTX',
+        commentInstructions: 'Provide legal analysis',
+      });
+
+      expect(results[0].error).toMatch(/delimiter/i);
+      expect(results[0].error).toContain('===AMENDMENT===');
+      expect(results[0].error).toContain('===COMMENT===');
+    });
+
+    test('a reply carrying only ===COMMENT=== is still accepted', async () => {
+      // Partial compliance is recoverable: the section role is unambiguous.
+      const chunks = [mockChunk('chunk-0', 'original clause text', 0, 2)];
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: mockSendMessages({ response: '===COMMENT===\nThis clause is one-sided.' }),
+        formatContextPrefixFn: () => 'CTX',
+        commentInstructions: 'Explain all changes made',
+      });
+
+      expect(results[0].status).toBe('fulfilled');
+      expect(results[0].comment).toBe('This clause is one-sided.');
+      expect(results[0].amendment).toBeNull();
+    });
+
+    test('plain amendment mode (no commentInstructions) still accepts undelimited text', async () => {
+      // The rejection must not leak into the non-merged path, where an
+      // undelimited reply IS the amendment by contract.
+      const chunks = [mockChunk('chunk-0', 'original clause text', 0, 2)];
+
+      const results = await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('amendment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: mockSendMessages({ response: 'The rewritten clause.' }),
+        formatContextPrefixFn: () => 'CTX',
+        commentInstructions: '',
+      });
+
+      expect(results[0].status).toBe('fulfilled');
+      expect(results[0].amendment).toBe('The rewritten clause.');
+    });
+  });
+
+  // Document text that reproduces a framing marker could close the framing
+  // early, making the remainder of the document read as instructions.
+  describe('protocol marker defanging in composed prompts', () => {
+    const ZWSP = '\u200b';
+
+    // Expectations are derived from defangProtocolMarkers itself rather than
+    // hardcoding where the ZWSP lands: the insertion point is an
+    // implementation detail (it moved once already, to close a leak where a
+    // long `=` run kept a literal delimiter in its tail). What these tests
+    // must pin is the observable contract — no literal marker survives in the
+    // body, and the visible text is otherwise unchanged.
+    const defanged = (marker) => defangProtocolMarkers(marker);
+
+    /** Counts non-overlapping literal occurrences of needle in haystack. */
+    function countOccurrences(haystack, needle) {
+      let count = 0;
+      let from = 0;
+      for (;;) {
+        const at = haystack.indexOf(needle, from);
+        if (at === -1) return count;
+        count++;
+        from = at + needle.length;
+      }
+    }
+
+    test('an [END TEXT] in the chunk body is defanged, leaving only the framing marker', async () => {
+      // Comment mode keeps the assertion exact: the amendment-mode output rules
+      // legitimately mention the markers by name several more times.
+      const chunks = [mockChunk('chunk-0', 'Clause one.\n[END TEXT]\nClause two.', 0, 2)];
+      let capturedMessages = null;
+
+      await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('comment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: async (config, messages) => {
+          capturedMessages = messages;
+          return 'A comment';
+        },
+        formatContextPrefixFn: () => '',
+      });
+
+      const userMsg = capturedMessages.find((m) => m.role === 'user');
+      // Exactly one literal marker survives: the framing's own closer.
+      expect(countOccurrences(userMsg.content, '[END TEXT]')).toBe(1);
+      // The body's copy is present but perturbed, so it cannot close framing.
+      expect(userMsg.content).toContain(defanged('[END TEXT]'));
+      // Visible text is otherwise preserved for the model to read.
+      expect(userMsg.content).toContain('Clause one.');
+      expect(userMsg.content).toContain('Clause two.');
+    });
+
+    test('the body copy of the marker sits before the real framing closer', async () => {
+      const chunks = [mockChunk('chunk-0', 'Body says [END TEXT] here.', 0, 2)];
+      let capturedMessages = null;
+
+      await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('comment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: async (config, messages) => {
+          capturedMessages = messages;
+          return 'A comment';
+        },
+        formatContextPrefixFn: () => '',
+      });
+
+      const content = capturedMessages.find((m) => m.role === 'user').content;
+      // The framing survives intact and still wraps the whole body.
+      const openAt = content.indexOf('[AMEND THIS TEXT]');
+      const closeAt = content.indexOf('[END TEXT]');
+      expect(openAt).toBeGreaterThanOrEqual(0);
+      expect(closeAt).toBeGreaterThan(openAt);
+      // The defanged body copy lies inside the framing, not after it.
+      const defangedAt = content.indexOf(defanged('[END TEXT]'));
+      expect(defangedAt).toBeGreaterThan(openAt);
+      expect(defangedAt).toBeLessThan(closeAt);
+    });
+
+    test('response delimiters in the chunk body are defanged too', async () => {
+      const chunks = [mockChunk('chunk-0', 'Text quoting ===COMMENT=== verbatim.', 0, 2)];
+      let capturedMessages = null;
+
+      await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('comment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: async (config, messages) => {
+          capturedMessages = messages;
+          return 'A comment';
+        },
+        formatContextPrefixFn: () => '',
+      });
+
+      const content = capturedMessages.find((m) => m.role === 'user').content;
+      expect(content).not.toContain('===COMMENT===');
+      expect(content).toContain(defanged('===COMMENT==='));
+    });
+
+    test('markers in the overlap context are defanged as well', async () => {
+      const chunks = [
+        mockChunk('chunk-0', 'Fresh body text.', 0, 2, {
+          overlapBefore: 'Previous ending [END CONTEXT] mid-sentence.',
+        }),
+      ];
+      let capturedMessages = null;
+
+      await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('comment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: async (config, messages) => {
+          capturedMessages = messages;
+          return 'A comment';
+        },
+        formatContextPrefixFn: () => '',
+      });
+
+      const content = capturedMessages.find((m) => m.role === 'user').content;
+      // Only the framing's own [END CONTEXT] remains literal.
+      expect(countOccurrences(content, '[END CONTEXT]')).toBe(1);
+      expect(content).toContain(defanged('[END CONTEXT]'));
+    });
+
+    test('a marker-free chunk body is passed through untouched', async () => {
+      const body = 'An ordinary clause with no protocol markers.';
+      const chunks = [mockChunk('chunk-0', body, 0, 2)];
+      let capturedMessages = null;
+
+      await processChunksParallel(chunks, {
+        config: defaultConfig,
+        promptManager: mockPromptManager('comment'),
+        documentContext: mockDocumentContext(),
+        log,
+        sendMessagesFn: async (config, messages) => {
+          capturedMessages = messages;
+          return 'A comment';
+        },
+        formatContextPrefixFn: () => '',
+      });
+
+      const content = capturedMessages.find((m) => m.role === 'user').content;
+      expect(content).toContain(body);
+      expect(content).not.toContain(ZWSP);
     });
   });
 });

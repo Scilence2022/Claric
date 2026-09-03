@@ -3,8 +3,8 @@
  *
  * Minimal Model Context Protocol client for the browser/WebView2 taskpane:
  * JSON-RPC over the Streamable HTTP transport (2025-06-18 protocol).
- * Browser sandboxes have no stdio, so HTTP is the only transport this
- * add-in can speak; CORS/mixed-content are handled by the same-origin
+ * Browser sandboxes have no stdio, so Streamable HTTP is the only transport
+ * this add-in can speak; CORS/mixed-content are handled by the same-origin
  * proxy infrastructure (see scripts/docker-server.cjs, MCP_PROXY_PATH).
  *
  * The transport keeps one JSON-RPC request per POST and reads the reply
@@ -20,6 +20,74 @@
 /** Protocol version this client speaks. */
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+const ABSOLUTE_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
+/**
+ * Returns true for an HTTPS URL, a loopback HTTP URL, or a same-origin
+ * relative reference. Relative references are intentionally not resolved:
+ * browser fetch resolves them against the taskpane origin.
+ *
+ * @param {*} value
+ * @returns {boolean}
+ */
+export function isAllowedMcpUrl(value) {
+    if (typeof value !== 'string') return false;
+    const candidate = value.trim();
+    // eslint-disable-next-line no-control-regex -- reject control characters before fetch
+    if (!candidate || /[\u0000-\u001f\u007f]/.test(candidate)) return false;
+    // WHATWG URL parsing treats backslashes as authority separators for HTTP.
+    // Reject them everywhere so a relative path cannot become cross-origin.
+    if (candidate.includes('\\') || candidate.startsWith('//')) return false;
+    if (!ABSOLUTE_SCHEME_RE.test(candidate)) return true;
+    if (!/^https?:\/\//i.test(candidate)) return false;
+
+    let parsed;
+    try {
+        parsed = new URL(candidate);
+    } catch (_err) {
+        return false;
+    }
+    if (!parsed.hostname || parsed.username || parsed.password) return false;
+    if (parsed.protocol === 'https:') return true;
+    if (parsed.protocol !== 'http:') return false;
+    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+    return LOOPBACK_HOSTS.has(hostname);
+}
+
+/**
+ * Removes credentials and sensitive query/header values from an error string.
+ * The caller still gets a useful status/code, but a token cannot be echoed by
+ * a browser fetch implementation or an upstream error response.
+ *
+ * @param {*} message
+ * @param {*} [token]
+ * @returns {string}
+ */
+export function sanitizeMcpErrorMessage(message, token) {
+    let safe = String(message || 'MCP request failed');
+    const secret = token == null ? '' : String(token);
+    if (secret) {
+        safe = safe.split(secret).join('[redacted]');
+        try {
+            const encoded = encodeURIComponent(secret);
+            if (encoded && encoded !== secret) safe = safe.split(encoded).join('[redacted]');
+        } catch (_err) {
+            // A malformed value is still covered by the literal replacement.
+        }
+    }
+    safe = safe.replace(/((?:authorization|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|token)\b\s*["']?\s*[:=]\s*)(?:(?:Bearer|Basic)\s+)?[^\s,;}\]"']+/gi, '$1[redacted]');
+    safe = safe.replace(/([?&](?:token|access[_-]?token|api[_-]?key|authorization)=)[^&#\s"'<>]+/gi, '$1[redacted]');
+    safe = safe.replace(/\b(?:https?|ftp):\/\/[^\s"'<>]+/gi, '[redacted URL]');
+    return safe;
+}
+
+function safeMcpError(error, token) {
+    const safe = new Error(sanitizeMcpErrorMessage(error && error.message, token));
+    if (error && error.name) safe.name = sanitizeMcpErrorMessage(error.name, token);
+    return safe;
+}
+
 let nextRequestId = 1;
 
 /**
@@ -28,77 +96,81 @@ let nextRequestId = 1;
  * @private
  */
 async function rpcPost(url, { body, token, sessionId, fetchFn, timeoutMs }) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/event-stream',
-    };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    if (sessionId) headers['Mcp-Session-Id'] = sessionId;
-
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = setTimeout(() => controller && controller.abort(), timeoutMs);
-    let response;
     try {
-        response = await fetchFn(url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body),
-            signal: controller ? controller.signal : undefined,
-        });
-    } finally {
-        clearTimeout(timer);
-    }
+        const headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+        };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        if (sessionId) headers['Mcp-Session-Id'] = sessionId;
 
-    if (!response.ok) {
-        throw new Error(`MCP HTTP ${response.status}: ${response.statusText || 'request failed'}`);
-    }
-    const sessionIdFromServer = response.headers
-        ? (response.headers.get('Mcp-Session-Id') || response.headers.get('mcp-session-id'))
-        : null;
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = setTimeout(() => controller && controller.abort(), timeoutMs);
+        let response;
+        try {
+            response = await fetchFn(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body),
+                signal: controller ? controller.signal : undefined,
+            });
+        } finally {
+            clearTimeout(timer);
+        }
 
-    const contentType = (response.headers && response.headers.get('content-type')) || '';
-    let message = null;
-    const text = await response.text();
-    if (contentType.includes('text/event-stream')) {
-        for (const line of text.split(/\r?\n/)) {
-            if (!line.startsWith('data:')) continue;
-            const payload = line.slice(5).trim();
-            if (!payload || payload === '[DONE]') continue;
-            try {
-                const parsed = JSON.parse(payload);
-                if (body.id === undefined || parsed.id === body.id) {
-                    message = parsed;
-                    break;
+        if (!response.ok) {
+            throw new Error(`MCP HTTP ${response.status}: ${response.statusText || 'request failed'}`);
+        }
+        const sessionIdFromServer = response.headers
+            ? (response.headers.get('Mcp-Session-Id') || response.headers.get('mcp-session-id'))
+            : null;
+
+        const contentType = (response.headers && response.headers.get('content-type')) || '';
+        let message = null;
+        const text = await response.text();
+        if (contentType.includes('text/event-stream')) {
+            for (const line of text.split(/\r?\n/)) {
+                if (!line.startsWith('data:')) continue;
+                const payload = line.slice(5).trim();
+                if (!payload || payload === '[DONE]') continue;
+                try {
+                    const parsed = JSON.parse(payload);
+                    if (body.id === undefined || parsed.id === body.id) {
+                        message = parsed;
+                        break;
+                    }
+                } catch (_parseErr) {
+                    // Non-JSON data line — skip.
                 }
+            }
+            if (!message) {
+                // A notification-only stream is a valid reply to a notification.
+                return { sessionId: sessionIdFromServer, message: null };
+            }
+        } else if (text) {
+            try {
+                message = JSON.parse(text);
             } catch (_parseErr) {
-                // Non-JSON data line — skip.
+                // Empty or non-JSON body — valid for 202 notifications.
+                return { sessionId: sessionIdFromServer, message: null };
             }
         }
-        if (!message) {
-            // A notification-only stream is a valid reply to a notification.
-            return { sessionId: sessionIdFromServer, message: null };
-        }
-    } else if (text) {
-        try {
-            message = JSON.parse(text);
-        } catch (_parseErr) {
-            // Empty or non-JSON body — valid for 202 notifications.
-            return { sessionId: sessionIdFromServer, message: null };
-        }
-    }
 
-    if (message && message.error) {
-        const err = message.error;
-        throw new Error(`MCP error ${err.code}: ${err.message || 'unknown error'}`);
+        if (message && message.error) {
+            const err = message.error;
+            throw new Error(`MCP error ${err.code}: ${err.message || 'unknown error'}`);
+        }
+        return { sessionId: sessionIdFromServer, message };
+    } catch (err) {
+        throw safeMcpError(err, token);
     }
-    return { sessionId: sessionIdFromServer, message };
 }
 
 /**
  * Connects to an MCP server and returns a handle with typed helpers.
  *
  * @param {object} args
- * @param {string} args.url - MCP server endpoint (HTTP; same-origin proxy path or absolute URL)
+ * @param {string} args.url - MCP server endpoint (HTTPS, local HTTP, or same-origin relative path)
  * @param {string} [args.token] - Bearer token for the Authorization header
  * @param {function} [args.fetchFn] - Injectable fetch (defaults to global)
  * @param {function} [args.log] - Logging callback (message, type)
@@ -116,12 +188,16 @@ export async function connectMcpServer({
 }) {
     if (!fetchFn) throw new Error('MCP client requires a fetch implementation');
     if (!url || typeof url !== 'string') throw new Error('MCP client requires a server URL');
+    const endpoint = url.trim();
+    if (!isAllowedMcpUrl(endpoint)) {
+        throw new Error('MCP server URL must be an HTTPS URL, a localhost HTTP URL, or a relative path.');
+    }
 
     let sessionId = null;
 
     const request = async (method, params) => {
         const id = nextRequestId++;
-        const { sessionId: returned, message } = await rpcPost(url, {
+        const { sessionId: returned, message } = await rpcPost(endpoint, {
             body: { jsonrpc: '2.0', id, method, params },
             token,
             sessionId,
@@ -133,7 +209,7 @@ export async function connectMcpServer({
     };
 
     const notify = async (method, params) => {
-        const { sessionId: returned } = await rpcPost(url, {
+        const { sessionId: returned } = await rpcPost(endpoint, {
             body: { jsonrpc: '2.0', method, params },
             token,
             sessionId,

@@ -117,12 +117,18 @@ const APPEND_INTENT_RE = /\bappend\b|\badd\b.{0,30}\bto the (document|doc|end)\b
 /**
  * Illustration-intent markers: the user wants NEW artwork designed and
  * inserted into the document. The dedicated nouns (插图/插画/配图/svg/...)
- * match directly; generic image words (图片/图像/image/picture) require a
- * creation verb nearby, so an edit that merely mentions an image
- * ("修改图像描述的措辞") still routes to an edit pipeline. These route to
- * the illustration pipeline (SVG design + image insertion).
+ * match directly; generic image and diagram words (图片/图像/示意图/流程图/
+ * image/diagram) require a creation verb nearby, so an edit that merely
+ * mentions a picture ("修改图像描述的措辞") still routes to an edit pipeline.
+ * These route to the illustration pipeline (image-model or SVG design,
+ * then insertion).
+ *
+ * Diagram nouns deliberately sit in the verb-gated group rather than matching
+ * bare: "设计示意图并插入" is a design request, but "把示意图的标题改成..."
+ * is an edit, and only the verb tells them apart. The verb list includes bare
+ * 画 ("画个流程图") — safe here because a diagram noun must also be present.
  */
-const ILLUSTRATION_INTENT_RE = /插图|插画|配图|扉页图|题图|头图|画作|绘制|\bsvg\b|\billustrat|\bartwork\b|(设计|生成|插入|添加|增加|创作|制作).{0,15}(图片|图像|图画)|(draw|generate|create|add|insert|design)\b.{0,20}\b(image|picture|drawing)\b/i;
+const ILLUSTRATION_INTENT_RE = /插图|插画|配图|扉页图|题图|头图|画作|绘制|\bsvg\b|\billustrat|\bartwork\b|(设计|生成|插入|添加|增加|创作|制作|画|做一?[张个幅]).{0,15}(图片|图像|图画|图表|图示|(?:示意|流程|架构|结构|拓扑|原理|思维导|框架|时序|甘特|折线|柱状|饼|网络)图)|(draw|generate|create|add|insert|design|render|make)\b.{0,20}\b(images?|pictures?|drawings?|diagrams?|charts?|figures?|schematics?|flowcharts?)\b/i;
 
 /**
  * True when free text asks for an illustration to be designed and inserted.
@@ -804,7 +810,10 @@ export function createConversation(deps) {
                     logWithRetry(
                         `${outcome.failedCount} section(s) failed to process. Click to retry.`,
                         'warning',
-                        () => outcome.retryFailed()
+                        // The retry fires from the activity log long after this
+                        // turn returned, so it owns its own input lock — hand it
+                        // the setter, since word-actions cannot reach the input.
+                        () => outcome.retryFailed({ setBusy: (busy) => input.setProcessing(busy) })
                     );
                 }
                 return;
@@ -1245,8 +1254,9 @@ export function createConversation(deps) {
     /**
      * Runs an illustration turn: the LLM designs one self-contained SVG from
      * the document's subject and mood, staged in a proposal card with an
-     * image preview. Apply rasterizes it to PNG and inserts it into the
-     * document via Word.js (tracked when track-changes is on).
+     * image preview. Apply inserts the returned raster bytes into the
+     * document via Word.js (tracked when track-changes is on); SVG fallback
+     * proposals are rasterized to PNG at apply time.
      */
     async function runIllustrationTurn(turn, msg, turnDeps, turnController) {
         const myController = _beginChatTurn(turnController);
@@ -1258,16 +1268,24 @@ export function createConversation(deps) {
                 onToken: (t) => msg.appendModelToken({ id: 'illustration' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'illustration' }, 'reasoning', t),
             });
-            if (!proposal.svg) {
-                msg.setStatus('The model produced no usable SVG illustration.');
+            if (!proposal.svg && !proposal.imageBase64) {
+                msg.setStatus('The model produced no usable illustration.');
                 return;
             }
             msg.setStatus('');
             const positionLabel = proposal.positionLabel || `document ${proposal.position}`;
+            const countsText = `${proposal.sizeLabel || 'illustration'} at ${positionLabel}`;
+            // The image engine returns raster bytes rendered through a
+            // MIME-aware data URL; the SVG engine returns sanitized markup
+            // rendered inline. Only one is ever set — see
+            // prepareIllustrationProposal.
+            const preview = proposal.imageBase64
+                ? { previewSrc: proposal.previewSrc || `data:image/png;base64,${proposal.imageBase64}` }
+                : { previewSvg: proposal.svg };
             const card = makeProposalCard({
                 title: 'Proposed illustration',
-                countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
-                previewSvg: proposal.svg,
+                countsText,
+                ...preview,
                 comment: null,
                 onApply: async () => {
                     try {
@@ -1285,8 +1303,8 @@ export function createConversation(deps) {
             msg.attachProposal(card, {
                 title: 'Proposed illustration',
                 state: 'pending',
-                countsText: `SVG ${(proposal.svg.length / 1024).toFixed(1)} KB → PNG at ${positionLabel}`,
-                previewSvg: proposal.svg,
+                countsText,
+                ...preview,
                 items: [],
             });
         } catch (error) {
@@ -1555,19 +1573,31 @@ export function createConversation(deps) {
 
     /**
      * Runs a selection-scope comment turn (fire-and-forget comment pipeline).
+     *
+     * Claims the turn lifecycle like every other runner so cancel() can reach
+     * the in-flight LLM request (see _beginChatTurn). The claim is released as
+     * soon as the request is QUEUED, not when the comment lands: the pipeline
+     * is deliberately fire-and-forget so several comments can be pending at
+     * once, and holding the busy flag until insertion would serialize them.
+     * The signal keeps working after release — an abort still suppresses the
+     * insert (comment-request.js).
      */
-    async function runSelectionCommentTurn(skill, args, msg, turnDeps) {
+    async function runSelectionCommentTurn(skill, args, msg, turnDeps, turnController) {
         if (!appState.supportsComments) {
             msg.markError('Comment features require Word API 1.4.');
             return;
         }
+        const myController = _beginChatTurn(turnController);
         try {
             await actions.fireSelectionComment(turnDeps, {
                 promptTemplate: withArgs(skill.defaultTemplate, args),
+                signal: myController.signal,
             });
             msg.setStatus('Comment request fired — it will appear in the document shortly.');
         } catch (error) {
-            msg.markError(error.message);
+            _reportTurnError(msg, error);
+        } finally {
+            _endChatTurn(myController, turnController);
         }
     }
 
@@ -1738,7 +1768,7 @@ export function createConversation(deps) {
                 break;
             case 'comment':
                 if (skill.scope === 'selection-first' && hasSelection) {
-                    await runSelectionCommentTurn(skill, args, msg, turnDeps);
+                    await runSelectionCommentTurn(skill, args, msg, turnDeps, turnController);
                 } else {
                     await runDocumentTurn(skill, args, msg, turnDeps);
                 }

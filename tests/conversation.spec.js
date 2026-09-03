@@ -1450,11 +1450,35 @@ describe('createConversation.submit', () => {
     expect(actions.applyIllustrationProposal).toHaveBeenCalledTimes(1);
   });
 
+  test('illustration turn stages a raster preview with its supplied MIME type', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareIllustrationProposal: jest.fn(async () => ({
+        instruction: 'x', svg: null, imageBase64: '/9j/4AAQ',
+        previewSrc: 'data:image/jpeg;base64,/9j/4AAQ',
+        position: 'end', model: 'image-model', sizeLabel: '1 KB image',
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('设计示意图并插入');
+
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    const preview = cardEl.querySelector('img.proposal-card-preview');
+    expect(preview).not.toBeNull();
+    expect(preview.getAttribute('src')).toBe('data:image/jpeg;base64,/9j/4AAQ');
+    expect(actions.applyIllustrationProposal).not.toHaveBeenCalled();
+  });
+
   test('illustration turn with no usable SVG shows a status instead of a card', async () => {
     const appState = makeAppState();
     const view = makeView();
     const actions = makeActions({
-      prepareIllustrationProposal: jest.fn(async () => ({ instruction: 'x', svg: null, position: 'end', model: 'm' })),
+      prepareIllustrationProposal: jest.fn(async () => ({ instruction: 'x', svg: null, imageBase64: null, position: 'end', model: 'm' })),
     });
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
@@ -1464,7 +1488,9 @@ describe('createConversation.submit', () => {
     await conv.submit('设计并增加SVG插图');
 
     expect(view._msg.attachProposal).not.toHaveBeenCalled();
-    expect(view._msg.setStatus).toHaveBeenCalledWith('The model produced no usable SVG illustration.');
+    // Message is engine-agnostic now that an illustration may come from the
+    // image model (imageBase64) or the SVG route (svg).
+    expect(view._msg.setStatus).toHaveBeenCalledWith('The model produced no usable illustration.');
     expect(actions.applyIllustrationProposal).not.toHaveBeenCalled();
   });
 

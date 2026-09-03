@@ -7,12 +7,157 @@ const fs = require('fs');
 // Load environment variables from .env file
 require('dotenv').config();
 
+const DEFAULT_DEV_SERVER_ALLOWED_HOSTS = Object.freeze([
+  'localhost',
+  '127.0.0.1',
+  '[::1]'
+]);
+const CORS_ALLOWED_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
+const CORS_ALLOWED_HEADERS = 'Content-Type, Authorization, Accept, X-Requested-With, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access';
+
+/**
+ * Parses the dev-server host allowlist. The special `all` value is never
+ * accepted here: callers must opt into each additional host explicitly.
+ *
+ * @param {string|undefined} value
+ * @returns {string[]}
+ */
+function parseAllowedHosts(value) {
+  const hosts = String(value || '')
+    .split(',')
+    .map((host) => host.trim())
+    .filter((host) => host && host.toLowerCase() !== 'all');
+  return hosts.length > 0 ? hosts : [...DEFAULT_DEV_SERVER_ALLOWED_HOSTS];
+}
+
+/**
+ * Normalizes one configured CORS origin. `*` remains available as an explicit
+ * opt-in for test harnesses; malformed or non-HTTP(S) origins are ignored.
+ *
+ * @param {string|undefined} value
+ * @returns {string|null}
+ */
+function normalizeCorsOrigin(value) {
+  const candidate = String(value || '').trim();
+  if (candidate === '*') return '*';
+  if (!candidate) return null;
+  if (!/^https?:\/\//i.test(candidate)) return null;
+  try {
+    const parsed = new URL(candidate);
+    if (!parsed.hostname || parsed.username || parsed.password) return null;
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.origin;
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * Returns origins allowed by default for the HTTPS local dev server.
+ *
+ * @param {number} port
+ * @returns {string[]}
+ */
+function defaultCorsOrigins(port) {
+  return [
+    `https://localhost:${port}`,
+    `https://127.0.0.1:${port}`,
+    `https://[::1]:${port}`,
+  ].map(normalizeCorsOrigin).filter(Boolean);
+}
+
+/**
+ * Parses DEV_SERVER_CORS_ORIGIN as a comma-separated origin list.
+ *
+ * @param {string|undefined} value
+ * @param {number} port
+ * @returns {string[]}
+ */
+function parseCorsOrigins(value, port) {
+  const configured = String(value || '')
+    .split(',')
+    .map(normalizeCorsOrigin)
+    .filter(Boolean);
+  return configured.length > 0 ? configured : defaultCorsOrigins(port);
+}
+
+/**
+ * Selects a CORS origin without reflecting an untrusted Origin header.
+ *
+ * @param {string|undefined} requestOrigin
+ * @param {string[]} allowedOrigins
+ * @returns {string|null}
+ */
+function resolveCorsOrigin(requestOrigin, allowedOrigins) {
+  if (allowedOrigins.includes('*')) return '*';
+  const normalizedRequestOrigin = normalizeCorsOrigin(requestOrigin);
+  if (normalizedRequestOrigin && allowedOrigins.includes(normalizedRequestOrigin)) {
+    return normalizedRequestOrigin;
+  }
+  return requestOrigin ? null : (allowedOrigins[0] || null);
+}
+
+/**
+ * Builds the CORS headers used by static dev-server responses and proxy hooks.
+ *
+ * @param {object} req
+ * @param {string[]} allowedOrigins
+ * @returns {object}
+ */
+function corsHeaders(req, allowedOrigins) {
+  const origin = resolveCorsOrigin(req && req.headers && req.headers.origin, allowedOrigins);
+  const headers = {
+    'Access-Control-Allow-Methods': CORS_ALLOWED_METHODS,
+    'Access-Control-Allow-Headers': CORS_ALLOWED_HEADERS,
+  };
+  if (origin) {
+    headers['Access-Control-Allow-Origin'] = origin;
+    if (origin !== '*') headers.Vary = 'Origin';
+  }
+  return headers;
+}
+
+const LOOPBACK_PROXY_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  'host.docker.internal'
+]);
+
+/**
+ * Accepts HTTPS proxy targets plus HTTP targets that resolve to loopback or
+ * Docker's explicit host bridge alias.
+ *
+ * @param {string} value
+ * @returns {URL|null}
+ */
+function parseProxyTarget(value) {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  if (!/^https?:\/\//i.test(candidate) || candidate.includes('\\')) return null;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch (_err) {
+    return null;
+  }
+  if (!parsed.hostname || parsed.username || parsed.password) return null;
+  if (parsed.protocol === 'https:') return parsed;
+  if (parsed.protocol !== 'http:') return null;
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  return LOOPBACK_PROXY_HOSTS.has(hostname) ? parsed : null;
+}
+
 // Environment configuration with defaults
 const ENV = {
   // Dev server (binds localhost by default; set DEV_SERVER_HOST=0.0.0.0
   // explicitly if the add-in must be reached from another machine)
   DEV_SERVER_HOST: process.env.DEV_SERVER_HOST || '127.0.0.1',
   DEV_SERVER_PORT: parseInt(process.env.DEV_SERVER_PORT || '3000', 10),
+  DEV_SERVER_ALLOWED_HOSTS: parseAllowedHosts(process.env.DEV_SERVER_ALLOWED_HOSTS),
+  DEV_SERVER_CORS_ORIGINS: parseCorsOrigins(
+    process.env.DEV_SERVER_CORS_ORIGIN,
+    parseInt(process.env.DEV_SERVER_PORT || '3000', 10)
+  ),
   // Ollama proxy
   OLLAMA_PROXY_PATH: process.env.OLLAMA_PROXY_PATH || '/ollama',
   OLLAMA_PROXY_TARGET: process.env.OLLAMA_PROXY_TARGET || 'http://localhost:11434',
@@ -54,8 +199,8 @@ const ENV = {
  *
  * Each proxy strips its path prefix, rewrites Origin/Referer off the
  * upstream request (some backends enforce CORS on the server side),
- * answers OPTIONS preflights directly, and adds permissive CORS headers
- * to proxied responses. LLM calls can take minutes, so both timeouts are
+ * answers OPTIONS preflights directly, and adds CORS headers only for
+ * configured local origins. LLM calls can take minutes, so both timeouts are
  * 5 minutes and connections use a keep-alive agent.
  *
  * A provider is disabled by setting its *_PROXY_PATH to an empty string.
@@ -65,6 +210,9 @@ const ENV = {
  */
 function buildLlmProxies(ENV) {
   const LLM_PROXY_TIMEOUT_MS = require('./scripts/llm-constants.cjs').DEFAULT_LLM_PROXY_TIMEOUT_MS;
+  const allowedCorsOrigins = Array.isArray(ENV.DEV_SERVER_CORS_ORIGINS)
+    ? ENV.DEV_SERVER_CORS_ORIGINS
+    : defaultCorsOrigins(ENV.DEV_SERVER_PORT || 3000);
 
   const providers = [
     ['OLLAMA_PROXY_PATH', 'OLLAMA_PROXY_TARGET', 'Ollama'],
@@ -89,9 +237,16 @@ function buildLlmProxies(ENV) {
     const target = ENV[targetKey];
     if (!proxyPath || !target) continue;
 
+    const targetUrl = parseProxyTarget(target);
+    if (!targetUrl) {
+      console.error(`Ignoring ${targetKey}: target must use HTTPS or loopback HTTP`);
+      continue;
+    }
+    const AgentCtor = targetUrl.protocol === 'https:' ? require('https').Agent : require('http').Agent;
+
     proxies.push({
       context: [proxyPath],
-      target,
+      target: targetUrl.href,
       changeOrigin: true,
       pathRewrite: { [`^${proxyPath}`]: '' },
       // Verify upstream TLS by default; set LLM_PROXY_TLS_VERIFY=false only
@@ -100,7 +255,7 @@ function buildLlmProxies(ENV) {
       logLevel: 'debug',
       timeout: LLM_PROXY_TIMEOUT_MS,
       proxyTimeout: LLM_PROXY_TIMEOUT_MS,
-      agent: new (require('http').Agent)({
+      agent: new AgentCtor({
         keepAlive: true,
         keepAliveMsecs: 30000,
         maxSockets: 50,
@@ -109,11 +264,9 @@ function buildLlmProxies(ENV) {
       }),
       bypass: function (req, res) {
         if (req.method === 'OPTIONS') {
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-          // The Anthropic headers matter for the Claude proxy route; the
-          // rest of the providers never send them.
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access');
+          for (const [name, value] of Object.entries(corsHeaders(req, allowedCorsOrigins))) {
+            res.setHeader(name, value);
+          }
           res.setHeader('Access-Control-Max-Age', '86400');
           res.statusCode = 204;
           res.end();
@@ -121,28 +274,38 @@ function buildLlmProxies(ENV) {
         }
       },
       onProxyReq: function (proxyReq, req) {
-        console.log(`[${label} Proxy Request]`, req.method, req.url, '→', proxyReq.path);
+        const requestPath = String(req.url || '').split('?')[0];
+        const upstreamPath = String(proxyReq.path || '').split('?')[0];
+        console.log(`[${label} Proxy Request]`, req.method, requestPath, '→', upstreamPath);
         if (typeof proxyReq.removeHeader === 'function') {
           proxyReq.removeHeader('origin');
           proxyReq.removeHeader('referer');
         }
       },
       onProxyRes: function (proxyRes, req) {
-        console.log(`[${label} Proxy Response]`, req.url, '←', proxyRes.statusCode);
-        proxyRes.headers['Access-Control-Allow-Origin'] = '*';
-        proxyRes.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-        proxyRes.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, X-Requested-With, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access';
+        const requestPath = String(req.url || '').split('?')[0];
+        console.log(`[${label} Proxy Response]`, requestPath, '←', proxyRes.statusCode);
+        const corsHeaderNames = new Set([
+          'access-control-allow-origin',
+          'access-control-allow-methods',
+          'access-control-allow-headers',
+        ]);
+        for (const name of Object.keys(proxyRes.headers)) {
+          if (corsHeaderNames.has(name.toLowerCase())) delete proxyRes.headers[name];
+        }
+        Object.assign(proxyRes.headers, corsHeaders(req, allowedCorsOrigins));
       },
       onError: function (err, req, res) {
-        console.error(`[${label} Proxy Error]`, req.url, err.message);
+        const requestPath = String(req.url || '').split('?')[0];
+        console.error(`[${label} Proxy Error]`, requestPath, err.code || 'upstream error');
         if (!res.headersSent) {
           res.writeHead(502, {
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
+            ...corsHeaders(req, allowedCorsOrigins)
           });
           res.end(JSON.stringify({
             error: `${label} Proxy Error`,
-            message: err.message,
+            message: 'Upstream request failed',
             code: err.code
           }));
         }
@@ -184,7 +347,16 @@ module.exports = (env, argv) => {
       commands: './src/commands/commands.js'
     },
     output: {
+      // Entry names stay stable and hash-free: taskpane.html/commands.html are
+      // generated by HtmlWebpackPlugin, but manifest.xml and the sideload
+      // scripts reference these URLs directly.
       filename: '[name].js',
+      // Async chunks (the mammoth and pdf.js parsers, dynamically imported by
+      // file-attachments.js) get semantic names instead of webpack's module
+      // ids. Without this the same two ~490 KB parser bundles landed as
+      // 255.js/400.js and were renumbered whenever module ids shifted, so a
+      // diff of dist/ could not tell a real change from a renumbering.
+      chunkFilename: '[name].[contenthash:8].js',
       path: path.resolve(__dirname, 'dist'),
       clean: true
     },
@@ -229,8 +401,15 @@ module.exports = (env, argv) => {
           {
             // pdf.js worker for .pdf attachments (see src/lib/file-attachments.js).
             // Loaded on demand by pdf.js itself, never by the app bundle.
+            //
+            // noErrorOnMissing so the worker alone never kills a build: the
+            // .pdf attachment path degrades to "unsupported file" at runtime,
+            // while a pdfjs-dist layout change on upgrade (or an install
+            // without the optional parser) still yields a working add-in.
+            // PDF support is one attachment type, not a build dependency.
             from: 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs',
-            to: 'pdf.worker.min.mjs'
+            to: 'pdf.worker.min.mjs',
+            noErrorOnMissing: true
           }
         ]
       }),
@@ -250,10 +429,8 @@ module.exports = (env, argv) => {
       host: ENV.DEV_SERVER_HOST,
       port: ENV.DEV_SERVER_PORT,
       hot: true,
-      allowedHosts: 'all',  // Allow connections from any host
-      headers: {
-        'Access-Control-Allow-Origin': '*'
-      },
+      allowedHosts: ENV.DEV_SERVER_ALLOWED_HOSTS,
+      headers: (req) => corsHeaders(req, ENV.DEV_SERVER_CORS_ORIGINS),
       setupMiddlewares: process.env.ENABLE_DEV_ENDPOINTS === 'true'
         // Dev-only E2E/coding-agent endpoints (see scripts/dev-e2e-middlewares.cjs).
         // Off by default: they write files and use wildcard CORS, so they are
@@ -281,5 +458,14 @@ module.exports = (env, argv) => {
     },
     devtool: isDev ? 'eval-source-map' : false
   };
+};
+
+module.exports.__testing = {
+  parseAllowedHosts,
+  parseCorsOrigins,
+  resolveCorsOrigin,
+  corsHeaders,
+  parseProxyTarget,
+  buildLlmProxies,
 };
 

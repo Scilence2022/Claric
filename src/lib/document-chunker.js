@@ -34,6 +34,12 @@
  * @property {number} tokenCount - Total estimated tokens in chunk
  * @property {string} sectionTitle - Nearest heading text (for logging)
  * @property {string} overlapBefore - Text from previous chunk's last paragraph(s) for context
+ * @property {boolean} oversized - True when the chunk exceeds maxTokens because
+ *   a SINGLE paragraph does. Such a chunk cannot be made smaller without
+ *   splitting a paragraph, which the reassembler's paragraph-index contract
+ *   forbids (it bookmarks ranges by index and verifies boundary paragraph
+ *   text), so the orchestrator rejects it up front with an actionable reason
+ *   instead of sending a request the backend will refuse for context length.
  */
 
 /**
@@ -115,11 +121,12 @@ export function chunkDocument(docModel, options = {}) {
             }
         }
 
-        // Would this paragraph push us over the limit?
+        // The hard maxTokens bound always wins over the minTokens batching
+        // preference. A short current chunk may be kept together at a heading
+        // boundary, but it must be finalized before a paragraph that would
+        // otherwise make the chunk exceed the backend budget.
         if (currentTokens + para.tokenEstimate > maxTokens && currentParas.length > 0) {
-            if (currentTokens >= minTokens) {
-                finalizeCurrentChunk();
-            }
+            finalizeCurrentChunk();
         }
 
         currentParas.push(para);
@@ -131,12 +138,14 @@ export function chunkDocument(docModel, options = {}) {
     finalizeCurrentChunk();
 
     // Merge tiny trailing chunk (below minTokens) into previous chunk —
-    // unless a skipped table stands between them (barrier): merging would
-    // give the combined chunk a bookmark range that spans the table.
+    // unless a skipped table stands between them (barrier), or the merge would
+    // break the hard maxTokens bound. The minTokens preference is only a
+    // batching heuristic; it can never justify an over-budget request.
     if (rawChunks.length > 1) {
         const lastChunk = rawChunks[rawChunks.length - 1];
-        if (lastChunk.tokenCount < minTokens && !lastChunk.barrierBefore) {
-            const prevChunk = rawChunks[rawChunks.length - 2];
+        const prevChunk = rawChunks[rawChunks.length - 2];
+        if (lastChunk.tokenCount < minTokens && !lastChunk.barrierBefore
+            && prevChunk.tokenCount + lastChunk.tokenCount <= maxTokens) {
             prevChunk.paragraphs.push(...lastChunk.paragraphs);
             prevChunk.tokenCount += lastChunk.tokenCount;
             rawChunks.pop();
@@ -161,6 +170,11 @@ export function chunkDocument(docModel, options = {}) {
             overlapBefore = overlapParas.map(p => p.text).join('\n');
         }
 
+        // A chunk can only exceed maxTokens when one paragraph alone does:
+        // every other path finalizes before appending. Flag it so callers can
+        // reject rather than discover it as an HTTP 400 from the backend.
+        const oversized = raw.paragraphs.length === 1 && raw.tokenCount > maxTokens;
+
         return {
             id: `chunk-${idx}`,
             paragraphs: raw.paragraphs,
@@ -168,7 +182,8 @@ export function chunkDocument(docModel, options = {}) {
             endIndex: lastPara.index,
             tokenCount: raw.tokenCount,
             sectionTitle,
-            overlapBefore
+            overlapBefore,
+            oversized
         };
     });
 

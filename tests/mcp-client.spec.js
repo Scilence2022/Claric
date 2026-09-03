@@ -7,7 +7,11 @@
  * error propagation, and HTTP error propagation.
  */
 
-const { connectMcpServer } = require('../src/lib/mcp-client.js');
+const {
+    connectMcpServer,
+    isAllowedMcpUrl,
+    sanitizeMcpErrorMessage,
+} = require('../src/lib/mcp-client.js');
 
 /** Records POSTs and replies from a scripted queue of responses. */
 function makeFetchMock(responses) {
@@ -155,5 +159,57 @@ describe('prompts and resources helpers', () => {
         expect((await client.readResource('file:///a.md')).contents[0].text).toBe('content');
         // A server without resource support degrades to an empty list, not a crash.
         await expect(client.listResources()).resolves.toEqual([]);
+    });
+});
+
+describe('MCP endpoint validation and error redaction', () => {
+    test.each([
+        ['/mcp', true],
+        ['./mcp?transport=streamable', true],
+        ['https://remote.example/mcp', true],
+        ['https:remote.example/mcp', false],
+        ['https://user:password@remote.example/mcp', false],
+        ['http://localhost:8787/mcp', true],
+        ['http://127.0.0.1/mcp', true],
+        ['http://[::1]:8787/mcp', true],
+        ['http://localhost./mcp', true],
+        ['http://remote.example/mcp', false],
+        ['ftp://localhost/mcp', false],
+        ['javascript:alert(1)', false],
+        ['file:///tmp/mcp', false],
+        ['data:text/plain,mcp', false],
+        ['//remote.example/mcp', false],
+        ['/\\remote.example/mcp', false],
+        ['https://remote.example/\\evil', false],
+        ['', false],
+        [null, false],
+    ])('classifies %p as %p', (url, expected) => {
+        expect(isAllowedMcpUrl(url)).toBe(expected);
+    });
+
+    test('rejects an unsafe endpoint before fetch and does not echo a token', async () => {
+        const fetchFn = jest.fn();
+        await expect(connectMcpServer({
+            url: 'http://remote.example/mcp?token=top-secret',
+            token: 'top-secret',
+            fetchFn,
+        })).rejects.toThrow(/HTTPS.*localhost HTTP.*relative path/);
+        expect(fetchFn).not.toHaveBeenCalled();
+    });
+
+    test('redacts token, bearer value, and sensitive query values', () => {
+        const message = sanitizeMcpErrorMessage(
+            'fetch failed for https://mcp.example/mcp?token=top-secret Authorization: Bearer top-secret',
+            'top-secret',
+        );
+        expect(message).not.toContain('top-secret');
+        expect(message).toContain('[redacted]');
+    });
+
+    test('redacts a token echoed by a transport failure', async () => {
+        const token = 'mcp-secret-123';
+        const fetchFn = jest.fn().mockRejectedValue(new Error(`request failed: Bearer ${token}`));
+        await expect(connectMcpServer({ url: 'https://mcp.example/mcp', token, fetchFn }))
+            .rejects.toThrow('request failed: Bearer [redacted]');
     });
 });
