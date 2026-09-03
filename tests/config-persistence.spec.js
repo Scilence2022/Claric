@@ -10,6 +10,7 @@
 
 const { normalizeConfig } = require('../src/taskpane/app-state.js');
 const { PROVIDER_PRESETS, KNOWN_PROVIDERS, defaultProviderConfig } = require('../src/lib/providers.js');
+const { KNOWN_IMAGE_PROVIDERS, defaultImageProviderConfig, DEFAULT_IMAGE_SIZE } = require('../src/lib/image-providers.js');
 
 /** Baseline defaults matching the module-level config literal. */
 function makeDefaults() {
@@ -22,6 +23,17 @@ function makeDefaults() {
         commentGranularity: 0,
         includeCommentsInSelection: false,
         providers: defaultProviderConfig(),
+    };
+}
+
+function makeImageDefaults() {
+    return {
+        ...makeDefaults(),
+        imageGeneration: {
+            enabled: false,
+            provider: 'openai',
+            providers: defaultImageProviderConfig(''),
+        },
     };
 }
 
@@ -225,6 +237,75 @@ describe('normalizeConfig', () => {
         const defaults = makeDefaults();
         normalizeConfig(defaults, { backends: { vllm: { url: 'http://x:8026' } } });
         expect(defaults.providers.vllm.url).toBe(PROVIDER_PRESETS.vllm.url);
+    });
+});
+
+describe('imageGeneration normalization', () => {
+    test('preserves valid provider settings and fills missing entries', () => {
+        const out = normalizeConfig(makeImageDefaults(), {
+            imageGeneration: {
+                enabled: true,
+                provider: 'minimax',
+                providers: {
+                    minimax: {
+                        url: '/custom-minimax',
+                        apiKey: 'image-key',
+                        model: 'image-01',
+                        size: '1536x1024',
+                    },
+                },
+            },
+        });
+
+        expect(out.imageGeneration.enabled).toBe(true);
+        expect(out.imageGeneration.provider).toBe('minimax');
+        expect(out.imageGeneration.providers.minimax).toEqual({
+            url: '/custom-minimax',
+            apiKey: 'image-key',
+            model: 'image-01',
+            apiPath: '/v1',
+            size: '1536x1024',
+        });
+        expect(out.imageGeneration.providers.openai.model).toBe('gpt-image-1');
+    });
+
+    test('keeps explicitly cleared URL and model fields empty', () => {
+        const out = normalizeConfig(makeImageDefaults(), {
+            imageGeneration: {
+                providers: {
+                    custom: { url: '', model: '', apiKey: '' },
+                },
+            },
+        });
+
+        expect(out.imageGeneration.providers.custom.url).toBe('');
+        expect(out.imageGeneration.providers.custom.model).toBe('');
+    });
+
+    test('falls back for invalid image provider, size, and field types', () => {
+        const defaults = makeImageDefaults();
+        const out = normalizeConfig(defaults, {
+            imageGeneration: {
+                provider: 'unknown',
+                providers: {
+                    openai: { url: 42, model: null, apiKey: 7, size: 'huge' },
+                },
+            },
+        });
+
+        expect(out.imageGeneration.provider).toBe('openai');
+        expect(out.imageGeneration.providers.openai.url).toBe('/openai');
+        expect(out.imageGeneration.providers.openai.model).toBe('gpt-image-1');
+        expect(out.imageGeneration.providers.openai.apiKey).toBe('');
+        expect(out.imageGeneration.providers.openai.size).toBe(DEFAULT_IMAGE_SIZE);
+        expect(Object.keys(out.imageGeneration.providers)).toEqual(KNOWN_IMAGE_PROVIDERS);
+    });
+
+    test('does not invent an image section when defaults do not have one', () => {
+        const out = normalizeConfig(makeDefaults(), {
+            imageGeneration: { enabled: true },
+        });
+        expect(out.imageGeneration).toBeUndefined();
     });
 });
 

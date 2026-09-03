@@ -1,7 +1,7 @@
 {
   "name": "claric",
   "version": "1.0.2",
-  "description": "Claric ? your redlining scribe for Microsoft Word. AI-powered tracked changes, summarization, and comment analysis.",
+  "description": "Claric — your redlining scribe for Microsoft Word. AI-powered tracked changes, summarization, comment analysis, and independent image generation via OpenAI Images, CogView, MiniMax, or custom providers.",
   "private": true,
   "scripts": {
     "start": "webpack serve --mode development",

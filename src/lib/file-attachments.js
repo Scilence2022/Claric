@@ -265,7 +265,7 @@ async function _readAsDataUrl(file) {
  * @private
  */
 async function _extractDocxText(file) {
-    const mod = await import('mammoth/mammoth.browser.min.js');
+    const mod = await import(/* webpackChunkName: "mammoth" */ 'mammoth/mammoth.browser.min.js');
     const mammoth = mod.default || mod;
     const arrayBuffer = await _readArrayBuffer(file);
     const result = await mammoth.extractRawText({ arrayBuffer });
@@ -281,7 +281,7 @@ async function _extractDocxText(file) {
  * @private
  */
 async function _extractPdfText(file) {
-    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.min.mjs');
+    const pdfjs = await import(/* webpackChunkName: "pdfjs" */ 'pdfjs-dist/legacy/build/pdf.min.mjs');
     if (pdfjs.GlobalWorkerOptions && !pdfjs.GlobalWorkerOptions.workerSrc) {
         const base = (typeof document !== 'undefined' && document.baseURI) || '';
         try {

@@ -22,6 +22,7 @@
  */
 
 import { extractJsonObject } from './json-utils.js';
+import { defangProtocolMarkers, restoreProtocolMarkers } from './response-parser.js';
 
 /** Row-op verbs understood by the protocol. */
 export const ROW_OP = Object.freeze({
@@ -48,14 +49,19 @@ export const TABLE_PATCH_LIMITS = Object.freeze({
  * @returns {string}
  */
 export function formatCellGrid(cells) {
-    return cells.map((c) => `[R${c.row}C${c.col}]${c.merged ? ' (merged — read-only)' : ''} ${c.text}`).join('\n');
+    return cells.map((c) => {
+        const text = defangProtocolMarkers(String(c.text ?? ''));
+        return `[R${c.row}C${c.col}]${c.merged ? ' (merged — read-only)' : ''} ${text}`;
+    }).join('\n');
 }
 
 /**
  * Builds the user message for a table-scope amendment: the user's edit
  * instruction, the coordinate grid of current cell contents, and the JSON
- * patch output rules. When any covered cell is merged-readonly, extra rules
- * restrict the patch to merge anchors and forbid row structure ops.
+ * patch output rules. Untrusted instruction/cell text is defanged before
+ * interpolation so it cannot reproduce another prompt protocol's boundaries.
+ * When any covered cell is merged-readonly, extra rules restrict the patch to
+ * merge anchors and forbid row structure ops.
  *
  * @param {string} instruction - The amendment instruction (skill template or
  *   free text; may contain a {selection} placeholder, already NOT substituted
@@ -65,11 +71,12 @@ export function formatCellGrid(cells) {
  * @returns {string}
  */
 export function buildTableUserPrompt(instruction, cells, { rowCount, colCount }) {
+    const safeInstruction = defangProtocolMarkers(instruction);
     const mergedRules = cells.some((c) => c.merged)
         ? '\n- MERGED CELLS: entries marked "(merged — read-only)" are grid slots covered by a merged cell. NEVER include them in "cells" — their coordinates are not editable.' +
           '\n- This table contains merged cells: "rowOps" MUST be an empty array (row insert/delete is not supported on merged tables).'
         : '';
-    return `${instruction}
+    return `${safeInstruction}
 
 The selection covers a table region in a Word document (${rowCount} rows x ${colCount} columns total). Current contents of the covered cells (1-based absolute coordinates):
 
@@ -256,11 +263,12 @@ function _parseCells(rawCells, { rowCount, colCount, originals, allowedBounds, s
             continue;
         }
 
-        const text = _asText(entry && entry.text);
-        if (text === null) {
+        const rawText = _asText(entry && entry.text);
+        if (rawText === null) {
             warnings.push(`Cell R${row}C${col} has no usable "text" — dropped`);
             continue;
         }
+        const text = restoreProtocolMarkers(rawText);
 
         const key = `${row},${col}`;
         if (conflictedKeys.has(key)) continue;
@@ -384,11 +392,12 @@ function _asRowValues(rawValues, colCount, op, row, warnings) {
 
     const values = [];
     for (let index = 0; index < rawValues.length; index++) {
-        const text = _asText(rawValues[index]);
-        if (text === null) {
+        const rawText = _asText(rawValues[index]);
+        if (rawText === null) {
             warnings.push(`Row op "${op}" at row ${row} value ${index + 1} has no usable text — dropped`);
             return null;
         }
+        const text = restoreProtocolMarkers(rawText);
         if (text.length > TABLE_PATCH_LIMITS.MAX_CELL_TEXT_CHARS) {
             warnings.push(`Row op "${op}" at row ${row} value ${index + 1} exceeds the ${TABLE_PATCH_LIMITS.MAX_CELL_TEXT_CHARS}-character per-cell limit — dropped`);
             return null;

@@ -20,7 +20,11 @@
 
 import { sendMessages as defaultSendMessages, sendMessagesStream as defaultSendMessagesStream, stripMarkdown, stripChunkDelimiters } from './llm-client.js';
 import { formatContextPrefix as defaultFormatContextPrefix } from './context-extractor.js';
-import { parseDelimitedResponse as defaultParseDelimitedResponse } from './response-parser.js';
+import {
+  parseDelimitedResponse as defaultParseDelimitedResponse,
+  defangProtocolMarkers,
+  restoreProtocolMarkers,
+} from './response-parser.js';
 
 /**
  * @typedef {import('./document-chunker.js').DocumentChunk} DocumentChunk
@@ -100,12 +104,22 @@ function _composeChunkMessages(chunk, documentContext, promptManager, mode, comm
     if (commentPrompt) promptTemplate = commentPrompt.template;
   }
 
-  // Build the text content with overlap markers
+  // Build the text content with overlap markers.
+  //
+  // Both the chunk body and the overlap context are defanged first: they are
+  // untrusted document text being interpolated between framing markers, and a
+  // document that reproduces `[END TEXT]` or `===COMMENT===` could otherwise
+  // close the framing early (making the rest of the document read as
+  // instructions) or make the response parser treat body text as a comment to
+  // insert. The defang only perturbs text that literally reproduces a protocol
+  // marker; in that rare case the returned amendment may differ from the
+  // original by one zero-width character at that spot, which is a cosmetic
+  // diff artifact and strictly preferable to a framing break.
   let textContent = '';
   if (chunk.overlapBefore) {
-    textContent += `[CONTEXT - DO NOT AMEND]\n${chunk.overlapBefore}\n[END CONTEXT]\n\n`;
+    textContent += `[CONTEXT - DO NOT AMEND]\n${defangProtocolMarkers(chunk.overlapBefore)}\n[END CONTEXT]\n\n`;
   }
-  textContent += `[AMEND THIS TEXT]\n${chunkText}\n[END TEXT]`;
+  textContent += `[AMEND THIS TEXT]\n${defangProtocolMarkers(chunkText)}\n[END TEXT]`;
 
   // Substitute into template
   if (promptTemplate.includes('{selection}')) {
@@ -245,6 +259,19 @@ export async function processChunksParallel(chunks, options) {
     }
 
     try {
+      // A single paragraph larger than the whole chunk budget cannot be split
+      // (the reassembler bookmarks ranges by paragraph index and verifies
+      // boundary text, so a half-paragraph chunk has no valid anchor). Sending
+      // it anyway costs a round trip and comes back as an opaque backend error
+      // about context length; failing here names the real cause and puts the
+      // chunk on the retry path with the rest.
+      if (chunk.oversized) {
+        throw new Error(
+          `Chunk ${chunk.id} holds a single paragraph of ~${chunk.tokenCount} tokens, over the `
+          + 'per-chunk budget. Split that paragraph in the document, or amend it via a selection.'
+        );
+      }
+
       // Compose messages for this chunk
       const messages = _composeChunkMessages(
         chunk,
@@ -280,12 +307,24 @@ export async function processChunksParallel(chunks, options) {
       const isMerged = (mode === 'both') || (mode === 'amendment' && commentInstructions);
 
       if (isMerged) {
+        // Parse BEFORE restoring echoed markers. A defanged marker copied from
+        // the document body must remain inert while section boundaries are
+        // located; restoring first would let document text manufacture a new
+        // amendment/comment delimiter.
         const parsed = parseDelimitedResponseFn(responseText);
         amendment = parsed.amendment;
         comment = parsed.comment;
-        // Fallback: if no delimiters found, treat as amendment
+        // No delimiters at all: the model ignored the output contract, so the
+        // text's role is unknown. Treating it as the amendment (the old
+        // behavior) fed prose like "I suggest the following changes: ..." into
+        // the alignment pass as replacement text — the 30%-length truncation
+        // guard cannot catch that, because the wrong text is the right length.
+        // Reject instead so the chunk lands on the retry path with a reason.
         if (!amendment && !comment) {
-          amendment = responseText;
+          throw new Error(
+            'Model response contained neither ===AMENDMENT=== nor ===COMMENT=== delimiters; ' +
+            'cannot tell an amendment from commentary, so the chunk was not applied.'
+          );
         }
       } else if (mode === 'amendment') {
         amendment = responseText;
@@ -300,10 +339,17 @@ export async function processChunksParallel(chunks, options) {
         log(`Chunk ${chunk.id}: LLM returned an empty response (may indicate a backend or model issue)`, 'warning');
       }
 
-      // Post-process: strip artifacts from amendment text
+      // Post-process amendment text before restoring the zero-width character
+      // used to defang echoed document markers. Restoring only after parsing
+      // (and after cleanup) keeps a copied marker inert at every protocol
+      // boundary while still returning the user's original visible text.
       if (amendment) {
         amendment = stripMarkdown(amendment, log);
         amendment = stripChunkDelimiters(amendment, log);
+        amendment = restoreProtocolMarkers(amendment);
+      }
+      if (comment) {
+        comment = restoreProtocolMarkers(comment);
       }
 
       completed++;

@@ -154,6 +154,23 @@ describe('chunkDocument', () => {
             }
         });
 
+        test('hard maxTokens wins when a short batch is below minTokens', () => {
+            const paras = [
+                makePara({ index: 0, text: 'First', tokenEstimate: 60 }),
+                makePara({ index: 1, text: 'Second', tokenEstimate: 60 }),
+            ];
+
+            const chunks = chunkDocument(makeDocModel(paras), {
+                maxTokens: 100,
+                minTokens: 500,
+            });
+
+            // The old minTokens guard appended both paragraphs and produced a
+            // 120-token chunk, even though the configured hard cap was 100.
+            expect(chunks).toHaveLength(2);
+            expect(chunks.every((chunk) => chunk.tokenCount <= 100)).toBe(true);
+        });
+
         test('long section exceeding maxTokens is split at paragraph boundary', () => {
             // Section with H1 + 15 body paragraphs each 1000 tokens = 16000 tokens
             const paras = [
@@ -475,6 +492,82 @@ describe('chunkDocument', () => {
             const chunks = chunkDocument(doc, { maxTokens: 12000 });
 
             expect(chunks[0].tokenCount).toBe(600);
+        });
+    });
+
+    // --- Oversized flag ---
+    //
+    // A chunk can only exceed maxTokens when one paragraph alone does; every
+    // other path finalizes the chunk before appending. Such a chunk cannot be
+    // split further (the reassembler bookmarks ranges by paragraph index), so
+    // it is flagged for the orchestrator to reject up front instead of being
+    // discovered as a context-length error from the backend.
+
+    describe('oversized flag', () => {
+        test('a single paragraph over maxTokens produces a chunk marked oversized', () => {
+            const paras = [
+                makePara({ index: 0, text: 'Small intro', tokenEstimate: 100 }),
+                makePara({ index: 1, text: 'X'.repeat(60000), tokenEstimate: 15000 }),
+                makePara({ index: 2, text: 'After big one', tokenEstimate: 100 })
+            ];
+
+            const chunks = chunkDocument(makeDocModel(paras), { maxTokens: 12000, minTokens: 50 });
+
+            const bigChunk = chunks.find(c => c.tokenCount === 15000);
+            expect(bigChunk).toBeDefined();
+            expect(bigChunk.paragraphs.length).toBe(1);
+            expect(bigChunk.oversized).toBe(true);
+        });
+
+        test('neighbouring chunks of an oversized paragraph are not flagged', () => {
+            const paras = [
+                makePara({ index: 0, text: 'Small intro', tokenEstimate: 100 }),
+                makePara({ index: 1, text: 'X'.repeat(60000), tokenEstimate: 15000 }),
+                makePara({ index: 2, text: 'After big one', tokenEstimate: 100 })
+            ];
+
+            const chunks = chunkDocument(makeDocModel(paras), { maxTokens: 12000, minTokens: 50 });
+
+            // Only the outsized paragraph's own chunk carries the flag.
+            expect(chunks.filter(c => c.oversized)).toHaveLength(1);
+            for (const chunk of chunks.filter(c => c.tokenCount !== 15000)) {
+                expect(chunk.oversized).toBe(false);
+            }
+        });
+
+        test('a document consisting of one oversized paragraph is flagged', () => {
+            const paras = [makePara({ index: 0, text: 'Y'.repeat(80000), tokenEstimate: 20000 })];
+
+            const chunks = chunkDocument(makeDocModel(paras), { maxTokens: 12000 });
+
+            expect(chunks).toHaveLength(1);
+            expect(chunks[0].oversized).toBe(true);
+        });
+
+        test('every chunk of a normal document has oversized false', () => {
+            const paras = [
+                makePara({ index: 0, text: 'Introduction', headingLevel: 1, tokenEstimate: 1000 }),
+                makePara({ index: 1, text: 'Intro body.', tokenEstimate: 2000 }),
+                makePara({ index: 2, text: 'Second Section', headingLevel: 1, tokenEstimate: 1000 }),
+                makePara({ index: 3, text: 'Section body.', tokenEstimate: 2000 })
+            ];
+
+            const chunks = chunkDocument(makeDocModel(paras), { maxTokens: 12000, minTokens: 500 });
+
+            expect(chunks.length).toBeGreaterThan(0);
+            for (const chunk of chunks) {
+                expect(chunk.oversized).toBe(false);
+            }
+        });
+
+        test('a paragraph exactly at maxTokens is not oversized (boundary)', () => {
+            const paras = [makePara({ index: 0, text: 'Z'.repeat(48000), tokenEstimate: 12000 })];
+
+            const chunks = chunkDocument(makeDocModel(paras), { maxTokens: 12000 });
+
+            expect(chunks).toHaveLength(1);
+            expect(chunks[0].tokenCount).toBe(12000);
+            expect(chunks[0].oversized).toBe(false);
         });
     });
 

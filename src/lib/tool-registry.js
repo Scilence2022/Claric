@@ -23,6 +23,30 @@ export const TOOL_LOOP_LIMITS = Object.freeze({
     MAX_STEPS_DEFAULT: 12,
     /** Max characters accepted for one model reply (guard against rambles). */
     MAX_RESPONSE_CHARS: 64 * 1024,
+    /**
+     * Max textual characters accumulated across the transcript. Image data
+     * URLs are excluded from this token-oriented budget and covered by the
+     * separate wire budget below.
+     */
+    MAX_TRANSCRIPT_CHARS: 260 * 1024,
+    /** Max characters retained for each immutable system/task prompt. */
+    MAX_INITIAL_MESSAGE_CHARS: 64 * 1024,
+    /** Max serialized characters retained for one tool observation. */
+    MAX_OBSERVATION_CHARS: 64 * 1024,
+    /** Max total data-URL characters attached to one observation (~4.5 MB). */
+    MAX_ATTACHMENT_CHARS: 6 * 1024 * 1024,
+    /**
+     * Max actual message-content characters sent in one request. This bounds
+     * HTTP memory while allowing one vision attachment plus the text budget.
+     */
+    MAX_REQUEST_CHARS: (6 * 1024 * 1024) + (260 * 1024),
+    /**
+     * How many consecutive identical calls (same tool, same args) are tolerated
+     * before the loop stops. The system prompt asks the model not to repeat
+     * calls, but nothing enforced it, so a model stuck on one failing call
+     * burned the entire step budget re-issuing it.
+     */
+    MAX_REPEATED_CALLS: 3,
 });
 
 /** The reserved tool name that ends a loop. */

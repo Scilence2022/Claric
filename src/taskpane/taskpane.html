@@ -199,6 +199,49 @@
                     </div>
 
                     <hr class="settings-divider">
+                    <p class="settings-section-label">Image Generation</p>
+                    <div class="form-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="imageGenEnabledCheckbox">
+                            Use an image model for illustrations
+                        </label>
+                        <small class="help-text">When off, illustration requests are drawn as SVG by the chat model.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="imageProviderSelect">Image provider:</label>
+                        <select id="imageProviderSelect" class="form-control">
+                            <option value="openai">OpenAI Images</option>
+                            <option value="glm">Zhipu CogView</option>
+                            <option value="minimax">MiniMax Images</option>
+                            <option value="custom">Custom (OpenAI-compatible)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="imageModelInput">Image model:</label>
+                        <input type="text" id="imageModelInput" class="form-control" placeholder="e.g., gpt-image-1">
+                    </div>
+                    <div class="form-group">
+                        <label for="imageEndpointUrl">Endpoint URL:</label>
+                        <input type="text" id="imageEndpointUrl" class="form-control" placeholder="e.g., /openai">
+                        <small class="help-text" id="imageEndpointHint">Base URL for the selected image provider</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="imageApiKey">API Key:</label>
+                        <input type="password" id="imageApiKey" class="form-control" placeholder="Image provider API key">
+                        <small class="help-text" id="imageApiKeyHint">Required by all cloud image providers.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="imageSizeSelect">Image size:</label>
+                        <select id="imageSizeSelect" class="form-control"></select>
+                        <small class="help-text">Larger sizes cost more and take longer to generate.</small>
+                    </div>
+                    <div class="form-group">
+                        <button type="button" id="testImageConnectionBtn" class="btn btn-compact"
+                                title="Generate a tiny test image to verify the settings">Test image connection</button>
+                        <small class="help-text" id="imageTestStatus"></small>
+                    </div>
+
+                    <hr class="settings-divider">
                     <p class="settings-section-label">Summary Mode Settings</p>
                     <div class="form-group">
                         <label for="docRichnessSelect">Document Extraction Richness:</label>

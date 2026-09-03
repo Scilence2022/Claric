@@ -14,6 +14,9 @@
 import { PromptManager } from '../lib/prompt-manager.js';
 import { CommentQueue } from '../lib/comment-queue.js';
 import { KNOWN_PROVIDERS, defaultProviderConfig } from '../lib/providers.js';
+import {
+    KNOWN_IMAGE_PROVIDERS, defaultImageProviderConfig, imageSizesFor, DEFAULT_IMAGE_SIZE,
+} from '../lib/image-providers.js';
 import { THINKING_LEVEL_VALUES } from '../lib/model-capabilities.js';
 import { TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
 
@@ -41,7 +44,15 @@ export function defaultConfig() {
         mcpServers: [],
         mcpStepBudget: TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT,
         autoApplyChanges: false,
-        providers: defaultProviderConfig()
+        providers: defaultProviderConfig(),
+        // Text-to-image generation for illustration turns. Disabled by default:
+        // every preset needs a cloud API key, and an install that never
+        // configures one keeps the existing SVG behavior untouched.
+        imageGeneration: {
+            enabled: false,
+            provider: 'openai',
+            providers: defaultImageProviderConfig(),
+        }
     };
 }
 
@@ -78,6 +89,38 @@ appState.commentQueue = new CommentQueue((message, type) => appState.log(message
 export function getActiveBackendConfig(state = appState) {
     const provider = state.config.backend;
     return { ...state.config.providers[provider], provider };
+}
+
+/**
+ * Returns a request-ready copy of the selected IMAGE provider config, or null
+ * when image generation is off or the selected entry is unusable.
+ *
+ * Returning null (rather than a half-filled object) is what lets the
+ * illustration route fall back to the SVG engine without every caller
+ * re-checking `enabled`, endpoint, and model separately.
+ *
+ * @param {object} [state] - App state (defaults to the shared appState)
+ * @returns {{ provider: string, url: string, apiKey: string, model: string,
+ *   apiPath: string, size: string }|null}
+ */
+export function getActiveImageConfig(state = appState) {
+    const image = state.config.imageGeneration;
+    if (!image || !image.enabled) return null;
+    const entry = image.providers && image.providers[image.provider];
+    if (!entry || !entry.url || !entry.model) return null;
+    return { ...entry, provider: image.provider };
+}
+
+/**
+ * True when an image model is configured well enough to attempt a generation.
+ * The illustration route uses this to decide between the raster and SVG
+ * engines (see illustrationRenderer).
+ *
+ * @param {object} [state] - App state (defaults to the shared appState)
+ * @returns {boolean}
+ */
+export function isImageModelReady(state = appState) {
+    return getActiveImageConfig(state) !== null;
 }
 
 /**
@@ -136,7 +179,8 @@ function normalizeProviderEntry(defaults, saved) {
  * @param {object} parsed - Whatever JSON.parse returned from localStorage
  * @returns {object} A fully-populated config
  */
-export function normalizeConfig(defaults, parsed) {
+export function normalizeConfig(defaults, parsedInput) {
+    const parsed = parsedInput && typeof parsedInput === 'object' ? parsedInput : {};
     // Copy the providers map too: a bare spread aliases it, so the
     // per-provider writes below would mutate the caller's defaults object and
     // leak one call's saved providers into the next call's fallbacks.
@@ -209,7 +253,66 @@ export function normalizeConfig(defaults, parsed) {
         out.autoApplyChanges = parsed.autoApplyChanges;
     }
 
+    // Image generation: validated field-by-field like `providers` above, and
+    // for the same reason — a hand-edited or half-written localStorage entry
+    // must never leave getActiveImageConfig() without a url/model to read.
+    //
+    // Only rebuilt when the defaults actually carry the section: this function
+    // merges ONTO defaults and must not invent config the caller did not ask
+    // for (callers pass partial defaults, and a fabricated section would then
+    // appear in a config that never had one).
+    if (defaults.imageGeneration) {
+        out.imageGeneration = {
+            ...defaults.imageGeneration,
+            providers: { ...defaults.imageGeneration.providers },
+        };
+    }
+    const savedImage = parsed.imageGeneration;
+    if (out.imageGeneration && savedImage && typeof savedImage === 'object') {
+        if (typeof savedImage.enabled === 'boolean') {
+            out.imageGeneration.enabled = savedImage.enabled;
+        }
+        if (typeof savedImage.provider === 'string' && KNOWN_IMAGE_PROVIDERS.includes(savedImage.provider)) {
+            out.imageGeneration.provider = savedImage.provider;
+        }
+        if (savedImage.providers && typeof savedImage.providers === 'object') {
+            for (const name of KNOWN_IMAGE_PROVIDERS) {
+                const saved = savedImage.providers[name];
+                if (saved && typeof saved === 'object') {
+                    out.imageGeneration.providers[name] = normalizeImageProviderEntry(
+                        defaults.imageGeneration.providers[name], saved, name
+                    );
+                }
+            }
+        }
+    }
+
     return out;
+}
+
+/**
+ * Validates one image-provider entry against its preset defaults.
+ *
+ * @param {object} defaults - Built-in default entry for this provider
+ * @param {object} saved - Persisted entry (possibly partial/corrupt)
+ * @param {string} providerId - Provider id (selects the valid size list)
+ * @returns {{url: string, apiKey: string, model: string, apiPath: string, size: string}}
+ */
+function normalizeImageProviderEntry(defaults, saved, providerId) {
+    const validSizes = imageSizesFor(providerId);
+    const hasOwn = (key) => Object.prototype.hasOwnProperty.call(saved, key);
+    return {
+        // An explicit empty URL/model is meaningful: it is how a user clears
+        // stale credentials or a custom relay before entering a replacement.
+        // Only a missing or non-string field falls back to the preset.
+        url: hasOwn('url') && typeof saved.url === 'string' ? saved.url : defaults.url,
+        apiKey: typeof saved.apiKey === 'string' ? saved.apiKey : '',
+        model: hasOwn('model') && typeof saved.model === 'string' ? saved.model : defaults.model,
+        apiPath: hasOwn('apiPath') && typeof saved.apiPath === 'string' ? saved.apiPath : defaults.apiPath,
+        size: typeof saved.size === 'string' && validSizes.includes(saved.size)
+            ? saved.size
+            : (validSizes.includes(defaults.size) ? defaults.size : DEFAULT_IMAGE_SIZE),
+    };
 }
 
 /**

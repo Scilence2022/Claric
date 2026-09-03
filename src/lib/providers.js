@@ -208,7 +208,9 @@ export const KNOWN_PROVIDERS = Object.keys(PROVIDER_PRESETS);
  * @returns {{label: string, url: string, apiPath: string, model: string, keyHint?: string, proxyUrl?: string, staticOk?: boolean, staticHint?: string, apiFormat?: string}|null}
  */
 export function getProviderPreset(providerId) {
-  return PROVIDER_PRESETS[providerId] || null;
+  return Object.prototype.hasOwnProperty.call(PROVIDER_PRESETS, providerId)
+    ? PROVIDER_PRESETS[providerId]
+    : null;
 }
 
 /**

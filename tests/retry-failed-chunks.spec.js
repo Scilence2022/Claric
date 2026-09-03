@@ -121,6 +121,96 @@ describe('retryFailedChunks', () => {
         expect(processChunksParallel).not.toHaveBeenCalled();
     });
 
+    // The retry used to raise isProcessingDoc without ever locking the chat
+    // input: the composer stayed editable with an active Send button, so a
+    // long retry had no visible in-progress state at all.
+    describe('busy state', () => {
+        function stubSuccess() {
+            processChunksParallel.mockResolvedValue([]);
+            applyChunkResults.mockResolvedValue({
+                amendmentsApplied: 1, commentsInserted: 0, noChangeCount: 0,
+                errors: [], appliedChunkIds: ['chunk-1'], interrupted: false,
+            });
+        }
+
+        it('locks the input for the run and releases it afterwards', async () => {
+            stubSuccess();
+            const chunk = { id: 'chunk-1', paragraphs: [{ text: 'Body.' }], overlapBefore: '' };
+            const setBusy = jest.fn();
+
+            await retryFailedChunks(makeDeps(), {
+                failedResults: [makeFailedResult(chunk)],
+                bookmarkMap: new Map(),
+                backendConfig: { model: 'm' },
+                promptShim: {},
+                setBusy,
+            });
+
+            expect(setBusy.mock.calls.map((c) => c[0])).toEqual([true, false]);
+        });
+
+        it('releases the input lock even when the retry throws', async () => {
+            processChunksParallel.mockRejectedValue(new Error('backend down'));
+            const chunk = { id: 'chunk-1', paragraphs: [{ text: 'Body.' }], overlapBefore: '' };
+            const setBusy = jest.fn();
+
+            await retryFailedChunks(makeDeps(), {
+                failedResults: [makeFailedResult(chunk)],
+                bookmarkMap: new Map(),
+                backendConfig: { model: 'm' },
+                promptShim: {},
+                setBusy,
+            });
+
+            expect(setBusy).toHaveBeenLastCalledWith(false);
+        });
+
+        it('registers its own controller so cancel() can reach the retry', async () => {
+            let seenController = null;
+            processChunksParallel.mockImplementation(async (chunks, opts) => {
+                // Captured mid-flight: after the run settles the slot is cleared.
+                seenController = opts.signal;
+                return [];
+            });
+            applyChunkResults.mockResolvedValue({
+                amendmentsApplied: 0, commentsInserted: 0, noChangeCount: 0,
+                errors: [], appliedChunkIds: [], interrupted: false,
+            });
+            const chunk = { id: 'chunk-1', paragraphs: [{ text: 'Body.' }], overlapBefore: '' };
+            const deps = makeDeps();
+
+            await retryFailedChunks(deps, {
+                failedResults: [makeFailedResult(chunk)],
+                bookmarkMap: new Map(),
+                backendConfig: { model: 'm' },
+                promptShim: {},
+            });
+
+            expect(seenController).toBeInstanceOf(AbortSignal);
+            // Ownership released on settle, so a later turn is not blocked.
+            expect(deps.appState.processDocController).toBeNull();
+            expect(deps.appState.isProcessingDoc).toBe(false);
+        });
+
+        it('does not clobber a controller still owned by another operation', async () => {
+            // isProcessingDoc can be false while a proposal-card apply still
+            // owns the controller; overwriting it would make that apply
+            // uncancellable.
+            const live = new AbortController();
+            const deps = makeDeps({ processDocController: live });
+
+            await retryFailedChunks(deps, {
+                failedResults: [makeFailedResult({ id: 'chunk-1', paragraphs: [{ text: 'B.' }] })],
+                bookmarkMap: new Map(),
+                backendConfig: { model: 'm' },
+                promptShim: {},
+            });
+
+            expect(processChunksParallel).not.toHaveBeenCalled();
+            expect(deps.appState.processDocController).toBe(live);
+        });
+    });
+
     it('cleans up the retried chunks\' bookmarks after the retry settles', async () => {
         // The original apply() keeps FAILED chunks' bookmarks alive precisely
         // so this retry can target them; once the retry settles they must be

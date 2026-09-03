@@ -21,7 +21,13 @@
 
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from '../lib/word-diff/index.js';
 import { hasCjk, applyCharDiffStrategy } from '../lib/word-diff/char-diff.js';
-import { sendPrompt, sendPromptStream, sendMessagesStream, stripMarkdown } from '../lib/llm-client.js';
+import {
+    sendPrompt,
+    sendPromptStream,
+    sendMessagesStream,
+    stripMarkdown,
+    stripChunkDelimiters,
+} from '../lib/llm-client.js';
 import { buildTableUserPrompt, parseTablePatchResponse } from '../lib/table-patch.js';
 import {
     inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
@@ -33,7 +39,11 @@ import { extractAllComments, extractDocumentStructured, estimateTokenCount, extr
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
 import { formatTableMarkdown, formatMixedContext, formatCursorContext } from '../lib/selection-context.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
-import { parseDelimitedResponse, buildFallbackClassificationPrompt } from '../lib/response-parser.js';
+import {
+    parseDelimitedResponse,
+    buildFallbackClassificationPrompt,
+    restoreProtocolMarkers,
+} from '../lib/response-parser.js';
 import { parseDocument } from '../lib/document-parser.js';
 import { chunkDocument } from '../lib/document-chunker.js';
 import { extractContext } from '../lib/context-extractor.js';
@@ -41,12 +51,13 @@ import { processChunksParallel } from '../lib/orchestrator.js';
 import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
 import { buildFormatPrompt, parseFormatOps } from '../lib/format-ops.js';
 import {
-    buildIllustrationPrompt, parseIllustration, sanitizeSvg,
+    buildIllustrationPrompt, buildImagePrompt, parseIllustration, sanitizeSvg,
     ensureSvgDimensions, svgDimensions, illustrationPositionFromInstruction,
-    illustrationPositionLabel,
+    illustrationPositionLabel, illustrationRenderer,
 } from '../lib/illustration.js';
+import { generateImage } from '../lib/image-client.js';
 import { buildPlanPrompt, parsePlan } from '../lib/task-planner.js';
-import { getActiveBackendConfig } from './app-state.js';
+import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 
 /**
  * Flattens a chat-completions messages array into a single prompt string
@@ -1014,9 +1025,15 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     if (!merged) {
+        // The selection may contain a defanged protocol marker that the model
+        // echoed. Strip transport artifacts while it is still inert, then
+        // restore the visible document text before staging the proposal.
+        const amendedText = restoreProtocolMarkers(
+            stripChunkDelimiters(stripMarkdown(rawResponse, log), log)
+        );
         return {
             selectionText,
-            amendedText: stripMarkdown(rawResponse, log),
+            amendedText,
             commentText: null,
             model: backendConfig.model,
             ...(mixed ? { mixedTable: true } : {}),
@@ -1025,31 +1042,39 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
 
     // Merged mode: parse the ===AMENDMENT=== / ===COMMENT=== protocol,
     // with the fallback classification call preserved from the old handler.
+    // Parsing must happen before restoring defanged markers, otherwise a
+    // marker copied from the selection could become a new section boundary.
     let parsed = parseDelimitedResponse(rawResponse);
 
-    if (parsed.amendment === null) {
+    if (parsed.amendment === null && parsed.comment === null) {
         log('Response missing delimiters, attempting to classify...', 'info');
         const fallbackMessages = buildFallbackClassificationPrompt(rawResponse, selectionText);
         try {
             const fallbackResponse = await sendPrompt(backendConfig, _flattenMessages(fallbackMessages), log, signal);
             parsed = parseDelimitedResponse(fallbackResponse);
-            if (parsed.amendment === null) {
+            if (parsed.amendment === null && parsed.comment === null) {
                 log('Could not split response into amendment and comment', 'warning');
-                parsed = { amendment: rawResponse.trim(), comment: null, raw: rawResponse };
+                parsed = { amendment: String(rawResponse || '').trim(), comment: null, raw: rawResponse };
             }
         } catch (fallbackError) {
             // A user cancel must propagate, not stage a proposal from
             // partial output (the catch below would swallow it).
             if (fallbackError.name === 'AbortError') throw fallbackError;
             log(`Fallback classification failed: ${fallbackError.message}`, 'warning');
-            parsed = { amendment: rawResponse.trim(), comment: null, raw: rawResponse };
+            parsed = { amendment: String(rawResponse || '').trim(), comment: null, raw: rawResponse };
         }
     }
 
+    const amendedText = parsed.amendment
+        ? restoreProtocolMarkers(stripChunkDelimiters(stripMarkdown(parsed.amendment, log), log))
+        : null;
+    const commentText = parsed.comment
+        ? restoreProtocolMarkers(stripChunkDelimiters(parsed.comment, log))
+        : null;
     return {
         selectionText,
-        amendedText: parsed.amendment ? stripMarkdown(parsed.amendment, log) : null,
-        commentText: parsed.comment || null,
+        amendedText,
+        commentText,
         model: backendConfig.model,
         ...(mixed ? { mixedTable: true } : {}),
     };
@@ -2785,19 +2810,33 @@ const MAX_ILLUSTRATION_WIDTH_PT = 450;
 
 /**
  * Designs an illustration for the document — the prepare half of the staged
- * illustration flow. The model returns ONE self-contained SVG (see
- * illustration.js); it is parsed, sanitized (safe for DOM preview), and
- * staged in a proposal card, written by applyIllustrationProposal only when
- * the user applies.
+ * illustration flow. Nothing is written here; applyIllustrationProposal does
+ * that only when the user applies the proposal card.
+ *
+ * Two engines, picked by illustrationRenderer():
+ *  - 'image': a text-to-image model returns raster bytes (image-client.js).
+ *    Used when Settings has image generation configured, which is what makes
+ *    "设计示意图并插入" produce real artwork.
+ *  - 'svg': the chat LLM returns SVG markup, which is parsed and sanitized.
+ *    The fallback, and the forced choice when the user asks for vector output.
+ *
+ * The returned proposal carries EITHER `svg` or `imageBase64`; both are null
+ * when the engine produced nothing usable. Raster proposals also carry a
+ * MIME-aware `previewSrc`, because hosted providers may return JPEG/GIF/WebP
+ * bytes even though the Word insertion API accepts the raw base64 directly.
+ * An image-engine failure falls back to the SVG engine rather than failing
+ * the turn — a missing picture is worth one retry through the other path,
+ * and the reason is logged either way.
  *
  * @param {object} deps - { appState, log }
  * @param {object} args
  * @param {string} args.instruction - The user's illustration instruction
  * @param {function} [args.onToken] - Called with each streamed content token
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
- * @returns {Promise<{ instruction: string, svg: string|null, position: string,
- *   positionLabel: string, model: string }>}
- *   svg is null when the model returned nothing usable.
+ * @param {AbortSignal} [args.signal]
+ * @returns {Promise<{ instruction: string, svg: string|null, imageBase64: string|null,
+ *   previewSrc?: string, renderer: 'svg'|'image', position: string,
+ *   positionLabel: string, model: string, sizeLabel: string }>}
  */
 export async function prepareIllustrationProposal(deps, { instruction, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
@@ -2805,6 +2844,33 @@ export async function prepareIllustrationProposal(deps, { instruction, onToken, 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
     log('Extracting document text for context...', 'info');
     const documentText = await extractDocumentStructured({ richness });
+
+    const position = illustrationPositionFromInstruction(instruction);
+    const positionLabel = illustrationPositionLabel(position);
+    const imageConfig = getActiveImageConfig(appState);
+    const renderer = illustrationRenderer(instruction, imageConfig !== null);
+
+    if (renderer === 'image') {
+        const prompt = buildImagePrompt(instruction, documentText);
+        try {
+            const generated = await generateImage(imageConfig, prompt, log, signal);
+            return {
+                instruction: (instruction || '').trim(),
+                svg: null,
+                imageBase64: generated.base64,
+                previewSrc: imageDataUrl(generated.base64),
+                renderer: 'image',
+                position,
+                positionLabel,
+                model: generated.model,
+                sizeLabel: `${(generated.base64.length / 1024).toFixed(0)} KB image`,
+            };
+        } catch (error) {
+            // Cancellation is the user's decision — never silently retry it.
+            if (error.name === 'AbortError') throw error;
+            log(`Image generation failed (${error.message}). Falling back to an SVG illustration.`, 'warning');
+        }
+    }
 
     const prompt = buildIllustrationPrompt(instruction, documentText);
     const backendConfig = getActiveBackendConfig(appState);
@@ -2816,20 +2882,20 @@ export async function prepareIllustrationProposal(deps, { instruction, onToken, 
     const parsed = parseIllustration(rawResponse, log);
     const svg = parsed ? ensureSvgDimensions(sanitizeSvg(parsed.svg)) : null;
     if (svg) log(`Illustration SVG received (${(svg.length / 1024).toFixed(1)} KB).`, 'success');
-    const position = illustrationPositionFromInstruction(instruction);
     return {
         instruction: (instruction || '').trim(),
         svg,
+        imageBase64: null,
+        renderer: 'svg',
         position,
-        positionLabel: illustrationPositionLabel(position),
+        positionLabel,
         model: backendConfig.model,
+        sizeLabel: svg ? `SVG ${(svg.length / 1024).toFixed(1)} KB → PNG` : '',
     };
 }
 
 /**
- * Applies a prepared illustration proposal: rasterizes the sanitized SVG to
- * PNG (Word's insertInlinePictureFromBase64 takes PNG/JPEG/GIF/BMP base64,
- * not SVG) and inserts it, as a tracked change per config:
+ * Applies a prepared illustration proposal, as a tracked change per config:
  * - start/end: a centered inline picture in its own paragraph at the
  *   document start or end;
  * - cursor: INLINE at the caret — the insertion point is read at apply
@@ -2837,17 +2903,34 @@ export async function prepareIllustrationProposal(deps, { instruction, onToken, 
  *   anchored to the selection end so a non-collapsed selection never has
  *   its text replaced.
  *
+ * Accepts either proposal shape from prepareIllustrationProposal: a
+ * `imageBase64` payload from the image model is inserted as-is, while an `svg`
+ * payload is rasterized first — Word's insertInlinePictureFromBase64 takes
+ * PNG/JPEG/GIF/BMP base64 but not SVG.
+ *
  * @param {object} deps - { appState, log }
  * @param {object} proposal - Result of prepareIllustrationProposal
  * @returns {Promise<{ inserted: boolean }>}
  */
 export async function applyIllustrationProposal(deps, proposal) {
     const { appState, log } = deps;
+    const imageBase64 = ((proposal && proposal.imageBase64) || '').trim();
     const svg = ((proposal && proposal.svg) || '').trim();
-    if (!svg) {
-        throw new Error('No illustration to apply — the model returned no usable SVG.');
+    if (!imageBase64 && !svg) {
+        throw new Error('No illustration to apply — the model returned no usable image.');
     }
-    const { base64, width, height } = await svgToPngBase64(svg);
+
+    // Raster payloads carry no intrinsic dimensions here; the picture's own
+    // synced width drives the content-width scaling in finalizeInsertedPicture,
+    // so only the log line needs a fallback description.
+    let base64 = imageBase64;
+    let sizeDesc = 'generated image';
+    if (!base64) {
+        const rasterized = await svgToPngBase64(svg);
+        base64 = rasterized.base64;
+        sizeDesc = `${rasterized.width}x${rasterized.height}px PNG`;
+    }
+
     const position = proposal.position === 'start' || proposal.position === 'cursor'
         ? proposal.position
         : 'end';
@@ -2873,7 +2956,7 @@ export async function applyIllustrationProposal(deps, proposal) {
                 await context.sync();
             }
         }
-        log(`Inserted illustration at ${illustrationPositionLabel(position)} (${width}x${height}px PNG).`, 'success');
+        log(`Inserted illustration at ${illustrationPositionLabel(position)} (${sizeDesc}).`, 'success');
     });
     return { inserted: true };
 }
@@ -2975,8 +3058,12 @@ export async function svgToPngBase64(svg) {
  * @param {object} deps - { appState, log, logWithRetry, updateStatusBar }
  * @param {object} args
  * @param {string} args.promptTemplate - Explicit comment template
+ * @param {AbortSignal} [args.signal] - Cancels the in-flight LLM request when
+ *   the user presses Stop. The queued request stays fire-and-forget by design
+ *   (several comments may be pending at once), so the signal only aborts the
+ *   network call and suppresses the insert — it does not hold the turn open.
  */
-export async function fireSelectionComment(deps, { promptTemplate } = {}) {
+export async function fireSelectionComment(deps, { promptTemplate, signal } = {}) {
     const { appState, log, logWithRetry, updateStatusBar } = deps;
     const { selectionText } = await readSelectionText(deps);
     fireCommentRequest(selectionText, {
@@ -2987,6 +3074,7 @@ export async function fireSelectionComment(deps, { promptTemplate } = {}) {
         log,
         addLogWithRetryFn: logWithRetry,
         updateStatusBarFn: updateStatusBar,
+        signal,
     });
 }
 
@@ -3121,13 +3209,19 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
      * backend config, and prompt shim. Exposed on the gated return too, so
      * an all-chunks-failed run (where apply() never runs and no card is
      * staged) can still offer a retry link.
+     *
+     * `setBusy` comes from the caller (the conversation layer owns the chat
+     * input) and locks the composer for the retry's duration; the retry runs
+     * long after this turn returned, so it cannot inherit a lock.
+     *
+     * @param {{setBusy?: function(boolean)}} [opts]
      */
-    const retryFailed = () => {
+    const retryFailed = ({ setBusy } = {}) => {
         const failedChunks = results.filter(r => r.status === 'rejected');
         if (failedChunks.length === 0) {
             return Promise.resolve();
         }
-        return retryFailedChunks(deps, { failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress });
+        return retryFailedChunks(deps, { failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress, setBusy });
     };
 
     /**
@@ -3163,18 +3257,33 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
  * @param {object} args.backendConfig - Backend configuration
  * @param {object} args.promptShim - PromptManager shim from the original run
  * @param {function} [args.onProgress] - Progress callback
+ * @param {function(boolean)} [args.setBusy] - Locks/unlocks the chat input for
+ *   the duration of the retry. This layer cannot reach the input widget, so the
+ *   conversation layer injects it; without it the retry raised the busy flag
+ *   while the composer still looked idle (Send button active, text editable),
+ *   and the run had no visible "in progress" state at all.
  */
-export async function retryFailedChunks(deps, { failedResults, bookmarkMap, backendConfig, promptShim, onProgress } = {}) {
+export async function retryFailedChunks(deps, { failedResults, bookmarkMap, backendConfig, promptShim, onProgress, setBusy = () => {} } = {}) {
     const { appState, log } = deps;
 
     if (appState.isProcessingDoc) {
         log('Document processing is already running. Wait for it to finish before retrying.', 'warning');
         return;
     }
+    // Never clobber a live controller: isProcessingDoc can be false while a
+    // proposal-card apply still owns processDocController, and overwriting it
+    // would make that apply uncancellable. Mirrors the same defense in
+    // makeProposalCard.registerController.
+    if (appState.processDocController) {
+        log('Another document operation is still settling. Try the retry again in a moment.', 'warning');
+        return;
+    }
 
     log(`Retrying ${failedResults.length} failed chunk(s)...`, 'info');
+    const myController = new AbortController();
     appState.isProcessingDoc = true;
-    appState.processDocController = new AbortController();
+    appState.processDocController = myController;
+    setBusy(true);
 
     try {
         // Re-drive the ORIGINAL chunk objects. ChunkResult.chunk carries the
@@ -3242,8 +3351,14 @@ export async function retryFailedChunks(deps, { failedResults, bookmarkMap, back
             log(`Retry failed: ${error.message}`, 'error');
         }
     } finally {
-        appState.isProcessingDoc = false;
-        appState.processDocController = null;
+        // Only release what we still own: cancel() may have nulled the
+        // controller to free the UI, and a late-settling orphan must not clear
+        // a follow-up run's flags (same ownership rule as runDocumentTurn).
+        if (appState.processDocController === myController) {
+            appState.isProcessingDoc = false;
+            appState.processDocController = null;
+        }
+        setBusy(false);
     }
 }
 

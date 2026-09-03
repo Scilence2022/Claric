@@ -18,6 +18,7 @@ jest.mock('../src/lib/llm-client.js', () => ({
   sendPrompt: jest.fn(),
   sendPromptStream: jest.fn(),
   stripMarkdown: jest.fn((t) => t),
+  stripChunkDelimiters: jest.fn((t) => t),
 }));
 
 jest.mock('../src/lib/word-diff/index.js', () => ({

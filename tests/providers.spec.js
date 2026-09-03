@@ -181,6 +181,12 @@ describe('providers catalog', () => {
     expect(getProviderPreset('')).toBeNull();
   });
 
+  test('getProviderPreset does not resolve inherited prototype keys', () => {
+    for (const id of ['constructor', 'toString', '__proto__']) {
+      expect(getProviderPreset(id)).toBeNull();
+    }
+  });
+
   test('defaultProviderConfig yields an editable entry per provider', () => {
     // Static origin: entry URLs equal the presets' absolute urls verbatim.
     const config = defaultProviderConfig('https://scilence2022.github.io');

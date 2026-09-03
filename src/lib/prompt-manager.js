@@ -9,6 +9,8 @@
  * @module prompt-manager
  */
 
+import { defangProtocolMarkers } from './response-parser.js';
+
 /**
  * The four prompt categories.
  * @type {string[]}
@@ -335,13 +337,19 @@ export class PromptManager {
             ? { template: templateOverride }
             : this.getActivePrompt(category);
         if (targetPrompt) {
+            // Selection text is document-derived and may contain one of the
+            // protocol markers named by the surrounding prompt. Defang it for
+            // every category (not only merged mode): comment requests also
+            // interpolate the selection into a model instruction, and an
+            // echoed delimiter must never become a parser boundary later.
+            const safeSelection = defangProtocolMarkers(selectionText);
             let content;
             if (targetPrompt.template.includes('{selection}')) {
                 // Template has explicit placeholder -- replace all occurrences
-                content = targetPrompt.template.replace(/{selection}/g, selectionText);
+                content = targetPrompt.template.replace(/{selection}/g, safeSelection);
             } else {
                 // Template has no placeholder -- append selection text so it is always sent
-                content = targetPrompt.template + '\n\n' + selectionText;
+                content = targetPrompt.template + '\n\n' + safeSelection;
             }
 
             // Add output format constraints for amendment mode
@@ -390,11 +398,19 @@ export class PromptManager {
             return [];
         }
 
+        // Defang protocol markers in the selection: this method declares the
+        // ===AMENDMENT===/===COMMENT=== contract below, so a selection that
+        // reproduces either marker (a clause quoting this add-in's protocol,
+        // or text a previous merged run wrote back) would make
+        // parseDelimitedResponse split the response at the wrong place and
+        // insert body text as a Word comment.
+        const safeSelection = defangProtocolMarkers(selectionText);
+
         let content;
         if (amendmentPrompt.template.includes('{selection}')) {
-            content = amendmentPrompt.template.replace(/{selection}/g, selectionText);
+            content = amendmentPrompt.template.replace(/{selection}/g, safeSelection);
         } else {
-            content = amendmentPrompt.template + '\n\n' + selectionText;
+            content = amendmentPrompt.template + '\n\n' + safeSelection;
         }
 
         // Append delimiter instructions for merged response

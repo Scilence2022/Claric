@@ -95,14 +95,32 @@ class CommentQueue {
 }
 
 /**
+ * Monotonic counter making bookmark names unique within a taskpane session.
+ *
+ * A timestamp+random name is NOT enough: several requests fired in the same
+ * millisecond only differ by 4 base36 chars (~1.7M combinations), and
+ * `Math.random().toString(36).slice(2, 6)` narrows that further because the
+ * old `[^a-z0-9] -> 'a'` fold collapsed every illegal char onto one letter.
+ * Collisions were observable at 100 names/ms and would make two concurrent
+ * comment requests share a bookmark — the second overwrites the first's
+ * captured range. The counter removes the birthday problem entirely; the
+ * random suffix stays so names from different sessions (each starting at 0)
+ * still do not collide inside one document.
+ */
+let bookmarkSeq = 0;
+
+/**
  * Generates a unique hidden bookmark name for comment range capture.
- * Format: _cq + lowercase hex timestamp + 4 random alphanumeric chars.
+ * Format: _cq + hex timestamp + base36 sequence + 4 random base36 chars.
  * Hidden (underscore prefix), max 40 chars, alphanumeric + underscore only.
  */
 function generateBookmarkName() {
     const timestamp = Date.now().toString(16);
-    const random = Math.random().toString(36).slice(2, 6).replace(/[^a-z0-9]/g, 'a');
-    return `_cq${timestamp}${random}`;
+    const seq = (bookmarkSeq++).toString(36);
+    // padStart keeps the suffix at a fixed 4 chars: toString(36) drops
+    // trailing zeros, so a bare slice() can yield fewer and shrink the space.
+    const random = Math.random().toString(36).slice(2, 6).padStart(4, '0');
+    return `_cq${timestamp}${seq}${random}`;
 }
 
 export { CommentQueue, generateBookmarkName };

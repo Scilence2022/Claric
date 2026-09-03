@@ -17,7 +17,59 @@
 
 const http = require('http');
 const { Readable, Writable } = require('stream');
-const { handleProxyRequest } = require('../scripts/docker-server.cjs');
+const {
+    buildProxyRoutes,
+    handleProxyRequest,
+    parseProxyTarget,
+} = require('../scripts/docker-server.cjs');
+
+describe('docker-server proxy target validation', () => {
+    test.each([
+        'https://api.example.com',
+        'http://localhost:11434',
+        'http://127.0.0.1:8026',
+        'http://[::1]:8026',
+        'http://host.docker.internal:11434',
+    ])('allows %s', (target) => {
+        expect(parseProxyTarget(target)).toBeInstanceOf(URL);
+    });
+
+    test.each([
+        'http://remote.example/v1',
+        'http://localhost.evil/v1',
+        'ftp://localhost/model',
+        'javascript:alert(1)',
+        'https://user:password@example.com/v1',
+        '//remote.example/v1',
+    ])('rejects %s', (target) => {
+        expect(parseProxyTarget(target)).toBeNull();
+    });
+
+    test('buildProxyRoutes drops remote cleartext targets without logging the URL', () => {
+        const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+        const leakedTarget = 'http://remote.example/v1?token=secret';
+        try {
+            const routes = buildProxyRoutes({
+                OLLAMA_PROXY_PATH: '/ollama',
+                OLLAMA_PROXY_TARGET: 'http://localhost:11434',
+                VLLM_PROXY_PATH: '/vllm',
+                VLLM_PROXY_TARGET: leakedTarget,
+                OPENAI_PROXY_PATH: '/openai',
+                OPENAI_PROXY_TARGET: 'https://api.openai.com',
+                LLM_PROXY_TIMEOUT_MS: 300000,
+            });
+
+            expect(routes.map((route) => route.proxyPath)).toEqual(['/ollama', '/openai']);
+            expect(routes[0].targetUrl.href).toBe('http://localhost:11434/');
+            const log = consoleError.mock.calls.flat().join(' ');
+            expect(log).toContain('VLLM_PROXY_TARGET');
+            expect(log).not.toContain(leakedTarget);
+            expect(log).not.toContain('secret');
+        } finally {
+            consoleError.mockRestore();
+        }
+    });
+});
 
 function startRecordingServer() {
     const hits = [];
