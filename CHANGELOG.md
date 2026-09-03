@@ -8,6 +8,17 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
+- **macOS one-click installer** (`installer/macos/`) ? `Install-Claric.sh`
+  registers any Claric manifest (the static GitHub Pages build by default, or
+  a self-hosted one via `--manifest`) as a Word developer add-in by copying it
+  into Word's sideload folder
+  (`~/Library/Containers/com.microsoft.Word/Data/Documents/wef`) -- the same
+  mechanism `office-addin-dev-settings` uses on the Mac -- and generates
+  `Claric-Launch.docx` (the same Microsoft template as on Windows), which
+  opens Word with the taskpane mounted. Stock macOS tools only, no admin
+  rights. `Uninstall-Claric.sh` reverses it, and `npm run install:macos` /
+  `uninstall:macos` (plus `npm run sideload` on a Mac) wrap both.
+
 - **Windows one-click installer** (`installer/windows/`) ? `Install-Claric.ps1`
   registers any Claric manifest (the static GitHub Pages build by default, or
   a self-hosted one via `-ManifestPath`) as a Word developer add-in under

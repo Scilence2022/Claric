@@ -18,6 +18,8 @@
     "sideload:remove": "node scripts/sideload-addin.cjs --remove",
     "install:windows": "node scripts/sideload-addin.cjs",
     "uninstall:windows": "node scripts/sideload-addin.cjs --remove",
+    "install:macos": "node scripts/sideload-addin.cjs",
+    "uninstall:macos": "node scripts/sideload-addin.cjs --remove",
     "typecheck": "tsc",
     "verify": "npm run lint && npm test && npm run coverage && npm run check-coverage && npm run typecheck && npm run build",
     "icons": "node scripts/generate-icons.cjs"
@@ -39,7 +41,9 @@
   "dependencies": {
     "dompurify": "^3.4.14",
     "dotenv": "^17.2.3",
-    "marked": "^17.0.4"
+    "mammoth": "^1.12.2",
+    "marked": "^17.0.4",
+    "pdfjs-dist": "^6.3.289"
   },
   "devDependencies": {
     "@babel/core": "^7.28.5",
