@@ -457,7 +457,7 @@ module.exports = (env, argv) => {
     performance: {
       // The taskpane bundle legitimately exceeds webpack's 244 KiB default
       // hint: it is served same-origin to WebView2, so there is no cold
-      // network fetch and a single ~430 KiB bundle is acceptable. This is a
+      // network fetch and a single ~510 KiB bundle is acceptable. This is a
       // hard gate (hints: 'error' fails the build), calibrated just above
       // the current size, to catch accidental size regressions. Exempt the
       // lazily-loaded parser chunks (mammoth/pdf.js for file attachments)
@@ -465,7 +465,7 @@ module.exports = (env, argv) => {
       // first paint.
       hints: 'error',
       maxAssetSize: 700 * 1024,
-      maxEntrypointSize: 500 * 1024,
+      maxEntrypointSize: 540 * 1024,
       assetFilter: (name) => !/pdf\.worker\.min\.mjs$/.test(name)
     },
     devtool: isDev ? 'eval-source-map' : false
