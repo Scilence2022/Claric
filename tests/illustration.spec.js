@@ -8,7 +8,7 @@
  */
 
 const {
-  buildIllustrationPrompt, parseIllustration, sanitizeSvg,
+  buildIllustrationPrompt, buildIllustrationRedesignPrompt, parseIllustration, sanitizeSvg,
   svgDimensions, ensureSvgDimensions, illustrationPositionFromInstruction,
   illustrationPositionLabel, buildImagePrompt, illustrationRenderer,
 } = require('../src/lib/illustration.js');
@@ -156,6 +156,35 @@ describe('buildIllustrationPrompt', () => {
     expect(p).toContain('Output ONLY the SVG markup');
     expect(p).toContain('self-contained');
     expect(p).toContain('viewBox');
+  });
+});
+
+describe('buildIllustrationRedesignPrompt', () => {
+  test('keeps the SVG output contract and asks for legible labels', () => {
+    const p = buildIllustrationRedesignPrompt('make the legend text larger', '架构正文');
+    expect(p).toContain('make the legend text larger');
+    expect(p).toContain('架构正文');
+    expect(p).toContain('Output ONLY the SVG markup');
+    expect(p).toContain('self-contained');
+    expect(p).toContain('viewBox');
+    // A redesign is a diagram with labels — the opposite of buildImagePrompt,
+    // which forbids rendered text.
+    expect(p).toContain('text labels are expected');
+    expect(p).toContain('no overlaps');
+    expect(p).toContain('Keep the original layout');
+  });
+
+  test('without a source image, the figure is only the instruction description', () => {
+    const p = buildIllustrationRedesignPrompt('redraw the diagram', '正文');
+    expect(p).toContain('described in the user instruction');
+    expect(p).not.toContain('attached as an image');
+  });
+
+  test('with a source image, demands faithful reproduction of untouched parts', () => {
+    const p = buildIllustrationRedesignPrompt('fix the arrow colors', '正文', { hasSourceImage: true });
+    expect(p).toContain('attached as an image');
+    expect(p).toContain('Reproduce its structure');
+    expect(p).toContain('change only what the instruction asks for');
   });
 });
 

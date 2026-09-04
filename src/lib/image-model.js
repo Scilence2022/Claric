@@ -97,8 +97,8 @@ export const IMAGE_TOOL_SPECS = Object.freeze([
     }),
     defineTool({
         name: 'replace_illustration',
-        description: 'Replace one existing picture with a newly designed illustration. "index" is the snapshot index of the picture to replace; "instruction" is the design brief for its replacement.',
-        argsExample: { index: 2, instruction: 'the same scene but at dusk' },
+        description: 'Replace one existing picture with a newly designed illustration. "index" is the snapshot index of the picture to replace; "instruction" states WHAT to change, not a full re-description — when the original picture is readable it is attached to the nested design call, which stays faithful to its structure and labels. Prefer read_image first so the loop sees the figure too.',
+        argsExample: { index: 2, instruction: 'make the legend text larger and clearer' },
     }),
     defineTool({
         name: 'delete_image',
