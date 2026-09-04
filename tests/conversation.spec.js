@@ -1350,7 +1350,7 @@ describe('createConversation.submit', () => {
       actions, getSelectionText: async () => 'This selected passage needs editing.',
     });
 
-    await conv.submit('/academic-polish preserve field-specific terminology');
+    await conv.submit('/polish preserve field-specific terminology');
 
     expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
     const { promptTemplate } = actions.prepareSelectionAmendment.mock.calls[0][1];

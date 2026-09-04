@@ -108,8 +108,8 @@ export const BUILTIN_SKILLS = Object.freeze([
             'Answer the user\'s question with concrete, actionable structure advice.',
     }),
     Object.freeze({
-        name: 'academic-polish',
-        slash: '/academic-polish',
+        name: 'polish',
+        slash: '/polish',
         description: 'Polish selected writing into clear, precise, formal academic English while preserving meaning',
         category: 'amendment',
         scope: 'selection-first',
