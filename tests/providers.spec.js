@@ -13,7 +13,7 @@ const {
 
 describe('providers catalog', () => {
   test('exposes the expected provider ids in a stable order', () => {
-    expect(KNOWN_PROVIDERS).toEqual(['ollama', 'vllm', 'openai', 'claude', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu', 'custom']);
+    expect(KNOWN_PROVIDERS).toEqual(['ollama', 'vllm', 'openai', 'claude', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu', 'openrouter', 'siliconflow', 'custom']);
   });
 
   test('every preset has label, url, apiPath, and model', () => {
@@ -43,6 +43,8 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.minimax.apiPath).toBe('/v1');
     expect(PROVIDER_PRESETS['minimax-cn'].apiPath).toBe('/v1');
     expect(PROVIDER_PRESETS.zhongkeyu.apiPath).toBe('/v1');
+    expect(PROVIDER_PRESETS.openrouter.apiPath).toBe('/api/v1');
+    expect(PROVIDER_PRESETS.siliconflow.apiPath).toBe('/v1');
     // Zhipu GLM serves OpenAI-compatible endpoints under /api/paas/v4
     expect(PROVIDER_PRESETS.glm.apiPath).toBe('/api/paas/v4');
   });
@@ -56,6 +58,8 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.minimax.keyHint).toContain('minimax.io');
     expect(PROVIDER_PRESETS['minimax-cn'].keyHint).toContain('minimax.cn');
     expect(PROVIDER_PRESETS.zhongkeyu.keyHint).toContain('zhongkeyu.com');
+    expect(PROVIDER_PRESETS.openrouter.keyHint).toContain('openrouter.ai');
+    expect(PROVIDER_PRESETS.siliconflow.keyHint).toContain('siliconflow.cn');
     expect(PROVIDER_PRESETS.ollama.keyHint).toBeUndefined();
     expect(PROVIDER_PRESETS.vllm.keyHint).toBeUndefined();
   });
@@ -94,6 +98,22 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.zhongkeyu.label).toContain('中科大模型');
   });
 
+  test('OpenRouter and SiliconFlow presets point at multi-model gateways', () => {
+    // OpenRouter exposes /api/v1 (NOT /v1) — its chat completions endpoint
+    // is /api/v1/chat/completions, with the image router under /api/v1/images.
+    expect(PROVIDER_PRESETS.openrouter.url).toBe('https://openrouter.ai');
+    expect(PROVIDER_PRESETS.openrouter.apiPath).toBe('/api/v1');
+    expect(PROVIDER_PRESETS.openrouter.model).toMatch(/\//);
+    expect(PROVIDER_PRESETS.openrouter.staticOk).toBe(true);
+
+    // SiliconFlow mirrors the OpenAI shape under /v1 with chat and image
+    // endpoints; default model keeps the gateway's upstream namespace.
+    expect(PROVIDER_PRESETS.siliconflow.url).toBe('https://api.siliconflow.cn');
+    expect(PROVIDER_PRESETS.siliconflow.apiPath).toBe('/v1');
+    expect(PROVIDER_PRESETS.siliconflow.model.length).toBeGreaterThan(0);
+    expect(PROVIDER_PRESETS.siliconflow.staticOk).toBe(true);
+  });
+
   test('cloud presets default to absolute HTTPS origins (statically hosted installs work serverless)', () => {
     // These providers send Access-Control-Allow-Origin for the add-in's
     // hosted origins (verified; Claude via the browser-access header), so
@@ -108,7 +128,9 @@ describe('providers catalog', () => {
     expect(PROVIDER_PRESETS.minimax.url).toBe('https://api.minimax.io');
     expect(PROVIDER_PRESETS['minimax-cn'].url).toBe('https://api.minimaxi.com');
     expect(PROVIDER_PRESETS.zhongkeyu.url).toBe('https://zhongkeyu.com');
-    for (const id of ['claude', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu']) {
+    expect(PROVIDER_PRESETS.openrouter.url).toBe('https://openrouter.ai');
+    expect(PROVIDER_PRESETS.siliconflow.url).toBe('https://api.siliconflow.cn');
+    for (const id of ['claude', 'deepseek', 'glm', 'kimi', 'minimax', 'minimax-cn', 'zhongkeyu', 'openrouter', 'siliconflow']) {
       expect(PROVIDER_PRESETS[id].staticOk).toBe(true);
     }
   });
@@ -137,6 +159,8 @@ describe('providers catalog', () => {
     expect(cfg.minimax.url).toBe('https://api.minimax.io');
     expect(cfg['minimax-cn'].url).toBe('https://api.minimaxi.com');
     expect(cfg.zhongkeyu.url).toBe('https://zhongkeyu.com');
+    expect(cfg.openrouter.url).toBe('https://openrouter.ai');
+    expect(cfg.siliconflow.url).toBe('https://api.siliconflow.cn');
     expect(cfg.openai.url).toBe('/openai');
   });
 
@@ -153,6 +177,8 @@ describe('providers catalog', () => {
       expect(cfg.glm.url).toBe('/glm');
       expect(cfg['minimax-cn'].url).toBe('/minimax-cn');
       expect(cfg.zhongkeyu.url).toBe('/zhongkeyu');
+      expect(cfg.openrouter.url).toBe('/openrouter');
+      expect(cfg.siliconflow.url).toBe('/siliconflow');
     }
   });
 

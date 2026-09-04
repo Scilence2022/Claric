@@ -67,6 +67,11 @@ describe('defaultImageProviderConfig origin adaptation', () => {
     const cfg = defaultImageProviderConfig(STATIC_ORIGIN);
     expect(cfg.glm.url).toBe('https://open.bigmodel.cn');
     expect(cfg.minimax.url).toBe('https://api.minimax.io');
+    // OpenRouter and SiliconFlow also default to their absolute origins on
+    // static hosts — both return Access-Control-Allow-Origin: * for public
+    // origins (verified), so the marketplace install talks to them directly.
+    expect(cfg.openrouter.url).toBe('https://openrouter.ai');
+    expect(cfg.siliconflow.url).toBe('https://api.siliconflow.cn');
   });
 
   test('a locally served origin uses same-origin proxy paths', () => {
@@ -74,6 +79,8 @@ describe('defaultImageProviderConfig origin adaptation', () => {
       const cfg = defaultImageProviderConfig(origin);
       expect(cfg.glm.url).toBe('/glm');
       expect(cfg.minimax.url).toBe('/minimax');
+      expect(cfg.openrouter.url).toBe('/openrouter');
+      expect(cfg.siliconflow.url).toBe('/siliconflow');
     }
   });
 
@@ -141,5 +148,21 @@ describe('preset request-shape metadata', () => {
     expect(IMAGE_PROVIDER_PRESETS.minimax.apiFormat).toBe('minimax-images');
     expect(imageSizesFor('minimax')).toEqual(IMAGE_SIZES);
     expect(IMAGE_PROVIDER_PRESETS.minimax.model).toBe('image-01');
+  });
+
+  test('OpenRouter and SiliconFlow image presets reuse the OpenAI request shape', () => {
+    // Both gateways expose /v1/images/generations (or /api/v1/images), so the
+    // shared 'openai-images' format applies. Their upstream hosts answer
+    // ACAO=* for public origins (verified), so static installs reach them
+    // directly without a relay.
+    expect(IMAGE_PROVIDER_PRESETS.openrouter.apiFormat).toBe('openai-images');
+    expect(IMAGE_PROVIDER_PRESETS.openrouter.apiPath).toBe('/api/v1');
+    expect(IMAGE_PROVIDER_PRESETS.openrouter.model.length).toBeGreaterThan(0);
+    expect(IMAGE_PROVIDER_PRESETS.openrouter.responseFormat).toBe('dall-e-b64');
+
+    expect(IMAGE_PROVIDER_PRESETS.siliconflow.apiFormat).toBe('openai-images');
+    expect(IMAGE_PROVIDER_PRESETS.siliconflow.apiPath).toBe('/v1');
+    expect(IMAGE_PROVIDER_PRESETS.siliconflow.model.length).toBeGreaterThan(0);
+    expect(IMAGE_PROVIDER_PRESETS.siliconflow.responseFormat).toBe('dall-e-b64');
   });
 });

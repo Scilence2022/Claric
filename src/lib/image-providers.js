@@ -110,6 +110,45 @@ export const IMAGE_PROVIDER_PRESETS = {
         // Keep the UI's three document-friendly orientations plus auto.
         sizes: IMAGE_SIZES,
     },
+    // OpenRouter routes text-to-image requests through /api/v1/images (a
+    // variant of the OpenAI /v1/images/generations shape — see the API
+    // reference). Their endpoint returns b64_json directly, so the standard
+    // OpenAI request body (with response_format=b64_json) works for models
+    // like google/gemini-2.5-flash-image-preview, bytedance-seed/seedream,
+    // black-forest-labs/flux*, and recraft/recraft-v4. openrouter.ai returns
+    // Access-Control-Allow-Origin: * for public origins (verified).
+    openrouter: {
+        label: 'OpenRouter Images',
+        url: 'https://openrouter.ai',
+        proxyUrl: '/openrouter',
+        apiPath: '/api/v1',
+        model: 'google/gemini-2.5-flash-image-preview',
+        keyHint: 'openrouter.ai',
+        staticOk: true,
+        apiFormat: 'openai-images',
+        // OpenRouter accepts and prefers b64_json for downstream providers
+        // that support it; some still return URLs, which the client handles.
+        responseFormat: 'dall-e-b64',
+    },
+    // SiliconFlow's image API is OpenAI-shaped: POST /v1/images/generations
+    // with model/prompt/size/n. Default model Kwai-Kolors/Kolors accepts
+    // standard pixel sizes and returns a hosted URL (the OpenAI relay shape);
+    // users can switch to Qwen-Image, stable-diffusion-3, etc. without
+    // changing the provider. api.siliconflow.cn returns ACAO=* (verified).
+    siliconflow: {
+        label: 'SiliconFlow Images',
+        url: 'https://api.siliconflow.cn',
+        proxyUrl: '/siliconflow',
+        apiPath: '/v1',
+        model: 'Kwai-Kolors/Kolors',
+        keyHint: 'cloud.siliconflow.cn',
+        staticOk: true,
+        apiFormat: 'openai-images',
+        // SiliconFlow's hosted URL response matches the standard OpenAI
+        // relay; we ask for b64_json when the model supports it (most do)
+        // to avoid a second CDN GET that the local-server proxy cannot relay.
+        responseFormat: 'dall-e-b64',
+    },
     custom: {
         label: 'Custom (OpenAI-compatible)',
         url: '',

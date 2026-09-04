@@ -502,9 +502,18 @@ const PROFILE_MATCHERS = [
         matcher: /(?:^|[/:._-])qwen[-_.]?3(?:[^a-z]|$)/i,
     },
     {
-        providers: ['deepseek', 'custom', 'zhongkeyu'],
+        providers: ['deepseek', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: DEEPSEEK_V4_PROFILE,
         matcher: /(?:^|[/:._-])deepseek[-_. ]?v4[-_. ]?(?:flash|pro)(?:[^a-z]|$)/i,
+    },
+    {
+        providers: ['deepseek', 'siliconflow'],
+        profile: DEEPSEEK_V4_PROFILE,
+        // SiliconFlow mirrors the upstream DeepSeek ids under its own namespace
+        // (e.g. "deepseek-ai/DeepSeek-V4-Flash"); OpenRouter does too
+        // ("deepseek/deepseek-v4-flash"). Match the bare v4 / v3.2 family so
+        // the DeepSeek-V4 protocol profile applies.
+        matcher: /(?:^|[/:._-])deepseek[-_. ]?(?:v[34](?:[-_.][0-9]+)?[-_. ]?(?:flash|pro|exp)?(?:[^a-z]|$))/i,
     },
     {
         providers: ['deepseek'],
@@ -517,79 +526,79 @@ const PROFILE_MATCHERS = [
         matcher: /(?:^|[/:._-])deepseek[-_. ]?chat(?:[^a-z]|$)/i,
     },
     {
-        providers: ['glm', 'custom', 'zhongkeyu'],
+        providers: ['glm', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: GLM_53_PROFILE,
         matcher: /(?:^|[/:._-])glm[-_. ]?5[._-]?3(?:[-_. ]?flash)?(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['glm', 'custom', 'zhongkeyu'],
+        providers: ['glm', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: GLM_52_PROFILE,
         matcher: /(?:^|[/:._-])glm[-_. ]?5[._-]?2(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['glm', 'custom', 'zhongkeyu'],
+        providers: ['glm', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: GLM_TOGGLE_PROFILE,
         matcher: /(?:^|[/:._-])glm[-_. ]?4[._-]?(?:5|6|7)(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['kimi', 'custom', 'zhongkeyu'],
+        providers: ['kimi', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: KIMI_K3_PROFILE,
         matcher: /(?:^|[/:._-])kimi[-_. ]?k3(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['kimi', 'custom', 'zhongkeyu'],
+        providers: ['kimi', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: KIMI_K2_PROFILE,
         matcher: /(?:^|[/:._-])kimi[-_. ]?k2[._-]?6(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['kimi', 'custom', 'zhongkeyu'],
+        providers: ['kimi', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: KIMI_CODE_PROFILE,
         matcher: /(?:^|[/:._-])kimi[-_. ]?k2[._-]?7(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['kimi', 'custom', 'zhongkeyu'],
+        providers: ['kimi', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: KIMI_K2_PROFILE,
         matcher: /(?:^|[/:._-])kimi[-_. ]?k2(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['minimax', 'custom', 'zhongkeyu'],
+        providers: ['minimax', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: MINIMAX_M3_PROFILE,
         matcher: /(?:^|[/:._-])minimax[-_. ]?m3(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['minimax', 'custom', 'zhongkeyu'],
+        providers: ['minimax', 'custom', 'zhongkeyu', 'openrouter', 'siliconflow'],
         profile: MINIMAX_M2_PROFILE,
         matcher: /(?:^|[/:._-])minimax[-_. ]?m2(?:[^0-9a-z]|$)/i,
     },
     // OpenAI generations, newest first; gateways match these only when the
     // model id explicitly names a GPT/o-series upstream model.
     {
-        providers: ['openai', 'custom', 'zhongkeyu'],
+        providers: ['openai', 'custom', 'zhongkeyu', 'openrouter'],
         profile: OPENAI_GPT_54_PROFILE,
         matcher: /(?:^|[/:._-])gpt[-_. ]?5[._-]?1[-_. ]?codex[-_. ]?max(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['openai', 'custom', 'zhongkeyu'],
+        providers: ['openai', 'custom', 'zhongkeyu', 'openrouter'],
         profile: OPENAI_GPT_56_PROFILE,
         matcher: /(?:^|[/:._-])gpt[-_. ]?5[._-]?6(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['openai', 'custom', 'zhongkeyu'],
+        providers: ['openai', 'custom', 'zhongkeyu', 'openrouter'],
         profile: OPENAI_GPT_54_PROFILE,
         matcher: /(?:^|[/:._-])gpt[-_. ]?5[._-]?[45](?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['openai', 'custom', 'zhongkeyu'],
+        providers: ['openai', 'custom', 'zhongkeyu', 'openrouter'],
         profile: OPENAI_GPT_51_PROFILE,
         matcher: /(?:^|[/:._-])gpt[-_. ]?5[._-]?1(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['openai', 'custom', 'zhongkeyu'],
+        providers: ['openai', 'custom', 'zhongkeyu', 'openrouter'],
         profile: OPENAI_GPT_5_PROFILE,
         matcher: /(?:^|[/:._-])gpt[-_. ]?5(?:[^0-9a-z]|$)/i,
     },
     {
-        providers: ['openai', 'custom', 'zhongkeyu'],
+        providers: ['openai', 'custom', 'zhongkeyu', 'openrouter'],
         profile: OPENAI_O_SERIES_PROFILE,
         matcher: /(?:^|[/:._-])o[134](?:[^0-9a-z]|$)/i,
     },
