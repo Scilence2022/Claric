@@ -187,6 +187,16 @@ const ENV = {
   MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
   ZHONGKEYU_PROXY_PATH: process.env.ZHONGKEYU_PROXY_PATH || '/zhongkeyu',
   ZHONGKEYU_PROXY_TARGET: process.env.ZHONGKEYU_PROXY_TARGET || 'https://zhongkeyu.com',
+  // OpenRouter: multi-provider gateway under /api/v1 (chat + images). The
+  // cloud preset defaults to its absolute origin on static hosts (ACAO=*
+  // for public origins, verified) and uses the proxy path when the add-in
+  // is served from localhost so CORS never reaches the browser.
+  OPENROUTER_PROXY_PATH: process.env.OPENROUTER_PROXY_PATH || '/openrouter',
+  OPENROUTER_PROXY_TARGET: process.env.OPENROUTER_PROXY_TARGET || 'https://openrouter.ai',
+  // SiliconFlow: Chinese multi-model gateway under /v1 (chat + images).
+  // Same origin-adaptive rationale as OpenRouter.
+  SILICONFLOW_PROXY_PATH: process.env.SILICONFLOW_PROXY_PATH || '/siliconflow',
+  SILICONFLOW_PROXY_TARGET: process.env.SILICONFLOW_PROXY_TARGET || 'https://api.siliconflow.cn',
   // Custom (any OpenAI-compatible endpoint). Path defaults to empty so the
   // dev server does not register a route unless the user opts in.
   CUSTOM_PROXY_PATH: process.env.CUSTOM_PROXY_PATH || '',
@@ -225,6 +235,8 @@ function buildLlmProxies(ENV) {
     ['MINIMAX_PROXY_PATH', 'MINIMAX_PROXY_TARGET', 'MiniMax'],
     ['MINIMAX_CN_PROXY_PATH', 'MINIMAX_CN_PROXY_TARGET', 'MiniMax-CN'],
     ['ZHONGKEYU_PROXY_PATH', 'ZHONGKEYU_PROXY_TARGET', 'ZhongKeYu'],
+    ['OPENROUTER_PROXY_PATH', 'OPENROUTER_PROXY_TARGET', 'OpenRouter'],
+    ['SILICONFLOW_PROXY_PATH', 'SILICONFLOW_PROXY_TARGET', 'SiliconFlow'],
     ['CUSTOM_PROXY_PATH', 'CUSTOM_PROXY_TARGET', 'Custom'],
   ];
 

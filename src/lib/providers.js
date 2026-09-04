@@ -189,6 +189,40 @@ export const PROVIDER_PRESETS = {
     keyHint: 'zhongkeyu.com',
     staticOk: true,
   },
+  // OpenRouter is a multi-provider gateway: a single OpenAI-compatible /api/v1
+  // surface routes to models from OpenAI, Anthropic, Google, Meta, Mistral,
+  // and many others. Their API requires HTTP-Referer / X-Title identification
+  // headers for app discoverability; those are handled by the user's deployed
+  // site so we don't add them here. openrouter.ai returns Access-Control-
+  // Allow-Origin: * for public origins (verified), so static installs reach
+  // it directly — the proxy path is here for the locally served case where
+  // browsers reflect localhost/private-IP origins that the gateway rejects.
+  openrouter: {
+    label: 'OpenRouter',
+    url: 'https://openrouter.ai',
+    proxyUrl: '/openrouter',
+    apiPath: '/api/v1',
+    // A safe, broadly available default; users pick a different upstream in
+    // Settings → Model without changing the provider.
+    model: 'openai/gpt-4o-mini',
+    keyHint: 'openrouter.ai',
+    staticOk: true,
+  },
+  // SiliconFlow is a Chinese-friendly multi-model gateway: DeepSeek, Qwen,
+  // GLM, Kimi, Llama, Yi, plus image models (Kwai-Kolors, Qwen-Image, ...).
+  // api.siliconflow.cn returns Access-Control-Allow-Origin: * for public
+  // origins (verified), so static installs call it directly; the proxy path
+  // exists for the locally served add-in so the user does not need to point
+  // at a CORS-restricted mirror.
+  siliconflow: {
+    label: 'SiliconFlow',
+    url: 'https://api.siliconflow.cn',
+    proxyUrl: '/siliconflow',
+    apiPath: '/v1',
+    model: 'deepseek-ai/DeepSeek-V3.2-Exp',
+    keyHint: 'cloud.siliconflow.cn',
+    staticOk: true,
+  },
   custom: {
     label: 'Custom (OpenAI-compatible)',
     url: '',
