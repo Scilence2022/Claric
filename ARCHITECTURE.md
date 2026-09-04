@@ -729,7 +729,7 @@ Chat-driven UI split into focused modules:
 - `taskpane.js` — bootstrap only (module wiring, Office.onReady, WordApi detection, selection watch wiring)
 - `app-state.js` — shared config/state; `normalizeConfig` field-by-field validation
 - `conversation.js` — turn routing (see "Turn Routing" above) and per-pipeline turn runners; every `log()` line is teed into the message's work log; concurrency guard + AbortController cancel (every LLM-bearing turn wires `chatController`; compound turns thread one shared controller into their sub-tasks so a single cancel stops the whole chain)
-- `skills.js` — skill registry: six built-ins plus PromptManager prompts as custom slash commands
+- `skills.js` — skill registry: built-in skills plus PromptManager prompts as custom slash commands
 - `message-shape.js` — the single definition of a persisted chat message (id generation, field validation, attachment/citation metadata). `sessions.js` normalizes through it on the way into localStorage and `ui/chat-view.js` on the way back into the DOM, so a new message field cannot be validated on one leg and dropped on the other
 - `word-actions.js` — the pipelines (selection/append/format/illustration/cleanup prepare+apply pairs, gated doc-scope runs, planner, Q&A, summary) with explicit args instead of DOM/active-prompt reads
 - `ui/chat-view.js` — message list, streaming body, per-turn work log (auto-collapse to "Worked for Ns · M steps"), model activity region (reasoning dimmed, per-section split, pin-to-bottom auto-scroll that disengages when the user scrolls up), progress bar with ETA, citation pills

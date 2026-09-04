@@ -1268,6 +1268,23 @@ describe('createConversation.submit', () => {
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
   });
 
+  test('parameterized new summary skill passes its focus to the summary pipeline', async () => {
+    const appState = makeAppState();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view: makeView(), input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('/executive-summary focus on financial risks');
+
+    expect(actions.runSummarySkill).toHaveBeenCalledTimes(1);
+    const { promptTemplate } = actions.runSummarySkill.mock.calls[0][1];
+    expect(promptTemplate).toContain('Write an executive summary for a busy decision-maker');
+    expect(promptTemplate).toContain('Additional instructions from the user: focus on financial risks');
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+  });
+
   test('document-scope skill runs the document pipeline with citation pills', async () => {
     const appState = makeAppState();
     const view = makeView();
@@ -1324,6 +1341,25 @@ describe('createConversation.submit', () => {
     expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
   });
 
+  test('parameterized new amendment skill stages a selection proposal with its instructions', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'This selected passage needs editing.',
+    });
+
+    await conv.submit('/academic-polish preserve field-specific terminology');
+
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
+    const { promptTemplate } = actions.prepareSelectionAmendment.mock.calls[0][1];
+    expect(promptTemplate).toContain('Revise {selection} into polished academic English');
+    expect(promptTemplate).toContain('Additional instructions from the user: preserve field-specific terminology');
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+  });
+
   test('chat skill answers in chat via the Q&A path', async () => {
     const appState = makeAppState();
     const actions = makeActions();
@@ -1337,6 +1373,39 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
     expect(actions.answerQuestion.mock.calls[0][1].question).toBe('tell me about SaaS');
     expect(actions.answerQuestion.mock.calls[0][1].skillTemplate).toContain('industry analyst');
+  });
+
+  test('parameterized new chat skill returns key points through document Q&A', async () => {
+    const appState = makeAppState();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view: makeView(), input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('/key-points emphasize deadlines and owners');
+
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    const qaArgs = actions.answerQuestion.mock.calls[0][1];
+    expect(qaArgs.question).toBe('emphasize deadlines and owners');
+    expect(qaArgs.skillTemplate).toContain('most important points in the current document');
+    expect(actions.runSummarySkill).not.toHaveBeenCalled();
+  });
+
+  test('parameterized comment skill routes and executes through the comment pipeline', async () => {
+    const appState = makeAppState();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view: makeView(), input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'The results are clear.',
+    });
+
+    await conv.submit('/check-clarity focus on ambiguous references');
+
+    expect(actions.fireSelectionComment).toHaveBeenCalledTimes(1);
+    expect(actions.fireSelectionComment.mock.calls[0][1].promptTemplate).toContain('Review {selection} for clarity');
+    expect(actions.fireSelectionComment.mock.calls[0][1].promptTemplate).toContain('Additional instructions from the user: focus on ambiguous references');
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
   });
 
   test('concurrency guard: submit while a doc run is in flight is rejected', async () => {
