@@ -186,6 +186,11 @@ describe('IMAGE_TOOL_SPECS', () => {
         // the next observation) — it stages no draft op of its own.
         const read = IMAGE_TOOL_SPECS.find((t) => t.name === 'read_image');
         expect(read.description).toMatch(/image input/i);
+        expect(read.description).toMatch(/documentContext/);
+        expect(read.description).toMatch(/captionCandidates/);
+        expect(read.description).toMatch(/legend/i);
+        expect(read.description).toMatch(/untrusted data/i);
+        expect(read.description).toMatch(/do not call an ordinary nearby paragraph a caption/i);
         // Style-y tools cover align/alt/link.
         const align = IMAGE_TOOL_SPECS.find((t) => t.name === 'align_image');
         expect(align.description).toMatch(/centered/);
