@@ -1374,11 +1374,17 @@ export function createConversation(deps) {
         const svgOps = proposal.items.filter((item) => item.svg);
         // Already sanitized by the image tool loop (design/replace_illustration
         // ops run sanitizeSvg + ensureSvgDimensions). Inline render avoids the
-        // SVG data-URL decode that fails on some hosts.
-        const previewSvg = svgOps.length === 1 ? svgOps[0].svg : undefined;
-        const cardItems = proposal.items.map(({ id, label, before, after }) => ({
-            id, label, before, after,
-        }));
+        // SVG data-URL decode that fails on some hosts. The top-of-card
+        // preview is for pure inserts; replace ops carry beforeSrc and show
+        // their own before/after visual diff inside the change list.
+        const previewSvg = svgOps.length === 1 && !svgOps[0].beforeSrc ? svgOps[0].svg : undefined;
+        const cardItems = proposal.items.map((item) => {
+            const cardItem = { id: item.id, label: item.label, before: item.before, after: item.after };
+            // Per-item visuals; skip the svg already shown as the top preview.
+            if (item.beforeSrc) cardItem.beforeSrc = item.beforeSrc;
+            if (item.svg && item.svg !== previewSvg) cardItem.svg = item.svg;
+            return cardItem;
+        });
         const card = makeProposalCard({
             title,
             countsText,

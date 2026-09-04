@@ -69,6 +69,51 @@ describe('createProposalCard', () => {
     expect(diffs[0].querySelector('ins').textContent).toBe('new');
   });
 
+  test('image items render a two-up before/after visual diff instead of the text diff', () => {
+    const card = makeCard({
+      items: [{
+        id: 1,
+        label: 'Replace image 1',
+        before: 'existing picture',
+        after: 'improve legends (3.2 KB SVG → PNG)',
+        beforeSrc: 'data:image/png;base64,iVBORw0KGgo=',
+        svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="60">'
+          + '<rect width="100" height="60" fill="#def"/>'
+          + '<script>alert(1)</' + 'script></svg>',
+      }],
+    });
+    const diff = card.el.querySelector('.proposal-card-image-diff');
+    expect(diff).not.toBeNull();
+    // Before pane shows the current picture; after pane the sanitized SVG.
+    const beforeImg = diff.querySelector('img');
+    expect(beforeImg.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=');
+    const afterSvg = diff.querySelector('.proposal-card-preview-svg svg');
+    expect(afterSvg).not.toBeNull();
+    expect(diff.querySelector('script')).toBeNull();
+    expect([...diff.querySelectorAll('.proposal-card-image-diff-label')]
+      .map((el) => el.textContent)).toEqual(['Before', 'After']);
+    // The visual diff replaces the text diff for this item.
+    expect(card.el.querySelector('.diff-view')).toBeNull();
+    // No top-of-card preview: the visual lives inside the change row.
+    expect(card.el.querySelector(':scope > .proposal-card-preview')).toBeNull();
+  });
+
+  test('an insert-only image item falls back to a "(new image)" before pane', () => {
+    const card = makeCard({
+      items: [{
+        id: 1,
+        label: 'Insert illustration at end',
+        before: '',
+        after: 'a sun (2.1 KB SVG → PNG)',
+        svg: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>',
+      }],
+    });
+    const diff = card.el.querySelector('.proposal-card-image-diff');
+    expect(diff).not.toBeNull();
+    expect(diff.querySelector('.proposal-card-image-diff-empty').textContent).toBe('(new image)');
+    expect(diff.querySelector('svg')).not.toBeNull();
+  });
+
   test('locate button fires onLocate with the item searchText', () => {
     const onLocate = jest.fn();
     const card = makeCard({ items: makeItems(), onLocate });

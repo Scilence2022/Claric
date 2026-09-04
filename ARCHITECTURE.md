@@ -96,6 +96,7 @@ src/
                                #   strict allowlist parser, op describer
     illustration.js            # SVG illustration prompt/parse/sanitize
                                #   (DOMPurify SVG profile)/dimensions/position
+                               #   + deterministic label edits (editSvgTextLabels)
     task-planner.js            # Compound-instruction decomposition prompt +
                                #   plan parser (7 task types + image_management/
                                #   table_management, caps)
@@ -139,6 +140,8 @@ src/
     image-model.js             # L2 tool-calling: image draft model + tools
                                #   (list_images/read_image/
                                #   design_illustration/replace_illustration/
+                               #   edit_illustration_text (deterministic label
+                               #   find-and-replace on the stored SVG source)/
                                #   delete_image/resize_image (widthPt |
                                #   heightPt | scalePct + lockAspectRatio)
                                #   /align_image /set_alt_text (description
@@ -188,6 +191,12 @@ src/
                                #   prepareTableToolEdit (chained table edits →
                                #   tablePatch proposal), prepareImageToolEdit +
                                #   applyImageOps (image management ops)
+    svg-source-store.js        # Persists an illustration's SVG source in a
+                               #   shared-API custom XML part (picture alt-text
+                               #   title carries the part id), so redesigns and
+                               #   edit_illustration_text re-edit the vector
+                               #   markup instead of redrawing from pixels;
+                               #   degrades gracefully where unavailable
     ui/
       chat-view.js             # Message rendering, streaming text, per-turn
                                #   work log, model activity (auto-scroll),
@@ -204,6 +213,7 @@ src/
                                #   + prompt management
       proposal-card.js         # Staged proposal card: per-change checkboxes,
                                #   locate button, image/table previews,
+                               #   before/after visual diff for image ops,
                                #   selective apply, terminal states
                                #   (applied/rejected/warning/error)
       diff-view.js             # Inline <del>/<ins> text diff element
