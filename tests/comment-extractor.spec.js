@@ -679,6 +679,96 @@ describe('extractDocumentStructured', () => {
             expect(structuredSyncCount).toBe(3);
         });
     });
+
+    // --- revision-aware text via body.getOoxml() ---
+
+    describe('revision-aware text', () => {
+        /**
+         * Wraps paragraph XML in the pkg:package envelope body.getOoxml()
+         * returns, with the payload as the /word/document.xml part.
+         */
+        function bodyOoxml(innerXml) {
+            return '<?xml version="1.0"?>' +
+                '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">' +
+                '<pkg:part pkg:name="/word/document.xml"><pkg:xmlData>' +
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+                '<w:body>' + innerXml + '</w:body>' +
+                '</w:document>' +
+                '</pkg:xmlData></pkg:part>' +
+                '</pkg:package>';
+        }
+
+        function attachOoxml(ooxml) {
+            mockContext.document.body.getOoxml = jest.fn(() => ({ value: ooxml }));
+        }
+
+        test('resolves tracked changes to accept-all text instead of interleaved paragraph.text', async () => {
+            // Word.js inlines deletions beside insertions: 'The old paragraphnew wording stays.'
+            mockParagraphs = [
+                createMockParagraph('The old paragraphnew wording stays.'),
+                createMockParagraph('Clean paragraph.')
+            ];
+            attachOoxml(bodyOoxml(
+                '<w:p>' +
+                '<w:r><w:t xml:space="preserve">The </w:t></w:r>' +
+                '<w:del><w:r><w:delText xml:space="preserve">old paragraph</w:delText></w:r></w:del>' +
+                '<w:ins><w:r><w:t xml:space="preserve">new wording</w:t></w:r></w:ins>' +
+                '<w:r><w:t xml:space="preserve"> stays.</w:t></w:r>' +
+                '</w:p>' +
+                '<w:p><w:r><w:t>Clean paragraph.</w:t></w:r></w:p>'
+            ));
+
+            const result = await extractDocumentStructured({ richness: 'plain' });
+
+            expect(result).toBe('The new wording stays.\nClean paragraph.');
+            expect(result).not.toContain('old paragraph');
+        });
+
+        test('excludes table-nested paragraphs from the top-level text mapping', async () => {
+            mockParagraphs = [
+                createMockParagraph('garbled')
+            ];
+            attachOoxml(bodyOoxml(
+                '<w:p><w:r><w:t>Real body text.</w:t></w:r></w:p>' +
+                '<w:tbl><w:tr><w:tc>' +
+                '<w:p><w:r><w:t>Table cell text.</w:t></w:r></w:p>' +
+                '</w:tc></w:tr></w:tbl>'
+            ));
+
+            const result = await extractDocumentStructured({ richness: 'plain' });
+
+            // Counts agree (1 top-level paragraph), so OOXML text wins and
+            // the table cell must not leak into the document text.
+            expect(result).toBe('Real body text.');
+        });
+
+        test('falls back to paragraph.text when the OOXML paragraph count diverges', async () => {
+            mockParagraphs = [
+                createMockParagraph('First.'),
+                createMockParagraph('Second.')
+            ];
+            attachOoxml(bodyOoxml(
+                '<w:p><w:r><w:t>Different set entirely.</w:t></w:r></w:p>'
+            ));
+
+            const result = await extractDocumentStructured({ richness: 'plain' });
+
+            expect(result).toBe('First.\nSecond.');
+        });
+
+        test('falls back to paragraph.text when getOoxml throws', async () => {
+            mockParagraphs = [
+                createMockParagraph('Fallback text.')
+            ];
+            mockContext.document.body.getOoxml = jest.fn(() => {
+                throw new Error('OOXML unavailable');
+            });
+
+            const result = await extractDocumentStructured({ richness: 'plain' });
+
+            expect(result).toBe('Fallback text.');
+        });
+    });
 });
 
 // ============================================================================

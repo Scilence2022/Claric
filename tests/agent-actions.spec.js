@@ -12,8 +12,17 @@ jest.mock('../src/lib/llm-client.js', () => ({
     stripMarkdown: jest.fn((t) => t),
 }));
 
+// Provide DOMParser for the OOXML text extraction (node test environment
+// lacks it; the add-in WebView has it natively)
+const { JSDOM } = require('jsdom');
+if (typeof globalThis.DOMParser === 'undefined') {
+    const dom = new JSDOM('');
+    globalThis.DOMParser = dom.window.DOMParser;
+}
+
 jest.mock('../src/lib/illustration.js', () => ({
     buildIllustrationPrompt: jest.fn((instruction) => `design:${instruction}`),
+    buildIllustrationRedesignPrompt: jest.fn((instruction, _scope, opts) => `redesign:${instruction}:${opts && opts.hasSourceImage ? 'with-image' : 'text-only'}`),
     parseIllustration: jest.fn((raw) => ({ svg: String(raw) })),
     sanitizeSvg: jest.fn((svg) => svg),
     ensureSvgDimensions: jest.fn((svg) => svg),
@@ -430,7 +439,7 @@ describe('prepareImageToolEdit', () => {
         });
     });
 
-    test('read_image normalizes and bounds paragraph context', async () => {
+    test('read_image normalizes and bounds paragraph context at word boundaries', async () => {
         const longText = (letter) => `${letter.repeat(600)}  \n\t ${letter.repeat(600)}`;
         setImageWorld(
             [{ paragraphIndex: 2, getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }],
@@ -445,10 +454,15 @@ describe('prepareImageToolEdit', () => {
         const observation = JSON.parse(messages[messages.length - 2].content[0].text);
         const documentContext = observation.result.documentContext;
         expect(documentContext.truncated).toBe(true);
-        expect(documentContext.nearbyParagraphs).toHaveLength(4);
-        expect(documentContext.nearbyParagraphs.every((p) => p.text.length === 1000 && p.truncated)).toBe(true);
-        expect(documentContext.nearbyParagraphs.reduce((sum, p) => sum + p.text.length, 0)).toBe(4000);
-        expect(documentContext.nearbyParagraphs.every((p) => !/[\n\t]| {2}/.test(p.text))).toBe(true);
+        // Normalized to 'aaaa…a bbbb…b' (600 + 1 + 600), capped at the last
+        // space before 1000 → the 600-letter head plus an ellipsis.
+        expect(documentContext.nearbyParagraphs).toHaveLength(5);
+        for (const p of documentContext.nearbyParagraphs) {
+            expect(p.truncated).toBe(true);
+            expect(p.text).toMatch(/^[a-e]{600} …$/);
+            expect(p.text.length).toBeLessThanOrEqual(1002);
+            expect(p.text).not.toMatch(/[\n\t]| {2}/);
+        }
     });
 
     test.each([
@@ -564,6 +578,108 @@ describe('prepareImageToolEdit', () => {
         await expect(prepareImageToolEdit(makeDeps(), { instruction: '看图' }))
             .rejects.toMatchObject({ name: 'AbortError' });
         expect(sendMessages).toHaveBeenCalledTimes(2);
+    });
+
+    test('read_image resolves tracked-changes context via OOXML (accept-all view)', async () => {
+        // Word.js paragraph.text inlines tracked deletions next to their
+        // insertions ("TheResults reassemblerare maps resultsmapped...");
+        // the OOXML path must hide w:del and keep w:ins + plain runs.
+        const revisedOoxml =
+            '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">'
+            + '<pkg:part pkg:name="/word/document.xml" pkg:contentType="text/xml"><pkg:xmlData>'
+            + '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+            + '<w:p>'
+            + '<w:del><w:r><w:delText xml:space="preserve">The </w:delText></w:r></w:del>'
+            + '<w:ins><w:r><w:t xml:space="preserve">Results </w:t></w:r></w:ins>'
+            + '<w:del><w:r><w:delText xml:space="preserve">reassembler </w:delText></w:r></w:del>'
+            + '<w:ins><w:r><w:t xml:space="preserve">are </w:t></w:r></w:ins>'
+            + '<w:del><w:r><w:delText xml:space="preserve">maps results </w:delText></w:r></w:del>'
+            + '<w:ins><w:r><w:t xml:space="preserve">mapped </w:t></w:r></w:ins>'
+            + '<w:r><w:t xml:space="preserve">back onto the document.</w:t></w:r>'
+            + '</w:p>'
+            + '</w:body></w:document></pkg:xmlData></pkg:part></pkg:package>';
+        setImageWorld(
+            [{ paragraphIndex: 1, getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }],
+            {
+                paragraphs: [
+                    {
+                        text: 'The Results reassembler are maps results mapped back onto the document.',
+                        getRange: jest.fn(() => ({ getOoxml: () => ({ value: revisedOoxml }) })),
+                    },
+                    { text: ' ' },
+                    { text: 'Figure 1. Architecture', style: 'Caption', styleBuiltIn: 'Caption' },
+                ],
+            }
+        );
+        sendMessages.mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"clean context"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '读取图片上下文' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content[0].text);
+        const texts = observation.result.documentContext.nearbyParagraphs.map((p) => p.text);
+        expect(texts).toContain('Results are mapped back onto the document.');
+        expect(texts.join('\n')).not.toContain('reassembler');
+    });
+
+    test('replace_illustration grounds the nested design call in the source image', async () => {
+        setImageWorld([{ altTextDescription: 'fig1', getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]);
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legends"}}')
+            .mockResolvedValueOnce(SVG)
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesigned"}}');
+
+        const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '改进这张图的图例' });
+
+        // sendMessages call 2 is the nested design call: one user message
+        // whose content carries the redesign prompt plus the source pixels.
+        const designMessages = sendMessages.mock.calls[1][1];
+        expect(designMessages).toHaveLength(1);
+        expect(designMessages[0].role).toBe('user');
+        expect(designMessages[0].content).toEqual([
+            { type: 'text', text: 'redesign:improve legends:with-image' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+        ]);
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(proposal.ops).toEqual([
+            { type: 'replace', index: 1, instruction: 'improve legends', svg: SVG },
+        ]);
+    });
+
+    test('replace_illustration falls back to text-only redesign when the image is unreadable', async () => {
+        setImageWorld([{ altTextDescription: 'fig1' }]); // no getBase64ImageSrc
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legends"}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesigned"}}');
+        sendPrompt.mockResolvedValueOnce(SVG);
+
+        const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '改进这张图的图例' });
+
+        expect(sendPrompt).toHaveBeenCalledWith(
+            expect.anything(), 'redesign:improve legends:text-only', expect.anything(), undefined
+        );
+        expect(proposal.ops).toEqual([
+            { type: 'replace', index: 1, instruction: 'improve legends', svg: SVG },
+        ]);
+    });
+
+    test('replace_illustration retries text-only when the backend rejects the source image', async () => {
+        setImageWorld([{ altTextDescription: 'fig1', getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]);
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legends"}}')
+            .mockRejectedValueOnce(new Error('HTTP 400: Bad Request'))
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesigned"}}');
+        sendPrompt.mockResolvedValueOnce(SVG);
+
+        const deps = makeDeps();
+        const proposal = await prepareImageToolEdit(deps, { instruction: '改进这张图的图例' });
+
+        expect(sendPrompt).toHaveBeenCalledWith(
+            expect.anything(), 'redesign:improve legends:text-only', expect.anything(), undefined
+        );
+        expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/redesigning text-only/), 'warning');
+        expect(proposal.ops[0]).toMatchObject({ type: 'replace', index: 1, svg: SVG });
     });
 });
 

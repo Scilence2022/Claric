@@ -31,9 +31,10 @@ import { describeStyleOp } from '../lib/table-style.js';
 import { createImageModel, IMAGE_TOOL_SPECS } from '../lib/image-model.js';
 import { sendMessages, sendPrompt } from '../lib/llm-client.js';
 import {
-    buildIllustrationPrompt, parseIllustration, sanitizeSvg, ensureSvgDimensions,
+    buildIllustrationPrompt, buildIllustrationRedesignPrompt, parseIllustration, sanitizeSvg, ensureSvgDimensions,
 } from '../lib/illustration.js';
 import { extractDocumentStructured } from '../lib/comment-extractor.js';
+import { extractFinalTextFromOoxml } from '../lib/ooxml-text.js';
 import { readSelectionTableRegion, svgToPngBase64, insertPngPicture, finalizeInsertedPicture, imageDataUrl } from './word-actions.js';
 import { getActiveBackendConfig } from './app-state.js';
 
@@ -316,26 +317,79 @@ async function _snapshotImages() {
 /**
  * Runs the nested illustration design call for design_/replace_ tools.
  *
+ * Redesigns (replace_illustration) attach the original picture when it is
+ * readable: a text-only call would have to redraw the figure from the loop
+ * model's description alone, silently drifting every label it misread.
+ * Backends that reject image inputs fall back to the text-only call.
+ *
  * @private
  */
-async function _designSvg(deps, { instruction, documentText, signal }) {
+async function _designSvg(deps, { instruction, documentText, sourceImage, redesign, signal }) {
     const { log } = deps;
     const backendConfig = getActiveBackendConfig(deps.appState);
     log(`Designing illustration via tool call [${backendConfig.model}]...`, 'info');
-    const raw = await sendPrompt(
-        backendConfig, buildIllustrationPrompt(instruction, documentText), log, signal
-    );
+    let raw;
+    if (sourceImage) {
+        const prompt = buildIllustrationRedesignPrompt(instruction, documentText, { hasSourceImage: true });
+        const messages = [{
+            role: 'user',
+            content: [
+                { type: 'text', text: prompt },
+                { type: 'image_url', image_url: { url: sourceImage } },
+            ],
+        }];
+        try {
+            raw = await sendMessages(backendConfig, messages, log, signal);
+        } catch (err) {
+            if (err.name === 'AbortError' || err.name === 'TimeoutError'
+                || !/^HTTP 4\d\d/.test(err.message || '')) {
+                throw err;
+            }
+            log(`Backend rejected the source image (${err.message}); redesigning text-only.`, 'warning');
+            raw = await sendPrompt(
+                backendConfig,
+                buildIllustrationRedesignPrompt(instruction, documentText, { hasSourceImage: false }),
+                log, signal
+            );
+        }
+    } else if (redesign) {
+        raw = await sendPrompt(
+            backendConfig,
+            buildIllustrationRedesignPrompt(instruction, documentText, { hasSourceImage: false }),
+            log, signal
+        );
+    } else {
+        raw = await sendPrompt(
+            backendConfig, buildIllustrationPrompt(instruction, documentText), log, signal
+        );
+    }
     const parsed = parseIllustration(raw, log);
     return parsed ? ensureSvgDimensions(sanitizeSvg(parsed.svg)) : null;
 }
 
 /**
- * Normalizes one nearby paragraph and classifies caption evidence.
+ * Slices normalized text at the last space before the cap so truncated
+ * context does not end mid-word; falls back to a hard cut for scripts
+ * without spaces (CJK).
  *
  * @private
  */
-function _imageContextParagraph(paragraph, position, distance) {
-    const normalized = String(paragraph.text || '').replace(/\s+/g, ' ').trim();
+function _sliceAtWordBoundary(normalized, max) {
+    if (normalized.length <= max) return { text: normalized, truncated: false };
+    let cut = normalized.lastIndexOf(' ', max);
+    if (cut < Math.floor(max * 0.6)) cut = max;
+    return { text: normalized.slice(0, cut).trimEnd() + ' …', truncated: true };
+}
+
+/**
+ * Normalizes one nearby paragraph and classifies caption evidence.
+ * rawText should already be revision-resolved (accept-all) — the caller
+ * prefers paragraph OOXML over the revision-blind text property.
+ *
+ * @private
+ */
+function _imageContextParagraph(rawText, paragraph, position, distance) {
+    const normalized = String(rawText || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return null;
 
     const style = paragraph.style || '';
@@ -350,16 +404,16 @@ function _imageContextParagraph(paragraph, position, distance) {
         reason = 'starts with a Figure/Fig./图 label and number';
     }
 
-    const text = normalized.slice(0, MAX_IMAGE_CONTEXT_PARAGRAPH_CHARS);
+    const sliced = _sliceAtWordBoundary(normalized, MAX_IMAGE_CONTEXT_PARAGRAPH_CHARS);
     return {
-        text,
+        text: sliced.text,
         position,
         distance,
         style,
         styleBuiltIn,
         captionStrength,
         reason,
-        truncated: text.length < normalized.length,
+        truncated: sliced.truncated,
     };
 }
 
@@ -367,6 +421,10 @@ function _imageContextParagraph(paragraph, position, distance) {
  * Reads only the picture's containing paragraph and two neighbors per side.
  * This runs separately from image-byte extraction so unsupported paragraph
  * APIs or a failed sync cannot discard a valid visual attachment.
+ *
+ * Paragraph text prefers the paragraph's OOXML (accept-all view): the
+ * Word.js text property inlines tracked deletions next to their insertions,
+ * interleaving old and new wording into garbage context.
  *
  * @private
  */
@@ -386,8 +444,23 @@ async function _readImageDocumentContext(index) {
                 throw new Error('Nearby paragraph APIs are unavailable in this Word host.');
             }
 
-            containing.load('text,style,styleBuiltIn');
-            raw.push({ paragraph: containing, position: 'containing', distance: 0, order: 0 });
+            const track = (paragraph, position, distance, order) => {
+                paragraph.load('text,style,styleBuiltIn');
+                let ooxmlResult = null;
+                if (typeof paragraph.getRange === 'function') {
+                    try {
+                        const range = paragraph.getRange();
+                        if (range && typeof range.getOoxml === 'function') {
+                            ooxmlResult = range.getOoxml();
+                        }
+                    } catch {
+                        ooxmlResult = null;
+                    }
+                }
+                raw.push({ paragraph, position, distance, order, ooxmlResult });
+            };
+
+            track(containing, 'containing', 0, 0);
 
             let previous = containing;
             let next = containing;
@@ -397,19 +470,29 @@ async function _readImageDocumentContext(index) {
                 if (!previous || !next) {
                     throw new Error('Nearby paragraph APIs returned no proxy object.');
                 }
-                previous.load('isNullObject,text,style,styleBuiltIn');
-                next.load('isNullObject,text,style,styleBuiltIn');
-                raw.push({ paragraph: previous, position: 'before', distance, order: -distance });
-                raw.push({ paragraph: next, position: 'after', distance, order: distance });
+                previous.load('isNullObject');
+                next.load('isNullObject');
+                track(previous, 'before', distance, -distance);
+                track(next, 'after', distance, distance);
             }
             await context.sync();
         });
 
+        // OOXML text wins when available; the revision-blind property is the
+        // fallback for hosts/mocks without range OOXML.
+        const resolveText = ({ paragraph, ooxmlResult }) => {
+            if (ooxmlResult && typeof ooxmlResult.value === 'string') {
+                const cleaned = extractFinalTextFromOoxml(ooxmlResult.value);
+                if (cleaned !== null) return cleaned;
+            }
+            return paragraph.text;
+        };
+
         const byProximity = raw
             .filter(({ paragraph }) => !paragraph.isNullObject)
-            .map(({ paragraph, position, distance, order }) => ({
-                item: _imageContextParagraph(paragraph, position, distance),
-                order,
+            .map((entry) => ({
+                item: _imageContextParagraph(resolveText(entry), entry.paragraph, entry.position, entry.distance),
+                order: entry.order,
             }))
             .filter(({ item }) => item)
             .sort((a, b) => a.item.distance - b.item.distance || a.order - b.order);
@@ -424,7 +507,7 @@ async function _readImageDocumentContext(index) {
             }
             const item = entry.item;
             if (item.text.length > remaining) {
-                item.text = item.text.slice(0, remaining);
+                item.text = _sliceAtWordBoundary(item.text, remaining).text;
                 item.truncated = true;
             }
             remaining -= item.text.length;
@@ -550,7 +633,18 @@ export async function prepareImageToolEdit(deps, { instruction, selectionImages,
                 return model.recordInsert({ position: args.position, instruction: args.instruction, svg });
             }
             case 'replace_illustration': {
-                const svg = await _designSvg(deps, { instruction: args.instruction, documentText, signal });
+                // Ground the redesign in the original pixels when readable —
+                // without them the design call must re-transcribe every label
+                // from the loop model's description and silently drifts.
+                let sourceImage = null;
+                try {
+                    sourceImage = (await _readImageAttachment(args.index)).dataUrl;
+                } catch (err) {
+                    log(`Source image ${args.index} unreadable (${err.message}); redesigning without it.`, 'warning');
+                }
+                const svg = await _designSvg(deps, {
+                    instruction: args.instruction, documentText, sourceImage, redesign: true, signal,
+                });
                 return model.recordReplace({ index: args.index, instruction: args.instruction, svg });
             }
             case 'delete_image':

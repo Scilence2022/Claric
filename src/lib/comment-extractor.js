@@ -9,6 +9,8 @@
  * @module comment-extractor
  */
 
+import { extractTopLevelParagraphTexts } from './ooxml-text.js';
+
 const MAX_ASSOCIATED_TEXT_LENGTH = 500;
 
 // OOXML namespace constants
@@ -502,6 +504,24 @@ export async function extractDocumentStructured(options = {}) {
         }
         await context.sync();
 
+        // Revision-aware text: para.text inlines tracked deletions beside
+        // their insertions, interleaving old and new wording. Prefer
+        // accept-all text parsed from the body OOXML; fall back to the
+        // property when OOXML is unavailable or the top-level paragraph
+        // sets diverge (count mismatch).
+        let ooxmlTexts = null;
+        if (typeof body.getOoxml === 'function') {
+            try {
+                const ooxmlResult = body.getOoxml();
+                await context.sync();
+                ooxmlTexts = extractTopLevelParagraphTexts(ooxmlResult.value);
+            } catch {
+                ooxmlTexts = null;
+            }
+        }
+        const useOoxml = Array.isArray(ooxmlTexts)
+            && ooxmlTexts.length === paragraphs.items.length;
+
         // For structured: batch load listItem details for list paragraphs
         if (richness === 'structured') {
             const listItems = [];
@@ -519,8 +539,8 @@ export async function extractDocumentStructured(options = {}) {
 
         // Build output
         const lines = [];
-        for (const para of paragraphs.items) {
-            const text = para.text || '';
+        for (const [index, para] of paragraphs.items.entries()) {
+            const text = useOoxml ? (ooxmlTexts[index] || '') : (para.text || '');
             if (!text.trim()) continue; // Skip empty paragraphs
 
             if (richness === 'plain') {

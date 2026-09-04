@@ -49,6 +49,46 @@ export function buildIllustrationPrompt(instruction, scopeText) {
 }
 
 /**
+ * Builds the LLM prompt that REDESIGNS an existing figure as one SVG
+ * document (replace_illustration). Unlike buildIllustrationPrompt this
+ * expects text: diagrams live on their labels and legends, so the
+ * "avoid lettering" rule would defeat the task. When the original picture
+ * is attached to the request, the prompt anchors fidelity to it — the
+ * model must change only what the instruction asks for.
+ *
+ * @param {string} instruction - What to change (not a full re-description)
+ * @param {string} scopeText - Document text (subject/mood context)
+ * @param {object} [options]
+ * @param {boolean} [options.hasSourceImage=false] - True when the original
+ *   picture rides along as an image input
+ * @returns {string}
+ */
+export function buildIllustrationRedesignPrompt(instruction, scopeText, { hasSourceImage = false } = {}) {
+    const fidelity = hasSourceImage
+        ? 'The CURRENT version of the figure is attached as an image. Reproduce its structure, ' +
+          'flow, and every text label faithfully — change only what the instruction asks for.'
+        : 'The figure to redesign is described in the user instruction below.';
+    return (
+        'You are an illustrator embedded in Microsoft Word. Redesign an EXISTING figure of the ' +
+        'document as a single self-contained SVG image.\n\n' +
+        fidelity + '\n\n' +
+        'OUTPUT CONTRACT (strict):\n' +
+        '- Output ONLY the SVG markup: exactly one <svg ...>...</svg> element. No markdown, no code ' +
+        'fences, no explanations, no commentary.\n' +
+        '- The SVG must be self-contained: no external images, fonts, or URLs; no <script>, no event ' +
+        'handlers, no <foreignObject>.\n' +
+        '- Include width, height, and viewBox attributes on the root <svg> element.\n' +
+        '- This is a diagram: text labels are expected. Render every label legibly — short strings, ' +
+        'boxes sized to fit their text, no overlaps.\n' +
+        '- Keep the original layout, color palette, and proportions unless the instruction says ' +
+        'otherwise. Keep the markup under ~15 KB.\n' +
+        '- Match the language of the document and of the original labels.\n\n' +
+        'USER INSTRUCTION:\n' + (instruction || '').trim() + '\n\n' +
+        '--- DOCUMENT TEXT (context for subject and mood) ---\n' + (scopeText || '')
+    );
+}
+
+/**
  * Max characters of document context fed to an image model. Image APIs cap
  * the prompt hard (OpenAI's images endpoint rejects very long prompts), and
  * a diagram brief needs the subject, not the whole document.
