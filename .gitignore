@@ -34,6 +34,7 @@ Thumbs.db
 .specstory/
 .planning/
 .cursor/
+kimi-debug-session_*.zip
 
 # Evaluations
 evals/

@@ -1,0 +1,117 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Don't cancel an in-flight deploy — losing a half-finished push leaves
+# the Pages repo in an indeterminate state and the next run can't tell.
+concurrency:
+  group: deploy-pages
+  cancel-in-progress: false
+
+# This workflow is self-contained: it runs the same lint + test + build
+# gates the CI workflow (`.github/workflows/ci.yml`) runs, then ships the
+# bundle to Scilence2022/claric-addin. Keeping it independent means a deploy
+# never waits on CI's unrelated docker build, and a CI failure (e.g.
+# Trivy vulnerability scan) can't block a Pages release.
+jobs:
+  deploy:
+    name: Build and push bundle to Pages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # PAGES_REPO_TOKEN is a PAT (classic or fine-grained) with `Contents:
+      # read and write` on Scilence2022/claric-addin. The default
+      # GITHUB_TOKEN cannot push to a different repo.
+      PAGES_REPO_TOKEN: ${{ secrets.PAGES_REPO_TOKEN }}
+      CLARIC_ADDIN_REPO: Scilence2022/claric-addin
+      CLARIC_ADDIN_LOCAL: /tmp/claric-addin-bootstrap
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Write minimal .env for manifest generation
+        # Manifest identity must be stable across deploys so existing Word
+        # installs continue to see the add-in as the same one (changing the
+        # GUID causes Word to treat each deploy as a brand-new add-in). Pin
+        # ADDIN_GUID in the workflow file; the source repo's `.env` may
+        # carry its own value but it must match the Pages-published GUID.
+        env:
+          HOST: scilence2022.github.io
+          HOST_PORT: '443'
+          PROTOCOL: https
+          BASE_PATH: /claric-addin
+          ADDIN_GUID: 814b0af4-661b-4244-9a98-1b9a444502e6
+          SUPPORT_URL: https://github.com/Scilence2022/Claric/issues
+          APP_DOMAINS: api.deepseek.com,open.bigmodel.cn,api.moonshot.cn,api.minimax.io,api.minimaxi.com
+        run: |
+          {
+            echo "HOST=${HOST}"
+            echo "HOST_PORT=${HOST_PORT}"
+            echo "PROTOCOL=${PROTOCOL}"
+            echo "BASE_PATH=${BASE_PATH}"
+            echo "ADDIN_GUID=${ADDIN_GUID}"
+            echo "SUPPORT_URL=${SUPPORT_URL}"
+            echo "APP_DOMAINS=${APP_DOMAINS}"
+          } > .env
+
+      - name: Switch manifest to Pages host
+        run: npm run manifest:store
+
+      - name: Regenerate manifest with fresh icon hash
+        run: npm run manifest
+
+      - name: Sync bundle into Pages repo and push
+        env:
+          PAGES_REPO_TOKEN: ${{ secrets.PAGES_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO_URL="https://x-access-token:${PAGES_REPO_TOKEN}@github.com/${CLARIC_ADDIN_REPO}.git"
+          rm -rf "${CLARIC_ADDIN_LOCAL}"
+          git clone --depth 1 "${REPO_URL}" "${CLARIC_ADDIN_LOCAL}"
+          cd "${CLARIC_ADDIN_LOCAL}"
+          git checkout main
+
+          # Mirror what scripts/publish-addin.cjs does: keep .git + README,
+          # wipe everything else, copy dist + manifest.xml.
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            ! -name 'README.md' \
+            -exec rm -rf {} +
+
+          cp -R "${GITHUB_WORKSPACE}/dist/." .
+          cp "${GITHUB_WORKSPACE}/manifest.xml" ./manifest.xml
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "[deploy] no changes - Pages already current"
+            exit 0
+          fi
+
+          git -c user.email="ci@scilence2022.com" \
+              -c user.name="claric-publish" \
+              commit -m "chore: deploy add-in bundle"
+          git push origin main
+          echo "[deploy] pushed to main"
