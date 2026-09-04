@@ -1,4 +1,4 @@
-# Claric — your redlining scribe for Word
+# Claric — AI editing you can review, inside Microsoft Word
 
 <p align="center">
   <img src="assets/icon-128.png" alt="Claric" width="96" height="96" />
@@ -11,14 +11,26 @@
   <a href="https://github.com/Scilence2022/Claric/issues">Support</a>
 </p>
 
-Claric is an AI-powered Microsoft Word add-in with a chat-driven taskpane. Tell
-it what to do — polish a passage, restyle the headings, add a title, insert a
-table, draw an illustration, continue writing, delete empty paragraphs, or
-summarize the
-comments — and it routes the request to the right pipeline, stages the result
-as a reviewable proposal card, and applies it as native tracked changes.
-Instructions work in English or Chinese, against any OpenAI-compatible LLM
-backend, local or hosted.
+Claric is an open-source AI assistant that lives in a Word taskpane. Say what
+you want in plain English or Chinese — *polish this paragraph*, *make this
+Heading 2*, *add a 4×3 milestone table*, *draw an illustration*, *continue
+writing*, *clean up the empty paragraphs*, *summarize all comments* — and
+Claric routes each request to the right pipeline, stages the result as
+proposal cards, and writes only what you approve into the document as native
+tracked changes. Nothing changes without your sign-off.
+
+- **Review-first** — every edit arrives as a proposal card with an inline
+  before/after diff; tick the ones you want, reject the rest.
+- **Real revisions, not rewrites** — word-level tracked changes with
+  formatting preserved end to end; your supervisor sees an ordinary redline.
+- **Whole documents, not snippets** — heading-aware chunking, parallel LLM
+  dispatch, and formatting-preserving reassembly for full-length files.
+- **Beyond text** — tables, illustrations, comments, summaries, MCP tools,
+  and slash-command skills in the same pane.
+- **Bring your own model** — 11 chat providers plus independent image
+  generation; run local (Ollama / vLLM) or cloud, and keys stay in your
+  browser.
+- **Bilingual** — instructions and edits work in English and 中文.
 
 ## Screenshots
 
