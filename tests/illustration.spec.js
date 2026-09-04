@@ -9,6 +9,7 @@
 
 const {
   buildIllustrationPrompt, buildIllustrationRedesignPrompt, parseIllustration, sanitizeSvg,
+  editSvgTextLabels, extractSvgTextLabels,
   svgDimensions, ensureSvgDimensions, illustrationPositionFromInstruction,
   illustrationPositionLabel, buildImagePrompt, illustrationRenderer,
 } = require('../src/lib/illustration.js');
@@ -185,6 +186,102 @@ describe('buildIllustrationRedesignPrompt', () => {
     expect(p).toContain('attached as an image');
     expect(p).toContain('Reproduce its structure');
     expect(p).toContain('change only what the instruction asks for');
+  });
+
+  test('with a stored SVG source, embeds it and shifts the task to minimal editing', () => {
+    const source = '<svg width="10" height="10"><text>Dispatch</text></svg>';
+    const p = buildIllustrationRedesignPrompt('improve legends', '正文', { sourceSvg: source });
+    expect(p).toContain('exact SVG source');
+    expect(p).toContain('Edit it minimally');
+    expect(p).toContain('CURRENT SVG SOURCE');
+    expect(p).toContain(source);
+    expect(p).not.toContain('attached as an image');
+  });
+
+  test('with both source image and SVG source, anchors fidelity to both', () => {
+    const source = '<svg width="10" height="10"/>';
+    const p = buildIllustrationRedesignPrompt('improve legends', '正文', { hasSourceImage: true, sourceSvg: source });
+    expect(p).toContain('attached as an image');
+    expect(p).toContain('exact SVG source is included below');
+    expect(p).toContain(source);
+  });
+
+  test('ignores a sourceSvg that is not SVG markup', () => {
+    const p = buildIllustrationRedesignPrompt('improve legends', '正文', { sourceSvg: 'not svg' });
+    expect(p).not.toContain('CURRENT SVG SOURCE');
+    expect(p).toContain('described in the user instruction');
+  });
+});
+
+describe('extractSvgTextLabels', () => {
+  test('collects text and tspan contents, trimmed and deduplicated', () => {
+    const svg = '<svg width="100" height="100">'
+      + '<text x="1" y="1"> Dispatch </text>'
+      + '<text x="1" y="20"><tspan>Reassemble</tspan><tspan>Dispatch</tspan></text>'
+      + '<rect width="5" height="5"/>'
+      + '</svg>';
+    expect(extractSvgTextLabels(svg)).toEqual(['Dispatch', 'Reassemble']);
+  });
+
+  test('returns [] for unparseable or text-free markup', () => {
+    expect(extractSvgTextLabels('not xml')).toEqual([]);
+    expect(extractSvgTextLabels('<svg width="1" height="1"><rect width="1" height="1"/></svg>')).toEqual([]);
+    expect(extractSvgTextLabels('')).toEqual([]);
+  });
+});
+
+describe('editSvgTextLabels', () => {
+  const DIAGRAM = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">'
+    + '<g class="lane"><text x="5" y="10">Dispatch</text>'
+    + '<text x="5" y="30">Parse &amp; Chunk</text>'
+    + '<text x="5" y="50"><tspan>Reassemble</tspan></text></g>'
+    + '</svg>';
+
+  test('replaces an exact label and keeps the rest of the markup intact', () => {
+    const { svg, applied, failed } = editSvgTextLabels(DIAGRAM, [{ old: 'Dispatch', new: '调度' }]);
+    expect(applied).toEqual([{ old: 'Dispatch', new: '调度', count: 1 }]);
+    expect(failed).toEqual([]);
+    expect(svg).toContain('调度');
+    expect(svg).not.toContain('>Dispatch<');
+    // Structure and other labels survive verbatim.
+    expect(svg).toContain('class="lane"');
+    expect(svg).toContain('Reassemble');
+    expect(svg).toContain('Parse &amp; Chunk');
+  });
+
+  test('matches a substring inside a longer label and decodes entities for matching', () => {
+    const { svg, applied } = editSvgTextLabels(DIAGRAM, [{ old: 'Parse & Chunk', new: 'Split' }]);
+    expect(applied).toEqual([{ old: 'Parse & Chunk', new: 'Split', count: 1 }]);
+    expect(svg).toContain('>Split<');
+  });
+
+  test('replaces every occurrence and reports the count', () => {
+    const svg = '<svg width="10" height="10"><text>dup</text><text>dup</text></svg>';
+    const { applied, svg: out } = editSvgTextLabels(svg, [{ old: 'dup', new: 'x' }]);
+    expect(applied[0].count).toBe(2);
+    expect(out).not.toContain('dup');
+  });
+
+  test('unmatched edits are reported with the labels present', () => {
+    const { svg, applied, failed, labels } = editSvgTextLabels(DIAGRAM, [{ old: 'Dispach', new: 'Dispatch' }]);
+    expect(applied).toEqual([]);
+    expect(failed).toEqual([{ old: 'Dispach', new: 'Dispatch' }]);
+    expect(svg).toBe(DIAGRAM); // untouched input returned as-is
+    expect(labels).toEqual(expect.arrayContaining(['Dispatch', 'Parse & Chunk', 'Reassemble']));
+  });
+
+  test('empty or no-op edits apply nothing', () => {
+    expect(editSvgTextLabels(DIAGRAM, []).applied).toEqual([]);
+    expect(editSvgTextLabels(DIAGRAM, [{ old: '', new: 'x' }]).applied).toEqual([]);
+    expect(editSvgTextLabels(DIAGRAM, [{ old: 'Dispatch', new: 'Dispatch' }]).applied).toEqual([]);
+    expect(editSvgTextLabels(DIAGRAM, null).applied).toEqual([]);
+  });
+
+  test('unparseable svg fails every edit and returns the input unchanged', () => {
+    const { svg, applied, failed } = editSvgTextLabels('<svg><broken', [{ old: 'a', new: 'b' }]);
+    expect(svg).toBe('<svg><broken');
+    expect(applied).toEqual([]);
+    expect(failed).toEqual([{ old: 'a', new: 'b' }]);
   });
 });
 

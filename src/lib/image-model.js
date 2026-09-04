@@ -11,9 +11,10 @@
  * card.
  *
  * Tools: list_images, read_image, design_illustration, replace_illustration,
- * delete_image, resize_image (widthPt/heightPt/scalePct + lockAspectRatio),
- * align_image (picture paragraph alignment), set_alt_text (title +
- * description), set_image_link (hyperlink set/clear).
+ * edit_illustration_text (deterministic label find-and-replace on the stored
+ * SVG source), delete_image, resize_image (widthPt/heightPt/scalePct +
+ * lockAspectRatio), align_image (picture paragraph alignment), set_alt_text
+ * (title + description), set_image_link (hyperlink set/clear).
  *
  * Index discipline: image indexes are STABLE snapshot indexes (1-based,
  * document order at prepare time). Deletes/replaces mark their slot
@@ -101,6 +102,11 @@ export const IMAGE_TOOL_SPECS = Object.freeze([
         argsExample: { index: 2, instruction: 'make the legend text larger and clearer' },
     }),
     defineTool({
+        name: 'edit_illustration_text',
+        description: 'Edit text labels of a Claric-designed illustration WITHOUT redrawing it: deterministic find-and-replace on the illustration\'s stored SVG source (no nested design call). "index" is the snapshot index; "edits" is a list of {"old","new"} exact label replacements — "old" must match the label text exactly as drawn. Only works when the image carries stored SVG source (list_images/read_image report hasSvgSource); when it does not, use replace_illustration instead. Prefer this over replace_illustration for pure wording fixes — it never disturbs layout or colors. Stages a replace proposal for user review.',
+        argsExample: { index: 1, edits: [{ old: 'Dispatch', new: 'Dispatch queue' }] },
+    }),
+    defineTool({
         name: 'delete_image',
         description: 'Delete one existing picture by its snapshot index.',
         argsExample: { index: 1 },
@@ -171,6 +177,7 @@ export function createImageModel(snapshot) {
                 ...(img.lockAspectRatio !== undefined ? { lockAspectRatio: img.lockAspectRatio } : {}),
                 ...(img.hyperlink !== undefined ? { hyperlink: img.hyperlink } : {}),
                 ...(img.format !== undefined ? { format: img.format } : {}),
+                ...(img.hasSvgSource ? { hasSvgSource: true } : {}),
             })),
             pendingOps: ops.map((op, i) => ({ id: i + 1, ...op, svg: undefined })),
         });
@@ -190,7 +197,7 @@ export function createImageModel(snapshot) {
         return _ok({ staged: `insert at ${position}`, svgKb: (svg.length / 1024).toFixed(1) });
     }
 
-    function recordReplace({ index, instruction, svg }) {
+    function recordReplace({ index, instruction, svg, beforeSrc }) {
         if (!Number.isInteger(index) || !live(index)) {
             return _err(`"index" must be a live snapshot index (1..${images.length}, not already deleted or replaced).`);
         }
@@ -201,7 +208,12 @@ export function createImageModel(snapshot) {
             return _err('The design step produced no usable SVG.');
         }
         consumed.add(index);
-        ops.push({ type: 'replace', index, instruction: instruction.trim(), svg });
+        const op = { type: 'replace', index, instruction: instruction.trim(), svg };
+        // Current pixels of the replaced picture — the proposal card renders
+        // them as the "before" half of a visual diff. In-memory only; the
+        // history record keeps the text form.
+        if (typeof beforeSrc === 'string' && beforeSrc) op.beforeSrc = beforeSrc;
+        ops.push(op);
         return _ok({ staged: `replace ${describe(index)}` });
     }
 
@@ -324,8 +336,11 @@ export function createImageModel(snapshot) {
             switch (op.type) {
                 case 'insert':
                     return { ...base, label: `Insert illustration at ${op.position}`, before: '', after: `${op.instruction} (${(op.svg.length / 1024).toFixed(1)} KB SVG → PNG)`, svg: op.svg };
-                case 'replace':
-                    return { ...base, label: `Replace ${describe(op.index)}`, before: original.altText || 'existing picture', after: `${op.instruction} (${(op.svg.length / 1024).toFixed(1)} KB SVG → PNG)`, svg: op.svg };
+                case 'replace': {
+                    const item = { ...base, label: `Replace ${describe(op.index)}`, before: original.altText || 'existing picture', after: `${op.instruction} (${(op.svg.length / 1024).toFixed(1)} KB SVG → PNG)`, svg: op.svg };
+                    if (op.beforeSrc) item.beforeSrc = op.beforeSrc;
+                    return item;
+                }
                 case 'delete':
                     return { ...base, label: `Delete ${describe(op.index)}`, before: 'existing picture', after: '' };
                 case 'resize': {

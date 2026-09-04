@@ -680,6 +680,46 @@ body {
     margin-bottom: var(--spacing-sm);
 }
 
+/* Two-up before/after visual diff for image ops inside the change list. */
+.proposal-card-image-diff {
+    display: flex;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-xs);
+}
+
+.proposal-card-image-diff-pane {
+    flex: 1;
+    min-width: 0;
+}
+
+.proposal-card-image-diff-label {
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+    margin-bottom: 2px;
+}
+
+.proposal-card-image-diff-pane img {
+    display: block;
+    max-width: 100%;
+    max-height: 140px;
+    margin: 0 auto;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-md);
+}
+
+.proposal-card-image-diff-pane .proposal-card-preview-svg svg {
+    max-height: 140px;
+}
+
+.proposal-card-image-diff-empty {
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--border-radius-md);
+    padding: var(--spacing-xs);
+    word-break: break-word;
+}
+
 .proposal-card-changes-static {
     padding-left: var(--spacing-sm);
 }

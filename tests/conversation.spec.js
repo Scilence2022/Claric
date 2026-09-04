@@ -716,6 +716,72 @@ describe('createConversation.submit', () => {
     expect(actions.applyImageOps.mock.calls[0][1].ops).toEqual([{ type: 'delete', index: 1 }]);
   });
 
+  test('image replace op stages a before/after visual diff (no top preview)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions({
+      prepareImageToolEdit: jest.fn(async () => ({
+        instruction: 'x',
+        ops: [{
+          type: 'replace', index: 1, instruction: 'improve legends',
+          svg: '<svg width="10" height="10"><rect width="10" height="10"/></svg>',
+          beforeSrc: 'data:image/png;base64,iVBORw0KGgo=',
+        }],
+        items: [{
+          id: 1, label: 'Replace image 1',
+          before: 'existing picture', after: 'improve legends (0.1 KB SVG → PNG)',
+          svg: '<svg width="10" height="10"><rect width="10" height="10"/></svg>',
+          beforeSrc: 'data:image/png;base64,iVBORw0KGgo=',
+        }],
+        snapshotCount: 1,
+        model: 'm',
+        toolLoop: { steps: 2, finished: true },
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('改进文档里第二张图片的图例');
+
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    // The replace item renders its own two-up diff; the card-level preview
+    // (single-svg insert convention) stays empty for replace ops.
+    expect(cardEl.querySelector(':scope > .proposal-card-preview-svg')).toBeNull();
+    const diff = cardEl.querySelector('.proposal-card-image-diff');
+    expect(diff).not.toBeNull();
+    expect(diff.querySelector('img').getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=');
+    expect(diff.querySelector('svg')).not.toBeNull();
+  });
+
+  test('a single insert op keeps the top-of-card preview (no per-item duplicate)', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const svg = '<svg width="10" height="10"><rect width="10" height="10"/></svg>';
+    const actions = makeActions({
+      prepareImageToolEdit: jest.fn(async () => ({
+        instruction: 'x',
+        ops: [{ type: 'insert', position: 'end', instruction: 'a sun', svg }],
+        items: [{ id: 1, label: 'Insert illustration at end', before: '', after: 'a sun (0.1 KB SVG → PNG)', svg }],
+        snapshotCount: 0,
+        model: 'm',
+        toolLoop: { steps: 1, finished: true },
+      })),
+    });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('加一张太阳的插图');
+
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    expect(cardEl.querySelector(':scope > .proposal-card-preview-svg svg')).not.toBeNull();
+    // The svg rides the top preview only — not duplicated inside the row.
+    expect(cardEl.querySelector('.proposal-card-image-diff')).toBeNull();
+  });
+
   test('image-only selection enters the image tool session with selection focus', async () => {
     const appState = makeAppState();
     const view = makeView();

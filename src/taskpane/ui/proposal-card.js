@@ -183,6 +183,58 @@ export function renderTablePreview(preview) {
 }
 
 /**
+ * Two-up visual diff for image ops: the current picture (beforeSrc) beside
+ * the proposed illustration (svg, rendered inline and sanitized like the
+ * top preview). Either pane falls back to its text form when the visual is
+ * missing (an insert op has no before image; history-restored items carry
+ * no visuals at all and never reach this branch).
+ *
+ * @param {object} item - { beforeSrc?: string, svg?: string, before?: string, after?: string }
+ * @returns {HTMLElement}
+ */
+function buildImageDiffElement(item) {
+    const wrap = document.createElement('div');
+    wrap.className = 'proposal-card-image-diff';
+
+    const addPane = (label, buildContent) => {
+        const pane = document.createElement('div');
+        pane.className = 'proposal-card-image-diff-pane';
+        const caption = document.createElement('div');
+        caption.className = 'proposal-card-image-diff-label';
+        caption.textContent = label;
+        pane.appendChild(caption);
+        pane.appendChild(buildContent());
+        wrap.appendChild(pane);
+    };
+
+    addPane('Before', () => {
+        if (item.beforeSrc) {
+            const img = document.createElement('img');
+            img.alt = 'Current picture';
+            img.src = item.beforeSrc;
+            return img;
+        }
+        const text = document.createElement('div');
+        text.className = 'proposal-card-image-diff-empty';
+        text.textContent = item.before || '(new image)';
+        return text;
+    });
+    addPane('After', () => {
+        if (item.svg) {
+            const holder = document.createElement('div');
+            holder.className = 'proposal-card-preview-svg';
+            holder.innerHTML = sanitizeSvg(item.svg);
+            return holder;
+        }
+        const text = document.createElement('div');
+        text.className = 'proposal-card-image-diff-empty';
+        text.textContent = item.after || '';
+        return text;
+    });
+    return wrap;
+}
+
+/**
  * Creates a proposal card.
  *
  * @param {object} args
@@ -204,8 +256,10 @@ export function renderTablePreview(preview) {
  *     position?: string, truncated?: boolean }
  * @param {Array<object>} [args.items] - Optional change list. Each item:
  *   { id: string|number, label: string, before?: string, after?: string,
- *     searchText?: string }. before+after render an inline diff; searchText
- *   plus onLocate adds a locate-in-document link.
+ *     searchText?: string, beforeSrc?: string, svg?: string }.
+ *   before+after render an inline diff; searchText plus onLocate adds a
+ *   locate-in-document link. Items carrying beforeSrc and/or svg (image
+ *   ops) render a two-up before/after visual diff instead of the text diff.
  * @param {function(string)} [args.onLocate] - Locate-in-document callback
  *   (receives the item's searchText)
  * @param {string} [args.comment] - Optional comment text (merged mode)
@@ -323,7 +377,10 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             }
             row.appendChild(rowHead);
 
-            if (item.before !== undefined && item.after !== undefined) {
+            if (item.beforeSrc || item.svg) {
+                // Image op: visual before/after instead of the text diff.
+                row.appendChild(buildImageDiffElement(item));
+            } else if (item.before !== undefined && item.after !== undefined) {
                 row.appendChild(buildTextDiffElement(item.before, item.after));
             }
             details.appendChild(row);

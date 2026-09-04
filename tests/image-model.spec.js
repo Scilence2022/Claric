@@ -136,6 +136,30 @@ describe('createImageModel', () => {
         expect(model.recordDelete(1).error).toMatch(/live snapshot index/);
     });
 
+    test('recordReplace carries beforeSrc through to the card item', () => {
+        const model = createImageModel(SNAPSHOT);
+        const beforeSrc = 'data:image/png;base64,iVBORw0KGgo=';
+        expect(model.recordReplace({ index: 1, instruction: 'dusk', svg: SVG, beforeSrc }).ok).toBe(true);
+        expect(model.ops[0].beforeSrc).toBe(beforeSrc);
+        const item = model.describeOps()[0];
+        expect(item.beforeSrc).toBe(beforeSrc);
+        expect(item.svg).toBe(SVG);
+        // Without beforeSrc the item simply omits the field.
+        const plain = createImageModel(SNAPSHOT);
+        plain.recordReplace({ index: 2, instruction: 'x', svg: SVG });
+        expect('beforeSrc' in plain.describeOps()[0]).toBe(false);
+    });
+
+    test('list_images surfaces the stored-SVG-source capability flag', () => {
+        const model = createImageModel([
+            { index: 1, width: 300, height: 200, altText: 'sunset', hasSvgSource: true },
+            { index: 2, width: 450, height: 300, altText: '' },
+        ]);
+        const { result } = model.listImages();
+        expect(result.images[0].hasSvgSource).toBe(true);
+        expect('hasSvgSource' in result.images[1]).toBe(false);
+    });
+
     test('describeOps renders one card item per op', () => {
         const model = createImageModel(SNAPSHOT);
         model.recordDelete(2);
@@ -179,6 +203,7 @@ describe('IMAGE_TOOL_SPECS', () => {
     test('covers the full management surface incl. visual reading', () => {
         expect(IMAGE_TOOL_SPECS.map((t) => t.name)).toEqual([
             'list_images', 'read_image', 'design_illustration', 'replace_illustration',
+            'edit_illustration_text',
             'delete_image', 'resize_image', 'align_image', 'set_alt_text', 'set_image_link',
         ]);
         expect(IMAGE_POSITIONS).toEqual(['start', 'end', 'cursor']);
@@ -196,6 +221,10 @@ describe('IMAGE_TOOL_SPECS', () => {
         expect(align.description).toMatch(/centered/);
         const link = IMAGE_TOOL_SPECS.find((t) => t.name === 'set_image_link');
         expect(link.description).toMatch(/scheme/);
+        // The deterministic label editor points at its fallback.
+        const editText = IMAGE_TOOL_SPECS.find((t) => t.name === 'edit_illustration_text');
+        expect(editText.description).toMatch(/stored SVG source/);
+        expect(editText.description).toMatch(/replace_illustration/);
     });
 });
 

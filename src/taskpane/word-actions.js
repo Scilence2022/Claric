@@ -57,6 +57,7 @@ import {
 } from '../lib/illustration.js';
 import { generateImage } from '../lib/image-client.js';
 import { buildPlanPrompt, parsePlan } from '../lib/task-planner.js';
+import { attachSvgSource } from './svg-source-store.js';
 import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 
 /**
@@ -2949,6 +2950,10 @@ export async function applyIllustrationProposal(deps, proposal) {
             await context.sync();
             // Scaling reads the synced width; alt text is best-effort.
             finalizeInsertedPicture(context, picture, (proposal.instruction || 'Illustration').slice(0, 200));
+            // Persist the SVG source beside the picture so later edits can
+            // re-edit the vector markup (no-op for raster-model payloads and
+            // where the shared custom-XML-parts API is unavailable).
+            if (svg) await attachSvgSource(picture, svg);
             await context.sync();
         } finally {
             if (Word.ChangeTrackingMode) {

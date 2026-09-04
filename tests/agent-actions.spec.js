@@ -22,13 +22,26 @@ if (typeof globalThis.DOMParser === 'undefined') {
 
 jest.mock('../src/lib/illustration.js', () => ({
     buildIllustrationPrompt: jest.fn((instruction) => `design:${instruction}`),
-    buildIllustrationRedesignPrompt: jest.fn((instruction, _scope, opts) => `redesign:${instruction}:${opts && opts.hasSourceImage ? 'with-image' : 'text-only'}`),
+    buildIllustrationRedesignPrompt: jest.fn((instruction, _scope, opts) => `redesign:${instruction}:${opts && opts.hasSourceImage ? 'with-image' : 'text-only'}${opts && opts.sourceSvg ? ':with-source' : ''}`),
     parseIllustration: jest.fn((raw) => ({ svg: String(raw) })),
     sanitizeSvg: jest.fn((svg) => svg),
     ensureSvgDimensions: jest.fn((svg) => svg),
+    editSvgTextLabels: jest.fn((svg) => ({ svg, applied: [], failed: [], labels: [] })),
     illustrationPositionFromInstruction: jest.fn(() => 'end'),
     illustrationPositionLabel: jest.fn(() => 'document end'),
     svgDimensions: jest.fn(() => ({ width: 1200, height: 800 })),
+}));
+
+jest.mock('../src/taskpane/svg-source-store.js', () => ({
+    SVG_SOURCE_TITLE_PREFIX: 'claric-svg:',
+    attachSvgSource: jest.fn(async () => true),
+    deleteSvgSource: jest.fn(async () => undefined),
+    loadSvgSource: jest.fn(async () => null),
+    svgSourceIdFromPicture: jest.fn((picture) => {
+        const title = picture && picture.altTextTitle;
+        return (typeof title === 'string' && title.startsWith('claric-svg:'))
+            ? title.slice('claric-svg:'.length) : null;
+    }),
 }));
 
 jest.mock('../src/lib/comment-extractor.js', () => ({
@@ -48,6 +61,8 @@ jest.mock('../src/taskpane/word-actions.js', () => ({
 const { sendMessages, sendPrompt } = require('../src/lib/llm-client.js');
 const { readSelectionTableRegion } = require('../src/taskpane/word-actions.js');
 const { insertPngPicture, finalizeInsertedPicture } = require('../src/taskpane/word-actions.js');
+const { buildIllustrationRedesignPrompt, editSvgTextLabels } = require('../src/lib/illustration.js');
+const { attachSvgSource, deleteSvgSource, loadSvgSource } = require('../src/taskpane/svg-source-store.js');
 const {
     prepareTableToolEdit, prepareImageToolEdit, applyImageOps,
 } = require('../src/taskpane/agent-actions.js');
@@ -643,7 +658,10 @@ describe('prepareImageToolEdit', () => {
         ]);
         expect(sendPrompt).not.toHaveBeenCalled();
         expect(proposal.ops).toEqual([
-            { type: 'replace', index: 1, instruction: 'improve legends', svg: SVG },
+            {
+                type: 'replace', index: 1, instruction: 'improve legends', svg: SVG,
+                beforeSrc: 'data:image/png;base64,iVBORw0KGgo=',
+            },
         ]);
     });
 
@@ -680,6 +698,126 @@ describe('prepareImageToolEdit', () => {
         );
         expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/redesigning text-only/), 'warning');
         expect(proposal.ops[0]).toMatchObject({ type: 'replace', index: 1, svg: SVG });
+    });
+
+    test('replace_illustration feeds the stored SVG source to the design call', async () => {
+        const OLD_SVG = '<svg width="10" height="10"><text>old label</text></svg>';
+        setImageWorld([{
+            altTextTitle: 'claric-svg:part-1',
+            getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }),
+        }]);
+        loadSvgSource.mockResolvedValueOnce(OLD_SVG);
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legends"}}')
+            .mockResolvedValueOnce(SVG)
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesigned"}}');
+
+        const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '改进这张图的图例' });
+
+        // The nested design prompt was built with the exact source markup,
+        // alongside the attached raster (see the mock's ':with-source' tag).
+        expect(buildIllustrationRedesignPrompt).toHaveBeenCalledWith(
+            'improve legends', expect.anything(),
+            expect.objectContaining({ hasSourceImage: true, sourceSvg: OLD_SVG })
+        );
+        const designMessages = sendMessages.mock.calls[1][1];
+        expect(designMessages[0].content[0].text).toBe('redesign:improve legends:with-image:with-source');
+        expect(proposal.ops[0]).toEqual({
+            type: 'replace', index: 1, instruction: 'improve legends', svg: SVG,
+            beforeSrc: 'data:image/png;base64,iVBORw0KGgo=',
+        });
+        // The snapshot surfaces the capability without leaking the marker.
+        const taskPrompt = sendMessages.mock.calls[0][1][1].content;
+        expect(taskPrompt).toContain('editable SVG source');
+        expect(taskPrompt).not.toContain('claric-svg:');
+    });
+
+    test('edit_illustration_text applies deterministic label edits without a design call', async () => {
+        const OLD_SVG = '<svg width="10" height="10"><text>Dispatch</text></svg>';
+        const EDITED_SVG = '<svg width="10" height="10"><text>调度</text></svg>';
+        setImageWorld([{
+            altTextTitle: 'claric-svg:part-1',
+            getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }),
+        }]);
+        loadSvgSource.mockResolvedValueOnce(OLD_SVG);
+        editSvgTextLabels.mockReturnValueOnce({
+            svg: EDITED_SVG,
+            applied: [{ old: 'Dispatch', new: '调度', count: 1 }],
+            failed: [],
+            labels: ['Dispatch'],
+        });
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"edit_illustration_text","args":{"index":1,"edits":[{"old":"Dispatch","new":"调度"}]}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"labels edited"}}');
+
+        const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '把图里的 Dispatch 改成 调度' });
+
+        expect(editSvgTextLabels).toHaveBeenCalledWith(OLD_SVG, [{ old: 'Dispatch', new: '调度' }]);
+        // Loop turns only — the edit never enters the nested design call.
+        expect(sendMessages).toHaveBeenCalledTimes(2);
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(proposal.ops).toEqual([{
+            type: 'replace', index: 1,
+            instruction: 'edit labels: "Dispatch" → "调度"',
+            svg: EDITED_SVG,
+            beforeSrc: 'data:image/png;base64,iVBORw0KGgo=',
+        }]);
+    });
+
+    test('edit_illustration_text without a stored source points at replace_illustration', async () => {
+        setImageWorld([{ getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]); // no marker title
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"edit_illustration_text","args":{"index":1,"edits":[{"old":"a","new":"b"}]}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"cannot edit directly"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '改图里的字' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content);
+        expect(observation.error).toMatch(/no stored SVG source/);
+        expect(observation.error).toMatch(/replace_illustration/);
+        expect(editSvgTextLabels).not.toHaveBeenCalled();
+    });
+
+    test('edit_illustration_text reports the available labels when no edit matches', async () => {
+        const OLD_SVG = '<svg width="10" height="10"><text>Alpha</text></svg>';
+        setImageWorld([{
+            altTextTitle: 'claric-svg:part-1',
+            getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }),
+        }]);
+        loadSvgSource.mockResolvedValueOnce(OLD_SVG);
+        editSvgTextLabels.mockReturnValueOnce({
+            svg: OLD_SVG,
+            applied: [],
+            failed: [{ old: 'Dispach', new: 'Dispatch' }],
+            labels: ['Alpha', 'Beta'],
+        });
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"edit_illustration_text","args":{"index":1,"edits":[{"old":"Dispach","new":"Dispatch"}]}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"retrying with the right label"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '修图例错字' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content);
+        expect(observation.error).toMatch(/No edit matched/);
+        expect(observation.error).toContain('"Alpha"');
+    });
+
+    test('read_image reports whether the picture carries a stored SVG source', async () => {
+        setImageWorld([{
+            altTextTitle: 'claric-svg:part-1',
+            getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }),
+        }]);
+        loadSvgSource.mockResolvedValueOnce('<svg width="10" height="10"/>');
+        sendMessages.mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"seen"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '看图' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content[0].text);
+        expect(observation.result.hasStoredSvgSource).toBe(true);
     });
 });
 
@@ -798,6 +936,63 @@ describe('applyImageOps', () => {
         });
         expect(result.applied).toBe(2);
         expect(result.warnings.some((w) => /no paragraph anchor/.test(w))).toBe(true);
+    });
+
+    test('insert persists the SVG source beside the new picture', async () => {
+        setImageWorld([]);
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 0,
+            ops: [{ type: 'insert', position: 'end', instruction: 'a sun', svg: SVG }],
+        });
+        const insertedPic = insertPngPicture.mock.results[0].value;
+        expect(attachSvgSource).toHaveBeenCalledWith(insertedPic, SVG);
+    });
+
+    test('replace scales and re-labels the new picture, re-attaches the new source, deletes the old part', async () => {
+        const newPic = { load: jest.fn(), width: 1600, height: 900 };
+        const [pic] = setImageWorld([{
+            altTextTitle: 'claric-svg:old-part',
+            altTextDescription: 'fig1',
+            getRange: jest.fn(() => ({ insertInlinePictureFromBase64: jest.fn(() => newPic) })),
+        }]);
+
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'replace', index: 1, instruction: 'improve legends', svg: SVG }],
+        });
+
+        expect(pic.delete).toHaveBeenCalled();
+        // The original alt-text description rides over to the replacement.
+        expect(finalizeInsertedPicture).toHaveBeenCalledWith(expect.anything(), newPic, 'fig1');
+        expect(attachSvgSource).toHaveBeenCalledWith(newPic, SVG);
+        expect(deleteSvgSource).toHaveBeenCalledWith('old-part');
+    });
+
+    test('replace without a prior source still attaches the new one', async () => {
+        const newPic = { load: jest.fn(), width: 1600, height: 900 };
+        const [pic] = setImageWorld([{
+            altTextDescription: '',
+            getRange: jest.fn(() => ({ insertInlinePictureFromBase64: jest.fn(() => newPic) })),
+        }]);
+
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'replace', index: 1, instruction: 'redraw', svg: SVG }],
+        });
+
+        expect(attachSvgSource).toHaveBeenCalledWith(newPic, SVG);
+        expect(deleteSvgSource).not.toHaveBeenCalled();
+        expect(pic.delete).toHaveBeenCalled();
+    });
+
+    test('delete drops the stored SVG source part', async () => {
+        const [pic] = setImageWorld([{ altTextTitle: 'claric-svg:old-part' }]);
+        await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{ type: 'delete', index: 1 }],
+        });
+        expect(pic.delete).toHaveBeenCalled();
+        expect(deleteSvgSource).toHaveBeenCalledWith('old-part');
     });
 });
 

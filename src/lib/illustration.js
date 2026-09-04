@@ -49,25 +49,50 @@ export function buildIllustrationPrompt(instruction, scopeText) {
 }
 
 /**
+ * Cap on the stored-SVG source embedded into a redesign prompt. Stored
+ * sources were already sanitizeSvg-bounded at design time; this is a
+ * defensive slice so a hand-inflated source cannot blow the context.
+ */
+const MAX_SOURCE_SVG_CHARS = 50 * 1024;
+
+/**
  * Builds the LLM prompt that REDESIGNS an existing figure as one SVG
  * document (replace_illustration). Unlike buildIllustrationPrompt this
  * expects text: diagrams live on their labels and legends, so the
  * "avoid lettering" rule would defeat the task. When the original picture
  * is attached to the request, the prompt anchors fidelity to it — the
- * model must change only what the instruction asks for.
+ * model must change only what the instruction asks for. When the stored
+ * SVG source is available it is embedded verbatim and the task shifts from
+ * "redraw" to "edit this markup minimally" — the lossless path.
  *
  * @param {string} instruction - What to change (not a full re-description)
  * @param {string} scopeText - Document text (subject/mood context)
  * @param {object} [options]
  * @param {boolean} [options.hasSourceImage=false] - True when the original
  *   picture rides along as an image input
+ * @param {string} [options.sourceSvg=''] - Stored SVG source of the figure
+ *   (svg-source-store), when the document carries it
  * @returns {string}
  */
-export function buildIllustrationRedesignPrompt(instruction, scopeText, { hasSourceImage = false } = {}) {
-    const fidelity = hasSourceImage
-        ? 'The CURRENT version of the figure is attached as an image. Reproduce its structure, ' +
-          'flow, and every text label faithfully — change only what the instruction asks for.'
-        : 'The figure to redesign is described in the user instruction below.';
+export function buildIllustrationRedesignPrompt(instruction, scopeText, { hasSourceImage = false, sourceSvg = '' } = {}) {
+    const svgSource = (typeof sourceSvg === 'string' && sourceSvg.trim().startsWith('<svg'))
+        ? sourceSvg.trim().slice(0, MAX_SOURCE_SVG_CHARS)
+        : '';
+    let fidelity;
+    if (svgSource && hasSourceImage) {
+        fidelity = 'The CURRENT version of the figure is attached as an image, and its exact SVG ' +
+            'source is included below. Edit that source minimally — reproduce its structure, flow, ' +
+            'and every text label faithfully; change only what the instruction asks for.';
+    } else if (svgSource) {
+        fidelity = 'The exact SVG source of the figure to redesign is included below. Edit it ' +
+            'minimally — keep its structure, flow, and every text label; change only what the ' +
+            'instruction asks for.';
+    } else if (hasSourceImage) {
+        fidelity = 'The CURRENT version of the figure is attached as an image. Reproduce its structure, ' +
+            'flow, and every text label faithfully — change only what the instruction asks for.';
+    } else {
+        fidelity = 'The figure to redesign is described in the user instruction below.';
+    }
     return (
         'You are an illustrator embedded in Microsoft Word. Redesign an EXISTING figure of the ' +
         'document as a single self-contained SVG image.\n\n' +
@@ -84,8 +109,133 @@ export function buildIllustrationRedesignPrompt(instruction, scopeText, { hasSou
         'otherwise. Keep the markup under ~15 KB.\n' +
         '- Match the language of the document and of the original labels.\n\n' +
         'USER INSTRUCTION:\n' + (instruction || '').trim() + '\n\n' +
+        (svgSource ? '--- CURRENT SVG SOURCE (edit this markup) ---\n' + svgSource + '\n\n' : '') +
         '--- DOCUMENT TEXT (context for subject and mood) ---\n' + (scopeText || '')
     );
+}
+
+/**
+ * Label cap for extractSvgTextLabels results — enough for the edit tool's
+ * error messages without dumping an entire pathological diagram.
+ */
+const MAX_SVG_LABELS = 40;
+const MAX_SVG_LABEL_CHARS = 80;
+
+/**
+ * Parses an SVG and returns its text-bearing elements (text and tspan),
+ * deepest first so nested tspans are edited before their parent text.
+ *
+ * @param {string} svg
+ * @returns {{ doc: Document|null, nodes: Element[] }} doc is null when the
+ *   markup cannot be parsed
+ * @private
+ */
+function _parseSvgTextNodes(svg) {
+    if (typeof svg !== 'string' || !svg.trim()) return { doc: null, nodes: [] };
+    let doc;
+    try {
+        doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    } catch {
+        return { doc: null, nodes: [] };
+    }
+    if (doc.getElementsByTagName('parsererror').length > 0) return { doc: null, nodes: [] };
+    const nodes = [];
+    const walk = (el, depth) => {
+        for (const child of Array.from(el.childNodes || [])) {
+            if (child.nodeType !== 1) continue;
+            if (child.localName === 'text' || child.localName === 'tspan') {
+                walk(child, depth + 1);
+                nodes.push({ el: child, depth });
+            } else {
+                walk(child, depth);
+            }
+        }
+    };
+    walk(doc.documentElement, 0);
+    nodes.sort((a, b) => b.depth - a.depth);
+    return { doc, nodes: nodes.map((n) => n.el) };
+}
+
+/**
+ * Lists the visible text labels of an SVG (trimmed text/tspan contents,
+ * document order, deduplicated). Used to tell the model which labels an
+ * edit_illustration_text call could have matched.
+ *
+ * @param {string} svg
+ * @returns {string[]}
+ */
+export function extractSvgTextLabels(svg) {
+    const { nodes } = _parseSvgTextNodes(svg);
+    const seen = new Set();
+    const labels = [];
+    // Shallowest last in node order; for label listing we want the parent
+    // <text> aggregates, not their tspan fragments — walk deepest-first
+    // nodes but keep only leaf text content per element's own text nodes.
+    for (const el of nodes.slice().reverse()) {
+        const own = Array.from(el.childNodes || [])
+            .filter((n) => n.nodeType === 3)
+            .map((n) => n.data)
+            .join('')
+            .trim();
+        if (!own) continue;
+        const label = own.slice(0, MAX_SVG_LABEL_CHARS);
+        if (seen.has(label)) continue;
+        seen.add(label);
+        labels.push(label);
+        if (labels.length >= MAX_SVG_LABELS) break;
+    }
+    return labels;
+}
+
+/**
+ * Applies deterministic find-and-replace edits to an SVG's text labels
+ * (edit_illustration_text). Matching happens on DECODED text-node content
+ * (entities resolved), so labels containing & or < match their drawn form;
+ * only text nodes are touched — structure, styles, and geometry survive
+ * verbatim. Each edit replaces every occurrence across the SVG.
+ *
+ * @param {string} svg - Stored SVG source
+ * @param {Array<{old: string, new: string}>} edits - Exact label replacements
+ * @returns {{ svg: string, applied: Array<{old: string, new: string, count: number}>,
+ *   failed: Array<{old: string, new: string}>, labels: string[] }}
+ *   svg is the edited markup (input unchanged when nothing applied);
+ *   labels lists the labels present for retry guidance
+ */
+export function editSvgTextLabels(svg, edits) {
+    const labels = extractSvgTextLabels(svg);
+    const cleanEdits = (Array.isArray(edits) ? edits : [])
+        .map((e) => ({
+            old: e && e.old != null ? String(e.old) : '',
+            new: e && e.new != null ? String(e.new) : '',
+        }))
+        .filter((e) => e.old.trim() && e.new.trim() && e.old !== e.new);
+    if (cleanEdits.length === 0) return { svg, applied: [], failed: [], labels };
+
+    const { doc, nodes } = _parseSvgTextNodes(svg);
+    if (!doc) {
+        return { svg, applied: [], failed: cleanEdits.map(({ old, new: n }) => ({ old, new: n })), labels };
+    }
+
+    const applied = [];
+    const failed = [];
+    for (const edit of cleanEdits) {
+        let count = 0;
+        for (const el of nodes) {
+            for (const child of Array.from(el.childNodes || [])) {
+                if (child.nodeType !== 3) continue;
+                const hits = child.data.split(edit.old).length - 1;
+                if (hits > 0) {
+                    child.data = child.data.split(edit.old).join(edit.new);
+                    count += hits;
+                }
+            }
+        }
+        if (count > 0) applied.push({ old: edit.old, new: edit.new, count });
+        else failed.push({ old: edit.old, new: edit.new });
+    }
+
+    if (applied.length === 0) return { svg, applied, failed, labels };
+    return { svg: new XMLSerializer().serializeToString(doc), applied, failed, labels };
 }
 
 /**
