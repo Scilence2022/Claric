@@ -2,7 +2,7 @@
  * Skill registry tests.
  *
  * Covers:
- *   - BUILTIN_SKILLS completeness (six frozen, well-formed descriptors)
+ *   - BUILTIN_SKILLS completeness (frozen, well-formed descriptors)
  *   - resolveSkill parsing of "/name args" input
  *   - listSkills custom-skill registration from PromptManager state
  *
@@ -22,11 +22,21 @@ const EXPECTED_SLASHES = [
   '/flag-issues',
   '/industry-overview',
   '/storylining',
+  '/academic-polish',
+  '/simplify',
+  '/shorten',
+  '/expand',
+  '/translate',
+  '/check-clarity',
+  '/check-consistency',
+  '/action-items',
+  '/executive-summary',
+  '/key-points',
 ];
 
 describe('BUILTIN_SKILLS registry', () => {
-  test('contains exactly the six built-in skills with unique slashes', () => {
-    expect(BUILTIN_SKILLS.length).toBe(6);
+  test('contains exactly the built-in skills with unique slashes', () => {
+    expect(BUILTIN_SKILLS.length).toBe(16);
     const slashes = BUILTIN_SKILLS.map((s) => s.slash);
     expect(new Set(slashes)).toEqual(new Set(EXPECTED_SLASHES));
   });
@@ -55,6 +65,34 @@ describe('BUILTIN_SKILLS registry', () => {
     expect(byName['flag-issues'].category).toBe('comment');
     expect(byName['industry-overview'].category).toBe('chat');
     expect(byName['storylining'].category).toBe('chat');
+    for (const name of ['academic-polish', 'simplify', 'shorten', 'expand', 'translate']) {
+      expect(byName[name].category).toBe('amendment');
+      expect(byName[name].scope).toBe('selection-first');
+    }
+    for (const name of ['check-clarity', 'check-consistency']) {
+      expect(byName[name].category).toBe('comment');
+    }
+    expect(byName['check-clarity'].scope).toBe('selection-first');
+    expect(byName['check-consistency'].scope).toBe('document');
+    for (const name of ['action-items', 'executive-summary']) {
+      expect(byName[name].category).toBe('summary');
+      expect(byName[name].scope).toBe('document');
+    }
+    expect(byName['key-points'].category).toBe('chat');
+    expect(byName['key-points'].scope).toBe('chat');
+  });
+
+  test('uses supported placeholders in the appropriate skill prompts', () => {
+    const byName = Object.fromEntries(BUILTIN_SKILLS.map((s) => [s.name, s]));
+    for (const name of ['academic-polish', 'simplify', 'shorten', 'expand', 'translate', 'check-clarity', 'check-consistency']) {
+      expect(byName[name].defaultTemplate).toContain('{selection}');
+    }
+    for (const name of ['action-items', 'executive-summary', 'summarize-contract']) {
+      expect(byName[name].defaultTemplate).toContain('{whole document}');
+      expect(byName[name].defaultTemplate).toContain('{comments}');
+    }
+    expect(byName.translate.defaultTemplate).toContain('English into Simplified Chinese');
+    expect(byName['key-points'].defaultTemplate).not.toMatch(/\{(?:selection|whole document|comments)\}/);
   });
 });
 
@@ -70,6 +108,12 @@ describe('resolveSkill', () => {
     const result = resolveSkill('/check-doc', BUILTIN_SKILLS);
     expect(result.skill.name).toBe('check-doc');
     expect(result.args).toBe('');
+  });
+
+  test('parses a newly added slash command with arguments', () => {
+    const result = resolveSkill('/translate into French', BUILTIN_SKILLS);
+    expect(result.skill.name).toBe('translate');
+    expect(result.args).toBe('into French');
   });
 
   test('matches slash token case-insensitively', () => {
@@ -99,10 +143,10 @@ describe('listSkills', () => {
   }
 
   test('returns built-ins plus the reserved /mcp skill when promptManager is missing or empty', () => {
-    // 6 built-ins + the reserved MCP-tools skill.
-    expect(listSkills(null).length).toBe(7);
+    // 16 built-ins + the reserved MCP-tools skill.
+    expect(listSkills(null).length).toBe(17);
     const pm = makePromptManager({});
-    expect(listSkills(pm).length).toBe(7);
+    expect(listSkills(pm).length).toBe(17);
   });
 
   test('registers saved prompts as custom slash commands', () => {
@@ -111,7 +155,7 @@ describe('listSkills', () => {
       summary: [{ id: 'exec-summary', name: 'Exec Summary', template: 'tpl', description: '' }],
     });
     const skills = listSkills(pm);
-    expect(skills.length).toBe(9); // 6 built-ins + /mcp + 2 prompt customs
+    expect(skills.length).toBe(19); // 16 built-ins + /mcp + 2 prompt customs
 
     const legal = skills.find((s) => s.slash === '/legal-review');
     expect(legal).toBeDefined();

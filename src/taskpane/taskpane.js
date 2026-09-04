@@ -229,7 +229,8 @@ function updateModelPill() {
 function showAbout() {
     chatView.addSystemNote(
         'Claric — your redlining scribe for Word.\n' +
-        'Type "/" for skills (/copy-edit, /check-doc, /flag-issues, /summarize-contract, ...), ' +
+        'Type "/" for slash commands (/academic-polish, /simplify, /shorten, /expand, /translate, /check-clarity, ' +
+        '/check-consistency, /action-items, /executive-summary, /key-points, ...), ' +
         'select text and type an instruction to edit it as tracked changes, or just ask a question about the document.'
     );
 }
