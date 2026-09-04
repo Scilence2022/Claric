@@ -77,19 +77,41 @@ function makeDeps() {
     };
 }
 
-/** Word.run mock whose body lists the given picture proxies. */
-function setImageWorld(pictures) {
-    const items = pictures.map((over) => {
-        const paragraph = {
-            alignment: 'Left',
-            // Expose paragraph.alignment as a real property so assignments stick.
-        };
+/** Word.run mock whose body lists the given picture and paragraph proxies. */
+function setImageWorld(pictures, { paragraphs, failContextSync = false } = {}) {
+    const nullParagraph = {
+        isNullObject: true,
+        text: '',
+        style: '',
+        styleBuiltIn: '',
+        load: jest.fn(),
+    };
+    nullParagraph.getPreviousOrNullObject = jest.fn(() => nullParagraph);
+    nullParagraph.getNextOrNullObject = jest.fn(() => nullParagraph);
+
+    const paragraphSpecs = paragraphs || pictures.map(() => ({}));
+    const paragraphItems = paragraphSpecs.map((spec) => ({
+        isNullObject: false,
+        text: '',
+        style: 'Normal',
+        styleBuiltIn: 'Normal',
+        load: jest.fn(),
+        ...spec,
+    }));
+    paragraphItems.forEach((paragraph, i) => {
+        paragraph.getPreviousOrNullObject = jest.fn(() => paragraphItems[i - 1] || nullParagraph);
+        paragraph.getNextOrNullObject = jest.fn(() => paragraphItems[i + 1] || nullParagraph);
         Object.defineProperty(paragraph, 'alignment', {
             get: () => paragraph._alignment,
             set: (v) => { paragraph._alignment = v; },
             configurable: true,
         });
-        paragraph._alignment = over.alignment || 'Left';
+        paragraph._alignment = paragraph.alignment || 'Left';
+    });
+
+    const items = pictures.map((over, i) => {
+        const paragraph = paragraphItems[over.paragraphIndex === undefined ? i : over.paragraphIndex];
+        if (paragraph && over.alignment) paragraph._alignment = over.alignment;
         return {
             width: 300, height: 200, altTextDescription: '', altTextTitle: '',
             hyperlink: '', lockAspectRatio: true,
@@ -99,11 +121,17 @@ function setImageWorld(pictures) {
             ...over,
         };
     });
+    let runCount = 0;
     global.Word = {
-        run: jest.fn(async (cb) => cb({
-            document: { body: { inlinePictures: { items, load: jest.fn() } } },
-            sync: jest.fn().mockResolvedValue(undefined),
-        })),
+        run: jest.fn(async (cb) => {
+            runCount += 1;
+            return cb({
+                document: { body: { inlinePictures: { items, load: jest.fn() } } },
+                sync: failContextSync && runCount === 3
+                    ? jest.fn().mockRejectedValue(new Error('context sync failed'))
+                    : jest.fn().mockResolvedValue(undefined),
+            });
+        }),
         RangeLocation: { start: 'Start', end: 'End' },
         InsertLocation: { start: 'Start', end: 'End', before: 'Before' },
         ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' },
@@ -323,6 +351,132 @@ describe('prepareImageToolEdit', () => {
         expect(proposal.answer).toBe('a sunset over water');
     });
 
+    test('read_image returns a following Caption paragraph as a strong candidate', async () => {
+        setImageWorld(
+            [{ paragraphIndex: 2, getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }],
+            {
+                paragraphs: [
+                    { text: 'Earlier context' },
+                    { text: 'Immediate context' },
+                    { text: '   ' },
+                    { text: '  Figure 2.   Revenue by region  ', style: 'Caption', styleBuiltIn: 'Caption' },
+                    { text: 'Later discussion' },
+                ],
+            }
+        );
+        sendMessages.mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"caption read"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '读取图注' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content[0].text);
+        expect(observation.result.documentContext.captionCandidates).toEqual([
+            expect.objectContaining({
+                text: 'Figure 2. Revenue by region',
+                position: 'after',
+                distance: 1,
+                style: 'Caption',
+                styleBuiltIn: 'Caption',
+                captionStrength: 'strong',
+                reason: 'Word built-in Caption style',
+            }),
+        ]);
+        expect(observation.result.documentContext.nearbyParagraphs)
+            .not.toEqual(expect.arrayContaining([expect.objectContaining({ position: 'containing' })]));
+    });
+
+    test('read_image recognizes a preceding Figure label as a weak candidate', async () => {
+        setImageWorld(
+            [{ paragraphIndex: 1, getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }],
+            { paragraphs: [{ text: 'FIG. IV  Study flow' }, { text: '' }, { text: 'Body text' }] }
+        );
+        sendMessages.mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"candidate read"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '读取图片上下文' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content[0].text);
+        expect(observation.result.documentContext.captionCandidates).toEqual([
+            expect.objectContaining({
+                text: 'FIG. IV Study flow',
+                position: 'before',
+                distance: 1,
+                captionStrength: 'weak',
+                reason: 'starts with a Figure/Fig./图 label and number',
+            }),
+        ]);
+    });
+
+    test('read_image handles null paragraph proxies at both document edges', async () => {
+        setImageWorld(
+            [{ getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }],
+            { paragraphs: [{ text: 'Only paragraph', styleBuiltIn: 'Normal' }] }
+        );
+        sendMessages.mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"edge read"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '读取图片上下文' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content[0].text);
+        expect(observation.result.documentContext).toMatchObject({
+            nearbyParagraphs: [expect.objectContaining({
+                text: 'Only paragraph', position: 'containing', distance: 0,
+            })],
+            captionCandidates: [],
+            truncated: false,
+        });
+    });
+
+    test('read_image normalizes and bounds paragraph context', async () => {
+        const longText = (letter) => `${letter.repeat(600)}  \n\t ${letter.repeat(600)}`;
+        setImageWorld(
+            [{ paragraphIndex: 2, getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }],
+            { paragraphs: ['a', 'b', 'c', 'd', 'e'].map((letter) => ({ text: longText(letter) })) }
+        );
+        sendMessages.mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"bounded"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '读取图片上下文' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content[0].text);
+        const documentContext = observation.result.documentContext;
+        expect(documentContext.truncated).toBe(true);
+        expect(documentContext.nearbyParagraphs).toHaveLength(4);
+        expect(documentContext.nearbyParagraphs.every((p) => p.text.length === 1000 && p.truncated)).toBe(true);
+        expect(documentContext.nearbyParagraphs.reduce((sum, p) => sum + p.text.length, 0)).toBe(4000);
+        expect(documentContext.nearbyParagraphs.every((p) => !/[\n\t]| {2}/.test(p.text))).toBe(true);
+    });
+
+    test.each([
+        ['unsupported nearby paragraph API', { paragraph: { load: jest.fn() } }, {}, /unavailable/],
+        ['context sync failure', {}, { failContextSync: true }, /context sync failed/],
+    ])('read_image keeps image data after %s', async (_label, pictureOverrides, options, reasonPattern) => {
+        setImageWorld(
+            [{ getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }), ...pictureOverrides }],
+            options
+        );
+        sendMessages.mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"visual still available"}}');
+
+        await prepareImageToolEdit(makeDeps(), { instruction: '看图' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const content = messages[messages.length - 2].content;
+        const observation = JSON.parse(content[0].text);
+        expect(observation.result.documentContext).toMatchObject({
+            nearbyParagraphs: [], captionCandidates: [],
+            unavailableReason: expect.stringMatching(reasonPattern),
+        });
+        expect(content[1]).toEqual({
+            type: 'image_url',
+            image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' },
+        });
+    });
+
     test('read_image on a bad index becomes an error observation, not a crash', async () => {
         setImageWorld([{ getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]);
         sendMessages.mockResolvedValueOnce('{"tool":"read_image","args":{"index":9}}')
@@ -354,6 +508,9 @@ describe('prepareImageToolEdit', () => {
         expect(messages[1].content).toContain('SELECTED by the user right now');
         expect(messages[1].content).toContain('image 1 (SELECTED');
         expect(messages[1].content).toContain('read_image');
+        expect(messages[1].content).toContain('legend or caption');
+        expect(messages[1].content).toContain('untrusted data');
+        expect(messages[1].content).toContain('do not claim an ordinary nearby paragraph');
     });
 
     test('unmatchable selection metadata degrades to an honest note', async () => {
