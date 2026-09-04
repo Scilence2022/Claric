@@ -116,7 +116,13 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         if (pickerItems.length === 0) return;
         pickerIndex = (pickerIndex + delta + pickerItems.length) % pickerItems.length;
         picker.querySelectorAll('.skill-picker-item').forEach((el, i) => {
-            el.classList.toggle('active', i === pickerIndex);
+            const active = i === pickerIndex;
+            el.classList.toggle('active', active);
+            // Keep the keyboard-highlighted item visible when the list
+            // overflows the picker's max-height and scrolls.
+            if (active && typeof el.scrollIntoView === 'function') {
+                el.scrollIntoView({ block: 'nearest' });
+            }
         });
     }
 

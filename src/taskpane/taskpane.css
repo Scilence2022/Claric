@@ -1076,9 +1076,26 @@ body {
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius-md);
     box-shadow: var(--shadow-lg);
-    max-height: 260px;
+    max-height: min(340px, 45vh);
     overflow-y: auto;
     z-index: 20;
+    /* Visible thin scrollbar — overlay-scrollbar platforms hide it by
+       default, which made the overflowing command list look truncated. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+
+.skill-picker::-webkit-scrollbar {
+    width: 6px;
+}
+
+.skill-picker::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
+.skill-picker::-webkit-scrollbar-track {
+    background: transparent;
 }
 
 .skill-picker-item {
@@ -1820,13 +1837,28 @@ textarea.form-control {
     z-index: 20;
     min-width: 260px;
     max-width: 320px;
-    max-height: 300px;
+    max-height: min(340px, 45vh);
     overflow-y: auto;
     background: var(--primary-bg);
     border: 1px solid var(--border-color);
     border-radius: 12px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
     padding: var(--spacing-xs);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+
+.skills-menu::-webkit-scrollbar {
+    width: 6px;
+}
+
+.skills-menu::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
+.skills-menu::-webkit-scrollbar-track {
+    background: transparent;
 }
 
 .skills-menu .skill-picker-item {

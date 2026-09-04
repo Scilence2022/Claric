@@ -22,7 +22,7 @@ const EXPECTED_SLASHES = [
   '/flag-issues',
   '/industry-overview',
   '/storylining',
-  '/academic-polish',
+  '/polish',
   '/simplify',
   '/shorten',
   '/expand',
@@ -65,7 +65,7 @@ describe('BUILTIN_SKILLS registry', () => {
     expect(byName['flag-issues'].category).toBe('comment');
     expect(byName['industry-overview'].category).toBe('chat');
     expect(byName['storylining'].category).toBe('chat');
-    for (const name of ['academic-polish', 'simplify', 'shorten', 'expand', 'translate']) {
+    for (const name of ['polish', 'simplify', 'shorten', 'expand', 'translate']) {
       expect(byName[name].category).toBe('amendment');
       expect(byName[name].scope).toBe('selection-first');
     }
@@ -84,7 +84,7 @@ describe('BUILTIN_SKILLS registry', () => {
 
   test('uses supported placeholders in the appropriate skill prompts', () => {
     const byName = Object.fromEntries(BUILTIN_SKILLS.map((s) => [s.name, s]));
-    for (const name of ['academic-polish', 'simplify', 'shorten', 'expand', 'translate', 'check-clarity', 'check-consistency']) {
+    for (const name of ['polish', 'simplify', 'shorten', 'expand', 'translate', 'check-clarity', 'check-consistency']) {
       expect(byName[name].defaultTemplate).toContain('{selection}');
     }
     for (const name of ['action-items', 'executive-summary', 'summarize-contract']) {
