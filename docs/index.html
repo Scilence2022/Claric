@@ -276,6 +276,11 @@
   }
   .start-card pre .cm { color: #78716c; }
   .start-card pre .pr { color: #a5b4fc; }
+  .start-label { margin: 0 0 .8rem; font: 700 .74rem 'Inter', sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-muted); }
+  .start-label + .start-grid { margin-top: 0; }
+  .start-grid + .start-label { margin-top: 2.2rem; }
+  .start-note { margin-top: 1.1rem; font-size: .85rem; color: var(--ink-soft); }
+  .start-note code { font-family: 'JetBrains Mono', monospace; font-size: .76rem; background: var(--paper-warm); border: 1px solid var(--line); border-radius: 6px; padding: .1rem .4rem; }
   @media (max-width: 860px) { .start-grid { grid-template-columns: 1fr; } }
 
   /* ── CTA banner ── */
@@ -714,15 +719,37 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <div class="kicker"><span class="lang-en">Get started</span><span class="lang-zh">快速上手</span></div>
-      <h2 class="serif"><span class="lang-en">Up and running in minutes</span><span class="lang-zh">几分钟即可跑起来</span></h2>
-      <p><span class="lang-en">Self-host the add-in with Docker or npm, sideload the manifest into Word, and point it at your model. HTTPS certificates are the only requirement.</span>
-         <span class="lang-zh">用 Docker 或 npm 自托管加载项，把 manifest 旁加载进 Word，再指向你的模型即可。唯一的前置要求是 HTTPS 证书。</span></p>
+      <h2 class="serif"><span class="lang-en">Install in one line</span><span class="lang-zh">一行命令，装进 Word</span></h2>
+      <p><span class="lang-en">One command installs Claric straight into Word — no admin rights, no Node.js, no Docker. Self-host with Docker or npm when you want local models.</span>
+         <span class="lang-zh">一条命令即可把 Claric 装进 Word——无需管理员权限、无需 Node.js、无需 Docker；想接本地模型，再用 Docker 或 npm 自托管。</span></p>
     </div>
+    <div class="start-label reveal"><span class="lang-en">One-click install · static build from GitHub Pages — recommended</span><span class="lang-zh">一键安装 · GitHub Pages 静态版（推荐）</span></div>
+    <div class="start-grid">
+      <div class="start-card reveal">
+        <div class="start-head">
+          <h3>🍎 macOS</h3>
+          <span><span class="lang-en">Terminal · per-user, no admin rights</span><span class="lang-zh">终端 · 按用户安装，无需管理员</span></span>
+        </div>
+        <pre><span class="cm"># downloads the manifest, registers it with Word, then opens Claric</span>
+curl -fsSL https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/macos/Install-Claric.sh | bash</pre>
+      </div>
+      <div class="start-card reveal">
+        <div class="start-head">
+          <h3>🪟 Windows</h3>
+          <span><span class="lang-en">PowerShell · per-user, no admin rights</span><span class="lang-zh">PowerShell · 按用户安装，无需管理员</span></span>
+        </div>
+        <pre><span class="cm"># same per-user install — works on consumer Microsoft 365 builds</span>
+irm https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/windows/Install-Claric.ps1 | iex</pre>
+      </div>
+    </div>
+    <p class="start-note reveal"><span class="lang-en">Word opens <code>Claric-Launch.docx</code> with the taskpane mounted — reopen that document (or Home → Add-ins → Claric) anytime. Matching uninstall scripts live in <code>installer/</code>.</span>
+       <span class="lang-zh">Word 会打开 <code>Claric-Launch.docx</code> 并挂载任务窗格——需要时重新打开该文档（或 主页 → 加载项 → Claric）即可，配对的卸载脚本在仓库 <code>installer/</code> 目录。</span></p>
+    <div class="start-label reveal"><span class="lang-en">Self-host · local models (Ollama / vLLM) &amp; development</span><span class="lang-zh">自托管 · 本地模型（Ollama / vLLM）与开发</span></div>
     <div class="start-grid">
       <div class="start-card reveal">
         <div class="start-head">
           <h3>🐳 Docker</h3>
-          <span><span class="lang-en">recommended · no Node.js needed</span><span class="lang-zh">推荐 · 无需 Node.js</span></span>
+          <span><span class="lang-en">self-host · for local models</span><span class="lang-zh">自托管 · 接本地模型</span></span>
         </div>
         <pre><span class="cm"># clone &amp; configure</span>
 git clone https://github.com/Scilence2022/Claric.git
@@ -753,6 +780,8 @@ cp localhost-key.pem server-key.pem
 npm start</pre>
       </div>
     </div>
+    <p class="start-note reveal"><span class="lang-en">Self-hosting? Once the server is up, sideload its manifest with <code>npm run install:macos</code> or <code>npm run install:windows</code> from a checkout — or follow the manual steps in the README.</span>
+       <span class="lang-zh">自托管的话，服务器跑起来后在仓库目录运行 <code>npm run install:macos</code> 或 <code>npm run install:windows</code> 旁加载其 manifest——或按 README 手动操作。</span></p>
 
     <div class="cta-banner reveal">
       <h2 class="serif"><span class="lang-en">Nothing changes without your approval.</span><span class="lang-zh">不经你确认，绝不动一个字。</span></h2>
