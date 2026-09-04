@@ -8,6 +8,18 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
+- **Build fingerprint surfaced in the taskpane Activity log**
+  (`webpack.config.cjs`, `src/taskpane/taskpane.js`,
+  `tests/build-info.spec.js`) — production builds now emit
+  `dist/build-info.json` carrying a 12-char `hash` (content-derived SHA-256 of
+  every file in `dist/`), the ISO-8601 UTC `builtAt`, the `mode`, and the
+  `appVersion` mirrored from `package.json`. The taskpane fetches it
+  fire-and-forget at startup and logs
+  `Claric build: <hash> (<appVersion>, <builtAt>)` in the Activity drawer —
+  completely silent if the file is missing or unreachable. The hash is stable
+  across reruns (filename + digest input, no mtime bias), so it is a reliable
+  way to confirm a user is on the latest bundle before triaging an issue.
+
 - **Independent image-generation providers** (`src/lib/image-client.js`,
   `src/lib/image-providers.js`) — image settings are separate from chat-provider
   selection and support OpenAI Images, Zhipu CogView, MiniMax Images, and Custom

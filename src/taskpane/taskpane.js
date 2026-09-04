@@ -207,6 +207,23 @@ function initialize() {
     // Auto-test connection and load models
     testConnectionUI();
 
+    // Log build fingerprint (dist content hash + UTC timestamp). Fire-and-forget:
+    // the asset may be served from a stale cache or unreachable; a missing
+    // build-info must never slow or surface anything to the user.
+    fetch(new URL('build-info.json', location.href).href, { cache: 'no-store' })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((info) => {
+            if (!info || typeof info.hash !== 'string') return;
+            const builtAt = typeof info.builtAt === 'string' ? info.builtAt : '';
+            addLog(
+                builtAt
+                    ? `Claric build: ${info.hash} (${info.appVersion || 'unknown'}, ${builtAt})`
+                    : `Claric build: ${info.hash} (${info.appVersion || 'unknown'})`,
+                'info'
+            );
+        })
+        .catch(() => { /* silent: build info missing or blocked is not an error */ });
+
     addLog('Claric initialized.', 'info');
     input.focus();
 }

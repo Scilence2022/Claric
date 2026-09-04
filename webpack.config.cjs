@@ -3,6 +3,7 @@ const HtmlWebpackPlugin = require('html-webpack-plugin');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
 const webpack = require('webpack');
 const fs = require('fs');
+const crypto = require('crypto');
 
 // Load environment variables from .env file
 require('dotenv').config();
@@ -431,7 +432,58 @@ module.exports = (env, argv) => {
         'process.env.DEFAULT_MODEL': JSON.stringify(ENV.DEFAULT_MODEL),
         'process.env.DEFAULT_VLLM_URL': JSON.stringify(ENV.DEFAULT_VLLM_URL),
         'process.env.DEFAULT_VLLM_MODEL': JSON.stringify(ENV.DEFAULT_VLLM_MODEL),
-      })
+      }),
+      // Writes dist/build-info.json (content-derived fingerprint + UTC timestamp)
+      // once the bundle is fully emitted. The plugin walks dist/ and hashes each
+      // file's bytes so the digest is reproducible across runs, host machines,
+      // and CI vs local. Only runs in production mode so dev-server rebuilds
+      // do not churn the file. Read at taskpane startup (fire-and-forget, see
+      // src/taskpane/taskpane.js).
+      {
+        apply: (compiler) => {
+          compiler.hooks.done.tap('claric-build-info', (stats) => {
+            if (stats.compilation.options.mode !== 'production') return;
+            const distDir = path.resolve(__dirname, 'dist');
+            if (!fs.existsSync(distDir)) return;
+            const fileHashes = [];
+            const walk = (dir) => {
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  walk(full);
+                } else if (entry.isFile()) {
+                  const rel = path.relative(distDir, full);
+                  const digest = crypto.createHash('sha256')
+                    .update(fs.readFileSync(full))
+                    .digest('hex');
+                  fileHashes.push(`${rel}:${digest}`);
+                }
+              }
+            };
+            walk(distDir);
+            fileHashes.sort();
+            const hash = crypto.createHash('sha256')
+              .update(fileHashes.join('\n'))
+              .digest('hex')
+              .slice(0, 12);
+            const pkg = JSON.parse(
+              fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf8')
+            );
+            const out = {
+              hash,
+              builtAt: new Date().toISOString(),
+              mode: 'production',
+              appVersion: String(pkg.version || '0.0.0'),
+            };
+            fs.writeFileSync(
+              path.join(distDir, 'build-info.json'),
+              JSON.stringify(out, null, 2) + '\n',
+              'utf8'
+            );
+            console.log(`[claric-build-info] dist hash = ${hash} (${fileHashes.length} files)`);
+          });
+        },
+      }
     ],
     devServer: {
       static: {
