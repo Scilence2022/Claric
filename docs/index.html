@@ -8,6 +8,9 @@
 <meta property="og:title" content="Claric — AI Writing &amp; Editing Assistant for Word">
 <meta property="og:description" content="Your document. Your call. Nothing changes without your approval.">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://scilence2022.github.io/Claric/">
+<meta property="og:image" content="https://scilence2022.github.io/Claric/assets/screenshots/tracked-changes.png">
+<link rel="canonical" href="https://scilence2022.github.io/Claric/">
 <link rel="icon" type="image/png" href="assets/icon-64.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -199,6 +202,17 @@
   .mock-btn.reject { color: var(--ink-muted); border: 1px solid var(--line); background: var(--card); }
   .mock-note { margin-left: auto; align-self: center; font-size: .72rem; color: var(--ink-muted); }
 
+  /* ── Screenshot gallery ── */
+  .gallery { background: var(--card); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .shot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.8rem 1.5rem; }
+  .shot { margin: 0; }
+  .shot .browser-frame { box-shadow: var(--shadow-md); transition: transform .2s, box-shadow .2s; }
+  .shot:hover .browser-frame { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
+  .shot figcaption { margin-top: .8rem; padding: 0 .2rem; }
+  .shot-title { font-size: .95rem; font-weight: 600; }
+  .shot-desc { margin-top: .15rem; font-size: .83rem; color: var(--ink-muted); }
+  @media (max-width: 860px) { .shot-grid { grid-template-columns: 1fr; } }
+
   /* ── Scenarios ── */
   .scenarios { background: var(--paper-warm); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
   .scene-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; }
@@ -298,6 +312,7 @@
     </a>
     <ul class="nav-links">
       <li><a href="#how"><span class="lang-en">How it works</span><span class="lang-zh">工作方式</span></a></li>
+      <li><a href="#gallery"><span class="lang-en">Screenshots</span><span class="lang-zh">界面掠影</span></a></li>
       <li><a href="#scenarios"><span class="lang-en">Scenarios</span><span class="lang-zh">应用场景</span></a></li>
       <li><a href="#features"><span class="lang-en">Features</span><span class="lang-zh">功能</span></a></li>
       <li><a href="#models"><span class="lang-en">Models</span><span class="lang-zh">模型</span></a></li>
@@ -455,6 +470,98 @@
   </div>
 </section>
 
+<!-- ───────────────────────── Screenshot gallery ───────────────────────── -->
+<section id="gallery" class="gallery">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="kicker"><span class="lang-en">Screenshots</span><span class="lang-zh">界面掠影</span></div>
+      <h2 class="serif"><span class="lang-en">See it in action</span><span class="lang-zh">眼见为实</span></h2>
+      <p><span class="lang-en">Real sessions, unedited — from the first slash command to the redlines your reviewer will see.</span>
+         <span class="lang-zh">真实使用画面，未经修饰——从第一条斜杠命令，到审稿人将要看到的红线修订。</span></p>
+    </div>
+    <div class="shot-grid">
+      <figure class="shot reveal">
+        <div class="browser-frame">
+          <div class="browser-bar">
+            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
+            <span class="browser-url">word · welcome</span>
+          </div>
+          <img src="assets/screenshots/welcome.png" alt="Claric welcome screen with built-in slash commands (/check-doc, /copy-edit, /summarize-contract, …)" loading="lazy">
+        </div>
+        <figcaption>
+          <div class="shot-title"><span class="lang-en">Chat-first, slash-command native</span><span class="lang-zh">聊天优先，斜杠命令内置</span></div>
+          <div class="shot-desc"><span class="lang-en">The taskpane opens to a bilingual welcome — built-in skills are one tap away.</span><span class="lang-zh">任务窗格欢迎页中英双语，内置技能一触即达。</span></div>
+        </figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <div class="browser-frame">
+          <div class="browser-bar">
+            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
+            <span class="browser-url">word · proposal</span>
+          </div>
+          <img src="assets/screenshots/proposal.png" alt="Proposal card: edits to 13 sections staged with per-change checkboxes, Apply and Reject" loading="lazy">
+        </div>
+        <figcaption>
+          <div class="shot-title"><span class="lang-en">Review every change</span><span class="lang-zh">逐条审阅每处修改</span></div>
+          <div class="shot-desc"><span class="lang-en">Whole-document runs stage one proposal per section — tick what you want, skip what you don't.</span><span class="lang-zh">全文处理按节生成提案——勾想要的，略过不要的。</span></div>
+        </figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <div class="browser-frame">
+          <div class="browser-bar">
+            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
+            <span class="browser-url">word · tracked changes</span>
+          </div>
+          <img src="assets/screenshots/tracked-changes.png" alt="Applied edits visible in Word as native tracked insertions and deletions" loading="lazy">
+        </div>
+        <figcaption>
+          <div class="shot-title"><span class="lang-en">Native redlines, formatting intact</span><span class="lang-zh">原生红线，格式无损</span></div>
+          <div class="shot-desc"><span class="lang-en">Applied edits land as word-level revisions your supervisor can accept or reject — styles survive the round trip.</span><span class="lang-zh">修改以逐词修订落地，导师可逐条接受或拒绝——样式往返无损。</span></div>
+        </figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <div class="browser-frame">
+          <div class="browser-bar">
+            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
+            <span class="browser-url">word · illustration</span>
+          </div>
+          <img src="assets/screenshots/illustration.png" alt="Illustration request staged as a proposal card with an image preview before insertion" loading="lazy">
+        </div>
+        <figcaption>
+          <div class="shot-title"><span class="lang-en">Illustrations on request</span><span class="lang-zh">一句话生成插图</span></div>
+          <div class="shot-desc"><span class="lang-en">A configured image model (or the SVG fallback) drafts the figure; you preview it in the card before it is inserted.</span><span class="lang-zh">配置图像模型（或用 SVG 回退）起草插图，先在卡片里预览，再插入文档。</span></div>
+        </figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <div class="browser-frame">
+          <div class="browser-bar">
+            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
+            <span class="browser-url">word · table editing</span>
+          </div>
+          <img src="assets/screenshots/table-edit.png" alt="Existing table edited through a tool session: merge cells staged and applied as a tracked transaction" loading="lazy">
+        </div>
+        <figcaption>
+          <div class="shot-title"><span class="lang-en">Tables as controllable objects</span><span class="lang-zh">表格亦可对话式编辑</span></div>
+          <div class="shot-desc"><span class="lang-en">Merge cells, patch values, insert rows — every op is staged as a reviewable, diffable transaction.</span><span class="lang-zh">合并单元格、改数值、插行——每个操作都暂存为可审阅、可对比的事务。</span></div>
+        </figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <div class="browser-frame">
+          <div class="browser-bar">
+            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
+            <span class="browser-url">word · settings</span>
+          </div>
+          <img src="assets/screenshots/settings.png" alt="Settings panel: provider picker, endpoint, API key, thinking level, track-changes toggle" loading="lazy">
+        </div>
+        <figcaption>
+          <div class="shot-title"><span class="lang-en">Bring your own model</span><span class="lang-zh">自带模型与密钥</span></div>
+          <div class="shot-desc"><span class="lang-en">11 chat providers plus independent image generation — keys stay in your browser's local storage.</span><span class="lang-zh">11 家聊天模型服务商，图像生成单独配置——密钥只存在浏览器本地。</span></div>
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
 <!-- ───────────────────────── Scenarios ───────────────────────── -->
 <section id="scenarios" class="scenarios">
   <div class="wrap">
@@ -534,8 +641,8 @@
       <div class="feat reveal">
         <div class="feat-icon">📊</div>
         <h3><span class="lang-en">Tables &amp; illustrations</span><span class="lang-zh">表格与插图</span></h3>
-        <p><span class="lang-en">"Insert a 4×3 table" previews a grid before insertion; existing tables are editable through per-cell patch ops. Illustrations are LLM-designed SVGs, sanitized and rasterized to PNG.</span>
-           <span class="lang-zh">"插入 4×3 表格"先预览再插入；已有表格支持逐单元格修改。插图由 LLM 生成 SVG，消毒后栅格化为 PNG 插入。</span></p>
+        <p><span class="lang-en">"Insert a 4×3 table" previews a grid before insertion; existing tables are editable through per-cell patch ops. Illustrations come from a real image model (OpenAI Images, CogView, MiniMax) when configured, with a sanitized SVG fallback.</span>
+           <span class="lang-zh">"插入 4×3 表格"先预览再插入；已有表格支持逐单元格修改。配置图像模型（OpenAI Images、CogView、MiniMax）后插图走文生图，否则回退到消毒后的 SVG。</span></p>
       </div>
       <div class="feat reveal">
         <div class="feat-icon">⚡</div>
@@ -548,6 +655,18 @@
         <h3><span class="lang-en">MCP tools &amp; live streaming</span><span class="lang-zh">MCP 工具与流式输出</span></h3>
         <p><span class="lang-en">Connect MCP tool servers and run ReAct tool loops with <code>/mcp</code>. Watch reasoning and output stream token-by-token in the model activity panel.</span>
            <span class="lang-zh">接入 MCP 工具服务器，用 <code>/mcp</code> 运行 ReAct 工具循环；在模型活动面板中逐 token 观看推理与输出。</span></p>
+      </div>
+      <div class="feat reveal">
+        <div class="feat-icon">🧩</div>
+        <h3><span class="lang-en">Compound instructions, planned</span><span class="lang-zh">复合指令，自动拆解</span></h3>
+        <p><span class="lang-en">"Add a title, then polish the whole text" is decomposed by an LLM task planner into ordered steps — one proposal card per pipeline, reviewed in sequence.</span>
+           <span class="lang-zh">"加个标题再润色全文"会被任务规划器拆成有序步骤——每条管线一张提案卡，依次审阅。</span></p>
+      </div>
+      <div class="feat reveal">
+        <div class="feat-icon">🚀</div>
+        <h3><span class="lang-en">Auto-apply when you trust it</span><span class="lang-zh">信得过，就自动应用</span></h3>
+        <p><span class="lang-en">Flip the auto-apply toggle and settled proposals apply themselves as tracked changes — still staged, still auditable, no extra clicks.</span>
+           <span class="lang-zh">打开自动应用开关，提案在生成后自动以修订落地——仍然留痕、可审计，省去逐次点击。</span></p>
       </div>
     </div>
   </div>

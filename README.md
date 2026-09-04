@@ -4,6 +4,13 @@
   <img src="assets/icon-128.png" alt="Claric" width="96" height="96" />
 </p>
 
+<p align="center">
+  <a href="https://scilence2022.github.io/Claric/"><strong>Website</strong></a> ·
+  <a href="https://scilence2022.github.io/Claric/architecture.html">Architecture</a> ·
+  <a href="https://scilence2022.github.io/Claric/privacy.html">Privacy</a> ·
+  <a href="https://github.com/Scilence2022/Claric/issues">Support</a>
+</p>
+
 Claric is an AI-powered Microsoft Word add-in with a chat-driven taskpane. Tell
 it what to do — polish a passage, restyle the headings, add a title, insert a
 table, draw an illustration, continue writing, delete empty paragraphs, or
@@ -12,6 +19,29 @@ comments — and it routes the request to the right pipeline, stages the result
 as a reviewable proposal card, and applies it as native tracked changes.
 Instructions work in English or Chinese, against any OpenAI-compatible LLM
 backend, local or hosted.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/welcome.png" alt="Welcome screen with built-in slash commands" /></td>
+    <td width="50%"><img src="docs/assets/screenshots/proposal.png" alt="Proposal card staging edits to 13 sections with per-change checkboxes" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Chat-first taskpane with built-in slash commands</sub></td>
+    <td align="center"><sub>Every mutation staged as a reviewable proposal card</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/tracked-changes.png" alt="Applied edits visible as native Word tracked changes" /></td>
+    <td width="50%"><img src="docs/assets/screenshots/illustration.png" alt="Illustration staged with an image preview before insertion" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Applied edits land as native tracked changes</sub></td>
+    <td align="center"><sub>Illustrations preview before they are inserted</sub></td>
+  </tr>
+</table>
+
+More screenshots on the [website](https://scilence2022.github.io/Claric/).
 
 ## Features
 
@@ -630,7 +660,7 @@ See `ARCHITECTURE.md` for details.
 ## Testing
 
 ```bash
-npm test          # 1,643 tests across 65 suites
+npm test          # 1,702 tests across 67 suites
 npm run lint      # ESLint (flat config)
 npm run coverage  # Jest coverage report
 npm run check-coverage # enforce configured coverage thresholds
