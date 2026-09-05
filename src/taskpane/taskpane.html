@@ -227,7 +227,16 @@
                     </div>
                     <div class="form-group">
                         <label for="imageModelInput">Image model:</label>
-                        <input type="text" id="imageModelInput" class="form-control" placeholder="e.g., gpt-image-1">
+                        <div class="model-input-row">
+                            <div class="model-combobox">
+                                <input type="text" id="imageModelInput" class="form-control"
+                                       placeholder="e.g., gpt-image-1" autocomplete="off"
+                                       role="combobox" aria-expanded="false" aria-controls="imageModelDropdown">
+                                <div id="imageModelDropdown" class="model-dropdown" role="listbox" hidden></div>
+                            </div>
+                            <button type="button" id="refreshImageModelsBtn" class="btn btn-compact"
+                                    title="Refresh the image model list from the provider">Refresh</button>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label for="imageEndpointUrl">Endpoint URL:</label>
