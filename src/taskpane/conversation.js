@@ -39,6 +39,7 @@ import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
 import { describeFormatOp } from '../lib/format-ops.js';
 import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib/file-attachments.js';
+import { buildConversationHistory } from '../lib/conversation-history.js';
 
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
@@ -680,21 +681,23 @@ export function createConversation(deps) {
      * assistant message's collapsible work log (Claude Code style).
      *
      * @param {object} msg - Assistant message handle
+     * @param {Array<{role: 'user'|'assistant', content: string}>} conversationHistory
+     * @param {function(): boolean} isCurrentSession
      * @returns {object} action deps for one turn
      */
-    function actionDepsFor(msg) {
-        const epoch = sessionEpoch;
+    function actionDepsFor(msg, conversationHistory, isCurrentSession) {
         return {
             appState,
+            conversationHistory,
             logWithRetry: typeof logWithRetry === 'function' ? (message, type, retry) => logWithRetry(message, type, () => {
-                if (epoch !== sessionEpoch || isBusy()) return;
+                if (!isCurrentSession() || isBusy()) return;
                 return retry({ setBusy: (busy) => input.setProcessing(busy || isBusy()) });
             }) : undefined,
             updateStatusBar,
-            isCurrentSession: () => epoch === sessionEpoch,
+            isCurrentSession,
             stageRetryProposal: async (outcome) => {
-                if (epoch !== sessionEpoch) return;
-                await stageDocumentProposal(outcome, msg, actionDepsFor(msg));
+                if (!isCurrentSession()) return;
+                await stageDocumentProposal(outcome, msg, actionDepsFor(msg, conversationHistory, isCurrentSession));
             },
             log: (message, type) => {
                 log(message, type);
@@ -1793,11 +1796,12 @@ export function createConversation(deps) {
      *
      * @param {string} args - Instruction after /mcp
      * @param {object} msg - Assistant message view
+     * @param {object} turnDeps - Per-turn history and action dependencies
      * @param {string} selectionText - Current selection (focus context)
      * @param {AbortController} turnController - Shared turn controller
      * @private
      */
-    async function runMcpToolsTurn(args, msg, selectionText, turnController) {
+    async function runMcpToolsTurn(args, msg, turnDeps, selectionText, turnController) {
         const instruction = (args || '').trim() ||
             'List the tools available to you and summarize what you can do with them.';
         const servers = (appState.config.mcpServers || [])
@@ -1848,6 +1852,7 @@ export function createConversation(deps) {
             const result = await runToolLoop({
                 systemPrompt: buildToolLoopSystemPrompt(loopTools, { maxSteps: budget }),
                 taskPrompt,
+                conversationHistory: turnDeps.conversationHistory,
                 tools: loopTools,
                 execute: createMcpToolExecutor(mapping),
                 send: (messages) => sendMessages(config, messages, log, myController.signal, 120000),
@@ -1885,7 +1890,7 @@ export function createConversation(deps) {
                 // Reserved /mcp skill: a ReAct tool loop over the configured
                 // MCP servers. Read-only contract — results render as the
                 // chat answer, never as direct document writes.
-                await runMcpToolsTurn(args, msg, selectionText, turnController);
+                await runMcpToolsTurn(args, msg, turnDeps, selectionText, turnController);
                 break;
             case 'comment':
                 if (skill.scope === 'selection-first' && hasSelection) {
@@ -2186,7 +2191,13 @@ export function createConversation(deps) {
             log('Already processing. Cancel the current run first.', 'warning');
             return;
         }
-        const owner = { controller: new AbortController(), epoch: sessionEpoch };
+        const session = view.getCurrentSession?.();
+        const owner = {
+            controller: new AbortController(), epoch: sessionEpoch, sessionId: session?.id,
+            conversationHistory: buildConversationHistory(session?.messages, { log, config: appState.config }),
+        };
+        owner.isCurrentSession = () => owner.epoch === sessionEpoch
+            && owner.sessionId === view.getCurrentSession?.()?.id;
         submissionOwner = owner;
         appState.chatController = owner.controller;
         appState.isProcessing = true;
@@ -2227,7 +2238,7 @@ export function createConversation(deps) {
             selectionImages = [];
             hasMultiCellTableRegion = false;
         }
-        if (owner.controller.signal.aborted || owner.epoch !== sessionEpoch) return;
+        if (owner.controller.signal.aborted || !owner.isCurrentSession()) return;
         const hasSelection = !!selectionText || selectionImages.length > 0 || hasMultiCellTableRegion;
         const hasImageSelection = selectionImages.length > 0;
         const hasTextSelection = !!selectionText;
@@ -2255,6 +2266,7 @@ export function createConversation(deps) {
 
         view.hideWelcome();
         view.addUserMessage(effective, attachmentMeta(list));
+        owner.sessionId = view.getCurrentSession?.()?.id;
         input.setValue('');
 
         const rawMessage = view.createAssistantMessage();
@@ -2263,13 +2275,13 @@ export function createConversation(deps) {
                 const value = target[key];
                 if (typeof value !== 'function') return value;
                 return (...args) => {
-                    if (owner.epoch !== sessionEpoch) return;
+                    if (!owner.isCurrentSession()) return;
                     if (owner.controller.signal.aborted && key === 'attachProposal') return;
                     return value.apply(target, args);
                 };
             },
         });
-        const turnDeps = actionDepsFor(msg);
+        const turnDeps = actionDepsFor(msg, owner.conversationHistory, owner.isCurrentSession);
 
         try {
             await dispatchTurn(
@@ -2281,7 +2293,8 @@ export function createConversation(deps) {
         } finally {
             msg.collapseLog();
             msg.collapseModelOutput();
-            if (owner.epoch === sessionEpoch) {
+            if (owner.isCurrentSession()) {
+                if (owner.controller.signal.aborted) msg.setStatus('Cancelled.');
                 if (typeof msg.finalizeForHistory === 'function') msg.finalizeForHistory();
                 _commitSession();
             }

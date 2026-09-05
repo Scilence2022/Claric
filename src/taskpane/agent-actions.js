@@ -26,6 +26,7 @@
 
 import { buildToolLoopSystemPrompt } from '../lib/tool-registry.js';
 import { runToolLoop } from '../lib/tool-loop.js';
+import { withConversationHistory } from '../lib/conversation-history.js';
 import { createTableModel, executeTableTool, TABLE_TOOL_SPECS } from '../lib/table-model.js';
 import { describeStyleOp } from '../lib/table-style.js';
 import { createImageModel, IMAGE_TOOL_SPECS, imageIdentityKey } from '../lib/image-model.js';
@@ -203,6 +204,7 @@ async function _runLoop(deps, { systemPrompt, taskPrompt, tools, execute, maxSte
     return runToolLoop({
         systemPrompt,
         taskPrompt,
+        conversationHistory: deps.conversationHistory,
         tools,
         execute,
         maxSteps,
@@ -450,16 +452,22 @@ async function _designSvg(deps, {
         scopeText,
         { hasSourceImage, sourceSvg }
     );
+    const sendText = (prompt) => {
+        const messages = withConversationHistory([{ role: 'user', content: prompt }], deps.conversationHistory);
+        return messages.length > 1
+            ? sendMessages(backendConfig, messages, log, signal)
+            : sendPrompt(backendConfig, prompt, log, signal);
+    };
     let raw;
     if (sourceImage) {
         const prompt = buildRedesignPrompt(true);
-        const messages = [{
+        const messages = withConversationHistory([{
             role: 'user',
             content: [
                 { type: 'text', text: prompt },
                 { type: 'image_url', image_url: { url: sourceImage } },
             ],
-        }];
+        }], deps.conversationHistory);
         try {
             raw = await sendMessages(backendConfig, messages, log, signal);
         } catch (err) {
@@ -471,14 +479,12 @@ async function _designSvg(deps, {
                 throw new Error(`Backend rejected the source image (${err.message}); Figure visual changes require image input.`);
             }
             log(`Backend rejected the source image (${err.message}); redesigning text-only.`, 'warning');
-            raw = await sendPrompt(backendConfig, buildRedesignPrompt(false), log, signal);
+            raw = await sendText(buildRedesignPrompt(false));
         }
     } else if (redesign) {
-        raw = await sendPrompt(backendConfig, buildRedesignPrompt(false), log, signal);
+        raw = await sendText(buildRedesignPrompt(false));
     } else {
-        raw = await sendPrompt(
-            backendConfig, buildIllustrationPrompt(instruction, scopeText), log, signal
-        );
+        raw = await sendText(buildIllustrationPrompt(instruction, scopeText));
     }
     const parsed = parseIllustration(raw, log);
     return parsed ? ensureSvgDimensions(sanitizeSvg(parsed.svg)) : null;

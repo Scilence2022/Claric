@@ -65,6 +65,7 @@ function initialize() {
     // History slide-over (sessions saved to localStorage; survives reloads).
     initHistoryView({
         onLoadSession: (session) => {
+            conversation.newChat();
             chatView.setCurrentSession(session);
             input.focus();
         },

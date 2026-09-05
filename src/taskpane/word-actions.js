@@ -60,6 +60,22 @@ import { buildPlanPrompt, parsePlan } from '../lib/task-planner.js';
 import { imageIdentityKey } from '../lib/image-model.js';
 import { attachSvgSource, svgSourceIdFromPicture } from './svg-source-store.js';
 import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
+import { sendMessages } from '../lib/llm-client.js';
+import { withConversationHistory } from '../lib/conversation-history.js';
+
+async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
+    const messages = typeof prompt === 'string' ? [{ role: 'user', content: prompt }] : prompt;
+    if (deps.conversationHistory?.length) {
+        const request = withConversationHistory(messages, deps.conversationHistory);
+        return (onToken || onReasoning)
+            ? (await sendMessagesStream(config, request, { onContent: onToken, onReasoning }, deps.log, signal)).content
+            : sendMessages(config, request, deps.log, signal);
+    }
+    const text = _flattenMessages(messages);
+    return (onToken || onReasoning)
+        ? sendPromptStream(config, text, { onContent: onToken, onReasoning }, deps.log, signal)
+        : sendPrompt(config, text, deps.log, signal);
+}
 
 /**
  * Flattens a chat-completions messages array into a single prompt string
@@ -1038,10 +1054,7 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
         messages[messages.length - 1].content += '\n\nNOTE: The selection contains a Word table; each cell appears as its own line. Keep every line present and in the same order, edit text in place, and never merge, split, reorder, or drop lines.';
     }
 
-    const promptText = _flattenMessages(messages);
-    const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log, signal)
-        : await sendPrompt(backendConfig, promptText, log, signal);
+    const rawResponse = await _sendActionRequest(deps, backendConfig, messages, { onToken, onReasoning, signal });
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     if (!merged) {
@@ -1070,7 +1083,7 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
         log('Response missing delimiters, attempting to classify...', 'info');
         const fallbackMessages = buildFallbackClassificationPrompt(rawResponse, selectionText);
         try {
-            const fallbackResponse = await sendPrompt(backendConfig, _flattenMessages(fallbackMessages), log, signal);
+            const fallbackResponse = await _sendActionRequest(deps, backendConfig, fallbackMessages, { signal });
             parsed = parseDelimitedResponse(fallbackResponse);
             if (parsed.amendment === null && parsed.comment === null) {
                 log('Could not split response into amendment and comment', 'warning');
@@ -1140,10 +1153,7 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
     }
     messages.push({ role: 'user', content: buildTableUserPrompt(baseInstruction, cells, { rowCount, colCount }) });
 
-    const promptText = _flattenMessages(messages);
-    const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log, signal)
-        : await sendPrompt(backendConfig, promptText, log, signal);
+    const rawResponse = await _sendActionRequest(deps, backendConfig, messages, { onToken, onReasoning, signal });
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     // Full-table grid for no-op detection, per-cell "before" text, and
@@ -2151,9 +2161,7 @@ export async function prepareDocumentAppend(deps, { instruction, selectionText, 
 
     const backendConfig = getActiveBackendConfig(appState);
     log(`Drafting content to append [${backendConfig.model}]...`, 'info');
-    const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
-        : await sendPrompt(backendConfig, prompt, log, signal);
+    const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     return {
@@ -2270,9 +2278,7 @@ export async function prepareTableProposal(deps, { instruction, onToken, onReaso
     const prompt = buildTableCreationPrompt(promptInstruction, scopeText);
     const backendConfig = getActiveBackendConfig(appState);
     log(`Generating table content [${backendConfig.model}]...`, 'info');
-    const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
-        : await sendPrompt(backendConfig, prompt, log, signal);
+    const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
 
     const parsed = parseTableCreationResponse(rawResponse);
     if (!parsed.spec) {
@@ -2520,9 +2526,7 @@ export async function planDocumentTasks(deps, {
     });
     const backendConfig = getActiveBackendConfig(appState);
     log(`Planning tasks [${backendConfig.model}]...`, 'info');
-    const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
-        : await sendPrompt(backendConfig, prompt, log, signal);
+    const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
 
     const tasks = parsePlan(rawResponse, log);
     if (tasks) log(`Planned ${tasks.length} task(s): ${tasks.map((t) => t.type).join(' → ')}`, 'success');
@@ -2580,9 +2584,7 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
         const prompt = buildFormatPrompt(instruction, anchor.text, scope);
         const backendConfig = getActiveBackendConfig(appState);
         log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
-        const rawResponse = (onToken || onReasoning)
-            ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
-            : await sendPrompt(backendConfig, prompt, log, signal);
+        const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
         checkOperationSignal(signal);
         const ops = parseFormatOps(rawResponse, log);
         if (!ops.length) await discardFormatProposal(deps, { anchor });
@@ -2977,7 +2979,33 @@ async function designIllustrationProposal(deps, { instruction, onToken, onReason
     const renderer = illustrationRenderer(instruction, imageConfig !== null);
 
     if (renderer === 'image') {
-        const prompt = buildImagePrompt(instruction, documentText);
+        let imageInstruction = instruction;
+        if (deps.conversationHistory?.length) {
+            const backendConfig = getActiveBackendConfig(appState);
+            log(`Resolving image request from conversation [${backendConfig.model}]...`, 'info');
+            try {
+                checkOperationSignal(signal);
+                imageInstruction = (await _sendActionRequest(deps, backendConfig, [
+                    {
+                        role: 'system',
+                        content: 'Resolve the current image request into a standalone image brief using the prior conversation. ' +
+                            'Resolve references such as "that" or "the second suggestion" to their actual visual details. ' +
+                            'Preserve the requested subject, style, and constraints; do not invent missing referents. ' +
+                            'Output only the concise image brief, preferably under 600 characters, with no commentary. ' +
+                            'If a necessary reference cannot be resolved, output exactly UNRESOLVED.',
+                    },
+                    { role: 'user', content: `CURRENT IMAGE REQUEST:\n${instruction || ''}\n\nCURRENT DOCUMENT:\n${documentText}` },
+                ], { onToken, onReasoning, signal })).trim();
+                checkOperationSignal(signal);
+                if (!imageInstruction || imageInstruction === 'UNRESOLVED') {
+                    throw new Error('The referenced image details could not be resolved. Restate the image request with those details.');
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') throw error;
+                throw new Error(`Image request resolution failed: ${error.message}`);
+            }
+        }
+        const prompt = buildImagePrompt(imageInstruction, documentText);
         try {
             const generated = await generateImage(imageConfig, prompt, log, signal);
             return {
@@ -3001,9 +3029,7 @@ async function designIllustrationProposal(deps, { instruction, onToken, onReason
     const prompt = buildIllustrationPrompt(instruction, documentText);
     const backendConfig = getActiveBackendConfig(appState);
     log(`Designing illustration [${backendConfig.model}]...`, 'info');
-    const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
-        : await sendPrompt(backendConfig, prompt, log, signal);
+    const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
 
     const parsed = parseIllustration(rawResponse, log);
     const svg = parsed ? ensureSvgDimensions(sanitizeSvg(parsed.svg)) : null;
@@ -3205,6 +3231,8 @@ export async function fireSelectionComment(deps, { promptTemplate, signal } = {}
     fireCommentRequest(selectionText, {
         config: getActiveBackendConfig(appState),
         sendPromptFn: sendPrompt,
+        sendMessagesFn: sendMessages,
+        conversationHistory: deps.conversationHistory,
         promptManager: makePromptShim(appState.promptManager, 'comment', promptTemplate),
         commentQueue: appState.commentQueue,
         log,
@@ -3234,7 +3262,7 @@ export async function fireSelectionComment(deps, { promptTemplate, signal } = {}
  *   staged?: boolean, apply?: Function, discard?: Function, failedCount?: number, cancelledCount?: number }>}
  */
 export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, onChunkToken, gateApply = false, signal: signalArg } = {}) {
-    const { appState, log, logWithRetry } = deps;
+    const { appState, log, logWithRetry, conversationHistory = [] } = deps;
     // Honor the caller's signal; fall back to the shared processing slot for
     // legacy callers that rely on it having been set before invocation.
     const signal = signalArg || (appState.processDocController ? appState.processDocController.signal : undefined);
@@ -3271,6 +3299,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         concurrency,
         timeoutMs: 300000,
         commentInstructions,
+        conversationHistory,
     });
 
     const failed = results.filter(r => r.status === 'rejected').length;
@@ -3359,7 +3388,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         }
         return retryFailedChunks(deps, {
             failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress, setBusy,
-            documentContext, commentInstructions, concurrency, onChunkToken,
+            documentContext, commentInstructions, concurrency, onChunkToken, conversationHistory,
         });
     };
 
@@ -3407,6 +3436,7 @@ const retryLifecycles = new WeakMap();
 export async function retryFailedChunks(deps, {
     failedResults, bookmarkMap, backendConfig, promptShim, onProgress,
     documentContext = null, commentInstructions = '', concurrency = 4,
+    conversationHistory = deps.conversationHistory,
     onChunkToken, setBusy = () => {}, lifecycle,
 } = {}) {
     const { appState, log } = deps;
@@ -3436,7 +3466,7 @@ export async function retryFailedChunks(deps, {
         const results = await processChunksParallel(chunks, {
             config: backendConfig, promptManager: promptShim, documentContext,
             log, onProgress, onChunkToken, signal: myController.signal,
-            concurrency, timeoutMs: 300000, commentInstructions,
+            concurrency, timeoutMs: 300000, commentInstructions, conversationHistory,
         });
         if (myController.signal.aborted || (deps.isCurrentSession && !deps.isCurrentSession())) return;
         const retryBookmarks = new Map(failedResults
@@ -3488,6 +3518,7 @@ export async function retryFailedChunks(deps, {
             retryFailed: (opts = {}) => retryFailedChunks(deps, {
                 failedResults, bookmarkMap, backendConfig, promptShim, onProgress,
                 documentContext, commentInstructions, concurrency, onChunkToken, ...opts, lifecycle: state,
+                conversationHistory,
             }),
         };
         log(`Retry prepared for confirmation: ${results.length - failedCount} section(s), ${failedCount} still failed.`,
@@ -3587,10 +3618,7 @@ export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoni
 
     const backendConfig = getActiveBackendConfig(appState);
     log(`Sending summary request [${backendConfig.model}]...`, 'info');
-    const promptText = _flattenMessages(messages);
-    const llmResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, promptText, { onContent: onToken, onReasoning }, log, signal)
-        : await sendPrompt(backendConfig, promptText, log, signal);
+    const llmResponse = await _sendActionRequest(deps, backendConfig, messages, { onToken, onReasoning, signal });
     log(`Summary received (${llmResponse.length} chars). Creating document...`, 'info');
 
     let docTitle = 'Document Summary';
@@ -3634,7 +3662,7 @@ function _selectedImagesBlock(imageMeta, note) {
 
 /**
  * Answers a free-text question in chat using the document as context.
- * Streams tokens via sendPromptStream when the backend supports SSE.
+ * Streams tokens when the backend supports SSE, preserving prior turn roles.
  *
  * @param {object} deps - { appState, log }
  * @param {object} args
@@ -3663,7 +3691,7 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
 
     let prompt = '';
     const contextPrompt = appState.promptManager.getActivePrompt('context');
-    if (contextPrompt) {
+    if (contextPrompt && !deps.conversationHistory?.length) {
         prompt += contextPrompt.template + '\n\n';
     }
     if (skillTemplate) {
@@ -3714,20 +3742,22 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
     // Long documents + slow backends can exceed the 120s client default;
     // chat answers get 5 minutes (the doc pipeline uses the same per-chunk).
     const handlers = { onContent: onToken, onReasoning };
+    const requestMessages = (content) => withConversationHistory([
+        ...(contextPrompt && deps.conversationHistory?.length
+            ? [{ role: 'system', content: contextPrompt.template }] : []),
+        { role: 'user', content },
+    ], deps.conversationHistory);
     const uploaded = (Array.isArray(questionImages) ? questionImages : [])
         .filter((img) => img && typeof img.dataUrl === 'string' && img.dataUrl);
     if (uploaded.length > 0) {
-        // Chat file-upload images go as OpenAI image_url parts (same shape
-        // as read_image observations in the tool loop). Text-only backends
-        // answer 4xx — retry once without the images, mirroring
-        // _sendLoopMessages in agent-actions.
+        // Text-only backends may reject image parts; retry only the current request without them.
         const parts = [
             { type: 'text', text: prompt },
             ...uploaded.map((img) => ({ type: 'image_url', image_url: { url: img.dataUrl } })),
         ];
         try {
             const { content } = await sendMessagesStream(
-                backendConfig, [{ role: 'user', content: parts }], handlers, log, signal, 300000);
+                backendConfig, requestMessages(parts), handlers, log, signal, 300000);
             return content;
         } catch (err) {
             if (err.name === 'AbortError' || err.name === 'TimeoutError' || !/^HTTP 4\d\d/.test(err.message || '')) {
@@ -3736,6 +3766,9 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
             log(`Backend rejected image inputs (${err.message}); retrying without attached images.`, 'warning');
             if (onStatus) onStatus(`Waiting for ${backendConfig.model}...`);
         }
+    }
+    if (deps.conversationHistory?.length) {
+        return (await sendMessagesStream(backendConfig, requestMessages(prompt), handlers, log, signal, 300000)).content;
     }
     return sendPromptStream(backendConfig, prompt, handlers, log, signal, 300000);
 }

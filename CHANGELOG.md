@@ -8,6 +8,30 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
+- **Multi-turn conversation continuity with a configurable history budget**
+  (`src/lib/conversation-history.js`, `src/taskpane/conversation.js`,
+  `src/taskpane/word-actions.js`, `src/lib/tool-loop.js`,
+  `src/taskpane/agent-actions.js`, `src/lib/orchestrator.js`,
+  `src/lib/comment-request.js`) — same-session history is now sent to the
+  model with every request. Previously only the latest message reached it:
+  Q&A, task planning, selection/document edits, tables, append, summary,
+  comments, chunked runs and retries, and the table/image/MCP tool loops each
+  started from a single fresh prompt, so follow-ups like "your second
+  suggestion" lost their referent. Each submission snapshots the live session
+  into role-preserving `user`/`assistant` messages (proposal status, pending
+  vs applied, is carried truthfully; failed/cancelled partial output is
+  excluded; attachment names are metadata only), and every producer thread
+  composes it ahead of the current request via `withConversationHistory`.
+  The snapshot is taken per submission, so retries and late responses cannot
+  pick up later turns, and switching/restoring sessions invalidates the
+  outgoing turn (abort reaches the transport, stale answers are neither
+  persisted nor reused as context). History size is bounded by
+  **Settings → General → Chat history budget (tokens)** (`contextBudgetTokens`,
+  default 128,000, clamped 1,000–2,000,000) using a CJK-aware token estimate;
+  whole recent turns are kept oldest-out, the newest turn is truncated rather
+  than dropped, and every trim is reported in the activity log. Raise the
+  budget for 200K–1M-context models; lower it for small local backends.
+
 - **Image model suggestion list with Refresh** (`src/taskpane/ui/settings-view.js`,
   `src/taskpane/taskpane.html`, `tests/settings-image-models.spec.js`) — the
   Image model field is now a combobox like the chat Model field: a **Refresh**

@@ -319,3 +319,21 @@ describe('autoApplyChanges normalization', () => {
         expect(corrupt.autoApplyChanges).toBe(false);
     });
 });
+
+describe('contextBudgetTokens normalization', () => {
+    test('defaults to 128000 and keeps valid saved values', () => {
+        const { normalizeConfig, defaultConfig } = require('../src/taskpane/app-state.js');
+        expect(defaultConfig().contextBudgetTokens).toBe(128_000);
+        const out = normalizeConfig(defaultConfig(), { contextBudgetTokens: 1_000_000 });
+        expect(out.contextBudgetTokens).toBe(1_000_000);
+    });
+
+    test('falls back to the default for invalid values and clamps the range', () => {
+        const { normalizeConfig, defaultConfig } = require('../src/taskpane/app-state.js');
+        for (const invalid of ['yes', 0, -5, Number.NaN, null]) {
+            expect(normalizeConfig(defaultConfig(), { contextBudgetTokens: invalid }).contextBudgetTokens).toBe(128_000);
+        }
+        expect(normalizeConfig(defaultConfig(), { contextBudgetTokens: 5_000_000 }).contextBudgetTokens).toBe(2_000_000);
+        expect(normalizeConfig(defaultConfig(), { contextBudgetTokens: 999.6 }).contextBudgetTokens).toBe(1000);
+    });
+});

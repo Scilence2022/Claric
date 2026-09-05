@@ -289,6 +289,14 @@
                     </div>
 
                     <hr class="settings-divider">
+                    <p class="settings-section-label">Conversation Context</p>
+                    <div class="form-group">
+                        <label for="contextBudgetInput">Chat history budget (tokens):</label>
+                        <input type="number" id="contextBudgetInput" class="form-control" min="1000" max="2000000" step="1000" aria-label="Chat history token budget">
+                        <small class="help-text">How much of the recent conversation is sent with each request, in estimated tokens (CJK-aware). Default 128000 — raise it for 200K–1M-context models, lower it for small local models.</small>
+                    </div>
+
+                    <hr class="settings-divider">
                     <p class="settings-section-label">Whole-Document Processing Settings</p>
                     <div class="form-group">
                         <label for="commentGranularity">Comment granularity:</label>

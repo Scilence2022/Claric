@@ -59,6 +59,100 @@ describe('runToolLoop', () => {
         return { send, sent };
     }
 
+    test('prior user and assistant messages precede the task exactly once on every send', async () => {
+        const conversationHistory = Object.freeze([
+            Object.freeze({ role: 'user', content: 'Use the second option.' }),
+            Object.freeze({ role: 'assistant', content: 'The second option is blue. [TOOL-LOOP-HISTORY-NOTE]' }),
+        ]);
+        const { send, sent } = makeLoop({ replies: [
+            '{"tool":"get_state","args":{}}',
+            '{"tool":"finish","args":{"summary":"done"}}',
+        ] });
+        await runToolLoop({
+            systemPrompt: 'SYS', taskPrompt: 'Apply it', conversationHistory, tools: TOOLS,
+            execute: async () => ({ ok: true, result: { grid: 'current' } }), send,
+        });
+        const prefix = [
+            { role: 'system', content: 'SYS' }, ...conversationHistory,
+            { role: 'user', content: 'Apply it\n\nBegin.' },
+        ];
+        expect(sent[0]).toEqual(prefix);
+        expect(sent[1].slice(0, 4)).toEqual(prefix);
+        expect(sent[1]).toHaveLength(6);
+        expect(sent[1][4].role).toBe('assistant');
+        expect(JSON.parse(sent[1][5].content).result.grid).toBe('current');
+    });
+
+    test('initial budget eviction removes a whole prior turn but keeps the latest conversation', async () => {
+        const conversationHistory = [
+            { role: 'user', content: 'old question ' + 'q'.repeat(220000) },
+            { role: 'assistant', content: 'old answer ' + 'a'.repeat(40000) },
+            { role: 'user', content: 'new question' },
+            { role: 'assistant', content: 'new answer' },
+        ];
+        const { send, sent } = makeLoop({ replies: ['{"tool":"finish","args":{"summary":"done"}}'] });
+        await runToolLoop({
+            systemPrompt: 'S'.repeat(65536), taskPrompt: 'T'.repeat(65536),
+            conversationHistory, tools: TOOLS, execute: jest.fn(), send,
+        });
+        expect(sent[0][0].role).toBe('system');
+        expect(sent[0].slice(1, 3)).toEqual(conversationHistory.slice(2));
+        expect(sent[0][3].content).toBe('T'.repeat(65536) + '\n\nBegin.');
+        expect(JSON.parse(sent[0][4].content).note).toContain('2 earlier message(s) dropped');
+        expect(sent[0]).toHaveLength(5);
+        expect(conversationHistory).toHaveLength(4);
+    });
+
+    test.each([false, true])('history eviction preserves bounds and the latest complete tool exchange (images=%s)', async (images) => {
+        const conversationHistory = Array.from({ length: 3 }, (_, turn) => [
+            { role: 'user', content: `question ${turn} ` + 'q'.repeat(10000) },
+            { role: 'assistant', content: `answer ${turn} ` + 'a'.repeat(10000) },
+        ]).flat();
+        const replies = Array.from({ length: 5 }, (_, step) => JSON.stringify({
+            tool: 'set_cell', args: { row: step + 1, text: 'r'.repeat(65000) },
+        }));
+        const { send, sent } = makeLoop({ replies });
+        const dataUrl = 'data:image/png;base64,' + 'A'.repeat(TOOL_LOOP_LIMITS.MAX_ATTACHMENT_CHARS - 22);
+        await runToolLoop({
+            systemPrompt: 'S'.repeat(65536), taskPrompt: 'T'.repeat(65536),
+            conversationHistory, tools: TOOLS, send, maxSteps: replies.length,
+            execute: async (_name, args) => ({
+                ok: true, result: { row: args.row, blob: 'z'.repeat(65000) },
+                ...(images ? { attachments: [{ dataUrl }] } : {}),
+            }),
+        });
+        sent.forEach((messages, step) => {
+            let text = 0;
+            let wire = 0;
+            for (const message of messages) {
+                if (typeof message.content === 'string') {
+                    text += message.content.length;
+                    wire += message.content.length;
+                } else {
+                    for (const part of message.content) {
+                        text += (part.text || '').length;
+                        wire += (part.text || '').length + (part.image_url?.url || '').length;
+                    }
+                }
+            }
+            expect(text).toBeLessThanOrEqual(TOOL_LOOP_LIMITS.MAX_TRANSCRIPT_CHARS);
+            expect(wire).toBeLessThanOrEqual(TOOL_LOOP_LIMITS.MAX_REQUEST_CHARS);
+            expect(messages[0]).toEqual({ role: 'system', content: 'S'.repeat(65536) });
+            expect(messages.filter((m) => m.content === 'T'.repeat(65536) + '\n\nBegin.')).toHaveLength(1);
+            if (step > 0) {
+                expect(messages[messages.length - 2]).toEqual({ role: 'assistant', content: replies[step - 1] });
+                const observation = messages[messages.length - 1].content;
+                expect(JSON.parse(images ? observation[0].text : observation).result.row).toBe(step);
+                expect(messages.filter((m) => typeof m.content === 'string'
+                    && m.content.includes('[TOOL-LOOP-HISTORY-NOTE]'))).toHaveLength(1);
+            }
+            for (let turn = 0; turn < 3; turn++) {
+                expect(messages.some((m) => m.content === conversationHistory[turn * 2].content))
+                    .toBe(messages.some((m) => m.content === conversationHistory[turn * 2 + 1].content));
+            }
+        });
+    });
+
     test('happy path: one tool call, then finish; observations appended', async () => {
         const { send, sent } = makeLoop({
             replies: [

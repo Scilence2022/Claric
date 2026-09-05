@@ -29,6 +29,7 @@ import { parseSkillPackage } from '../../lib/skill-package.js';
 import { connectMcpServer } from '../../lib/mcp-client.js';
 import { importServerPrompts } from '../../lib/mcp-tools.js';
 import { TOOL_LOOP_LIMITS } from '../../lib/tool-registry.js';
+import { DEFAULT_HISTORY_BUDGET_TOKENS } from '../../lib/conversation-history.js';
 import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../../lib/skill-store.js';
 import { appState, getActiveBackendConfig, getActiveImageConfig, debounce, persistSettings } from '../app-state.js';
 import { BUILTIN_SKILLS, RESERVED_MCP_SKILL } from '../skills.js';
@@ -228,6 +229,7 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
     initSkillImport();
     initMcpServers();
     initMcpStepBudget();
+    initContextBudget();
     initPanelGeometry();
     renderAllDropdowns();
 
@@ -1381,6 +1383,27 @@ function initMcpStepBudget() {
             ? Math.min(Math.round(value), 48)
             : TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT;
         input.value = String(appState.config.mcpStepBudget);
+        saveSettings();
+    });
+}
+
+/**
+ * Chat-history token budget (default: DEFAULT_HISTORY_BUDGET_TOKENS). The
+ * input shows the configured total; conversation-history.js reserves a fixed
+ * slice of it for the current request and the model's output.
+ */
+function initContextBudget() {
+    const input = document.getElementById('contextBudgetInput');
+    if (!input) return;
+    const configured = () => (Number.isFinite(appState.config.contextBudgetTokens) && appState.config.contextBudgetTokens > 0
+        ? appState.config.contextBudgetTokens : DEFAULT_HISTORY_BUDGET_TOKENS);
+    input.value = String(configured());
+    input.addEventListener('change', () => {
+        const value = Number(input.value);
+        appState.config.contextBudgetTokens = Number.isFinite(value) && value > 0
+            ? Math.min(Math.round(value), 2_000_000)
+            : DEFAULT_HISTORY_BUDGET_TOKENS;
+        input.value = String(appState.config.contextBudgetTokens);
         saveSettings();
     });
 }

@@ -158,26 +158,14 @@ const BUDGET_NOTE_FRAGMENT = 'dropped to stay within the context budget';
 const BUDGET_NOTE_START = '[TOOL-LOOP-HISTORY-NOTE]';
 const BUDGET_NOTE_END = '[/TOOL-LOOP-HISTORY-NOTE]';
 
-function _isBudgetPlaceholder(message) {
-    return message && typeof message.content === 'string'
-        && message.content.includes(BUDGET_NOTE_START);
-}
-
-/** Removes loop-generated history notes without touching user observations. */
-function _removeBudgetPlaceholders(messages) {
-    for (let i = messages.length - 1; i >= 2; i--) {
-        if (_isBudgetPlaceholder(messages[i])) messages.splice(i, 1);
-    }
-}
-
-/** Builds the compact history note inserted after the preserved task head. */
+/** Builds the compact history note inserted after the preserved task. */
 function _budgetPlaceholder(totalEvicted) {
     return {
         role: 'user',
         content: JSON.stringify({
             ok: true,
             note: `${BUDGET_NOTE_START}[${totalEvicted} earlier message(s) ${BUDGET_NOTE_FRAGMENT}. `
-                + 'Earlier tool calls DID run; their effects are already staged. '
+                + 'Any earlier tool calls in this run DID run; their effects are already staged. '
                 + 'Do not repeat them; call list_* tools if you need current state.'
                 + BUDGET_NOTE_END,
         }),
@@ -185,21 +173,18 @@ function _budgetPlaceholder(totalEvicted) {
 }
 
 /**
- * Evicts complete assistant/observation pairs until BOTH the token-oriented
- * text budget and actual request-wire budget fit. The system/task head and
- * latest exchange remain. A separate user note is retained for compatibility
- * with the existing transcript shape, and its own size is included in the
- * final budget check.
+ * Evicts oldest conversation turns, then complete assistant/observation pairs
+ * until both text and wire budgets fit. The system, current task and latest
+ * tool exchange remain. The history notice is included in the budget check.
  *
  * @param {Array<{role: string, content: string|Array<object>}>} messages
- * @param {number} priorEvicted - Messages dropped by earlier passes
- * @returns {number} Updated cumulative number of historical messages evicted
+ * @param {object} state - Current task identity, previous notice and eviction count
  * @private
  */
-function _fitMessagesForSend(messages, priorEvicted = 0) {
-    // Remove the previous note before recalculating, otherwise it would be
-    // charged repeatedly and eventually crowd out every useful observation.
-    _removeBudgetPlaceholders(messages);
+function _fitMessagesForSend(messages, state) {
+    const previousNoteIndex = messages.indexOf(state.placeholder);
+    if (previousNoteIndex >= 0) messages.splice(previousNoteIndex, 1);
+    state.placeholder = null;
 
     const totals = () => ({
         text: messages.reduce((sum, m) => sum + _messageTextChars(m), 0),
@@ -208,43 +193,43 @@ function _fitMessagesForSend(messages, priorEvicted = 0) {
     const overBudget = (current) => current.text > TOOL_LOOP_LIMITS.MAX_TRANSCRIPT_CHARS
         || current.wire > TOOL_LOOP_LIMITS.MAX_REQUEST_CHARS;
     let current = totals();
-    let totalEvicted = priorEvicted;
+    const evictOldest = () => {
+        const taskIndex = messages.indexOf(state.task);
+        if (taskIndex > 1) {
+            let end = 2;
+            while (end < taskIndex && messages[end].role !== 'user') end++;
+            state.evicted += messages.splice(1, end - 1).length;
+            return true;
+        }
+        if (messages.length > taskIndex + 3) {
+            messages.splice(taskIndex + 1, 2);
+            state.evicted += 2;
+            return true;
+        }
+        return false;
+    };
 
-    // History after the two-message head consists of complete assistant/user
-    // pairs. Remove pairs, not single messages, so the model still sees valid
-    // call/observation exchanges.
-    while (overBudget(current) && messages.length > 4) {
-        messages.splice(2, 2);
-        totalEvicted += 2;
+    while (overBudget(current) && evictOldest()) {
         current = totals();
     }
 
-    // The note is itself part of the request. If it consumes the last few
-    // characters of the budget, evict another complete pair before retrying.
-    // If no historical pair remains, omit the note rather than violate the
-    // hard request bound; the preserved head and latest exchange still fit.
-    let placeholder = null;
-    while (totalEvicted > 0) {
-        placeholder = _budgetPlaceholder(totalEvicted);
-        messages.splice(2, 0, placeholder);
+    while (state.evicted > 0) {
+        const placeholder = _budgetPlaceholder(state.evicted);
+        const noteIndex = messages.indexOf(state.task) + 1;
+        messages.splice(noteIndex, 0, placeholder);
         current = totals();
-        if (!overBudget(current)) break;
-        messages.splice(2, 1);
-        placeholder = null;
-        if (messages.length <= 4) {
-            totalEvicted = 0;
+        if (!overBudget(current)) {
+            state.placeholder = placeholder;
             break;
         }
-        messages.splice(2, 2);
-        totalEvicted += 2;
-        current = totals();
+        messages.splice(noteIndex, 1);
+        if (!evictOldest()) break;
     }
 
     current = totals();
     if (overBudget(current)) {
         throw new Error('Tool-loop request exceeds the configured context budget after trimming.');
     }
-    return totalEvicted;
 }
 
 /** Recursively sorts object keys without filtering nested properties. */
@@ -272,10 +257,9 @@ function _callFingerprint(name, args) {
 /**
  * Runs the tool loop.
  *
- * Message history grows as [system, user(task), assistant(call),
- * user(observation), ...] — alternating roles per the chat-completions
- * contract; `send` receives the array verbatim so callers keep control of
- * transport (streaming vs plain), config, logging, and signals.
+ * Message history grows as [system, ...conversationHistory, user(task),
+ * assistant(call), user(observation), ...]. `send` receives the array verbatim
+ * so callers keep control of transport, config, logging, and signals.
  *
  * Protocol failures (non-JSON reply, unknown tool, non-object args) are NOT
  * thrown — they become error observations so the model can correct itself
@@ -291,6 +275,7 @@ function _callFingerprint(name, args) {
  * @param {object} args
  * @param {string} args.systemPrompt - Protocol prompt (buildToolLoopSystemPrompt)
  * @param {string} args.taskPrompt - Task + initial state for the first user message
+ * @param {Array<{role: string, content: string}>} [args.conversationHistory] - Prior user/assistant turns
  * @param {Array<{name: string}>} args.tools - Registered tool specs (names validate calls)
  * @param {function(string, object): Promise<{ok: boolean, result?: *, error?: string,
  *   attachments?: Array<{dataUrl: string}>}>} args.execute -
@@ -313,21 +298,25 @@ function _callFingerprint(name, args) {
  * @throws {Error} Transport errors from `send`
  */
 export async function runToolLoop({
-    systemPrompt, taskPrompt, tools, execute, send,
+    systemPrompt, taskPrompt, tools, execute, send, conversationHistory = [],
     maxSteps = TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT, signal, onStep,
 }) {
     const known = new Set((Array.isArray(tools) ? tools : []).map((t) => t.name));
     /** @type {Array<{role: string, content: string | Array<object>}>} */
     const messages = [
         { role: 'system', content: _boundedInitial(systemPrompt, 'system prompt') },
+        ...(Array.isArray(conversationHistory) ? conversationHistory : [])
+            .filter((message) => message && ['user', 'assistant'].includes(message.role)
+                && typeof message.content === 'string' && message.content.trim())
+            .map(({ role, content }) => ({ role, content })),
         { role: 'user', content: `${_boundedInitial(taskPrompt, 'task prompt')}\n\nBegin.` },
     ];
+    const budgetState = { task: messages[messages.length - 1], placeholder: null, evicted: 0 };
     const calls = [];
     let steps = 0;
     let summary = null;
     let lastFingerprint = null;
     let repeatCount = 0;
-    let evictedMessages = 0;
     const checkAbort = () => {
         if (signal && signal.aborted) {
             throw new DOMException('The operation was aborted.', 'AbortError');
@@ -338,7 +327,7 @@ export async function runToolLoop({
         checkAbort();
         // Fit BEFORE sending, including the observation just added. This is a
         // hard invariant over the actual request, not an accounting estimate.
-        evictedMessages = _fitMessagesForSend(messages, evictedMessages);
+        _fitMessagesForSend(messages, budgetState);
         const rawReply = await send(messages);
         checkAbort();
         const reply = rawReply.length > TOOL_LOOP_LIMITS.MAX_RESPONSE_CHARS
