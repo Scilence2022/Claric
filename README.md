@@ -123,7 +123,10 @@ A failed connection may mean an invalid key or model, quota limits, an
 unreachable endpoint, or CORS restrictions. Check the
 [route comparison](#deployment-routes-static-vs-local-server) before changing
 providers. **Image Generation** has separate provider, model, and key settings;
-its **Test image connection** button makes a real image-generation request
+**Refresh** beside its **Image model** field queries that provider's own
+endpoint for suggestions (multi-model gateways are filtered to image-looking
+ids, and the field always accepts free-text model names), while
+**Test image connection** makes a real image-generation request
 and may incur a charge.
 
 ## First workflow

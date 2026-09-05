@@ -38,7 +38,6 @@ import { containFocus } from './dialog.js';
 
 let _releaseSettingsFocus = null;
 let _releasePromptFocus = null;
-let _modelIndex = -1;
 let _onConfigChanged = () => {};
 let _lastFocusedElement = null;
 let _availableModels = [];
@@ -48,6 +47,13 @@ let _connectionSequence = 0;
 // changes before the three text inputs are re-rendered, so this separate
 // value lets a change handler commit the old form to the old provider first.
 let _imageFormProvider = null;
+// Image model suggestions per provider id (in-memory only, same lifetime as
+// the chat list cache): swapping image providers swaps the cached list, and
+// Refresh repopulates only the provider whose form is visible.
+const _imageModelsByProvider = new Map();
+let _imageModels = [];
+let _chatCombo = null;
+let _imageCombo = null;
 
 /**
  * Wires the settings slide-over and prompt management UI. Called once at startup.
@@ -108,47 +114,23 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
     // affordance for the same saveSettings path.
     const debouncedSaveSettings = debounce(saveSettings, 400);
     const modelInput = document.getElementById('modelSelect');
-    // Model combobox: clicking/focusing shows the full list, typing filters.
-    modelInput.addEventListener('input', () => {
-        updateGenerationControls(modelInput.value);
-        renderModelDropdown(modelInput.value);
-        debouncedSaveSettings();
-    });
-    modelInput.addEventListener('focus', openModelDropdown);
-    modelInput.addEventListener('click', openModelDropdown);
-    modelInput.addEventListener('blur', () => {
-        // Pointer selection prevents blur, so a real blur can close immediately.
-        closeModelDropdown();
-    });
-    modelInput.setAttribute('aria-autocomplete', 'list');
-    modelInput.addEventListener('keydown', (e) => {
-        if (e.isComposing || e.keyCode === 229) return;
-        const dropdown = document.getElementById('modelDropdown');
-        if (e.key === 'Escape' && !dropdown.hidden) {
-            e.preventDefault();
-            e.stopPropagation();
-            closeModelDropdown();
-        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-            e.preventDefault();
-            if (dropdown.hidden) openModelDropdown();
-            const options = [...dropdown.querySelectorAll('[role="option"]')];
-            if (!options.length) return;
-            _modelIndex = _modelIndex < 0
-                ? (e.key === 'ArrowDown' ? 0 : options.length - 1)
-                : (_modelIndex + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
-            options.forEach((option, index) => {
-                option.setAttribute('aria-selected', String(index === _modelIndex));
-                option.classList.toggle('active', index === _modelIndex);
-            });
-            modelInput.setAttribute('aria-activedescendant', options[_modelIndex].id);
-            options[_modelIndex].scrollIntoView?.({ block: 'nearest' });
-        } else if (e.key === 'Enter' && !dropdown.hidden && _modelIndex >= 0) {
-            e.preventDefault();
-            const option = dropdown.querySelectorAll('[role="option"]')[_modelIndex];
-            if (option) selectModel(option.textContent);
-        } else if (e.key === 'Tab') {
-            closeModelDropdown();
-        }
+    // Chat model combobox: clicking/focusing shows the full list, typing
+    // filters (shared behavior with the image model field, see
+    // attachModelCombobox).
+    _chatCombo = attachModelCombobox({
+        input: modelInput,
+        dropdown: document.getElementById('modelDropdown'),
+        idPrefix: 'model-option',
+        getModels: () => _availableModels,
+        getCurrent: () => getActiveBackendConfig(appState).model,
+        onInput: () => {
+            updateGenerationControls(modelInput.value);
+            debouncedSaveSettings();
+        },
+        onPick: (id) => {
+            updateGenerationControls(id);
+            saveSettings();
+        },
     });
     document.getElementById('refreshModelsBtn').addEventListener('click', () => {
         addLog('Refreshing model list...', 'info');
@@ -198,6 +180,28 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
         document.getElementById('imageModelInput').addEventListener('input', onImageTextInput);
         document.getElementById('imageApiKey').addEventListener('input', onImageTextInput);
         document.getElementById('testImageConnectionBtn').addEventListener('click', handleTestImageConnection);
+        // Image model combobox + Refresh: same interaction as the chat model
+        // field (see attachModelCombobox). Refresh queries the IMAGE entry's
+        // endpoint — a different base URL and key from the chat backend.
+        _imageCombo = attachModelCombobox({
+            input: document.getElementById('imageModelInput'),
+            dropdown: document.getElementById('imageModelDropdown'),
+            idPrefix: 'image-model-option',
+            getModels: () => _imageModels,
+            getCurrent: () => {
+                const image = appState.config.imageGeneration;
+                const entry = image && image.providers && image.providers[image.provider];
+                return (entry && entry.model) || '';
+            },
+            onInput: onImageTextInput,
+            onPick: () => {
+                syncImageFormToProvider();
+                saveSettings();
+            },
+        });
+        document.getElementById('refreshImageModelsBtn').addEventListener('click', () => {
+            handleRefreshImageModels();
+        });
     }
 
     // Per-category prompt controls
@@ -253,7 +257,8 @@ export function openSettings() {
 /** Closes the settings slide-over and restores the docked panel layout. */
 export function closeSettings() {
     if (_releasePromptFocus) hideSavePromptModal();
-    closeModelDropdown();
+    _chatCombo?.close();
+    _imageCombo?.close();
     resetPanelGeometry();
     document.getElementById('settingsOverlay').setAttribute('hidden', '');
     _releaseSettingsFocus?.();
@@ -444,6 +449,12 @@ function updateImageUIFromConfig() {
     }
     sizeSelect.value = entry.size || DEFAULT_IMAGE_SIZE;
 
+    // Provider switched: show that provider's cached suggestions, if any —
+    // Refresh still fetches fresh, but a cached list must not leak across
+    // providers (a GLM model id is meaningless for OpenAI Images).
+    _imageModels = _imageModelsByProvider.get(image.provider) || [];
+    if (_imageCombo) _imageCombo.refreshIfOpen();
+
     updateImageProviderHints();
 }
 
@@ -466,6 +477,62 @@ function updateImageProviderHints() {
     keyHint.textContent = preset.keyHint
         ? `Get a key at ${preset.keyHint}`
         : 'API key for the image endpoint';
+}
+
+/**
+ * Model ids that look image-capable. Multi-model gateways (OpenRouter,
+ * SiliconFlow, zhongkeyu, ...) answer /models with their whole catalog —
+ * mostly chat models an image pipeline cannot use — so Refresh filters the
+ * suggestions to image-ish ids. Heuristic by design: when nothing matches
+ * (unusual naming, or an images-only endpoint) the FULL list is shown rather
+ * than an empty picker, and the text input always accepts any id.
+ *
+ * @type {RegExp}
+ */
+const IMAGE_MODEL_PATTERN = /image|dall-e|dalle|cogview|kolors|flux|seedream|stable-diffusion|sd3|irag|recraft|ideogram|grok-2-image/i;
+
+/**
+ * Refreshes the image model suggestions from the SELECTED image provider's
+ * own endpoint ({url}{apiPath}/models — the same OpenAI-compatible call the
+ * chat connection test makes, but against the image entry's base URL and
+ * key). Results are cached per provider; a response that lands after the
+ * user switched providers is dropped.
+ */
+async function handleRefreshImageModels() {
+    const providerEl = document.getElementById('imageProviderSelect');
+    const image = appState.config.imageGeneration;
+    const requestedProvider = providerEl ? providerEl.value : null;
+    const entry = image && image.providers && image.providers[requestedProvider];
+    if (!requestedProvider || !entry) return;
+    // Commit the visible form first: Refresh should query what the user sees.
+    syncImageFormToProvider(requestedProvider);
+    if (!entry.url) {
+        addLog('Enter an image endpoint URL before refreshing the model list.', 'warning');
+        return;
+    }
+
+    const preset = getImageProviderPreset(requestedProvider);
+    const label = preset ? preset.label : requestedProvider;
+    addLog(`Refreshing image model list for ${label}...`, 'info');
+    try {
+        const result = await llmTestConnection({ url: entry.url, apiPath: entry.apiPath, apiKey: entry.apiKey });
+        const currentProvider = providerEl ? providerEl.value : null;
+        if (currentProvider !== requestedProvider) return;
+        let ids = result.models.map((m) => m.id);
+        const imageish = ids.filter((id) => IMAGE_MODEL_PATTERN.test(id));
+        if (imageish.length > 0) ids = imageish;
+        // The configured model stays selectable even when unlisted (or when
+        // the heuristic filtered it out).
+        if (entry.model && !ids.includes(entry.model)) ids.unshift(entry.model);
+        _imageModelsByProvider.set(requestedProvider, ids);
+        _imageModels = ids;
+        addLog(`Found ${ids.length} image model(s) for ${label}.`, 'success');
+        if (_imageCombo) _imageCombo.refreshIfOpen();
+    } catch (error) {
+        const currentProvider = providerEl ? providerEl.value : null;
+        if (currentProvider !== requestedProvider) return;
+        addLog(`${label} image model refresh failed: ${error.message}`, 'error');
+    }
 }
 
 /**
@@ -597,7 +664,7 @@ function handleBackendSwitch() {
     // Any in-flight connection probe belongs to the previous provider now;
     // its results must not repopulate this provider's model list or status.
     _connectionSequence += 1;
-    closeModelDropdown();
+    _chatCombo?.close();
     updateUIFromConfig();
     saveSettings();
 }
@@ -699,90 +766,139 @@ function populateModels(models) {
     }
     _modelsByProvider.set(appState.config.backend, [..._availableModels]);
 
-    const dropdown = document.getElementById('modelDropdown');
-    if (dropdown && !dropdown.hidden) {
-        renderModelDropdown(document.getElementById('modelSelect').value);
-    }
+    if (_chatCombo) _chatCombo.refreshIfOpen();
     // A newly listed model can activate a model-specific capability profile.
     updateGenerationControls();
 }
 
 /**
- * Renders the model dropdown items, filtered by the given substring
- * (case-insensitive). An empty filter renders the full list.
+ * Wires a text input + dropdown pair as a typeable model combobox. The chat
+ * and image model fields share this behavior: clicking or focusing the input
+ * shows the full list, typing filters it, Arrow keys + Enter pick an item,
+ * and Escape / Tab / blur close it. Free-text model ids remain valid — the
+ * input value is authoritative, the dropdown is only suggestions.
  *
- * @param {string} [filter]
+ * @param {object} spec
+ * @param {HTMLInputElement} spec.input - The combobox text input
+ * @param {HTMLElement} spec.dropdown - The suggestion listbox
+ * @param {string} spec.idPrefix - Prefix for generated option ids
+ * @param {function(): string[]} spec.getModels - Current suggestion list
+ * @param {function(): string} spec.getCurrent - Configured model id (highlighted)
+ * @param {function(): void} [spec.onInput] - Per-keystroke work besides the
+ *   filter render (chat: capability hints + debounced save)
+ * @param {function(string): void} [spec.onPick] - Receives the picked id
+ *   (chat: capability hints + save; image: commit form + save)
+ * @returns {{render: function(string=): void, open: function(): void,
+ *   close: function(): void, refreshIfOpen: function(): void}}
  */
-function renderModelDropdown(filter = '') {
-    const dropdown = document.getElementById('modelDropdown');
-    if (!dropdown) return;
+function attachModelCombobox({ input, dropdown, idPrefix, getModels, getCurrent, onInput, onPick }) {
+    let index = -1;
 
-    const query = (filter || '').trim().toLowerCase();
-    const current = getActiveBackendConfig(appState).model;
-    const matches = query
-        ? _availableModels.filter((id) => id.toLowerCase().includes(query))
-        : _availableModels;
+    function render(filter = '') {
+        const query = (filter || '').trim().toLowerCase();
+        const current = getCurrent();
+        const models = getModels();
+        const matches = query
+            ? models.filter((id) => id.toLowerCase().includes(query))
+            : models;
 
-    dropdown.innerHTML = '';
-    _modelIndex = -1;
-    const input = document.getElementById('modelSelect');
-    input.removeAttribute('aria-activedescendant');
-    dropdown.hidden = false;
-    input.setAttribute('aria-expanded', 'true');
-    if (matches.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'model-dropdown-empty';
-        empty.textContent = _availableModels.length
-            ? 'No matching models'
-            : 'No models loaded — click Refresh';
-        dropdown.appendChild(empty);
-        return;
+        dropdown.innerHTML = '';
+        index = -1;
+        input.removeAttribute('aria-activedescendant');
+        dropdown.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        if (matches.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'model-dropdown-empty';
+            empty.textContent = models.length
+                ? 'No matching models'
+                : 'No models loaded — click Refresh';
+            dropdown.appendChild(empty);
+            return;
+        }
+        for (const id of matches) {
+            const item = document.createElement('div');
+            item.className = 'model-dropdown-item' + (id === current ? ' current' : '');
+            item.setAttribute('role', 'option');
+            item.id = `${idPrefix}-${dropdown.childElementCount}`;
+            item.setAttribute('aria-selected', 'false');
+            item.textContent = id;
+            // mousedown + preventDefault keeps focus in the input (no blur) so
+            // the click reliably selects instead of being swallowed by blur.
+            item.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                pick(id);
+            });
+            dropdown.appendChild(item);
+        }
     }
-    for (const id of matches) {
-        const item = document.createElement('div');
-        item.className = 'model-dropdown-item' + (id === current ? ' current' : '');
-        item.setAttribute('role', 'option');
-        item.id = `model-option-${dropdown.childElementCount}`;
-        item.setAttribute('aria-selected', 'false');
-        item.textContent = id;
-        // mousedown + preventDefault keeps focus in the input (no blur) so
-        // the click reliably selects instead of being swallowed by blur.
-        item.addEventListener('mousedown', (e) => {
+
+    function open() {
+        render('');
+    }
+
+    function close() {
+        dropdown.hidden = true;
+        index = -1;
+        input.removeAttribute('aria-activedescendant');
+        input.setAttribute('aria-expanded', 'false');
+    }
+
+    function pick(id) {
+        input.value = id;
+        close();
+        if (onPick) onPick(id);
+    }
+
+    input.setAttribute('aria-autocomplete', 'list');
+    input.addEventListener('input', () => {
+        if (onInput) onInput();
+        render(input.value);
+    });
+    input.addEventListener('focus', open);
+    input.addEventListener('click', open);
+    input.addEventListener('blur', () => {
+        // Pointer selection prevents blur, so a real blur can close immediately.
+        close();
+    });
+    input.addEventListener('keydown', (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Escape' && !dropdown.hidden) {
             e.preventDefault();
-            selectModel(id);
-        });
-        dropdown.appendChild(item);
-    }
-}
+            e.stopPropagation();
+            close();
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (dropdown.hidden) open();
+            const options = [...dropdown.querySelectorAll('[role="option"]')];
+            if (!options.length) return;
+            index = index < 0
+                ? (e.key === 'ArrowDown' ? 0 : options.length - 1)
+                : (index + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+            options.forEach((option, i) => {
+                option.setAttribute('aria-selected', String(i === index));
+                option.classList.toggle('active', i === index);
+            });
+            input.setAttribute('aria-activedescendant', options[index].id);
+            options[index].scrollIntoView?.({ block: 'nearest' });
+        } else if (e.key === 'Enter' && !dropdown.hidden && index >= 0) {
+            e.preventDefault();
+            const option = dropdown.querySelectorAll('[role="option"]')[index];
+            if (option) pick(option.textContent);
+        } else if (e.key === 'Tab') {
+            close();
+        }
+    });
 
-/** Opens the model dropdown showing the full (unfiltered) list. */
-function openModelDropdown() {
-    renderModelDropdown('');
-    const dropdown = document.getElementById('modelDropdown');
-    dropdown.hidden = false;
-    document.getElementById('modelSelect').setAttribute('aria-expanded', 'true');
-}
-
-/** Closes the model dropdown. */
-function closeModelDropdown() {
-    const dropdown = document.getElementById('modelDropdown');
-    if (!dropdown) return;
-    dropdown.hidden = true;
-    _modelIndex = -1;
-    document.getElementById('modelSelect').removeAttribute('aria-activedescendant');
-    document.getElementById('modelSelect').setAttribute('aria-expanded', 'false');
-}
-
-/**
- * Picks a model from the dropdown: sets the input value, saves, closes.
- *
- * @param {string} id - The model id
- */
-function selectModel(id) {
-    document.getElementById('modelSelect').value = id;
-    closeModelDropdown();
-    updateGenerationControls(id);
-    saveSettings();
+    return {
+        render,
+        open,
+        close,
+        /** Re-renders with the current filter when the list changes while open. */
+        refreshIfOpen() {
+            if (!dropdown.hidden) render(input.value);
+        },
+    };
 }
 
 // ============================================================================

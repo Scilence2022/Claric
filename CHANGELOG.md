@@ -8,6 +8,17 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
+- **Image model suggestion list with Refresh** (`src/taskpane/ui/settings-view.js`,
+  `src/taskpane/taskpane.html`, `tests/settings-image-models.spec.js`) — the
+  Image model field is now a combobox like the chat Model field: a **Refresh**
+  button queries the selected image provider's own `/models` endpoint (the
+  image entry's base URL and key, not the chat backend's), and clicking or
+  typing in the field shows a filterable suggestion list. Multi-model gateway
+  catalogs are filtered to image-looking ids with a full-list fallback, the
+  configured model stays selectable even when unlisted, suggestions cache per
+  provider, and stale responses that land after a provider switch are dropped.
+  Free-text model ids remain valid.
+
 - **Build fingerprint surfaced in the taskpane Activity log**
   (`webpack.config.cjs`, `src/taskpane/taskpane.js`,
   `tests/build-info.spec.js`) — production builds now emit
