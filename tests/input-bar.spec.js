@@ -411,18 +411,33 @@ describe('file attachment chips', () => {
         expect(onLog).toHaveBeenCalledWith(expect.stringContaining('unsupported file type'), 'warning');
         const error = document.getElementById('inputError');
         expect(error.hidden).toBe(false);
-        expect(error.textContent).toContain('unsupported file type');
+        expect(error.textContent).toBe('archive.zip: unsupported file type (use text, image, .docx or .pdf).');
 
-        const big = { name: 'huge.txt', type: 'text/plain', size: 3 * 1024 * 1024, text: async () => 'x' };
+        const big = { name: 'huge.txt', type: 'text/plain', size: 10 * 1024 * 1024 + 1, text: async () => 'x' };
         pick([big]);
         await flush();
-        expect(onLog).toHaveBeenCalledWith(expect.stringContaining('per-file limit'), 'warning');
+        expect(onLog).toHaveBeenCalledWith('huge.txt: 10.0 MB exceeds the 10.0 MB per-file limit.', 'warning');
         expect(error.hidden).toBe(false);
-        expect(error.textContent).toContain('per-file limit');
+        expect(error.textContent).toBe('archive.zip: unsupported file type (use text, image, .docx or .pdf).\n'
+            + 'huge.txt: 10.0 MB exceeds the 10.0 MB per-file limit.');
 
         document.getElementById('chatInput').dispatchEvent(new Event('input', { bubbles: true }));
         expect(error.hidden).toBe(false);
         expect(error.textContent).toContain('archive.zip');
+    });
+
+    test('parse failures show the filename only once in the inline error and log', async () => {
+        const { pick, onLog } = setupWithAttachments();
+        pick([{
+            name: 'broken.txt', type: 'text/plain', size: 1,
+            text: async () => { throw new Error('read failed'); },
+        }]);
+        await flush();
+        const error = document.getElementById('inputError');
+        expect(error.hidden).toBe(false);
+        expect(error.textContent).toBe('broken.txt: read failed');
+        expect(onLog).toHaveBeenCalledWith('broken.txt: read failed', 'error');
+        expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
     });
 
     test('image files render a thumbnail chip', async () => {

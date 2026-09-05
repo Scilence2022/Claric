@@ -243,7 +243,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
             const kind = detectAttachmentKind(file.name, file.type);
             const verdict = validateAttachment({ name: file.name, size: file.size, kind }, attachments);
             if (!verdict.ok) {
-                attachmentErrors.push(`${file.name}: ${verdict.error}`);
+                attachmentErrors.push(verdict.error);
                 showError(attachmentErrors.join('\n'));
                 if (typeof onLog === 'function') onLog(verdict.error, 'warning');
                 continue;
@@ -254,7 +254,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
                 attachments.push(parsed);
             } catch (err) {
                 if (generation !== attachmentGeneration) return;
-                attachmentErrors.push(`${file.name}: ${err.message}`);
+                attachmentErrors.push(err.message);
                 showError(attachmentErrors.join('\n'));
                 if (typeof onLog === 'function') onLog(err.message, 'error');
             }
