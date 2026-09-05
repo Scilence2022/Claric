@@ -432,12 +432,63 @@ describe('file attachment chips', () => {
             name: 'broken.txt', type: 'text/plain', size: 1,
             text: async () => { throw new Error('read failed'); },
         }]);
+        // The chip appears as pending before the failure lands.
+        expect(document.querySelectorAll('.attachment-chip-pending')).toHaveLength(1);
         await flush();
         const error = document.getElementById('inputError');
         expect(error.hidden).toBe(false);
         expect(error.textContent).toBe('broken.txt: read failed');
         expect(onLog).toHaveBeenCalledWith('broken.txt: read failed', 'error');
         expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
+    });
+
+    test('picked files show a pending chip immediately, before parsing finishes', async () => {
+        const { pick } = setupWithAttachments();
+        let resolve;
+        pick([
+            { name: 'slow.txt', type: 'text/plain', size: 4, text: () => new Promise((r) => { resolve = r; }) },
+            new File(['x'], 'fast.txt'),
+        ]);
+
+        // Chips render synchronously, before any parse settles.
+        const chips = document.querySelectorAll('.attachment-chip');
+        expect(chips).toHaveLength(2);
+        for (const chip of chips) {
+            expect(chip.classList.contains('attachment-chip-pending')).toBe(true);
+            expect(chip.querySelector('.attachment-chip-spinner')).not.toBeNull();
+            expect(chip.querySelector('.attachment-chip-status').textContent).toBe('Parsing…');
+        }
+        expect(chips[0].querySelector('.attachment-chip-name').textContent).toBe('slow.txt');
+        expect(chips[1].querySelector('.attachment-chip-name').textContent).toBe('fast.txt');
+
+        resolve('slow body');
+        await flush();
+        const settled = document.querySelectorAll('.attachment-chip');
+        expect(settled).toHaveLength(2);
+        for (const chip of settled) {
+            expect(chip.classList.contains('attachment-chip-pending')).toBe(false);
+            expect(chip.querySelector('.attachment-chip-spinner')).toBeNull();
+            expect(chip.querySelector('.attachment-chip-status')).toBeNull();
+        }
+    });
+
+    test('removing a pending chip discards its parse result', async () => {
+        const { onSubmit, pick } = setupWithAttachments();
+        let resolve;
+        pick([{ name: 'slow.txt', type: 'text/plain', size: 4, text: () => new Promise((r) => { resolve = r; }) }]);
+        expect(document.querySelectorAll('.attachment-chip')).toHaveLength(1);
+
+        document.querySelector('.attachment-chip-remove').click();
+        expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
+
+        resolve('late body');
+        await flush();
+        expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
+
+        document.getElementById('chatInput').value = 'go';
+        document.getElementById('sendBtn').click();
+        expect(onSubmit).toHaveBeenCalledTimes(1);
+        expect(onSubmit.mock.calls[0][1]).toHaveLength(0);
     });
 
     test('image files render a thumbnail chip', async () => {

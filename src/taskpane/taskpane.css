@@ -431,6 +431,26 @@ body {
     max-width: 220px;
 }
 
+/* Pending chip: shown the moment a file is picked, until parsing lands. */
+.attachment-chip-pending {
+    border-style: dashed;
+}
+
+.attachment-chip-spinner {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--border-color);
+    border-top-color: var(--accent-color);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.attachment-chip-status {
+    flex: 0 0 auto;
+    color: var(--secondary-text);
+}
+
 .attachment-chip-icon {
     flex: 0 0 auto;
     font-weight: 600;
