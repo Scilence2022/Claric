@@ -1,853 +1,211 @@
 <!DOCTYPE html>
 <html lang="en" data-lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claric — AI Writing &amp; Editing Assistant for Word</title>
-<meta name="description" content="Claric is an open-source AI writing & editing assistant inside Microsoft Word. Ask in plain language, review every proposed change, and apply only what you approve — as native tracked changes. BYOK: local or cloud models.">
-<meta property="og:title" content="Claric — AI Writing &amp; Editing Assistant for Word">
-<meta property="og:description" content="Your document. Your call. Nothing changes without your approval.">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://scilence2022.github.io/Claric/">
-<meta property="og:image" content="https://scilence2022.github.io/Claric/assets/screenshots/tracked-changes.png">
-<link rel="canonical" href="https://scilence2022.github.io/Claric/">
-<link rel="icon" type="image/png" href="assets/icon-64.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Serif+SC:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --paper: #faf9f6;
-    --paper-warm: #f4f1ea;
-    --card: #ffffff;
-    --ink: #1c1917;
-    --ink-soft: #44403c;
-    --ink-muted: #78716c;
-    --line: #e7e2d9;
-    --accent: #4f46e5;
-    --accent-deep: #3730a3;
-    --accent-soft: #eef0fe;
-    --violet: #7c3aed;
-    --ins: #15803d;
-    --ins-bg: #dcfce7;
-    --del: #b91c1c;
-    --del-bg: #fee2e2;
-    --amber: #b45309;
-    --amber-bg: #fef3c7;
-    --radius: 14px;
-    --shadow-sm: 0 1px 2px rgba(28,25,23,.05), 0 1px 3px rgba(28,25,23,.07);
-    --shadow-md: 0 4px 12px rgba(28,25,23,.06), 0 12px 32px rgba(28,25,23,.08);
-    --shadow-lg: 0 8px 24px rgba(28,25,23,.08), 0 24px 64px rgba(28,25,23,.12);
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html { scroll-behavior: smooth; }
-  body {
-    font-family: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: var(--paper);
-    color: var(--ink);
-    line-height: 1.65;
-    font-size: 16px;
-    -webkit-font-smoothing: antialiased;
-  }
-  html[data-lang="en"] .lang-zh { display: none !important; }
-  html[data-lang="zh"] .lang-en { display: none !important; }
-  html[data-lang="zh"] body { font-family: 'Inter', 'Noto Sans SC', sans-serif; }
-
-  .serif { font-family: 'Fraunces', 'Noto Serif SC', Georgia, serif; }
-  html[data-lang="zh"] .serif { font-family: 'Fraunces', 'Noto Serif SC', serif; }
-
-  .wrap { max-width: 72rem; margin: 0 auto; padding: 0 1.5rem; }
-
-  /* ── Reveal animation ── */
-  .reveal { opacity: 0; transform: translateY(22px); transition: opacity .6s ease, transform .6s ease; }
-  .reveal.visible { opacity: 1; transform: none; }
-  @media (prefers-reduced-motion: reduce) {
-    .reveal { opacity: 1; transform: none; transition: none; }
-    .blob { animation: none !important; }
-    .marquee-track { animation: none !important; }
-  }
-
-  /* ── Nav ── */
-  .nav {
-    position: sticky; top: 0; z-index: 100;
-    background: rgba(250,249,246,.82);
-    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-    border-bottom: 1px solid var(--line);
-  }
-  .nav-inner { max-width: 72rem; margin: 0 auto; padding: .7rem 1.5rem; display: flex; align-items: center; gap: 1rem; }
-  .nav-brand { display: flex; align-items: center; gap: .55rem; text-decoration: none; color: var(--ink); font-weight: 700; font-size: 1rem; letter-spacing: -.01em; }
-  .nav-brand img { width: 26px; height: 26px; border-radius: 7px; }
-  .nav-links { display: flex; gap: .1rem; margin-left: auto; list-style: none; }
-  .nav-links a { font-size: .82rem; font-weight: 500; color: var(--ink-muted); text-decoration: none; padding: .35rem .65rem; border-radius: 8px; transition: color .15s, background .15s; }
-  .nav-links a:hover { color: var(--ink); background: rgba(28,25,23,.05); }
-  .nav-actions { display: flex; align-items: center; gap: .5rem; }
-  .lang-toggle {
-    font: 600 .72rem 'Inter', sans-serif; letter-spacing: .04em;
-    border: 1px solid var(--line); background: var(--card); color: var(--ink-soft);
-    border-radius: 999px; padding: .32rem .7rem; cursor: pointer; transition: border-color .15s, color .15s;
-  }
-  .lang-toggle:hover { border-color: var(--accent); color: var(--accent); }
-  .gh-btn {
-    display: inline-flex; align-items: center; gap: .4rem;
-    font-size: .82rem; font-weight: 600; text-decoration: none;
-    color: #fff; background: var(--ink); border-radius: 999px; padding: .42rem .9rem;
-    transition: background .15s, transform .15s;
-  }
-  .gh-btn:hover { background: #000; transform: translateY(-1px); }
-  .gh-btn svg { width: 15px; height: 15px; fill: currentColor; }
-  @media (max-width: 860px) { .nav-links { display: none; } }
-
-  /* ── Hero ── */
-  .hero { position: relative; overflow: hidden; padding: 5.5rem 0 4rem; }
-  .blob { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; pointer-events: none; }
-  .blob-1 { width: 480px; height: 480px; background: #c7d2fe; top: -160px; left: -120px; animation: drift 16s ease-in-out infinite alternate; }
-  .blob-2 { width: 420px; height: 420px; background: #fde68a; top: -80px; right: -100px; opacity: .35; animation: drift 20s ease-in-out infinite alternate-reverse; }
-  .blob-3 { width: 360px; height: 360px; background: #ddd6fe; bottom: -180px; left: 38%; opacity: .4; animation: drift 22s ease-in-out infinite alternate; }
-  @keyframes drift { from { transform: translate(0,0) scale(1); } to { transform: translate(50px, 30px) scale(1.12); } }
-  .hero-inner { position: relative; text-align: center; }
-  .hero-logo { width: 84px; height: 84px; border-radius: 22px; box-shadow: var(--shadow-md); }
-  .badge {
-    display: inline-flex; align-items: center; gap: .45rem; margin-top: 1.6rem;
-    font-size: .75rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
-    color: var(--accent-deep); background: var(--accent-soft); border: 1px solid #dfe3fd;
-    padding: .35rem .85rem; border-radius: 999px;
-  }
-  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-  .hero h1 {
-    margin: 1.1rem auto 0; max-width: 17ch;
-    font-size: clamp(2.6rem, 6vw, 4.3rem); font-weight: 600; line-height: 1.08; letter-spacing: -.02em;
-  }
-  .hero h1 em { font-style: italic; background: linear-gradient(100deg, var(--accent), var(--violet)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .hero-sub { margin: 1.4rem auto 0; max-width: 44rem; font-size: 1.08rem; color: var(--ink-soft); }
-  .hero-ctas { margin-top: 2.1rem; display: flex; gap: .8rem; justify-content: center; flex-wrap: wrap; }
-  .btn {
-    display: inline-flex; align-items: center; gap: .5rem; text-decoration: none;
-    font-weight: 600; font-size: .95rem; border-radius: 999px; padding: .8rem 1.6rem;
-    transition: transform .15s, box-shadow .15s, background .15s;
-  }
-  .btn-primary { color: #fff; background: linear-gradient(120deg, var(--accent), var(--violet)); box-shadow: 0 6px 20px rgba(99,102,241,.35); }
-  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(99,102,241,.45); }
-  .btn-ghost { color: var(--ink); background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-sm); }
-  .btn-ghost:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
-  .hero-hint { margin-top: 1rem; font-size: .8rem; color: var(--ink-muted); }
-  .hero-hint code { font-family: 'JetBrains Mono', monospace; font-size: .76rem; background: var(--paper-warm); border: 1px solid var(--line); border-radius: 6px; padding: .1rem .4rem; }
-
-  /* ── Browser frame with GIF ── */
-  .frame-wrap { position: relative; margin: 3.5rem auto 0; max-width: 58rem; }
-  .browser-frame {
-    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
-    box-shadow: var(--shadow-lg); overflow: hidden; text-align: left;
-  }
-  .browser-bar { display: flex; align-items: center; gap: .5rem; padding: .65rem .9rem; border-bottom: 1px solid var(--line); background: #fbfaf7; }
-  .browser-bar .c { width: 11px; height: 11px; border-radius: 50%; }
-  .c-r { background: #f87171; } .c-y { background: #fbbf24; } .c-g { background: #34d399; }
-  .browser-url {
-    margin-left: .6rem; flex: 1; max-width: 320px; font: 500 .72rem 'JetBrains Mono', monospace;
-    color: var(--ink-muted); background: var(--paper-warm); border: 1px solid var(--line);
-    border-radius: 7px; padding: .22rem .6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .browser-frame img { display: block; width: 100%; height: auto; }
-  .frame-caption { text-align: center; margin-top: .9rem; font-size: .8rem; color: var(--ink-muted); }
-
-  /* ── Marquee ── */
-  .marquee { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--card); overflow: hidden; padding: .85rem 0; }
-  .marquee-track { display: flex; gap: 2.6rem; width: max-content; animation: scroll 34s linear infinite; }
-  .marquee-track span { font-size: .82rem; font-weight: 600; letter-spacing: .05em; color: var(--ink-muted); white-space: nowrap; display: flex; align-items: center; gap: .55rem; }
-  .marquee-track span::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); opacity: .55; }
-  @keyframes scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-
-  /* ── Sections ── */
-  section { padding: 5rem 0; }
-  .sec-head { text-align: center; max-width: 44rem; margin: 0 auto 3rem; }
-  .kicker { font-size: .74rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
-  .sec-head h2 { margin-top: .6rem; font-size: clamp(1.8rem, 3.6vw, 2.5rem); font-weight: 600; letter-spacing: -.015em; line-height: 1.15; }
-  .sec-head p { margin-top: .9rem; color: var(--ink-soft); font-size: 1.02rem; }
-
-  /* ── How it works ── */
-  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; }
-  .step {
-    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 1.7rem 1.5rem; box-shadow: var(--shadow-sm); transition: transform .2s, box-shadow .2s;
-  }
-  .step:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
-  .step-num {
-    width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center;
-    font: 700 .9rem 'Fraunces', serif; color: #fff; background: linear-gradient(130deg, var(--accent), var(--violet));
-  }
-  .step h3 { margin-top: 1rem; font-size: 1.08rem; font-weight: 600; }
-  .step p { margin-top: .5rem; font-size: .9rem; color: var(--ink-soft); }
-  @media (max-width: 860px) { .steps { grid-template-columns: 1fr; } }
-
-  /* ── Proposal card mockup ── */
-  .mock-wrap { margin-top: 3rem; display: flex; justify-content: center; }
-  .mock {
-    width: 100%; max-width: 620px; background: var(--card); border: 1px solid var(--line);
-    border-radius: var(--radius); box-shadow: var(--shadow-lg); overflow: hidden; text-align: left;
-    transform: rotate(-.4deg);
-  }
-  .mock-head { display: flex; align-items: center; gap: .6rem; padding: .85rem 1.1rem; border-bottom: 1px solid var(--line); background: #fbfaf7; }
-  .mock-head .pill { font: 600 .68rem 'Inter', sans-serif; letter-spacing: .05em; text-transform: uppercase; color: var(--accent-deep); background: var(--accent-soft); border-radius: 999px; padding: .2rem .6rem; }
-  .mock-head .title { font-size: .82rem; font-weight: 600; color: var(--ink-soft); }
-  .mock-body { padding: 1.1rem 1.2rem; font-size: .92rem; }
-  .mock-line { display: flex; gap: .65rem; align-items: flex-start; padding: .5rem 0; }
-  .mock-check { flex: none; width: 17px; height: 17px; margin-top: .2rem; border-radius: 5px; border: 1.5px solid var(--accent); background: var(--accent); position: relative; }
-  .mock-check::after { content: ""; position: absolute; left: 4.5px; top: 1.5px; width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-  .mock-check.off { border-color: #d6d3d1; background: transparent; }
-  .mock-check.off::after { display: none; }
-  .diff del { color: var(--del); background: var(--del-bg); text-decoration: line-through; border-radius: 4px; padding: 0 .2rem; }
-  .diff ins { color: var(--ins); background: var(--ins-bg); text-decoration: none; border-radius: 4px; padding: 0 .2rem; }
-  .mock-foot { display: flex; gap: .6rem; padding: .9rem 1.2rem; border-top: 1px solid var(--line); background: #fbfaf7; }
-  .mock-btn { font-size: .8rem; font-weight: 600; border-radius: 8px; padding: .45rem 1rem; }
-  .mock-btn.apply { color: #fff; background: var(--ink); }
-  .mock-btn.reject { color: var(--ink-muted); border: 1px solid var(--line); background: var(--card); }
-  .mock-note { margin-left: auto; align-self: center; font-size: .72rem; color: var(--ink-muted); }
-
-  /* ── Screenshot gallery ── */
-  .gallery { background: var(--card); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-  .shot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.8rem 1.5rem; }
-  .shot { margin: 0; }
-  .shot .browser-frame { box-shadow: var(--shadow-md); transition: transform .2s, box-shadow .2s; }
-  .shot:hover .browser-frame { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
-  .shot figcaption { margin-top: .8rem; padding: 0 .2rem; }
-  .shot-title { font-size: .95rem; font-weight: 600; }
-  .shot-desc { margin-top: .15rem; font-size: .83rem; color: var(--ink-muted); }
-  @media (max-width: 860px) { .shot-grid { grid-template-columns: 1fr; } }
-
-  /* ── Scenarios ── */
-  .scenarios { background: var(--paper-warm); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-  .scene-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; }
-  .scene {
-    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 1.8rem 1.5rem; box-shadow: var(--shadow-sm); transition: transform .2s, box-shadow .2s;
-    display: flex; flex-direction: column;
-  }
-  .scene:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
-  .scene-icon { font-size: 1.7rem; }
-  .scene h3 { margin-top: .8rem; font-size: 1.12rem; font-weight: 600; }
-  .scene > p { margin-top: .45rem; font-size: .88rem; color: var(--ink-soft); flex: 1; }
-  .prompts { margin-top: 1.1rem; display: flex; flex-direction: column; gap: .5rem; }
-  .prompt-chip {
-    font-size: .82rem; color: var(--ink-soft); background: var(--paper); border: 1px solid var(--line);
-    border-radius: 9px; padding: .5rem .75rem;
-  }
-  .prompt-chip::before { content: "“"; color: var(--accent); font-weight: 700; margin-right: .15rem; }
-  .prompt-chip::after { content: "”"; color: var(--accent); font-weight: 700; margin-left: .15rem; }
-  @media (max-width: 860px) { .scene-grid { grid-template-columns: 1fr; } }
-
-  /* ── Feature grid ── */
-  .feat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; }
-  .feat {
-    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 1.6rem 1.4rem; box-shadow: var(--shadow-sm); transition: transform .2s, box-shadow .2s, border-color .2s;
-  }
-  .feat:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); border-color: #d9d4fb; }
-  .feat-icon {
-    width: 40px; height: 40px; border-radius: 11px; display: flex; align-items: center; justify-content: center;
-    background: var(--accent-soft); color: var(--accent-deep); font-size: 1.15rem;
-  }
-  .feat h3 { margin-top: .9rem; font-size: 1rem; font-weight: 600; }
-  .feat p { margin-top: .4rem; font-size: .87rem; color: var(--ink-soft); }
-  @media (max-width: 860px) { .feat-grid { grid-template-columns: 1fr; } }
-  @media (min-width: 861px) and (max-width: 1080px) { .feat-grid { grid-template-columns: repeat(2, 1fr); } }
-
-  /* ── BYOK ── */
-  .byok { background: var(--ink); color: #e7e5e4; position: relative; overflow: hidden; }
-  .byok .kicker { color: #a5b4fc; }
-  .byok .sec-head h2 { color: #fafaf9; }
-  .byok .sec-head p { color: #a8a29e; }
-  .byok-blob { position: absolute; width: 520px; height: 520px; border-radius: 50%; filter: blur(120px); opacity: .18; background: #6366f1; top: -200px; right: -140px; pointer-events: none; }
-  .byok-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; position: relative; }
-  .byok-card { background: #292524; border: 1px solid #44403c; border-radius: var(--radius); padding: 1.8rem 1.6rem; }
-  .byok-card h3 { color: #fafaf9; font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; gap: .55rem; }
-  .byok-card > p { margin-top: .6rem; font-size: .9rem; color: #a8a29e; }
-  .model-chips { margin-top: 1.1rem; display: flex; flex-wrap: wrap; gap: .5rem; }
-  .model-chip { font: 600 .78rem 'Inter', sans-serif; color: #d6d3d1; background: #1c1917; border: 1px solid #44403c; border-radius: 999px; padding: .35rem .8rem; }
-  @media (max-width: 860px) { .byok-grid { grid-template-columns: 1fr; } }
-
-  /* ── Get started ── */
-  .start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
-  .start-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden; }
-  .start-head { padding: 1.1rem 1.4rem; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: .6rem; }
-  .start-head h3 { font-size: 1.02rem; font-weight: 600; }
-  .start-head span { font-size: .78rem; color: var(--ink-muted); }
-  .start-card pre {
-    margin: 0; padding: 1.2rem 1.4rem; background: #1c1917; color: #e7e5e4;
-    font: 400 .8rem/1.75 'JetBrains Mono', monospace; overflow-x: auto;
-  }
-  .start-card pre .cm { color: #78716c; }
-  .start-card pre .pr { color: #a5b4fc; }
-  .start-label { margin: 0 0 .8rem; font: 700 .74rem 'Inter', sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-muted); }
-  .start-label + .start-grid { margin-top: 0; }
-  .start-grid + .start-label { margin-top: 2.2rem; }
-  .start-note { margin-top: 1.1rem; font-size: .85rem; color: var(--ink-soft); }
-  .start-note code { font-family: 'JetBrains Mono', monospace; font-size: .76rem; background: var(--paper-warm); border: 1px solid var(--line); border-radius: 6px; padding: .1rem .4rem; }
-  @media (max-width: 860px) { .start-grid { grid-template-columns: 1fr; } }
-
-  /* ── CTA banner ── */
-  .cta-banner {
-    margin-top: 1rem; border-radius: 20px; padding: 3.5rem 2rem; text-align: center;
-    background: linear-gradient(120deg, var(--accent) 0%, var(--violet) 100%);
-    color: #fff; position: relative; overflow: hidden;
-  }
-  .cta-banner h2 { font-size: clamp(1.7rem, 3.4vw, 2.4rem); font-weight: 600; letter-spacing: -.015em; }
-  .cta-banner p { margin-top: .8rem; color: rgba(255,255,255,.85); max-width: 36rem; margin-left: auto; margin-right: auto; }
-  .cta-banner .btn { margin-top: 1.8rem; background: #fff; color: var(--accent-deep); }
-  .cta-banner .btn:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(0,0,0,.25); }
-
-  /* ── Footer ── */
-  footer { border-top: 1px solid var(--line); padding: 2.6rem 0 3rem; background: var(--card); }
-  .foot-inner { display: flex; flex-wrap: wrap; gap: 1.4rem; align-items: center; justify-content: space-between; }
-  .foot-brand { display: flex; align-items: center; gap: .55rem; font-weight: 700; }
-  .foot-brand img { width: 24px; height: 24px; border-radius: 6px; }
-  .foot-links { display: flex; gap: 1.2rem; flex-wrap: wrap; list-style: none; }
-  .foot-links a { font-size: .84rem; color: var(--ink-muted); text-decoration: none; }
-  .foot-links a:hover { color: var(--accent); }
-  .foot-note { margin-top: 1.4rem; font-size: .78rem; color: var(--ink-muted); }
-  .foot-note a { color: var(--ink-soft); }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claric | Review-first AI editing for Microsoft Word</title>
+  <meta name="description" content="Claric brings review-first AI editing to Microsoft Word. Review proposals, apply text edits as tracked changes, and connect your own local or cloud models.">
+  <meta property="og:title" content="Claric | Review-first AI editing for Microsoft Word">
+  <meta property="og:description" content="AI editing inside Word, with reviewable proposals and native text revisions. Open source. Bring your own model.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://scilence2022.github.io/Claric/">
+  <meta property="og:image" content="https://scilence2022.github.io/Claric/assets/screenshots/tracked-changes.webp">
+  <meta property="og:image:width" content="1600">
+  <meta property="og:image:height" content="1004">
+  <meta property="og:image:alt" content="Claric taskpane alongside native tracked changes in Microsoft Word">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="canonical" href="https://scilence2022.github.io/Claric/">
+  <link rel="icon" type="image/png" href="assets/icon-64.png">
+  <style>html[data-lang="en"] [data-lang="zh"],html[data-lang="zh"] [data-lang="en"]{display:none!important}[hidden]{display:none!important}</style>
+  <link rel="stylesheet" href="assets/site.css">
+  <script src="assets/site.js" defer></script>
 </head>
 <body>
-
-<!-- ───────────────────────── Nav ───────────────────────── -->
-<nav class="nav">
-  <div class="nav-inner">
-    <a class="nav-brand" href="#top">
-      <img src="assets/icon-64.png" alt="Claric logo">
-      <span>Claric</span>
-    </a>
-    <ul class="nav-links">
-      <li><a href="#how"><span class="lang-en">How it works</span><span class="lang-zh">工作方式</span></a></li>
-      <li><a href="#gallery"><span class="lang-en">Screenshots</span><span class="lang-zh">界面掠影</span></a></li>
-      <li><a href="#scenarios"><span class="lang-en">Scenarios</span><span class="lang-zh">应用场景</span></a></li>
-      <li><a href="#features"><span class="lang-en">Features</span><span class="lang-zh">功能</span></a></li>
-      <li><a href="#models"><span class="lang-en">Models</span><span class="lang-zh">模型</span></a></li>
-      <li><a href="#start"><span class="lang-en">Get started</span><span class="lang-zh">快速上手</span></a></li>
-      <li><a href="architecture.html"><span class="lang-en">Architecture</span><span class="lang-zh">架构</span></a></li>
-    </ul>
-    <div class="nav-actions">
-      <button class="lang-toggle" id="langToggle" aria-label="Switch language">中文</button>
-      <a class="gh-btn" href="https://github.com/Scilence2022/Claric" target="_blank" rel="noopener">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-        GitHub
-      </a>
+  <a class="skip-link" href="#main"><span data-lang="en">Skip to content</span><span data-lang="zh">跳转到正文</span></a>
+  <header class="site-header">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#main" aria-label="Claric"><img src="assets/icon-64.png" alt="" width="28" height="28">Claric</a>
+      <nav aria-label="Main navigation" data-aria-en="Main navigation" data-aria-zh="主导航">
+        <a href="#how"><span data-lang="en">Workflow</span><span data-lang="zh">工作流</span></a>
+        <a href="#gallery"><span data-lang="en">Product</span><span data-lang="zh">产品</span></a>
+        <a href="#start"><span data-lang="en">Install</span><span data-lang="zh">安装</span></a>
+        <a href="#models"><span data-lang="en">Models</span><span data-lang="zh">模型</span></a>
+      </nav>
+      <button id="langToggle" type="button" class="language-toggle" aria-label="Switch to Chinese" lang="zh-CN" hidden>中文</button>
     </div>
-  </div>
-</nav>
+  </header>
 
-<!-- ───────────────────────── Hero ───────────────────────── -->
-<header class="hero" id="top">
-  <div class="blob blob-1"></div>
-  <div class="blob blob-2"></div>
-  <div class="blob blob-3"></div>
-  <div class="wrap hero-inner">
-    <img class="hero-logo" src="assets/icon-128.png" alt="Claric" width="84" height="84">
-    <div class="badge"><span class="dot"></span>
-      <span class="lang-en">Open source · MIT · BYOK</span>
-      <span class="lang-zh">开源 · MIT 许可 · 自带密钥</span>
-    </div>
-    <h1 class="serif">
-      <span class="lang-en">Your document.<br><em>Your call.</em></span>
-      <span class="lang-zh">你的文档，<br><em>你说了算。</em></span>
-    </h1>
-    <p class="hero-sub">
-      <span class="lang-en">Claric is an AI writing &amp; editing assistant that lives inside Microsoft Word. Ask in plain language — every suggestion arrives as a reviewable proposal card and lands as native tracked changes. Nothing is ever rewritten without your approval.</span>
-      <span class="lang-zh">Claric 是住在 Word 里的 AI 写作与编辑助手。用大白话下指令（中英文皆可），每条建议都是一张可逐条审阅的提案卡，以 Word 原生修订落地——不经你确认，绝不动一个字。</span>
-    </p>
-    <div class="hero-ctas">
-      <a class="btn btn-primary" href="#start">
-        <span class="lang-en">Get started</span><span class="lang-zh">快速上手</span>
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 8h11M9 3.5 13.5 8 9 12.5"/></svg>
-      </a>
-      <a class="btn btn-ghost" href="https://github.com/Scilence2022/Claric" target="_blank" rel="noopener">
-        <span class="lang-en">View on GitHub</span><span class="lang-zh">在 GitHub 查看</span>
-      </a>
-    </div>
-    <p class="hero-hint">
-      <span class="lang-en">Try it: open any document, select a paragraph, and type</span>
-      <span class="lang-zh">现在就试：打开任意文档，选中一段话，输入</span>
-      <code><span class="lang-en">polish this selection</span><span class="lang-zh">润色这段话</span></code>
-    </p>
-
-    <div class="frame-wrap reveal">
-      <div class="browser-frame">
-        <div class="browser-bar">
-          <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
-          <span class="browser-url">word · Claric taskpane</span>
-        </div>
-        <img src="assets/hero-demo.webp" alt="Claric walkthrough — welcome screen, staged proposal review, applied tracked changes, then illustration and table editing" loading="lazy">
-      </div>
-      <p class="frame-caption">
-        <span class="lang-en">Ask → review → apply as native tracked changes — tables and illustrations included.</span>
-        <span class="lang-zh">下指令 → 审阅 → 以原生修订落地——表格与插图也不在话下。</span>
-      </p>
-    </div>
-  </div>
-</header>
-
-<!-- ───────────────────────── Marquee ───────────────────────── -->
-<div class="marquee" aria-hidden="true">
-  <div class="marquee-track">
-    <span class="lang-en">Proposal cards</span><span class="lang-zh">提案卡审阅</span>
-    <span class="lang-en">Native tracked changes</span><span class="lang-zh">Word 原生修订</span>
-    <span class="lang-en">English &amp; 中文</span><span class="lang-zh">中英文双语</span>
-    <span class="lang-en">Local models (Ollama / vLLM)</span><span class="lang-zh">本地模型（Ollama / vLLM）</span>
-    <span class="lang-en">DeepSeek · GLM · Kimi · MiniMax</span><span class="lang-zh">DeepSeek · GLM · Kimi · MiniMax</span>
-    <span class="lang-en">Whole-document processing</span><span class="lang-zh">全文分块处理</span>
-    <span class="lang-en">Tables &amp; illustrations</span><span class="lang-zh">表格与插图</span>
-    <span class="lang-en">Slash-command skills</span><span class="lang-zh">斜杠命令技能</span>
-    <span class="lang-en">MCP tool servers</span><span class="lang-zh">MCP 工具服务器</span>
-    <span class="lang-en">Formatting preserved</span><span class="lang-zh">格式完整保留</span>
-    <!-- duplicate for seamless loop -->
-    <span class="lang-en">Proposal cards</span><span class="lang-zh">提案卡审阅</span>
-    <span class="lang-en">Native tracked changes</span><span class="lang-zh">Word 原生修订</span>
-    <span class="lang-en">English &amp; 中文</span><span class="lang-zh">中英文双语</span>
-    <span class="lang-en">Local models (Ollama / vLLM)</span><span class="lang-zh">本地模型（Ollama / vLLM）</span>
-    <span class="lang-en">DeepSeek · GLM · Kimi · MiniMax</span><span class="lang-zh">DeepSeek · GLM · Kimi · MiniMax</span>
-    <span class="lang-en">Whole-document processing</span><span class="lang-zh">全文分块处理</span>
-    <span class="lang-en">Tables &amp; illustrations</span><span class="lang-zh">表格与插图</span>
-    <span class="lang-en">Slash-command skills</span><span class="lang-zh">斜杠命令技能</span>
-    <span class="lang-en">MCP tool servers</span><span class="lang-zh">MCP 工具服务器</span>
-    <span class="lang-en">Formatting preserved</span><span class="lang-zh">格式完整保留</span>
-  </div>
-</div>
-
-<!-- ───────────────────────── How it works ───────────────────────── -->
-<section id="how">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="kicker"><span class="lang-en">How it works</span><span class="lang-zh">工作方式</span></div>
-      <h2 class="serif"><span class="lang-en">You ask. It proposes. <em>You decide.</em></span><span class="lang-zh">你下指令，它出方案，<em>你拍板。</em></span></h2>
-      <p><span class="lang-en">The way careful people actually work — a draft due tomorrow, a supervisor reading the redlines. Every fix stays traceable, because every fix is a real Word revision.</span>
-         <span class="lang-zh">按严谨的人的方式工作：明天要交的稿子，导师（或合伙人）要看修订记录。每一处修改都可追溯，因为每一处修改都是真正的 Word 修订。</span></p>
-    </div>
-
-    <div class="steps">
-      <div class="step reveal">
-        <div class="step-num">1</div>
-        <h3><span class="lang-en">Ask in plain language</span><span class="lang-zh">用大白话下指令</span></h3>
-        <p><span class="lang-en">Select a passage or work on the whole document. Type what you want — in English or 中文 — and Claric routes it to the right pipeline: edit, format, table, illustration, or Q&amp;A.</span>
-           <span class="lang-zh">选中一段文字，或处理整篇文档。输入你想要的效果——中文英文都行——Claric 会自动路由到对应管线：编辑、排版、表格、插图或问答。</span></p>
-      </div>
-      <div class="step reveal">
-        <div class="step-num">2</div>
-        <h3><span class="lang-en">Review every proposal</span><span class="lang-zh">逐条审阅提案</span></h3>
-        <p><span class="lang-en">Each suggestion lands as a proposal card: before/after diff, one checkbox per change, and a button that jumps to the exact spot in your document.</span>
-           <span class="lang-zh">每条建议都是一张提案卡：改前改后对比、逐条勾选、一键定位到原文位置。</span></p>
-      </div>
-      <div class="step reveal">
-        <div class="step-num">3</div>
-        <h3><span class="lang-en">Apply as tracked changes</span><span class="lang-zh">以原生修订落地</span></h3>
-        <p><span class="lang-en">Apply only what you ticked — Word records it as word-level tracked changes, exactly like a human editor's markup. Reject the rest with one click.</span>
-           <span class="lang-zh">只应用你勾选的修改——Word 以逐词修订记录，和人工编辑的红笔批注一模一样。其余一键拒绝。</span></p>
-      </div>
-    </div>
-
-    <div class="mock-wrap reveal">
-      <div class="mock">
-        <div class="mock-head">
-          <span class="pill"><span class="lang-en">Proposal</span><span class="lang-zh">提案</span></span>
-          <span class="title"><span class="lang-en">Polish this selection · 3 changes</span><span class="lang-zh">润色选中段落 · 3 处修改</span></span>
-        </div>
-        <div class="mock-body diff">
-          <div class="mock-line">
-            <span class="mock-check"></span>
-            <span><span class="lang-en">The results <del>basically show</del><ins>demonstrate</ins> that the method <del>works good</del><ins>performs consistently</ins> across datasets.</span>
-                  <span class="lang-zh">结果<del>基本上说明了</del><ins>表明</ins>该方法在不同数据集上<del>表现还行</del><ins>表现稳定</ins>。</span></span>
-          </div>
-          <div class="mock-line">
-            <span class="mock-check"></span>
-            <span><span class="lang-en"><del>As we all know,</del> transformer models <del>are very</del><ins>remain</ins> sensitive to hyperparameters.</span>
-                  <span class="lang-zh"><del>众所周知，</del>Transformer 模型对超参数<del>非常</del>敏感。</span></span>
-          </div>
-          <div class="mock-line">
-            <span class="mock-check off"></span>
-            <span><span class="lang-en"><del>In this paper, we</del><ins>We</ins> propose a lightweight fine-tuning scheme.</span>
-                  <span class="lang-zh"><del>在本文中，我们</del><ins>我们</ins>提出一种轻量级微调方案。</span></span>
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap">
+        <div class="hero-copy">
+          <p class="eyebrow"><span data-lang="en">Open-source Microsoft Word add-in</span><span data-lang="zh">开源 Microsoft Word 加载项</span></p>
+          <h1 id="hero-title">Claric</h1>
+          <p class="hero-summary"><span data-lang="en">AI editing inside Word.<br>Review the proposal. Keep the final say.</span><span data-lang="zh">在 Word 里用 AI 编辑。<br>先审阅提案，再决定如何修改。</span></p>
+          <div class="hero-actions">
+            <a class="button-link" href="#start"><span data-lang="en">Install Claric</span><span data-lang="zh">安装 Claric</span><span aria-hidden="true"> →</span></a>
+            <a href="https://github.com/Scilence2022/Claric"><span data-lang="en">View source</span><span data-lang="zh">查看源码</span><span aria-hidden="true"> ↗</span></a>
           </div>
         </div>
-        <div class="mock-foot">
-          <span class="mock-btn apply"><span class="lang-en">Apply 2 selected</span><span class="lang-zh">应用已选 2 处</span></span>
-          <span class="mock-btn reject"><span class="lang-en">Reject</span><span class="lang-zh">拒绝</span></span>
-          <span class="mock-note"><span class="lang-en">→ lands as native tracked changes</span><span class="lang-zh">→ 以 Word 原生修订写入</span></span>
+        <figure class="hero-stage">
+          <a class="image-link" href="assets/screenshots/tracked-changes.png" target="_blank" rel="noopener" aria-label="Open original tracked changes screenshot in a new tab" data-aria-en="Open original tracked changes screenshot in a new tab" data-aria-zh="在新标签页打开修订截图原图">
+            <img id="hero-image" src="assets/screenshots/tracked-changes.webp" alt="Claric taskpane beside text insertions and deletions tracked in Microsoft Word" data-alt-en="Claric taskpane beside text insertions and deletions tracked in Microsoft Word" data-alt-zh="Claric 任务窗格与 Microsoft Word 中记录文字增删的原生修订" width="1600" height="1004" fetchpriority="high" decoding="async">
+          </a>
+          <figcaption><span data-lang="en">Text edits, in Word's own revision view.</span><span data-lang="zh">文字修改，呈现在 Word 自己的修订视图中。</span> <a href="assets/screenshots/tracked-changes.png" target="_blank" rel="noopener"><span data-lang="en">Open original ↗</span><span data-lang="zh">打开原图 ↗</span></a></figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="how" class="section workflow">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow"><span data-lang="en">The workflow</span><span data-lang="zh">工作流程</span></p>
+          <h2><span data-lang="en">From instruction to a considered edit.</span><span data-lang="zh">从一句指令，到审慎的修改。</span></h2>
+        </div>
+        <ol class="steps">
+          <li><span class="step-number" aria-hidden="true">01</span><h3><span data-lang="en">Ask in context</span><span data-lang="zh">结合文档下指令</span></h3><p><span data-lang="en">Work on a selection or the whole document. Ask for edits in English or Chinese, without moving your draft out of Word.</span><span data-lang="zh">选中一段或处理全文，用中文或英文提出编辑要求，无需离开 Word 里的草稿。</span></p></li>
+          <li><span class="step-number" aria-hidden="true">02</span><h3><span data-lang="en">Review the proposal</span><span data-lang="zh">审阅修改提案</span></h3><p><span data-lang="en">Compare before and after, locate the passage, and select the changes to apply. Auto-apply is off by default.</span><span data-lang="zh">对比修改前后，定位原文，选择要应用的改动。自动应用默认关闭。</span></p></li>
+          <li><span class="step-number" aria-hidden="true">03</span><h3><span data-lang="en">Apply, then inspect</span><span data-lang="zh">应用后检查修订</span></h3><p><span data-lang="en">Text edits use native Word tracked changes. Inspect the result in your document before sharing it with a reviewer.</span><span data-lang="zh">文字编辑使用 Word 原生修订。交给审阅者之前，请在文档中检查实际结果。</span></p></li>
+        </ol>
+        <p class="section-note"><span data-lang="en">Opting into auto-apply gives ongoing permission to apply settled proposals until you turn it off. Structural revisions and formatting fidelity vary by Word host and document.</span><span data-lang="zh">开启自动应用即持续授权应用已生成的提案，直到你将其关闭。结构性修订支持和格式保真度因 Word 宿主及文档而异。</span> <a href="#features"><span data-lang="en">Review the boundaries</span><span data-lang="zh">了解功能边界</span></a></p>
+      </div>
+    </section>
+
+    <section id="start" class="section install-section">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow"><span data-lang="en">Install</span><span data-lang="zh">安装</span></p>
+          <h2><span data-lang="en">Choose how Word connects.</span><span data-lang="zh">选择 Word 的连接方式。</span></h2>
+          <p><span data-lang="en">Sideload the hosted add-in for supported cloud services, or self-host for local models and proxy control. You need a compatible Word installation and access to your chosen model.</span><span data-lang="zh">旁加载托管版本以连接支持的云服务，或自托管以使用本地模型和管理代理。你需要兼容的 Word，以及所选模型的访问权限。</span></p>
+        </div>
+        <div id="install-tabs" class="install-tabs" aria-label="Installation platform" data-aria-en="Installation platform" data-aria-zh="安装平台" hidden>
+          <button id="tab-macos" type="button" data-platform="macos" aria-controls="install-macos">macOS</button>
+          <button id="tab-windows" type="button" data-platform="windows" aria-controls="install-windows">Windows</button>
+          <button id="tab-selfhost" type="button" data-platform="selfhost" aria-controls="install-selfhost"><span data-lang="en">Self-host</span><span data-lang="zh">自托管</span></button>
+        </div>
+        <div class="install-panels">
+          <section id="install-macos" class="install-panel" data-install-panel="macos" aria-labelledby="install-macos-title">
+            <h3 id="install-macos-title"><span data-lang="en">Word for macOS</span><span data-lang="zh">macOS 版 Word</span></h3>
+            <ol>
+              <li><span data-lang="en">Read the Mac installation guide and inspect the installer source before running it.</span><span data-lang="zh">先阅读 Mac 安装说明并检查安装脚本源码，再决定是否运行。</span></li>
+              <li><span data-lang="en">Follow the guide to register the manifest in Word's per-user sideload folder, or use its manual instructions.</span><span data-lang="zh">按指南将 manifest 注册到 Word 的用户旁加载目录，也可使用手动安装步骤。</span></li>
+              <li><span data-lang="en">Open Claric in Word and configure your model endpoint and credentials in Settings.</span><span data-lang="zh">在 Word 中打开 Claric，在设置中配置模型端点和凭据。</span></li>
+            </ol>
+            <div class="resource-links"><a href="https://github.com/Scilence2022/Claric/blob/main/README.md#install-the-hosted-version"><span data-lang="en">Mac installation guide ↗</span><span data-lang="zh">Mac 安装指南 ↗</span></a><a href="https://github.com/Scilence2022/Claric/blob/main/installer/macos/Install-Claric.sh"><span data-lang="en">Inspect installer source ↗</span><span data-lang="zh">检查安装脚本源码 ↗</span></a></div>
+          </section>
+          <section id="install-windows" class="install-panel" data-install-panel="windows" aria-labelledby="install-windows-title">
+            <h3 id="install-windows-title"><span data-lang="en">Word for Windows</span><span data-lang="zh">Windows 版 Word</span></h3>
+            <ol>
+              <li><span data-lang="en">Read the Windows installation guide and inspect the PowerShell installer before running it.</span><span data-lang="zh">先阅读 Windows 安装说明并检查 PowerShell 安装脚本，再决定是否运行。</span></li>
+              <li><span data-lang="en">Follow the per-user registration steps. If your Word build supports it, the guide also covers manual sideloading.</span><span data-lang="zh">按指南完成用户级注册。如果你的 Word 版本支持，也可采用指南中的手动旁加载方式。</span></li>
+              <li><span data-lang="en">Open the launch document, then configure your model in the Claric taskpane.</span><span data-lang="zh">打开启动文档，然后在 Claric 任务窗格中配置模型。</span></li>
+            </ol>
+            <div class="resource-links"><a href="https://github.com/Scilence2022/Claric/blob/main/README.md#install-the-hosted-version"><span data-lang="en">Windows installation guide ↗</span><span data-lang="zh">Windows 安装指南 ↗</span></a><a href="https://github.com/Scilence2022/Claric/blob/main/installer/windows/Install-Claric.ps1"><span data-lang="en">Inspect installer source ↗</span><span data-lang="zh">检查安装脚本源码 ↗</span></a></div>
+          </section>
+          <section id="install-selfhost" class="install-panel" data-install-panel="selfhost" aria-labelledby="install-selfhost-title">
+            <h3 id="install-selfhost-title"><span data-lang="en">Self-host with Docker or npm</span><span data-lang="zh">使用 Docker 或 npm 自托管</span></h3>
+            <ol>
+              <li><span data-lang="en">Review the repository and choose Docker, or Node.js 22+ for development.</span><span data-lang="zh">检查仓库后选择 Docker，开发环境也可使用 Node.js 22+。</span></li>
+              <li><span data-lang="en">Configure trusted HTTPS certificates, backend endpoints, and the proxy routes your models need.</span><span data-lang="zh">配置受信任的 HTTPS 证书、后端端点及模型需要的代理路由。</span></li>
+              <li><span data-lang="en">Start your server, generate its local manifest, and follow the platform sideloading guide. Keep the server running while using Claric.</span><span data-lang="zh">启动服务，生成本地 manifest，然后按平台指南旁加载。使用 Claric 时需保持服务运行。</span></li>
+            </ol>
+            <div class="resource-links"><a href="https://github.com/Scilence2022/Claric/blob/main/README.md#option-a-docker-recommended-for-quick-setup"><span data-lang="en">Docker setup ↗</span><span data-lang="zh">Docker 配置 ↗</span></a><a href="https://github.com/Scilence2022/Claric/blob/main/README.md#option-b-npm-for-development"><span data-lang="en">npm development setup ↗</span><span data-lang="zh">npm 开发配置 ↗</span></a></div>
+          </section>
+        </div>
+        <p class="section-note"><span data-lang="en">Check your organization's add-in policy before installing. Platform guides include removal steps. A static site has no local proxy; OpenAI and local-model connections need an appropriate relay or self-hosted server.</span><span data-lang="zh">安装前请检查组织的加载项政策。平台指南包含卸载步骤。静态网站不提供本地代理；连接 OpenAI 或本地模型需要合适的中继或自托管服务。</span></p>
+      </div>
+    </section>
+
+    <section id="gallery" class="section product-section">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow"><span data-lang="en">Inside Word</span><span data-lang="zh">Word 中的产品界面</span></p>
+          <h2><span data-lang="en">The document stays at the center.</span><span data-lang="zh">始终围绕你的文档。</span></h2>
+          <p><span data-lang="en">Proposals, illustrations, and table edits in the same taskpane. These captured product sessions illustrate the workflow, not verification of the current build.</span><span data-lang="zh">提案、插图和表格编辑，都在同一个任务窗格里。这些历史产品画面用于展示工作流，并非当前构建的验证证明。</span></p>
+        </div>
+        <figure class="featured-shot">
+          <a class="image-link" href="assets/screenshots/proposal.png" target="_blank" rel="noopener"><img src="assets/screenshots/proposal.webp" width="1600" height="1005" loading="lazy" decoding="async" alt="Reviewable editing proposals with per-change selections alongside a Word document" data-alt-en="Reviewable editing proposals with per-change selections alongside a Word document" data-alt-zh="Word 文档旁显示可逐项选择的编辑提案"></a>
+          <figcaption><div><h3><span data-lang="en">A proposal before a change</span><span data-lang="zh">先有提案，再做修改</span></h3><p><span data-lang="en">Review section-level suggestions and choose the edits to apply with auto-apply off.</span><span data-lang="zh">关闭自动应用时，可以审阅分节建议，选择要应用的修改。</span></p></div><a href="assets/screenshots/proposal.png" target="_blank" rel="noopener"><span data-lang="en">Open original ↗</span><span data-lang="zh">打开原图 ↗</span></a></figcaption>
+        </figure>
+        <div class="shot-pair">
+          <figure><a class="image-link" href="assets/screenshots/illustration.png" target="_blank" rel="noopener"><img src="assets/screenshots/illustration.webp" width="1600" height="1004" loading="lazy" decoding="async" alt="An illustration preview staged in Claric before insertion into Word" data-alt-en="An illustration preview staged in Claric before insertion into Word" data-alt-zh="插入 Word 前在 Claric 中暂存的插图预览"></a><figcaption><h3><span data-lang="en">Preview an illustration</span><span data-lang="zh">预览插图</span></h3><p><span data-lang="en">Image generation has its own provider settings.</span><span data-lang="zh">图像生成使用独立的服务商设置。</span></p><a href="assets/screenshots/illustration.png" target="_blank" rel="noopener"><span data-lang="en">Open original ↗</span><span data-lang="zh">打开原图 ↗</span></a></figcaption></figure>
+          <figure><a class="image-link" href="assets/screenshots/table-edit.png" target="_blank" rel="noopener"><img src="assets/screenshots/table-edit.webp" width="1600" height="1004" loading="lazy" decoding="async" alt="A table editing session in the Claric taskpane next to a Word table" data-alt-en="A table editing session in the Claric taskpane next to a Word table" data-alt-zh="Word 表格旁 Claric 任务窗格中的表格编辑会话"></a><figcaption><h3><span data-lang="en">Work with existing tables</span><span data-lang="zh">编辑已有表格</span></h3><p><span data-lang="en">Stage cell and structure edits; check host-specific revision support.</span><span data-lang="zh">暂存单元格及结构修改，并检查宿主的修订支持。</span></p><a href="assets/screenshots/table-edit.png" target="_blank" rel="noopener"><span data-lang="en">Open original ↗</span><span data-lang="zh">打开原图 ↗</span></a></figcaption></figure>
+        </div>
+        <p class="gallery-more"><span data-lang="en">More product views:</span><span data-lang="zh">更多产品画面：</span> <a href="assets/screenshots/welcome.png" target="_blank" rel="noopener"><span data-lang="en">Welcome &amp; skills ↗</span><span data-lang="zh">欢迎页与技能 ↗</span></a> <a href="assets/screenshots/settings.png" target="_blank" rel="noopener"><span data-lang="en">Model settings ↗</span><span data-lang="zh">模型设置 ↗</span></a></p>
+      </div>
+    </section>
+
+    <section id="scenarios" class="section scenarios-section">
+      <div class="wrap">
+        <div class="section-heading"><p class="eyebrow"><span data-lang="en">Writing in practice</span><span data-lang="zh">实际写作任务</span></p><h2><span data-lang="en">Bring a draft. Ask a specific question.</span><span data-lang="zh">带着草稿，提出具体要求。</span></h2><p><span data-lang="en">Example instructions for your own Word session.</span><span data-lang="zh">以下是可用于你自己的 Word 会话的指令示例。</span></p></div>
+        <div class="scenario-list">
+          <article><h3><span data-lang="en">Research &amp; manuscripts</span><span data-lang="zh">研究与论文</span></h3><blockquote><span data-lang="en">“Polish this paragraph without changing the technical claims.”</span><span data-lang="zh">“润色这段话，不要改变技术论断。”</span></blockquote><p><span data-lang="en">Refine academic language and work through reviewer comments. Verify claims, citations, and terminology yourself.</span><span data-lang="zh">优化学术表达，处理审稿意见。论断、引文和术语仍需你亲自核查。</span></p></article>
+          <article><h3><span data-lang="en">Contracts &amp; review</span><span data-lang="zh">合同与审阅</span></h3><blockquote><span data-lang="en">“Summarize the obligations and flag ambiguous terms.”</span><span data-lang="zh">“总结各方义务，并指出含义不明确的条款。”</span></blockquote><p><span data-lang="en">Organize a first pass for a qualified reviewer. Generated analysis does not replace legal advice.</span><span data-lang="zh">为专业审阅者整理初步分析。生成的分析不能替代法律意见。</span></p></article>
+          <article><h3><span data-lang="en">Reports &amp; everyday documents</span><span data-lang="zh">报告与日常文档</span></h3><blockquote><span data-lang="en">“Add a milestone table with an owner and due date for each task.”</span><span data-lang="zh">“添加里程碑表格，列出每项任务的负责人和截止日期。”</span></blockquote><p><span data-lang="en">Draft tables, unify headings, and request an illustration. Inspect structure and layout in the final document.</span><span data-lang="zh">起草表格、统一标题或请求插图。请在最终文档中检查结构与排版。</span></p></article>
         </div>
       </div>
+    </section>
+
+    <section id="features" class="section">
+      <div class="wrap">
+        <div class="section-heading"><p class="eyebrow"><span data-lang="en">Capabilities &amp; boundaries</span><span data-lang="zh">能力与边界</span></p><h2><span data-lang="en">Built for review, with explicit controls.</span><span data-lang="zh">以审阅为核心，控制方式明确。</span></h2></div>
+        <dl class="feature-list">
+          <div><dt><span data-lang="en">Text revisions</span><span data-lang="zh">文字修订</span></dt><dd><span data-lang="en">Word-level diffs and CJK character-level editing aim to preserve existing formatting. Complex documents still need visual inspection; fidelity is not guaranteed.</span><span data-lang="zh">逐词差异与中日韩文字的字符级编辑力求保留现有格式。复杂文档仍需目视检查，不保证格式完全无损。</span></dd></div>
+          <div><dt><span data-lang="en">Whole-document work</span><span data-lang="zh">全文处理</span></dt><dd><span data-lang="en">Heading-aware chunks help process long documents. Summaries, comments, and reusable slash-command skills support repeated editing tasks.</span><span data-lang="zh">按标题分块处理长文档。摘要、批注和可复用的斜杠命令技能支持日常反复进行的编辑任务。</span></dd></div>
+          <div><dt><span data-lang="en">Tables &amp; structure</span><span data-lang="zh">表格与结构</span></dt><dd><span data-lang="en">Table creation, cell edits, and formatting proposals extend beyond prose. Native tracking of structural operations depends on Word host APIs; do not assume every operation is a reversible text revision. Keep a backup.</span><span data-lang="zh">除文字外，还可提议创建表格、修改单元格和调整格式。结构操作的原生修订取决于 Word 宿主 API；不要把每个操作都视为可撤回的文字修订。请保留备份。</span></dd></div>
+          <div><dt><span data-lang="en">Persistent auto-apply</span><span data-lang="zh">持续自动应用</span></dt><dd><span data-lang="en">Off by default. Enabling auto-apply saves ongoing authorization: settled proposals apply without waiting for another click, including later sessions until disabled. Turn it off to return to manual approval.</span><span data-lang="zh">默认关闭。开启后会保存持续授权：已生成的提案无需再次点击即可应用，并延续到后续会话，直到关闭。关闭后恢复手动确认。</span></dd></div>
+          <div><dt><span data-lang="en">MCP tools</span><span data-lang="zh">MCP 工具</span></dt><dd><span data-lang="en">Connect configured tool servers for additional capabilities. Tools may read or change external systems; inspect server permissions and tool behavior before granting access.</span><span data-lang="zh">连接已配置的工具服务器以扩展能力。工具可能读取或修改外部系统；授权前请检查服务器权限与工具行为。</span></dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section id="models" class="section models-section">
+      <div class="wrap">
+        <div class="section-heading"><p class="eyebrow"><span data-lang="en">Models &amp; data</span><span data-lang="zh">模型与数据</span></p><h2><span data-lang="en">Choose the model. Understand the route.</span><span data-lang="zh">选择模型，也了解数据去向。</span></h2><p><span data-lang="en">Bring your own endpoint and credentials. Provider availability depends on your deployment, network, account, and model access.</span><span data-lang="zh">自备端点与凭据。服务商可用性取决于部署方式、网络、账户和模型访问权限。</span></p></div>
+        <div class="provider-groups">
+          <div><h3><span data-lang="en">Local chat</span><span data-lang="zh">本地聊天模型</span></h3><p>Ollama · vLLM</p></div>
+          <div><h3><span data-lang="en">Cloud chat &amp; gateways</span><span data-lang="zh">云端聊天模型与网关</span></h3><p>OpenAI · Claude (Anthropic) · DeepSeek · GLM · Kimi · <span data-lang="en">MiniMax (international &amp; China)</span><span data-lang="zh">MiniMax（国际站与中国站）</span> · 中科大模型 · OpenRouter · SiliconFlow · <span data-lang="en">Custom (OpenAI-compatible)</span><span data-lang="zh">Custom（OpenAI 兼容）</span></p></div>
+          <div><h3><span data-lang="en">Independent image settings</span><span data-lang="zh">独立图像设置</span></h3><p><span data-lang="en">Image presets include OpenAI Images, CogView, and MiniMax. Configure image credentials and endpoints separately from chat.</span><span data-lang="zh">图像预设包括 OpenAI Images、CogView 和 MiniMax。图像凭据及端点与聊天模型分开配置。</span></p></div>
+        </div>
+        <div class="route-grid">
+          <div><h3><span data-lang="en">Static hosting</span><span data-lang="zh">静态托管</span></h3><p><span data-lang="en">Supported cloud presets call provider APIs directly where CORS permits it. There is no same-origin proxy. OpenAI needs a CORS-enabled HTTPS relay; plain HTTP local models are blocked by mixed-content rules.</span><span data-lang="zh">支持的云服务预设在 CORS 允许时直接调用服务商 API，不提供同源代理。OpenAI 需要支持 CORS 的 HTTPS 中继；纯 HTTP 本地模型会被混合内容规则阻止。</span></p></div>
+          <div><h3><span data-lang="en">Local server</span><span data-lang="zh">本地服务</span></h3><p><span data-lang="en">Docker and npm hosting supply configured same-origin proxy routes for cloud and local backends. That server relays request content and credentials to the selected upstream. Custom endpoints and relays need their own configuration.</span><span data-lang="zh">Docker 和 npm 托管为云端及本地后端提供已配置的同源代理路由。该服务会将请求内容和凭据转发至所选上游。自定义端点及中继需单独配置。</span></p></div>
+        </div>
+        <div class="data-routes">
+          <h3><span data-lang="en">What goes where</span><span data-lang="zh">各类数据发往哪里</span></h3>
+          <ul>
+            <li><strong><span data-lang="en">Chat:</span><span data-lang="zh">聊天：</span></strong> <span data-lang="en">your prompt, supplied document context, and relevant tool results go to the configured chat endpoint, directly or through your proxy.</span><span data-lang="zh">提示词、提供的文档上下文及相关工具结果，直接或经代理发送至配置的聊天端点。</span></li>
+            <li><strong><span data-lang="en">Images:</span><span data-lang="zh">图像：</span></strong> <span data-lang="en">generation prompts go to the separately configured image endpoint. A local chat model does not make cloud image generation local.</span><span data-lang="zh">生成提示词发往独立配置的图像端点。本地聊天模型不会让云端图像生成也变成本地处理。</span></li>
+            <li><strong>MCP:</strong> <span data-lang="en">tool arguments go to configured tool servers; returned results may enter chat context. External effects depend on the tools you enable.</span><span data-lang="zh">工具参数发送至配置的工具服务器；返回结果可能进入聊天上下文。外部影响取决于你启用的工具。</span></li>
+            <li><strong><span data-lang="en">Stored settings:</span><span data-lang="zh">设置存储：</span></strong> <span data-lang="en">API keys and settings use the add-in origin's localStorage. It is not an encrypted vault. Keys are sent to configured endpoints and may pass through proxies.</span><span data-lang="zh">API 密钥与设置使用加载项来源的 localStorage。它不是加密保险库。密钥会发送至配置的端点，也可能经过代理。</span></li>
+          </ul>
+          <a href="privacy.html"><span data-lang="en">Read the privacy policy</span><span data-lang="zh">阅读隐私政策</span></a>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="section faq-section">
+      <div class="wrap faq-wrap">
+        <div class="section-heading"><p class="eyebrow">FAQ</p><h2><span data-lang="en">Before your first edit.</span><span data-lang="zh">开始编辑之前。</span></h2></div>
+        <details><summary><span data-lang="en">Will Claric edit without asking?</span><span data-lang="zh">Claric 会不经确认直接修改吗？</span></summary><p><span data-lang="en">With the default auto-apply setting off, editing proposals wait for manual approval. Turning it on grants persistent permission to apply settled proposals until you switch it off. MCP tools have their own external effects; the document proposal workflow is not a universal approval gate for external systems.</span><span data-lang="zh">默认关闭自动应用时，编辑提案会等待手动确认。开启后会持续授权应用已生成的提案，直到关闭。MCP 工具有其自身的外部影响；文档提案流程不是所有外部系统操作的统一审批关卡。</span></p></details>
+        <details><summary><span data-lang="en">Can everything be accepted or rejected as a Word revision?</span><span data-lang="zh">所有操作都能作为 Word 修订接受或拒绝吗？</span></summary><p><span data-lang="en">No. Text edits support native tracked changes, but table structure and other operations depend on the Word host's APIs. Keep a copy of important documents and verify formatting and revision behavior in your version of Word.</span><span data-lang="zh">不能。文字编辑支持原生修订，但表格结构及其他操作取决于 Word 宿主 API。请保留重要文档副本，在你使用的 Word 版本中验证格式与修订行为。</span></p></details>
+        <details><summary><span data-lang="en">Does choosing a local model keep every request local?</span><span data-lang="zh">选择本地模型后，所有请求都会留在本地吗？</span></summary><p><span data-lang="en">Only if all relevant routes are local. Chat, image generation, and MCP servers are configured separately. Review every endpoint, proxy, and enabled tool before processing sensitive material.</span><span data-lang="zh">只有所有相关路由都在本地时才成立。聊天、图像生成和 MCP 服务器分别配置。处理敏感材料前，请检查每个端点、代理及启用的工具。</span></p></details>
+        <details><summary><span data-lang="en">Why does a model work in one deployment but not another?</span><span data-lang="zh">为什么同一个模型在不同部署中表现不同？</span></summary><p><span data-lang="en">Static hosting relies on provider CORS and HTTPS support. A local server can proxy requests, but requires reachable backends and trusted certificates. Settings are stored per origin, so switching deployments can require entering credentials again. See the deployment guide for your route.</span><span data-lang="zh">静态托管依赖服务商的 CORS 和 HTTPS 支持。本地服务可以代理请求，但需要可访问的后端及受信任的证书。设置按来源存储，切换部署后可能需要重新输入凭据。请查阅对应部署指南。</span> <a href="https://github.com/Scilence2022/Claric/blob/main/README.md#deployment-routes-static-vs-local-server"><span data-lang="en">Deployment guide ↗</span><span data-lang="zh">部署指南 ↗</span></a></p></details>
+        <details><summary><span data-lang="en">What should I try first?</span><span data-lang="zh">第一次适合尝试什么？</span></summary><p><span data-lang="en">Use a copy of a short document. Configure your model, leave auto-apply off, and ask for a small edit to a selection. Review the proposal and inspect the resulting Word revisions before trying whole-document or structural edits.</span><span data-lang="zh">使用一份短文档的副本。配置模型，保持自动应用关闭，针对选中文本请求一处小修改。审阅提案并检查 Word 中的修订结果，再尝试全文或结构性编辑。</span></p></details>
+      </div>
+    </section>
+
+    <section class="closing-band">
+      <div class="wrap"><h2><span data-lang="en">A clearer draft starts in Word.</span><span data-lang="zh">更清晰的草稿，从 Word 开始。</span></h2><a class="button-link" href="#start"><span data-lang="en">Choose your installation</span><span data-lang="zh">选择安装方式</span><span aria-hidden="true"> →</span></a></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-top"><a class="brand" href="#main"><img src="assets/icon-64.png" alt="" width="28" height="28">Claric</a><nav aria-label="Resources" data-aria-en="Resources" data-aria-zh="相关资源"><a href="https://github.com/Scilence2022/Claric">GitHub</a><a href="https://github.com/Scilence2022/Claric/issues"><span data-lang="en">Support</span><span data-lang="zh">支持</span></a><a href="architecture.html"><span data-lang="en">Architecture</span><span data-lang="zh">架构</span></a><a href="privacy.html"><span data-lang="en">Privacy</span><span data-lang="zh">隐私政策</span></a></nav></div>
+      <p><span data-lang="en">Claric is a fork of</span><span data-lang="zh">Claric fork 自</span> <a href="https://github.com/yuch85/word-ai-redliner">word-ai-redliner</a><span data-lang="en"> by yuch85, whose document pipeline, chunking, and reassembly form its foundation. The diff layer includes work from</span><span data-lang="zh">，以 yuch85 的文档管线、分块与重组架构为基础。差异层包含来自</span> <a href="https://github.com/yuch85/office-word-diff">office-word-diff</a><span data-lang="en">.</span><span data-lang="zh"> 的工作。</span> <a href="https://github.com/Scilence2022/Claric/blob/main/README.md#acknowledgments"><span data-lang="en">Full acknowledgments ↗</span><span data-lang="zh">完整致谢 ↗</span></a></p>
+      <p><a href="https://github.com/Scilence2022/Claric/blob/main/LICENSE">MIT License</a><span data-lang="en"> for Claric, with third-party licenses and notices, including Apache-2.0 for vendored diff code.</span><span data-lang="zh"> 适用于 Claric，另有第三方许可与声明，包括引入的差异代码所使用的 Apache-2.0。</span> <a href="https://github.com/Scilence2022/Claric/blob/main/src/lib/word-diff/NOTICE"><span data-lang="en">Third-party notices ↗</span><span data-lang="zh">第三方声明 ↗</span></a></p>
     </div>
-  </div>
-</section>
-
-<!-- ───────────────────────── Screenshot gallery ───────────────────────── -->
-<section id="gallery" class="gallery">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="kicker"><span class="lang-en">Screenshots</span><span class="lang-zh">界面掠影</span></div>
-      <h2 class="serif"><span class="lang-en">See it in action</span><span class="lang-zh">眼见为实</span></h2>
-      <p><span class="lang-en">Real sessions, unedited — from the first slash command to the redlines your reviewer will see.</span>
-         <span class="lang-zh">真实使用画面，未经修饰——从第一条斜杠命令，到审稿人将要看到的红线修订。</span></p>
-    </div>
-    <div class="shot-grid">
-      <figure class="shot reveal">
-        <div class="browser-frame">
-          <div class="browser-bar">
-            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
-            <span class="browser-url">word · welcome</span>
-          </div>
-          <img src="assets/screenshots/welcome.png" alt="Claric welcome screen with built-in slash commands (/check-doc, /copy-edit, /summarize-contract, …)" loading="lazy">
-        </div>
-        <figcaption>
-          <div class="shot-title"><span class="lang-en">Chat-first, slash-command native</span><span class="lang-zh">聊天优先，斜杠命令内置</span></div>
-          <div class="shot-desc"><span class="lang-en">The taskpane opens to a bilingual welcome — built-in skills are one tap away.</span><span class="lang-zh">任务窗格欢迎页中英双语，内置技能一触即达。</span></div>
-        </figcaption>
-      </figure>
-      <figure class="shot reveal">
-        <div class="browser-frame">
-          <div class="browser-bar">
-            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
-            <span class="browser-url">word · proposal</span>
-          </div>
-          <img src="assets/screenshots/proposal.png" alt="Proposal card: edits to 13 sections staged with per-change checkboxes, Apply and Reject" loading="lazy">
-        </div>
-        <figcaption>
-          <div class="shot-title"><span class="lang-en">Review every change</span><span class="lang-zh">逐条审阅每处修改</span></div>
-          <div class="shot-desc"><span class="lang-en">Whole-document runs stage one proposal per section — tick what you want, skip what you don't.</span><span class="lang-zh">全文处理按节生成提案——勾想要的，略过不要的。</span></div>
-        </figcaption>
-      </figure>
-      <figure class="shot reveal">
-        <div class="browser-frame">
-          <div class="browser-bar">
-            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
-            <span class="browser-url">word · tracked changes</span>
-          </div>
-          <img src="assets/screenshots/tracked-changes.png" alt="Applied edits visible in Word as native tracked insertions and deletions" loading="lazy">
-        </div>
-        <figcaption>
-          <div class="shot-title"><span class="lang-en">Native redlines, formatting intact</span><span class="lang-zh">原生红线，格式无损</span></div>
-          <div class="shot-desc"><span class="lang-en">Applied edits land as word-level revisions your supervisor can accept or reject — styles survive the round trip.</span><span class="lang-zh">修改以逐词修订落地，导师可逐条接受或拒绝——样式往返无损。</span></div>
-        </figcaption>
-      </figure>
-      <figure class="shot reveal">
-        <div class="browser-frame">
-          <div class="browser-bar">
-            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
-            <span class="browser-url">word · illustration</span>
-          </div>
-          <img src="assets/screenshots/illustration.png" alt="Illustration request staged as a proposal card with an image preview before insertion" loading="lazy">
-        </div>
-        <figcaption>
-          <div class="shot-title"><span class="lang-en">Illustrations on request</span><span class="lang-zh">一句话生成插图</span></div>
-          <div class="shot-desc"><span class="lang-en">A configured image model (or the SVG fallback) drafts the figure; you preview it in the card before it is inserted.</span><span class="lang-zh">配置图像模型（或用 SVG 回退）起草插图，先在卡片里预览，再插入文档。</span></div>
-        </figcaption>
-      </figure>
-      <figure class="shot reveal">
-        <div class="browser-frame">
-          <div class="browser-bar">
-            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
-            <span class="browser-url">word · table editing</span>
-          </div>
-          <img src="assets/screenshots/table-edit.png" alt="Existing table edited through a tool session: merge cells staged and applied as a tracked transaction" loading="lazy">
-        </div>
-        <figcaption>
-          <div class="shot-title"><span class="lang-en">Tables as controllable objects</span><span class="lang-zh">表格亦可对话式编辑</span></div>
-          <div class="shot-desc"><span class="lang-en">Merge cells, patch values, insert rows — every op is staged as a reviewable, diffable transaction.</span><span class="lang-zh">合并单元格、改数值、插行——每个操作都暂存为可审阅、可对比的事务。</span></div>
-        </figcaption>
-      </figure>
-      <figure class="shot reveal">
-        <div class="browser-frame">
-          <div class="browser-bar">
-            <span class="c c-r"></span><span class="c c-y"></span><span class="c c-g"></span>
-            <span class="browser-url">word · settings</span>
-          </div>
-          <img src="assets/screenshots/settings.png" alt="Settings panel: provider picker, endpoint, API key, thinking level, track-changes toggle" loading="lazy">
-        </div>
-        <figcaption>
-          <div class="shot-title"><span class="lang-en">Bring your own model</span><span class="lang-zh">自带模型与密钥</span></div>
-          <div class="shot-desc"><span class="lang-en">11 chat providers plus independent image generation — keys stay in your browser's local storage.</span><span class="lang-zh">11 家聊天模型服务商，图像生成单独配置——密钥只存在浏览器本地。</span></div>
-        </figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
-
-<!-- ───────────────────────── Scenarios ───────────────────────── -->
-<section id="scenarios" class="scenarios">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="kicker"><span class="lang-en">Scenarios</span><span class="lang-zh">应用场景</span></div>
-      <h2 class="serif"><span class="lang-en">Built for writing that matters</span><span class="lang-zh">为重要的写作而生</span></h2>
-      <p><span class="lang-en">Academic writing is the lead scenario — contracts and everyday documents follow. One assistant, one review workflow.</span>
-         <span class="lang-zh">学术写作是主打场景，合同与日常文档同样胜任。同一个助手，同一套审阅流程。</span></p>
-    </div>
-    <div class="scene-grid">
-      <div class="scene reveal">
-        <div class="scene-icon">🎓</div>
-        <h3><span class="lang-en">Academic writing</span><span class="lang-zh">学术写作</span></h3>
-        <p><span class="lang-en">Clearer, more formal academic English — applied as word-level tracked changes your supervisor can accept or reject, exactly like a human editor's markup.</span>
-           <span class="lang-zh">更清晰、更正式的学术表达，以逐词修订落地——导师可以逐条接受或拒绝，和红笔批注一模一样。</span></p>
-        <div class="prompts">
-          <div class="prompt-chip"><span class="lang-en">Polish this paragraph</span><span class="lang-zh">润色这段话</span></div>
-          <div class="prompt-chip"><span class="lang-en">Revise this chapter based on my advisor's comments</span><span class="lang-zh">按导师的批注修改这一章</span></div>
-          <div class="prompt-chip"><span class="lang-en">Summarize all the reviewer comments</span><span class="lang-zh">总结文档里所有审稿意见</span></div>
-          <div class="prompt-chip"><span class="lang-en">Delete the empty paragraphs</span><span class="lang-zh">删除多余空段</span></div>
-        </div>
-      </div>
-      <div class="scene reveal">
-        <div class="scene-icon">⚖️</div>
-        <h3><span class="lang-en">Contracts &amp; legal</span><span class="lang-zh">合同与法律</span></h3>
-        <p><span class="lang-en">Claric reads the document section by section, leaves margin comments where it sees risk, and proposes fixes — each amendment a native redline opposing counsel can review.</span>
-           <span class="lang-zh">分节通读全文，在风险处加批注并给出修改建议——每处修订都是原生红线，对方律师看到的和你看到的一样。</span></p>
-        <div class="prompts">
-          <div class="prompt-chip"><span class="lang-en">Check this whole contract for risky terms</span><span class="lang-zh">检查整份合同的风险条款</span></div>
-          <div class="prompt-chip"><span class="lang-en">Summarize this contract</span><span class="lang-zh">总结这份合同</span></div>
-          <div class="prompt-chip"><span class="lang-en">Make all headings consistent</span><span class="lang-zh">统一所有标题格式</span></div>
-        </div>
-      </div>
-      <div class="scene reveal">
-        <div class="scene-icon">📄</div>
-        <h3><span class="lang-en">Everyday documents</span><span class="lang-zh">日常文档</span></h3>
-        <p><span class="lang-en">Formatting, figures, tables, and first drafts — all on request, all previewed before anything touches your document.</span>
-           <span class="lang-zh">排版、配图、表格、初稿——一句话的事，全部先预览再落地。</span></p>
-        <div class="prompts">
-          <div class="prompt-chip"><span class="lang-en">Design an illustration for the cover</span><span class="lang-zh">给封面画一张插图</span></div>
-          <div class="prompt-chip"><span class="lang-en">Add a 4×3 table with the project milestones</span><span class="lang-zh">插入一张 4×3 的项目里程碑表格</span></div>
-          <div class="prompt-chip"><span class="lang-en">Continue writing from here</span><span class="lang-zh">从这里继续写</span></div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ───────────────────────── Features ───────────────────────── -->
-<section id="features">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="kicker"><span class="lang-en">Features</span><span class="lang-zh">功能</span></div>
-      <h2 class="serif"><span class="lang-en">A careful editor, not a cowboy</span><span class="lang-zh">严谨的编辑，而非莽夫</span></h2>
-      <p><span class="lang-en">Every document mutation is staged, reviewable, and reversible. Formatting survives the round trip.</span>
-         <span class="lang-zh">每一次文档改动都先暂存、可审阅、可回退，格式在往返中完整保留。</span></p>
-    </div>
-    <div class="feat-grid">
-      <div class="feat reveal">
-        <div class="feat-icon">✅</div>
-        <h3><span class="lang-en">Staged proposals, selective apply</span><span class="lang-zh">暂存提案，选择性应用</span></h3>
-        <p><span class="lang-en">Inline deleted/inserted diffs, per-change checkboxes, locate-in-document, and honest warnings when nothing changed. Staged ranges re-anchor at apply time, so cards never stomp each other.</span>
-           <span class="lang-zh">内联增删对比、逐条勾选、原文定位，无改动时如实提示。应用时重新锚定范围，多张卡片互不踩踏。</span></p>
-      </div>
-      <div class="feat reveal">
-        <div class="feat-icon">🖊️</div>
-        <h3><span class="lang-en">Word-level tracked changes</span><span class="lang-zh">逐词级修订</span></h3>
-        <p><span class="lang-en">A cascading diff engine — CJK character-level, formatting-preserving token map, sentence diff — writes real Word revisions, keeping bold, italic, fonts and colors intact.</span>
-           <span class="lang-zh">级联差异引擎——CJK 字符级、保留格式的词元映射、句子级对比——写入真正的 Word 修订，粗体、斜体、字体颜色原样保留。</span></p>
-      </div>
-      <div class="feat reveal">
-        <div class="feat-icon">📚</div>
-        <h3><span class="lang-en">Whole-document processing</span><span class="lang-zh">全文处理</span></h3>
-        <p><span class="lang-en">Parse → chunk along heading boundaries → parallel LLM dispatch with ETA → formatting-preserving reassembly. Definitions, abbreviations, and outline ride along as per-chunk context.</span>
-           <span class="lang-zh">解析 → 按标题边界分块 → 并行调度（带进度与 ETA）→ 保留格式的重组。定义、缩写词、大纲作为上下文注入每个分块。</span></p>
-      </div>
-      <div class="feat reveal">
-        <div class="feat-icon">📊</div>
-        <h3><span class="lang-en">Tables &amp; illustrations</span><span class="lang-zh">表格与插图</span></h3>
-        <p><span class="lang-en">"Insert a 4×3 table" previews a grid before insertion; existing tables are editable through per-cell patch ops. Illustrations come from a real image model (OpenAI Images, CogView, MiniMax) when configured, with a sanitized SVG fallback.</span>
-           <span class="lang-zh">"插入 4×3 表格"先预览再插入；已有表格支持逐单元格修改。配置图像模型（OpenAI Images、CogView、MiniMax）后插图走文生图，否则回退到消毒后的 SVG。</span></p>
-      </div>
-      <div class="feat reveal">
-        <div class="feat-icon">⚡</div>
-        <h3><span class="lang-en">Skills &amp; slash commands</span><span class="lang-zh">技能与斜杠命令</span></h3>
-        <p><span class="lang-en">Built-in <code>/copy-edit</code>, <code>/check-doc</code>, <code>/summarize-contract</code> and more. Import Claude-style SKILL.md packages, or save your own prompts as custom slash commands.</span>
-           <span class="lang-zh">内置 <code>/copy-edit</code>、<code>/check-doc</code>、<code>/summarize-contract</code> 等技能；支持导入 SKILL.md 技能包，也可把常用提示词存为自定义斜杠命令。</span></p>
-      </div>
-      <div class="feat reveal">
-        <div class="feat-icon">🔌</div>
-        <h3><span class="lang-en">MCP tools &amp; live streaming</span><span class="lang-zh">MCP 工具与流式输出</span></h3>
-        <p><span class="lang-en">Connect MCP tool servers and run ReAct tool loops with <code>/mcp</code>. Watch reasoning and output stream token-by-token in the model activity panel.</span>
-           <span class="lang-zh">接入 MCP 工具服务器，用 <code>/mcp</code> 运行 ReAct 工具循环；在模型活动面板中逐 token 观看推理与输出。</span></p>
-      </div>
-      <div class="feat reveal">
-        <div class="feat-icon">🧩</div>
-        <h3><span class="lang-en">Compound instructions, planned</span><span class="lang-zh">复合指令，自动拆解</span></h3>
-        <p><span class="lang-en">"Add a title, then polish the whole text" is decomposed by an LLM task planner into ordered steps — one proposal card per pipeline, reviewed in sequence.</span>
-           <span class="lang-zh">"加个标题再润色全文"会被任务规划器拆成有序步骤——每条管线一张提案卡，依次审阅。</span></p>
-      </div>
-      <div class="feat reveal">
-        <div class="feat-icon">🚀</div>
-        <h3><span class="lang-en">Auto-apply when you trust it</span><span class="lang-zh">信得过，就自动应用</span></h3>
-        <p><span class="lang-en">Flip the auto-apply toggle and settled proposals apply themselves as tracked changes — still staged, still auditable, no extra clicks.</span>
-           <span class="lang-zh">打开自动应用开关，提案在生成后自动以修订落地——仍然留痕、可审计，省去逐次点击。</span></p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ───────────────────────── BYOK / Models ───────────────────────── -->
-<section id="models" class="byok">
-  <div class="byok-blob"></div>
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="kicker"><span class="lang-en">Bring your own key</span><span class="lang-zh">自带密钥（BYOK）</span></div>
-      <h2 class="serif"><span class="lang-en">Your AI. Your rules.</span><span class="lang-zh">用哪个 AI，你说了算</span></h2>
-      <p><span class="lang-en">Claric doesn't lock you into one vendor. Connect the model you trust — keys stay in your browser, never on a server.</span>
-         <span class="lang-zh">Claric 不绑定任何厂商，接入你信任的模型——密钥只存在你的浏览器里，从不经过服务器。</span></p>
-    </div>
-    <div class="byok-grid">
-      <div class="byok-card reveal">
-        <h3>🔒 <span class="lang-en">Run AI locally</span><span class="lang-zh">本地运行 AI</span></h3>
-        <p><span class="lang-en">Unpublished research and confidential contracts never leave your computer.</span>
-           <span class="lang-zh">未发表的研究与机密合同，永远不出你的电脑。</span></p>
-        <div class="model-chips">
-          <span class="model-chip">Ollama</span>
-          <span class="model-chip">vLLM</span>
-          <span class="model-chip"><span class="lang-en">Any local OpenAI-compatible server</span><span class="lang-zh">任意本地 OpenAI 兼容服务</span></span>
-        </div>
-      </div>
-      <div class="byok-card reveal">
-        <h3>☁️ <span class="lang-en">Or use a cloud model</span><span class="lang-zh">或使用云端模型</span></h3>
-        <p><span class="lang-en">Same-origin proxying built in — no CORS setup. You control what's sent and where.</span>
-           <span class="lang-zh">内置同源代理，无需配置 CORS。发送什么、发到哪里，完全由你掌控。</span></p>
-        <div class="model-chips">
-          <span class="model-chip">DeepSeek</span>
-          <span class="model-chip">Zhipu GLM</span>
-          <span class="model-chip">Moonshot Kimi</span>
-          <span class="model-chip">MiniMax</span>
-          <span class="model-chip"><span class="lang-en">Any OpenAI-compatible API</span><span class="lang-zh">任意 OpenAI 兼容 API</span></span>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ───────────────────────── Get started ───────────────────────── -->
-<section id="start">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <div class="kicker"><span class="lang-en">Get started</span><span class="lang-zh">快速上手</span></div>
-      <h2 class="serif"><span class="lang-en">Install in one line</span><span class="lang-zh">一行命令，装进 Word</span></h2>
-      <p><span class="lang-en">One command installs Claric straight into Word — no admin rights, no Node.js, no Docker. Self-host with Docker or npm when you want local models.</span>
-         <span class="lang-zh">一条命令即可把 Claric 装进 Word——无需管理员权限、无需 Node.js、无需 Docker；想接本地模型，再用 Docker 或 npm 自托管。</span></p>
-    </div>
-    <div class="start-label reveal"><span class="lang-en">One-click install · static build from GitHub Pages — recommended</span><span class="lang-zh">一键安装 · GitHub Pages 静态版（推荐）</span></div>
-    <div class="start-grid">
-      <div class="start-card reveal">
-        <div class="start-head">
-          <h3>🍎 macOS</h3>
-          <span><span class="lang-en">Terminal · per-user, no admin rights</span><span class="lang-zh">终端 · 按用户安装，无需管理员</span></span>
-        </div>
-        <pre><span class="cm"># downloads the manifest, registers it with Word, then opens Claric</span>
-curl -fsSL https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/macos/Install-Claric.sh | bash</pre>
-      </div>
-      <div class="start-card reveal">
-        <div class="start-head">
-          <h3>🪟 Windows</h3>
-          <span><span class="lang-en">PowerShell · per-user, no admin rights</span><span class="lang-zh">PowerShell · 按用户安装，无需管理员</span></span>
-        </div>
-        <pre><span class="cm"># same per-user install — works on consumer Microsoft 365 builds</span>
-irm https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/windows/Install-Claric.ps1 | iex</pre>
-      </div>
-    </div>
-    <p class="start-note reveal"><span class="lang-en">Word opens <code>Claric-Launch.docx</code> with the taskpane mounted — reopen that document (or Home → Add-ins → Claric) anytime. Matching uninstall scripts live in <code>installer/</code>.</span>
-       <span class="lang-zh">Word 会打开 <code>Claric-Launch.docx</code> 并挂载任务窗格——需要时重新打开该文档（或 主页 → 加载项 → Claric）即可，配对的卸载脚本在仓库 <code>installer/</code> 目录。</span></p>
-    <div class="start-label reveal"><span class="lang-en">Self-host · local models (Ollama / vLLM) &amp; development</span><span class="lang-zh">自托管 · 本地模型（Ollama / vLLM）与开发</span></div>
-    <div class="start-grid">
-      <div class="start-card reveal">
-        <div class="start-head">
-          <h3>🐳 Docker</h3>
-          <span><span class="lang-en">self-host · for local models</span><span class="lang-zh">自托管 · 接本地模型</span></span>
-        </div>
-        <pre><span class="cm"># clone &amp; configure</span>
-git clone https://github.com/Scilence2022/Claric.git
-cd Claric &amp;&amp; cp .env.docker.example .env
-
-<span class="cm"># create HTTPS certs (mkcert recommended)</span>
-mkcert -install &amp;&amp; mkcert localhost
-cp localhost.pem server.pem
-cp localhost-key.pem server-key.pem
-
-<span class="cm"># run — manifest served at https://&lt;HOST&gt;:&lt;PORT&gt;/manifest.xml</span>
-docker compose up -d</pre>
-      </div>
-      <div class="start-card reveal">
-        <div class="start-head">
-          <h3>📦 npm</h3>
-          <span><span class="lang-en">for development · Node.js 22+</span><span class="lang-zh">开发模式 · 需 Node.js 22+</span></span>
-        </div>
-        <pre><span class="cm"># clone &amp; install</span>
-git clone https://github.com/Scilence2022/Claric.git
-cd Claric &amp;&amp; npm install
-cp .env.example .env
-
-<span class="cm"># create HTTPS certs, then start the dev server</span>
-mkcert -install &amp;&amp; mkcert localhost
-cp localhost.pem server.pem
-cp localhost-key.pem server-key.pem
-npm start</pre>
-      </div>
-    </div>
-    <p class="start-note reveal"><span class="lang-en">Self-hosting? Once the server is up, sideload its manifest with <code>npm run install:macos</code> or <code>npm run install:windows</code> from a checkout — or follow the manual steps in the README.</span>
-       <span class="lang-zh">自托管的话，服务器跑起来后在仓库目录运行 <code>npm run install:macos</code> 或 <code>npm run install:windows</code> 旁加载其 manifest——或按 README 手动操作。</span></p>
-
-    <div class="cta-banner reveal">
-      <h2 class="serif"><span class="lang-en">Nothing changes without your approval.</span><span class="lang-zh">不经你确认，绝不动一个字。</span></h2>
-      <p><span class="lang-en">Open source, MIT licensed, and built on the shoulders of the document-editing open-source community.</span>
-         <span class="lang-zh">开源、MIT 许可，站在文档编辑开源社区的肩膀上构建。</span></p>
-      <a class="btn" href="https://github.com/Scilence2022/Claric" target="_blank" rel="noopener">
-        <span class="lang-en">Star on GitHub</span><span class="lang-zh">去 GitHub 点个 Star</span> ★
-      </a>
-    </div>
-  </div>
-</section>
-
-<!-- ───────────────────────── Footer ───────────────────────── -->
-<footer>
-  <div class="wrap">
-    <div class="foot-inner">
-      <div class="foot-brand"><img src="assets/icon-64.png" alt=""> Claric</div>
-      <ul class="foot-links">
-        <li><a href="https://github.com/Scilence2022/Claric" target="_blank" rel="noopener">GitHub</a></li>
-        <li><a href="https://github.com/Scilence2022/Claric/issues" target="_blank" rel="noopener"><span class="lang-en">Support</span><span class="lang-zh">支持</span></a></li>
-        <li><a href="architecture.html"><span class="lang-en">Architecture</span><span class="lang-zh">架构</span></a></li>
-        <li><a href="privacy.html"><span class="lang-en">Privacy</span><span class="lang-zh">隐私政策</span></a></li>
-        <li><a href="https://github.com/Scilence2022/Claric/blob/main/LICENSE" target="_blank" rel="noopener"><span class="lang-en">License</span><span class="lang-zh">许可</span></a></li>
-      </ul>
-    </div>
-    <p class="foot-note">
-      <span class="lang-en">Claric — your redlining scribe for Word. A fork of <a href="https://github.com/yuch85/word-ai-redliner" target="_blank" rel="noopener">word-ai-redliner</a>, dual-licensed MIT / Apache-2.0.</span>
-      <span class="lang-zh">Claric —— 住在 Word 里的修订文书。fork 自 <a href="https://github.com/yuch85/word-ai-redliner" target="_blank" rel="noopener">word-ai-redliner</a>，采用 MIT / Apache-2.0 双重许可。</span>
-    </p>
-  </div>
-</footer>
-
-<script>
-(function () {
-  var root = document.documentElement;
-  var toggle = document.getElementById('langToggle');
-
-  function apply(lang) {
-    root.setAttribute('data-lang', lang);
-    root.setAttribute('lang', lang === 'zh' ? 'zh-CN' : 'en');
-    toggle.textContent = lang === 'zh' ? 'EN' : '中文';
-    try { localStorage.setItem('claric.site.lang', lang); } catch (e) {}
-  }
-
-  var saved = null;
-  try { saved = localStorage.getItem('claric.site.lang'); } catch (e) {}
-  var initial = saved || ((navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
-  apply(initial);
-
-  toggle.addEventListener('click', function () {
-    apply(root.getAttribute('data-lang') === 'zh' ? 'en' : 'zh');
-  });
-
-  // Scroll reveal
-  var els = document.querySelectorAll('.reveal');
-  if ('IntersectionObserver' in window) {
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) { entry.target.classList.add('visible'); io.unobserve(entry.target); }
-      });
-    }, { threshold: 0.12 });
-    els.forEach(function (el) { io.observe(el); });
-  } else {
-    els.forEach(function (el) { el.classList.add('visible'); });
-  }
-})();
-</script>
+  </footer>
 </body>
 </html>

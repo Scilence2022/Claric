@@ -1,663 +1,793 @@
 # Claric — AI editing you can review, inside Microsoft Word
 
 <p align="center">
-  <img src="assets/icon-128.png" alt="Claric" width="96" height="96" />
+  <img src="assets/icon-128.png" alt="Claric" width="80" height="80" />
 </p>
 
 <p align="center">
-  <a href="https://scilence2022.github.io/Claric/"><strong>Website</strong></a> ·
+  <a href="https://scilence2022.github.io/Claric/"><strong>Website (English / 中文)</strong></a> ·
+  <a href="https://scilence2022.github.io/Claric/?lang=zh">中文介绍与安装入口</a> ·
   <a href="https://scilence2022.github.io/Claric/architecture.html">Architecture</a> ·
   <a href="https://scilence2022.github.io/Claric/privacy.html">Privacy</a> ·
   <a href="https://github.com/Scilence2022/Claric/issues">Support</a>
 </p>
 
-Claric is an open-source AI assistant that lives in a Word taskpane. Say what
-you want in plain English or Chinese — *polish this paragraph*, *make this
-Heading 2*, *add a 4×3 milestone table*, *draw an illustration*, *continue
-writing*, *clean up the empty paragraphs*, *summarize all comments* — and
-Claric routes each request to the right pipeline, stages the result as
-proposal cards, and applies document edits through manual approval or your
-explicit opt-in to persistent auto-apply. Text edits use native tracked changes;
-structural revision support depends on the Word host (see Table Creation).
+Claric is an open-source Word add-in for revising documents with AI. Ask in
+English or Chinese to polish a paragraph, review a contract, edit a table,
+or add an illustration. Editing proposals appear in the taskpane for review;
+you choose which changes to apply, then review supported text edits as native
+Word tracked changes.
 
-- **Review-first** — editing proposals are reviewable before application;
-  with auto-apply off, select the changes you want and reject the rest.
-- **Real revisions, not rewrites** — text edits support word-level tracked
-  changes and aim to preserve formatting; fidelity and structural revision
-  support must be verified for the document and Word host in use.
-- **Whole documents, not snippets** — heading-aware chunking, parallel LLM
-  dispatch, and formatting-preserving reassembly for full-length files.
-- **Beyond text** — tables, illustrations, comments, summaries, MCP tools,
-  and slash-command skills in the same pane.
-- **Bring your own model** — 11 chat providers plus independent image
-  generation; run local (Ollama / vLLM) or cloud. Keys are stored in browser
-  localStorage and sent to configured endpoints, including through proxies.
-- **Bilingual** — instructions and edits work in English and 中文.
+Use your own cloud model account or a local backend. Claric does not include
+model credits. Keep a document copy and verify the result, especially for
+complex formatting, tables, and images: revision support varies by Word host
+and operation.
 
 ## Screenshots
 
-<table>
-  <tr>
-    <td width="50%"><img src="docs/assets/screenshots/welcome.png" alt="Welcome screen with built-in slash commands" /></td>
-    <td width="50%"><img src="docs/assets/screenshots/proposal.png" alt="Proposal card staging edits to 13 sections with per-change checkboxes" /></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Chat-first taskpane with built-in slash commands</sub></td>
-    <td align="center"><sub>Every mutation staged as a reviewable proposal card</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="docs/assets/screenshots/tracked-changes.png" alt="Applied edits visible as native Word tracked changes" /></td>
-    <td width="50%"><img src="docs/assets/screenshots/illustration.png" alt="Illustration staged with an image preview before insertion" /></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Applied edits land as native tracked changes</sub></td>
-    <td align="center"><sub>Illustrations preview before they are inserted</sub></td>
-  </tr>
-</table>
+![Claric taskpane alongside native tracked changes in Microsoft Word](docs/assets/screenshots/tracked-changes.png)
 
-More screenshots on the [website](https://scilence2022.github.io/Claric/).
+[See the proposal, table, and illustration gallery](https://scilence2022.github.io/Claric/#gallery).
+
+**Start here:** [Quick start](#quick-start) · [First workflow](#first-workflow) ·
+[Models, privacy & safety](#models-privacy--safety) · [Features](#features) ·
+[Self-hosting](#setup) · [Troubleshooting](#troubleshooting) · [Development](#option-b-npm-for-development)
+
+## Quick start
+
+### Before you install
+
+- Use **Microsoft Word desktop on macOS or Windows** for this installation
+  route. Word version, available Word APIs, and organization policy affect
+  what works. Web and mobile hosts do not have equivalent structural-revision
+  support and are not the target of these desktop installers.
+- Your organization must allow Office add-ins, developer sideloading, and the
+  relevant network endpoints. A per-user installer does not override managed
+  policies. Consult your administrator if installation or scripts are blocked.
+- Have a model endpoint, model name, and API key where required. Cloud API
+  usage may be billed separately. Local Ollama/vLLM users should start with
+  the [local-server route](#deployment-routes-static-vs-local-server).
+- The hosted add-in needs internet access and an endpoint that permits
+  browser requests from the add-in's origin (**CORS**). A listed preset is
+  not a guarantee of access for every model, account, region, or Word WebView.
+  OpenAI's default proxy and local-model proxy paths are not served by GitHub
+  Pages; use a trusted HTTPS relay or self-host Claric for those routes.
+
+### Install the hosted version
+
+The scripts sideload the hosted build from
+[`scilence2022.github.io/claric-addin`](https://scilence2022.github.io/claric-addin/).
+This is separate from the introduction website and is **not a Microsoft Store
+installation**. No Node.js or Docker is needed for this route.
+
+**Download the script, open it in a text editor, review it, and only then run
+it.** The links below point to the current `main` branch; organizations can
+review and pin a specific revision instead. The scripts download a manifest
+and, when not bundled locally, a launch-document template. Review those
+sources too. Do not bypass your organization's script restrictions.
+
+| Platform | Review source | Installation, options & removal |
+|----------|---------------|---------------------------------|
+| macOS | [Install-Claric.sh](installer/macos/Install-Claric.sh) | [macOS installer guide](installer/macos/README.md) |
+| Windows | [Install-Claric.ps1](installer/windows/Install-Claric.ps1) | [Windows installer guide](installer/windows/README.md) |
+
+**macOS: download in Terminal**
+
+```bash
+curl -fL https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/macos/Install-Claric.sh -o Install-Claric.sh
+```
+
+After reviewing the downloaded file, run it separately:
+
+```bash
+bash ./Install-Claric.sh
+```
+
+**Windows: download in PowerShell**
+
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/windows/Install-Claric.ps1 -OutFile Install-Claric.ps1
+```
+
+After reviewing the downloaded file, run it separately:
+
+```powershell
+.\Install-Claric.ps1
+```
+
+The installer registers Claric for the current user and opens
+`Claric-Launch.docx` in Word. On macOS it uses Word's `wef` folder; on Windows
+it writes a per-user Office developer-add-in registry entry. Neither script
+normally needs administrator privileges. If the pane does not appear, fully
+quit Word and reopen the launch document:
+
+- macOS: `~/Library/Application Support/ClaricAddin/Claric-Launch.docx`
+- Windows: `%LOCALAPPDATA%\ClaricAddin\Claric-Launch.docx`
+
+The installers register a hosted add-in, not an offline copy. Future hosted
+updates can change the taskpane without reinstalling. See the platform guides
+for uninstall scripts, or [manual sideloading](#sideload-the-add-in) for a
+self-hosted manifest. Prefer the download-review-run procedure above even
+where older installer examples show a download-and-execute one-liner.
+
+### Connect your model
+
+Open **Settings → General**, choose a chat provider, confirm the endpoint and
+model, and enter your own API key if needed. Keep **Enable Track Changes**
+checked, then click **Save**. Saving automatically checks the chat connection;
+watch the connection status under **LLM Backend**. **Refresh** beside the
+**Model** field updates the model list. Leave **Auto-apply** off in the
+composer for your first run.
+
+A failed connection may mean an invalid key or model, quota limits, an
+unreachable endpoint, or CORS restrictions. Check the
+[route comparison](#deployment-routes-static-vs-local-server) before changing
+providers. **Image Generation** has separate provider, model, and key settings;
+its **Test image connection** button makes a real image-generation request
+and may incur a charge.
+
+## First workflow
+
+1. **Start with a copy of a non-sensitive document.** Select one paragraph in
+   Word, then ask: `Polish this paragraph for clarity without changing its meaning.`
+   Chinese instructions work too, for example: `润色这段文字，保留原意。`
+2. **Review the proposal.** Compare the before/after diff, locate the source
+   text, and uncheck changes you do not want. **Reject** discards a pending
+   proposal; it does not undo edits already written to Word.
+3. **Apply the checked changes.** With Auto-apply off, proposals wait for
+   your approval. For the text edit, click **Apply as tracked changes**.
+   Inspect the result in Word's **Review** tab and accept or reject the
+   supported tracked revisions there.
+4. **Expand the scope when ready.** Clear the selection and ask to polish the
+   document, use `/check-doc`, or request a table or illustration. Check the
+   proposal's scope and warnings before applying: some operations affect the
+   whole document or create a new document.
+
+Failed whole-document sections can be retried without rerunning successful
+sections. Retry results are staged as a **new proposal** for review, rather
+than silently applied by the retry action. Check partial-application warnings
+in Word before retrying an operation that may already have written content.
+
+Auto-apply is an explicit, persistent opt-in for eligible pending proposals.
+It runs after a successful turn settles, requires Track Changes to be enabled,
+and skips invalidated sessions or non-pending cards. Turning it on removes
+the manual approval pause; it does not make every operation reversible or
+guarantee structural tracked changes. Keep it off when you need to approve
+each proposal before any application.
+
+## Models, Privacy & Safety
+
+**Chat presets:** Ollama, vLLM, OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM,
+Moonshot Kimi, MiniMax (international), MiniMax China, 中科大模型 (zhongkeyu.com),
+OpenRouter, SiliconFlow, and Custom (OpenAI-compatible).
+
+**Image presets:** OpenAI Images, Zhipu CogView, MiniMax Images, OpenRouter
+Images, SiliconFlow Images, and Custom (OpenAI-compatible). Chat and image
+configuration are independent. An API-compatible endpoint must also support
+the selected model and request format; not every model offered by a gateway
+supports every Claric operation. Current defaults live in
+[chat presets](src/lib/providers.js) and [image presets](src/lib/image-providers.js).
+
+- **What is sent:** instructions and document context required by the chosen
+  operation go to configured model endpoints. That context can include selected
+  text, whole-document content, comments, tracked changes, or images. Review
+  scope before sending confidential material.
+- **Where keys live:** provider keys are stored in plaintext in the add-in's
+  browser `localStorage`, scoped to its serving origin. Keys are transmitted to
+  configured endpoints and through any configured proxy or relay. Use trusted
+  hosts, restricted keys, and appropriate provider retention policies.
+- **Local does not automatically mean offline:** a local chat backend can keep
+  its model processing local, but the hosted UI, cloud image providers, or MCP
+  servers can still involve external services. Verify every enabled route.
+- **External tools can have side effects:** MCP tools do not directly edit the
+  Word document through Claric's document-edit path, but their servers may
+  modify external systems. Only enable servers and tools you trust; Word
+  proposal review is not an approval boundary for external tool effects.
+- **Review remains necessary:** AI output can be wrong, omit material, or change
+  meaning. Formatting preservation and tracked revisions are best-effort and
+  host-dependent. Keep backups and inspect text, tables, images, and comments.
+
+Read the [privacy policy](https://scilence2022.github.io/Claric/privacy.html)
+and [security notes](#security-notes) before using sensitive documents.
 
 ## Features
 
+Choose a workflow, then expand its details. For examples, see the website's
+[features](https://scilence2022.github.io/Claric/#features) and
+[scenarios](https://scilence2022.github.io/Claric/#scenarios).
+
+<details>
+<summary>Editing, proposals, and whole-document review</summary>
+
 ### Chat Interface & Turn Routing
 
-- Chat-first taskpane: message list, ChatGPT-style composer (rounded input card with a "+" button that opens a slash-command menu, model pill and circular send button in the toolbar row), welcome empty state with slash-command chips, ↑/↓ recall of submitted prompts (terminal-style, draft preserved)
-- **Auto-apply toggle** (macOS-style switch in the composer toolbar): when on, staged proposal cards apply automatically as tracked changes the moment the turn settles — proposals are still staged and reviewable, application just stops waiting for the click; the setting persists (`autoApplyChanges`) and the cross-card apply mutex still guards the write
-- Slash-command picker — type `/` to filter; Enter/Tab/click to select; the send button morphs into Cancel while a run is processing (AbortController)
-- Built-in skills: `/copy-edit`, `/check-doc`, `/flag-issues`, `/summarize-contract`, `/industry-overview`, `/storylining`; saved prompts register as custom slash commands
-- Intent routing for free text (English and Chinese): edit, format, append, table, illustration, and empty-paragraph cleanup each route to their own pipeline; questions always go to Q&A
-- Free text with a non-empty selection → amendment pipeline with the text as the edit instruction; `selection-first` skills run on the selection when one exists, otherwise on the whole document
-- Compound instructions ("add a title, then polish the whole text") are decomposed by an LLM task planner into up to 6 ordered tasks (`insert`, `format`, `edit`, `append`, `table`, `illustration`, `qa`, `image_management`, `table_management`), one proposal card per pipeline; `image_management` and `table_management` run document-scope object sessions with their own review cards
-- Ambiguous instructions with no intent keyword are classified by the planner instead of defaulting to Q&A; planning failure falls back gracefully
+Ask in English or Chinese to edit, format, append, create tables or
+illustrations, clean up empty paragraphs, or answer questions. A text
+selection usually focuses editing on that selection; document-scope skills
+and object operations can have a broader scope. Compound requests can be
+split into ordered tasks with separate proposals. Cancel stops ongoing
+processing; inspect any writes that already completed.
+
+Built-in skills include `/copy-edit`, `/check-doc`, `/flag-issues`,
+`/summarize-contract`, `/industry-overview`, and `/storylining`.
 
 ### Staged Proposals & Per-Change Review
 
-Document-edit proposals are staged before application. With auto-apply off (the default), they wait for manual Apply; opting into persistent auto-apply authorizes pending cards to apply after the turn settles:
-
-- Selection edits show before/after character counts; document-scope runs show per-section citation pills that jump to that section in the document
-- One checkbox per change, an inline deleted/inserted diff preview (diff-match-patch semantic cleanup), and a locate button that selects the source text in the document
-- Apply writes only the checked changes; Reject discards and cleans up bookmarks
-- Honest feedback: skipped sections are reported, no-change echoes are never proposed, and a card that lands nothing settles into a warning state
-- Staged ranges are re-anchored at apply time, so applying another card first (e.g. an inserted title) never causes deletions on drifted paragraphs
+Proposals provide a diff preview, per-change selection, and source-location
+controls where supported. Apply writes the checked changes; Reject discards
+the pending proposal. Skipped sections and no-change results are reported.
+Ranges are checked again at application time to reduce stale-target risks;
+review warnings if the document changed after staging. See
+[First workflow](#first-workflow) for the persistent Auto-apply option.
 
 ### AI Redlining
 
-- Word-level tracked changes via the vendored word-diff layer (`src/lib/word-diff/`, based on Apache-2.0 [office-word-diff](https://github.com/yuch85/office-word-diff)) plus a project-original CJK character-level strategy
-- Cascading strategies: char diff (CJK) → token map (preserves run-level formatting: bold, italic, font, color) → sentence diff → block replace
-- Hardened diff layer: caller-owned change-tracking mode with finally-restore, occurrence-ordered sentence diffs, and Nth-occurrence token resolution
+Text editing supports word-level tracked changes and a CJK character-level
+diff strategy. The diff layer attempts to preserve run formatting and can
+fall back to sentence or block replacement. Check the resulting formatting
+and revision marks in Word, particularly in complex documents.
 
 ### Whole-Document Processing
 
-- Full-document amendment and commenting: parse → chunk → parallel LLM dispatch → reassemble
-- Paragraph-level parsing with style, heading, list, and table detection; token-aware chunking (default 12K tokens per chunk) with heading-based boundaries (H1/H2 trigger splits, H3+ stay coherent), table atomicity, and overlap context
-- Tiny trailing chunks are merged into the previous chunk to prevent orphans
-- Worker-pool dispatch with auto-tuned concurrency (4 workers for large chunks, 6 for smaller), AbortController cancellation, per-chunk progress with ETA estimation, and retry of failed chunks without re-processing successful ones
-- Context extraction: definitions (means / shall mean / is defined as / the-X / hereinafter-X patterns), abbreviations via word-initial matching, and a document outline from the heading hierarchy — injected as a per-chunk filtered prefix into each LLM system message
-- Formatting-preserving reassembly: LCS + word-level similarity paragraph alignment; paragraph properties (styles, numbering, indentation) preserved through paragraph-scoped operations; reverse-order application; bookmark-persisted ranges; line-ending normalization; truncation guard against severely shortened LLM output
-- Merged amendment + comment mode: one LLM call returns delimited `===AMENDMENT===` / `===COMMENT===` sections; comments are inserted on bookmarked ranges after all amendments; undelimited responses are treated as amendment-only; comment instructions persist with the prompt data
-- Output quality: no-commentary/no-markdown rules appended to prompts, `stripMarkdown()` as a safety net, and `stripThinkTags()` removing reasoning blocks
-
-### Formatting & Insert Ops
-
-- Natural-language formatting instructions ("make this Heading 2", "center all headings") are planned into a strict JSON op allowlist: font (bold, italic, underline, highlight, color, size, …) and paragraph (style, alignment, spacing, indentation, …) properties, targeted by substring match, paragraph style, or whole scope
-- Insert ops add short structural elements — "add an article title" composes a title, inserts it at the document start, and styles it with the built-in Title style
-- Applied as tracked Formatted revisions; existing text is never rewritten
-
-### Illustration Pipeline
-
-- With an image model configured in Settings, ordinary schematic/illustration requests prefer the text-to-image route: the provider response is normalized to raw raster base64, staged with a preview, and inserted as a centered inline picture (≤ 450 pt wide)
-- Image-generation wire formats are provider-specific: OpenAI Images and Custom use `/images/generations` (GPT Image models return base64 and reject `response_format`; DALL-E-compatible models may request `b64_json`), CogView uses that endpoint and returns a hosted image URL, and MiniMax Images uses `/image_generation` with `aspect_ratio`, `response_format: 'base64'`, and a provider-specific response shape; the client downloads or unwraps every form while preserving the raster payload for Word insertion
-- Explicit SVG/vector requests keep the chat-LLM SVG route; when image generation is disabled or fails, the same sanitized SVG fallback is used. SVG is sanitized with DOMPurify (no scripts or `foreignObject`) and rasterized to PNG at Apply because Word's inline-picture API does not accept SVG
-- Image generation is configured independently under Settings → Image Generation: enable/disable it, choose OpenAI Images, Zhipu CogView, MiniMax Images, or a Custom OpenAI-compatible provider, then set its endpoint, model, API key, and size; Test image connection performs a small real generation
-- Position heuristic: header/title-image requests go to the document start, otherwise the end; cursor wording anchors insertion at the current selection; the proposal card shows an image preview
-
-### Document Append
-
-- "Continue writing" drafts new content against the full document context and stages an append-to-end proposal; Apply inserts it as tracked changes
-
-### Table Creation
-
-- "Insert a 3×3 table at the end of the document" routes to a dedicated table pipeline; explicit dimensions without a content request resolve to an empty grid deterministically — no LLM call, nothing to hallucinate
-- Content-bearing requests ("…并填充项目数据" / "fill it with project data") go through a strict JSON table protocol (`src/lib/table-ops.js`): a rectangular plain-text cell matrix, row/column/cell/character limits, and a dimension check against the instruction (a mismatched model grid rejects the whole proposal)
-- The proposal card shows a read-only grid preview; Apply inserts one native Word table at the document start/end or before/after the selection, with the grid style, an optional header row, and AutoFit
-- The insertion is recorded as a tracked revision on Word desktop; on hosts without structural-revision support (Word for the web, mobile) it lands untracked with an explicit warning instead of a half-tracked state
-- Editing an EXISTING table is a separate route: select its cells and the multi-cell patch protocol (`src/lib/table-patch.js`) stages per-cell edits and row insert/delete ops
-- Tables and images enter the conversation as **controllable objects with a tool list**, not raw content: a multi-cell/whole-table selection or an image selection routes to a tool-loop session (`src/lib/table-model.js` / `src/lib/image-model.js`). The table side exposes `get_state` / `set_cell` / `insert_row` / `delete_row` / `merge_cells`; the image side exposes `list_images` / `read_image` (multimodal content reading via the loop) / `design_illustration` / `replace_illustration` / `delete_image` / `resize_image` / `align_image` / `set_alt_text` / `set_image_link`. Ops are staged as a diffable transaction and applied only on Apply.
-
-### Empty-Paragraph Cleanup
-
-- "Delete empty paragraphs" runs a deterministic Word.js scan (no LLM — blank paragraphs are invisible to the text pipelines), excluding the final paragraph, table-cell paragraphs, and paragraphs holding inline pictures
-- Staged as a proposal card; Apply deletes them as tracked changes and reports the actual count
+Heading-aware, token-bounded chunks keep tables together and share nearby
+context. Parallel processing provides progress, cancellation, and failed-section
+retry. Reassembly aligns paragraphs and attempts to retain styles, numbering,
+and indentation. Combined amendment-and-comment runs can add comments along
+with text edits. Successful retry results return as new reviewable proposals.
 
 ### Document Summary & Comments
 
-- The `/summarize-contract` skill extracts all document comments, document text, and tracked changes, then generates a formatted Word document in a new file
-- `{comments}` inserts structured comment data (author, annotated text, comment text); `{whole document}` extracts the full text with configurable richness — **Plain** (raw paragraph text), **Headings** (markdown heading markers), **Structured** (headings + list numbering and indentation); `{tracked changes}` extracts revision marks via OOXML parsing
-- Generated documents include an annex with numbered source comments; LLM markdown is converted to HTML via [marked](https://github.com/markedjs/marked) and tables render with visible borders
-- OOXML tracked-changes parsing uses the browser DOMParser (no external dependencies): handles the `pkg:package` wrapper and `w:proofErr` normalization, pairs adjacent `w:del` + `w:ins` from the same author as replacements, detects move operations (`w:moveFrom` / `w:moveTo`), skips table-row revision markers, queries namespace-aware with prefix fallback, and includes author identity in the LLM-formatted output
-- Async comment queue: bookmark-based range persistence, a pending counter with retry-on-error, and WordApi 1.4 detection with graceful degradation
-
-### MCP Tools (Model Context Protocol)
-
-- Connect HTTP (Streamable) MCP tool servers in Settings → MCP Servers (name, URL, optional bearer token, enable/disable, one-click test)
-- `/mcp <instruction>` runs a ReAct tool loop (the same backend-agnostic loop as table/image sessions) over all enabled servers' tools — tool names are namespaced, results stream into the work log, and the final summary answers in chat
-- Read-only contract: MCP tools act on their own external systems and never write to the Word document directly; oversized results are truncated, image results ride the multimodal attachments channel
-- Resource tools (`mcp_list_resources` / `mcp_read_resource`) let the model pull reference material from servers mid-loop; "Import prompts" converts an MCP server's prompt templates into slash-command skills; the per-turn tool-loop step budget is configurable (Settings → MCP Servers)
-- CORS-bound servers can be proxied same-origin via the generic `CUSTOM_PROXY_PATH`/`CUSTOM_PROXY_TARGET` pair
-
-### Skill Packages (SKILL.md)
-
-- Import UI lives in Settings → Skills (its own tab); imported packages appear as slash commands
-
-- Import Claude-style skill packages: YAML frontmatter (name, description, optional `category`/`scope`) over a markdown instruction body — pasted or loaded from a `.md` file in Settings → Prompts
-- Imported skills appear as slash commands alongside built-ins and saved prompts; they persist in localStorage (`wordAI.skills.imported`, capped at 24) and can be removed in Settings
-
-### Prompt System
-
-- Four independent prompt categories — context, amendment, comment, summary — each with full CRUD, per-category activation, and `{selection}` placeholder replacement
-- Prompts persist in localStorage across sessions and double as custom slash commands in the chat UI
+`/summarize-contract` can use document text, comments, and tracked changes to
+create a formatted summary in a **new Word document**, including an annex of
+source comments. Prompts support `{comments}`, `{whole document}`, and
+`{tracked changes}`. Document extraction can be plain, heading-aware, or
+structured with lists. Comment operations depend on available Word APIs;
+check pending-comment and failure notices.
 
 ### Model Activity, Work Log & Streaming
 
-- Each turn shows a collapsible work log ("Worked for Ns · M steps") and a live model-activity region streaming reasoning (dimmed) and output tokens per section
-- Model activity auto-scrolls while pinned to the bottom; scrolling up disengages, scrolling back re-engages
-- Chat answers and pipelines stream token-by-token via OpenAI-compatible SSE; an idle timeout resets on every chunk, so long generations survive and only stalled streams abort; automatic fallback to non-streaming
-- A live selection preview chip sits above the input bar; the current selection is injected into Q&A prompts as focused context
+A per-turn work log shows progress and model activity. Answers and editing
+runs support streamed output with fallback when streaming is unavailable.
+Selection context and proposal scope help you check what a run is acting on.
+
+</details>
+
+<details>
+<summary>Formatting, tables, illustrations, and document cleanup</summary>
+
+### Formatting & Insert Ops
+
+Ask to change a heading style, font, alignment, spacing, or indentation, or to
+insert a short structural element such as a title. Formatting requests use
+an allowed set of operations rather than arbitrary code. Formatting-only
+operations target properties; insert operations add content. Revision
+visibility depends on the operation and Word host.
+
+### Illustration Pipeline
+
+Generate an illustration with the independently configured image provider,
+review its preview, then insert it. Explicit vector requests use a chat-model
+SVG path; this also serves as a fallback when image generation is disabled or
+fails. SVG is sanitized and converted to PNG for Word insertion. Image API
+responses and hosted image downloads must both be reachable from your route.
+
+### Document Append
+
+Ask to continue writing using document context. New text is staged as an
+append-to-end proposal before application.
+
+### Table Creation
+
+Ask for an empty grid (`Insert a 3x3 table at the end of the document`) or a
+table with generated content. Empty grids with explicit dimensions do not
+need an LLM call. Generated grids are validated and previewed before insertion
+as native Word tables. Desktop hosts can record table insertion as a revision;
+hosts without structural-revision support receive an explicit warning and
+may insert it untracked.
+
+Existing table selections have their own editing path for cell changes and
+row operations. Table and image tool sessions stage operations such as table
+merges, image resizing, alignment, replacement, deletion, and alt text. Review
+the proposed transaction and its tracking limitations before application.
+
+### Empty-Paragraph Cleanup
+
+A deterministic scan proposes removal of empty paragraphs without an LLM
+request. It excludes the final paragraph, table-cell paragraphs, and
+paragraphs containing inline pictures. Application reports the removal count.
+
+</details>
+
+<details>
+<summary>Skills, prompts, model configuration, and external tools</summary>
+
+### MCP Tools (Model Context Protocol)
+
+Configure HTTP Streamable MCP servers in **Settings → MCP Servers**, then use
+`/mcp <instruction>` to call enabled tools. Servers can supply resources and
+prompt templates; tool output appears in the work log. Tool permissions and
+external side effects belong to the connected server, not Word's proposal
+review system. CORS-restricted servers may need a trusted same-origin proxy
+using `CUSTOM_PROXY_PATH` and `CUSTOM_PROXY_TARGET`.
+
+### Skill Packages (SKILL.md)
+
+Import Markdown skill packages with YAML frontmatter in **Settings → Skills**.
+Imported packages become slash commands, persist in localStorage, and can be
+removed in Settings. Review imported instructions before using them.
+
+### Prompt System
+
+Manage context, amendment, comment, and summary prompts with placeholders
+such as `{selection}`. Saved prompts persist locally and can be used as
+custom slash commands.
 
 ### LLM Backends
 
-- Chat providers (11): Ollama, vLLM, OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax international, MiniMax China, 中科大模型 (zhongkeyu.com), and Custom (any OpenAI-compatible endpoint)
-- Unified OpenAI-compatible chat API; per-provider API prefix handled automatically (GLM uses `/api/paas/v4`); the Claude provider speaks Anthropic's native Messages API (auth via `x-api-key` + `anthropic-version`, browser access via `anthropic-dangerous-direct-browser-access`)
-- Thinking level and Temperature settings adapt to the selected model (model-capabilities.js): each provider's documented controls only — e.g. OpenAI `reasoning_effort` scales per GPT-5 generation, Claude `output_config.effort`/`thinking.budget_tokens`, DeepSeek `thinking.type` + `reasoning_effort`; Temperature is disabled where the model rejects it
-- Cloud provider defaults are origin-adaptive: on statically hosted installs (marketplace/Pages) they point at the absolute API origins (e.g. `https://api.deepseek.com`) and are called directly — all CORS-capable providers send CORS headers for public origins; behind the local dev/production server they point at same-origin proxy paths, because those providers refuse CORS for localhost/private-IP origins. OpenAI is the exception: `api.openai.com` sends no CORS headers at all, so it defaults to the `/openai` proxy path everywhere
-- Local models (Ollama/vLLM) default to same-origin proxy paths (`/ollama`, `/vllm`) served by the dev/production server — required because an HTTPS page cannot call `http://localhost` (mixed-content blocking) and to avoid per-user CORS setup
-- Typeable model field with a refreshable suggestion list (Refresh re-queries the provider's models endpoint); configurable endpoint URL and optional API key per provider; Track Changes and Line Diff toggles
+See the [model list and data-flow notes](#models-privacy--safety). Most chat
+presets use an OpenAI-compatible API; Claude uses Anthropic's Messages API.
+Model suggestions can be refreshed, and endpoints and model names can be
+edited. Thinking and temperature controls vary by model capability. Preset
+availability does not establish live provider compatibility; test your setup.
 
 ### Settings & UX
 
-- All provider, extraction, and prompt settings live in a slide-over panel with auto-save (plus an explicit Save button for visible confirmation)
-- Model pill under the input bar shows the active provider:model and opens settings on click
-- Activity log in a slim drawer; connection status and comment-pending indicators in the status bar
+Settings include model connections, prompts, extraction, Track Changes, and
+diff preferences. Configuration persists in localStorage. Switching hosting
+origins starts with separate settings. The activity log and connection or
+pending-comment indicators expose progress and failures.
+
+</details>
 
 ## Setup
 
-There are **two ways** to run this add-in:
+The [hosted installer](#quick-start) is the shortest path for desktop users
+with a browser-accessible cloud model. Self-host if you need local-model
+proxies, control over the served build, or development tools:
 
 | Method | Best for | Requirements |
 |--------|----------|--------------|
-| **Docker** | Quick setup, no Node.js needed | Docker, Docker Compose |
-| **npm** | Development, customization | Node.js 22+ |
+| [Docker](#option-a-docker-recommended-for-quick-setup) | Self-hosting without local Node.js | Docker, Docker Compose, trusted HTTPS |
+| [npm](#option-b-npm-for-development) | Development and customization | Node.js 22+, trusted HTTPS |
 
-Both methods require HTTPS certificates trusted by the machine running Word.
-
----
+Both self-hosted methods require a reachable server and certificates trusted
+by the machine running Word. Production proxy routes must be enabled explicitly.
 
 ## Deployment Routes: Static vs Local Server
 
-Beyond *how you host the server*, the add-in UI itself runs from one of two
-origins. Both are first-class; switching is one command each.
-
-| | **Static route** (GitHub Pages / Microsoft Marketplace) | **Local-server route** (Docker / npm dev) |
+| | Hosted static build | Local or self-hosted server |
 |---|---|---|
-| Taskpane served from | `https://scilence2022.github.io/claric-addin/` | `https://localhost:<HOST_PORT>` (or a LAN IP) |
-| Cloud providers (Claude / DeepSeek / GLM / Kimi / MiniMax / 中科大模型) | Direct CORS calls to the provider's API origin — no server needed (API key required) | Same-origin proxy paths (`/claude`, `/deepseek`, `/glm`, `/kimi`, `/minimax`, `/minimax-cn`, `/zhongkeyu`) — the providers refuse CORS for localhost/private-IP origins (verified), so direct calls cannot work here |
-| OpenAI | Not reachable: `api.openai.com` sends no CORS headers for any origin. Options: an HTTPS OpenAI-compatible relay, or use the local-server route | Works via the default `/openai` proxy path |
-| Local models (Ollama / vLLM) | Not reachable: an HTTPS page cannot call `http://localhost` (mixed-content blocking; WebKit has no exemption — bugs.webkit.org 171934/173161). Options: an HTTPS relay in front of Ollama (`OLLAMA_ORIGINS` for CORS), or use the local-server route | ✅ Work out of the box via the default proxy paths |
-| Image providers (OpenAI Images / CogView / MiniMax Images / Custom) | Direct calls where the provider permits CORS; OpenAI Images requires a relay, while Custom uses its configured endpoint | Same-origin proxy paths (`/openai`, `/glm`, `/minimax`) when configured; Custom requires `CUSTOM_PROXY_PATH`/`CUSTOM_PROXY_TARGET` or an absolute endpoint |
-| Backend server required | None | `docker compose up -d` or `npm start` |
-| Typical use | Marketplace submission, everyday cloud-LLM use | Local development (hot reload), local-AI setups |
+| Taskpane origin | `https://scilence2022.github.io/claric-addin/` | `https://localhost:<PORT>` or your HTTPS host |
+| Cloud chat | Direct requests only where the endpoint permits the add-in origin and request headers | Same-origin proxy paths when configured |
+| OpenAI | The preset expects `/openai`, which Pages does not provide; use a trusted HTTPS, CORS-enabled compatible relay | Enable `/openai` and its upstream |
+| Ollama / vLLM | No built-in proxy; direct local HTTP access is not portable across Word WebViews due to mixed-content and local-network restrictions | Enable `/ollama` or `/vllm` and run the upstream |
+| Image generation | Both the generation endpoint and any returned image URL must be accessible; OpenAI Images needs a relay | Enable the relevant provider proxy; separately check returned image URLs |
+| Backend server | None for compatible direct endpoints | Docker or npm server plus model upstreams |
+| Typical use | Hosted installation with a compatible cloud endpoint | Local AI, managed deployment, development |
 
-Provider defaults are **origin-adaptive**: on static hosts cloud presets
-default to their absolute API origins; behind the local server they default
-to the proxy paths. Both routes are zero-config for their supported
-backends.
+Current presets choose absolute cloud API URLs on GitHub Pages and same-origin
+proxy paths on other hosts, with exceptions such as OpenAI and local models.
+This origin detection is not universal static-host detection: on another
+static domain, check and set absolute endpoint URLs explicitly. CORS policy,
+authentication, endpoint format, region, and WebView behavior still determine
+whether requests work. Production is **not zero-configuration**.
 
 ### Switching routes
 
 | Command | Effect |
 |---------|--------|
-| `npm run manifest:local` | Point `manifest.xml` at the local server (`HOST=localhost`, `PORT=3001`) and regenerate it |
-| `npm run manifest:store` | Point `manifest.xml` at the GitHub Pages host (`HOST=scilence2022.github.io`, base path `/claric-addin`) and regenerate it |
-| `npm run sideload` | Sideload the current `manifest.xml`: into Word for Mac's `wef/` folder, or via the Windows installer (developer-add-in registry + launch document) |
-| `npm run sideload:remove` | Remove the sideloaded manifest from Word for Mac |
-| `npm run publish:addin` | Build the production bundle, switch to the store manifest, push `dist/` + `manifest.xml` to the Pages repo (`Scilence2022/claric-addin`); GitHub Pages rebuilds in ~30 s |
+| `npm run manifest:local` | Update `.env` (`HOST=localhost`, `HOST_PORT=3001`) and regenerate `manifest.xml` for the local server |
+| `npm run manifest:store` | Regenerate it for the hosted Pages build (`HOST=scilence2022.github.io`, base path `/claric-addin`); the command name does not imply a Store listing |
+| `npm run sideload` | Register the current manifest in macOS's `wef` folder or Windows's developer-add-in registry |
+| `npm run sideload:remove` | Remove the sideloaded registration on the current desktop platform |
+| `npm run publish:addin` | Maintainer operation: build, switch manifest, and push artifacts to `Scilence2022/claric-addin` |
 
-A typical local session: `npm start` (or `docker compose up -d`) →
-`npm run manifest:local` → `npm run sideload` → restart Word.
-A typical release: bump `package.json` → `npm run publish:addin` →
-`npm run sideload` → restart Word.
+For a local session, configure the environment and certificates, run
+`npm run manifest:local`, start `npm start` (or `docker compose up -d`), then
+run `npm run sideload` and restart Word. Verify your port after switching
+manifest modes. Publishing changes the remote hosted build and requires the
+appropriate repository permissions; it is not part of installation.
 
 ### Route-specific notes
 
-- **Settings are per-origin.** Provider choices, endpoints, and API keys live
-  in the add-in's localStorage under the serving origin
-  (`https://localhost:3001` vs `https://scilence2022.github.io`). Switching
-  routes starts from a fresh Settings state — re-enter the API key once per
-  route.
-- **Static installs and local models.** `http://localhost` endpoints are
-  blocked by Word's WebView from an HTTPS page. The supported alternatives
-  are an HTTPS reverse proxy in front of Ollama (plus `OLLAMA_ORIGINS`
-  including the add-in's origin) or a reachable relay of the production
-  container — enter its absolute URL as the endpoint.
-- **Why cloud defaults differ per route (verified, not configurable).** The
-  CORS-capable providers (Claude, DeepSeek, GLM, Kimi, MiniMax, zhongkeyu)
-  reflect `Access-Control-Allow-Origin` for public origins
-  (github.io, arbitrary domains) but emit **no CORS headers for localhost
-  or private-IP origins** — a common provider-side policy against local
-  network attacks. Hence: static installs call them directly; the local
-  server must relay. OpenAI emits no CORS headers at all, so it always uses
-  the proxy path or a relay. The same asymmetry plus mixed-content blocking rules
-  out direct `http://localhost` calls for local models.
+- **Settings are per-origin.** Provider choices and keys stored at
+  `https://localhost:3001` are separate from those at
+  `https://scilence2022.github.io`. Reconfigure after switching routes.
+- **Static installs and local models.** Use the local-server route, or a
+  reachable HTTPS relay whose CORS policy permits the taskpane origin.
+  For direct Ollama access, configure `OLLAMA_ORIGINS` as needed. Do not expose
+  an unauthenticated model service publicly to bypass browser restrictions.
+- **Provider policies can change.** A same-origin proxy avoids browser CORS
+  on the upstream request, but still needs a valid endpoint, credentials,
+  network access, and production route configuration. Relays handle request
+  content and keys; choose and secure them accordingly.
 - **Manifest `BASE_PATH`.** Defaults to `/claric-addin` when
-  `HOST=scilence2022.github.io` (the Pages repository path); empty for any
-  other host. Override explicitly in `.env` if you publish under a
-  different repo name.
-
----
+  `HOST=scilence2022.github.io`, and empty for other hosts. Override it when
+  publishing under a different repository path.
 
 ## Option A: Docker (Recommended for Quick Setup)
+
+This is the quick **self-hosting** option, not a requirement for hosted use.
 
 ### Prerequisites
 
 - Docker and Docker Compose
-- HTTPS certificate files (see [Create HTTPS Certificates](#create-https-certificates))
+- [Trusted HTTPS certificate files](#create-https-certificates)
+- A reachable model service or cloud endpoint and credentials as required
 
 ### Step-by-Step
 
-1. **Clone the repository**
+1. Clone the repository:
 
-```bash
-git clone https://github.com/Scilence2022/Claric.git
-cd Claric
-```
+   ```bash
+   git clone https://github.com/Scilence2022/Claric.git
+   cd Claric
+   ```
 
-2. **Create HTTPS certificates** (see [Create HTTPS Certificates](#create-https-certificates))
+2. [Create certificates](#create-https-certificates) and place `server.pem`
+   and `server-key.pem` in the project root.
+3. Copy the example, then edit `.env`:
 
-   Place `server.pem` and `server-key.pem` in the project root.
+   ```bash
+   cp .env.docker.example .env
+   ```
 
-3. **Configure environment variables**
+   Windows PowerShell:
 
-   Copy the Docker example and edit it:
+   ```powershell
+   Copy-Item .env.docker.example .env
+   ```
 
-```bash
-cp .env.docker.example .env
-```
+   Set `HOST` to a hostname or IP reachable from Word; use `localhost` only
+   when Word runs on the same machine. Set `HOST_PORT` and explicitly enable
+   the required `*_PROXY_PATH` routes. Confirm their `*_PROXY_TARGET` values.
 
-   On Windows PowerShell:
+4. Start the container:
 
-```powershell
-Copy-Item .env.docker.example .env
-```
+   ```bash
+   docker compose up -d
+   ```
 
-   **Important:** Edit `.env` and set `HOST` to the hostname or IP address that
-   the Word client can reach. If Word runs on a different machine, do **not**
-   use `localhost`.
+   The container serves `dist/` over HTTPS as a non-root user and regenerates
+   the manifest at startup. Pin `ADDIN_GUID` in `.env` to retain the same
+   add-in identity across container recreation.
 
-4. **Start the container**
-
-```bash
-docker compose up -d
-```
-
-   The container runs as a non-root user, serves `dist/` over HTTPS, and
-   regenerates `manifest.xml` from your `.env` values on every startup. A
-   stable add-in GUID is generated on first start and persisted inside the
-   container (pin it with `ADDIN_GUID` in `.env` to survive container
-   recreation).
-
-5. **Get the manifest**
-
-   Download it from the running server: `https://<HOST>:<HOST_PORT>/manifest.xml`
-   (e.g. open that URL in a browser and save the file).
-
-6. **Trust the certificate on Windows** (see [Trust the Certificate on Windows](#trust-the-certificate-on-windows))
-
-7. **Sideload the add-in** (see [Sideload the Add-in](#sideload-the-add-in))
-
-8. **Point the add-in at your LLM backend**
-
-   The container proxies the `/ollama` and `/vllm` paths to the upstreams in
-   your `.env` (defaults: `host.docker.internal:11434` / `:8026`), so the
-   add-in's default Settings work with no extra configuration -- the LLM
-   traffic stays same-origin, avoiding mixed-content and CORS issues. For a
-   remote backend, set the `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET` values
-   (or enter an absolute URL in the add-in Settings).
-
----
+5. Download `https://<HOST>:<HOST_PORT>/manifest.xml` in a browser.
+6. Trust the certificate on the Word client, then
+   [sideload the manifest](#sideload-the-add-in).
+7. [Configure and save the model settings](#connect-your-model), then check
+   the connection status. For local models, the Docker example targets
+   `host.docker.internal:11434` (Ollama) and `:8026` (vLLM); those services
+   must actually be running and reachable.
 
 ## Option B: npm (For Development)
 
 ### Prerequisites
 
-- Node.js 22+ (see `.nvmrc`; `engines` field enforces this)
-- HTTPS certificate files (see [Create HTTPS Certificates](#create-https-certificates))
+- Node.js 22+ (see [.nvmrc](.nvmrc) and [package.json](package.json))
+- [Trusted HTTPS certificate files](#create-https-certificates)
 
 ### Step-by-Step
 
-1. **Clone the repository**
+1. Clone and install dependencies:
 
-```bash
-git clone https://github.com/Scilence2022/Claric.git
-cd Claric
-```
+   ```bash
+   git clone https://github.com/Scilence2022/Claric.git
+   cd Claric
+   npm install
+   ```
 
-2. **Install dependencies**
+2. Create `server.pem` and `server-key.pem` in the project root.
+3. Copy the environment example and edit it:
 
-```bash
-npm install
-```
+   ```bash
+   cp .env.example .env
+   ```
 
-3. **Create HTTPS certificates** (see [Create HTTPS Certificates](#create-https-certificates))
+   Windows PowerShell:
 
-   Place `server.pem` and `server-key.pem` in the project root.
+   ```powershell
+   Copy-Item .env.example .env
+   ```
 
-4. **Configure environment variables**
+   Set `HOST` to a hostname reachable from Word and keep manifest and dev
+   server ports aligned. A different Word machine cannot use your `localhost`.
 
-   Copy the example and edit it:
+4. Start the development server:
 
-```bash
-cp .env.example .env
-```
+   ```bash
+   npm start
+   ```
 
-   On Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-   **Important:** Edit `.env` and set `HOST` to the hostname or IP address that
-   the Word client can reach. If Word runs on a different machine, do **not**
-   use `localhost`.
-
-5. **Start the dev server**
-
-```bash
-npm start
-```
-
-   This generates `manifest.xml` from your `.env` values and starts the webpack
-   dev server with hot reload.
-
-6. **Trust the certificate on Windows** (see [Trust the Certificate on Windows](#trust-the-certificate-on-windows))
-
-7. **Sideload the add-in** (see [Sideload the Add-in](#sideload-the-add-in))
-
-   Use the `manifest.xml` file in the project root.
-
----
+   This generates `manifest.xml` from the environment and starts webpack
+   with hot reload.
+5. Trust the certificate and [sideload](#sideload-the-add-in) the root
+   `manifest.xml`. [Configure and save the model settings](#connect-your-model),
+   then check the connection status.
 
 ## Create HTTPS Certificates
 
-The add-in must be served over HTTPS. Word will block untrusted certificates.
+Self-hosted add-ins need HTTPS trusted by the Word client. The public hosted
+build already uses HTTPS; its installer does not require a local certificate.
+Never accept an unexpected certificate warning without verifying its source.
 
-Place your cert files in the project root:
+Place these files in the project root and keep private keys out of version control:
 
-- `server.pem` (certificate)
-- `server-key.pem` (private key)
+- `server.pem`: certificate
+- `server-key.pem`: private key
 
 ### Option 1: mkcert (Recommended)
 
-1. Install [mkcert](https://github.com/FiloSottile/mkcert).
-2. Create a local CA and generate a cert:
+Install [mkcert](https://github.com/FiloSottile/mkcert), then create a local
+certificate authority and a certificate for the exact hostname Word uses:
 
 ```bash
 mkcert -install
-
-# For localhost (same machine):
-mkcert localhost
-
-# For a remote server (use your actual IP or hostname):
-mkcert <your-server-ip-or-hostname>
+mkcert -cert-file server.pem -key-file server-key.pem localhost
 ```
 
-3. Rename the output files:
+For a remote server, replace `localhost` with its real hostname or IP. To use
+mkcert's default output names instead:
 
 ```bash
+mkcert localhost
 cp localhost.pem server.pem
 cp localhost-key.pem server-key.pem
 ```
 
-   On Windows PowerShell:
+Windows PowerShell copies:
 
 ```powershell
 Copy-Item localhost.pem server.pem
 Copy-Item localhost-key.pem server-key.pem
 ```
 
+`mkcert -install` changes local trust and may require elevated approval. On a
+different client machine, trust the verified CA certificate according to your
+organization's policy. On macOS, use Keychain Access for a manually supplied
+CA; verify it before adjusting trust. Do not copy or share `rootCA-key.pem`.
+
 ### Option 2: OpenSSL (Manual)
 
+Use an OpenSSL version supporting `-addext`. Replace `YOUR_HOST` with the
+actual DNS name. For an IP address use `subjectAltName=IP:YOUR_IP` instead:
+
 ```bash
-# Replace <YOUR_HOST> with localhost or your server IP/hostname
 openssl req -x509 -nodes -days 365 \
   -newkey rsa:2048 \
   -keyout server-key.pem \
   -out server.pem \
-  -subj "/CN=<YOUR_HOST>"
+  -subj "/CN=YOUR_HOST" \
+  -addext "subjectAltName=DNS:YOUR_HOST"
 ```
 
----
+The subject alternative name (SAN) must match the hostname Word connects to;
+a common name alone is insufficient. Trust the resulting certificate on the
+Word client. Prefer mkcert if the system OpenSSL does not support this option.
 
 ## Trust the Certificate on Windows
 
 On the Windows PC running Word:
 
-1. Copy the `.pem` cert file to the Windows PC.
-2. Convert PEM to CRT (if needed):
+1. Copy only the verified public certificate to the PC, never its private key.
+2. Convert PEM to CRT if needed:
 
-```powershell
-openssl x509 -in server.pem -out server.crt
-```
+   ```powershell
+   openssl x509 -in server.pem -out server.crt
+   ```
 
-3. Open **certmgr.msc** (run as Administrator).
-4. Navigate to **Trusted Root Certification Authorities** → **Certificates**.
-5. Right-click → **All Tasks** → **Import...**
-6. Select the `.crt` file and finish the wizard.
+3. Open `certmgr.msc` for the current user's certificate store.
+4. Under **Trusted Root Certification Authorities → Certificates**, choose
+   **All Tasks → Import**, select the certificate, and finish the wizard.
+   Organization policy may restrict this; machine-wide trust changes require
+   administrator approval.
 
-**If you used mkcert**, you can install the mkcert root CA on Windows instead:
-
-- Copy the root CA from the server machine (find it via `mkcert -CAROOT`)
-- Import it into **Trusted Root Certification Authorities**
-
----
+With mkcert, import the CA's **`rootCA.pem`** instead (locate it on the server
+with `mkcert -CAROOT`). Verify its identity first. Never transfer
+`rootCA-key.pem`. Restart Word after changing trust.
 
 ## Sideload the Add-in
 
+Hosted users can use [Quick start](#quick-start). The following alternatives
+support self-hosting and manual registration. Office policy can restrict any
+of these methods; menu labels also vary by Word version.
+
 ### Word on Windows
 
-**Method 1: One-click installer (recommended)**
+**Method 1: Per-user installer**
 
-No admin rights, no Node.js. Uses the per-user developer-add-in registry
-(`HKCU\...\16.0\Wef\Developer`) — the same mechanism `office-addin-dev-settings`
-employs — so it also works on consumer Microsoft 365 builds where the
-"Upload My Add-in" entry no longer appears.
+For hosted use, [download and review the Windows script](#install-the-hosted-version)
+before running it. For a self-hosted checkout, generate the manifest for your
+server and run:
 
-- **Static build (GitHub Pages)** — run in PowerShell:
+```bash
+npm run install:windows
+```
 
-  ```powershell
-  irm https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/windows/Install-Claric.ps1 | iex
-  ```
+Or invoke the reviewed script directly in PowerShell:
 
-- **Self-hosted build (Docker / npm)** — from a checkout, after generating the
-  manifest for your server:
+```powershell
+.\installer\windows\Install-Claric.ps1 -ManifestPath .\manifest.xml
+```
 
-  ```
-  npm run install:windows        # wraps installer/windows/Install-Claric.ps1 -ManifestPath manifest.xml
-  ```
+The script copies the manifest to `%LOCALAPPDATA%\ClaricAddin\`, registers it
+under `HKCU\SOFTWARE\Microsoft\Office\16.0\Wef\Developer`, and creates
+`Claric-Launch.docx`. The npm wrapper registers without launching Word; open
+the launch document yourself. Claric may also appear under
+**Insert → Get Add-ins → My Add-ins**. Remove it with the reviewed
+[Uninstall-Claric.ps1](installer/windows/Uninstall-Claric.ps1) or
+`npm run uninstall:windows`. See the [Windows guide](installer/windows/README.md).
 
-The installer copies the manifest to `%LOCALAPPDATA%\ClaricAddin\`, registers
-it, builds `Claric-Launch.docx`, and opens Word with the taskpane mounted.
-Reopen that document whenever you need Claric, or find it under
-**Insert → Get Add-ins → My Add-ins**. Undo with `Uninstall-Claric.ps1` or
-`npm run uninstall:windows`. Details and troubleshooting:
-[installer/windows/README.md](installer/windows/README.md).
+**Method 2: Add from file**, if your Word build offers it:
 
-**Method 2: Add from file** (if your Word build still offers it)
-
-1. Open Word → **Insert** → **Get Add-ins** → **My Add-ins**.
-2. Click **Add a custom add-in** → **Add from file...**.
+1. Open **Insert → Get Add-ins → My Add-ins**.
+2. Choose **Add a custom add-in → Add from file**.
 3. Select `manifest.xml` and confirm.
 
-**Method 3: Network shared folder (Windows only)**
+**Method 3: Network shared folder**:
 
-1. Create a shared folder and note the network path (a real UNC share —
-   a plain local path such as `C:\...` is not picked up).
-2. In Word: **File** → **Options** → **Trust Center** → **Trust Center Settings** →
-   **Trusted Add-in Catalogs** → **Add catalog** (check **Show in Menu**).
-3. Copy `manifest.xml` into the shared folder.
-4. In Word: **Home** → **Add-ins** → **Advanced** → **Shared Folder** → select the add-in → **Add**.
+1. Create a real UNC share; a plain `C:\...` path is not a shared catalog.
+2. Open **File → Options → Trust Center → Trust Center Settings → Trusted
+   Add-in Catalogs**, add the catalog, and select **Show in Menu**.
+3. Copy the manifest to the share.
+4. Open **Home → Add-ins → Advanced → Shared Folder** and add Claric.
 
-For full details, see the [Microsoft sideloading guide](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/create-a-network-shared-folder-catalog-for-task-pane-and-content-add-ins).
+See [Microsoft's shared-folder guide](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/create-a-network-shared-folder-catalog-for-task-pane-and-content-add-ins).
 
 ### Word on Mac
 
-**Method 1: One-click installer (recommended)**
+**Method 1: Per-user installer**
 
-No admin rights, no Node.js. Uses Word's developer sideload folder
-(`~/Library/Containers/com.microsoft.Word/Data/Documents/wef`) -- the same
-registration mechanism `office-addin-dev-settings` employs on macOS, and it
-works on every Word for Mac build.
+For hosted use, [download and review the macOS script](#install-the-hosted-version)
+before running it. For a self-hosted checkout, generate the manifest for your
+server and run:
 
-- **Static build (GitHub Pages)** — run in Terminal:
+```bash
+npm run install:macos
+```
 
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/Scilence2022/Claric/main/installer/macos/Install-Claric.sh | bash
-  ```
+Or invoke the reviewed script directly:
 
-- **Self-hosted build (Docker / npm)** — from a checkout, after generating the
-  manifest for your server:
+```bash
+bash installer/macos/Install-Claric.sh --manifest manifest.xml
+```
 
-  ```
-  npm run install:macos          # wraps installer/macos/Install-Claric.sh --manifest manifest.xml
-  ```
-
-The installer copies the manifest into Word's `wef` sideload folder, builds
-`Claric-Launch.docx`, and opens Word with the taskpane mounted. Reopen that
-document whenever you need Claric, or find it under
-**Home → Add-ins → Claric**. Undo with `Uninstall-Claric.sh` or
-`npm run uninstall:macos`. Details and troubleshooting:
-[installer/macos/README.md](installer/macos/README.md).
+The script copies the manifest into Word's `wef` folder and creates
+`~/Library/Application Support/ClaricAddin/Claric-Launch.docx`. The npm wrapper
+registers without launching Word; open the launch document yourself, or look
+under **Home → Add-ins → Claric**. Remove it with the reviewed
+[Uninstall-Claric.sh](installer/macos/Uninstall-Claric.sh) or
+`npm run uninstall:macos`. See the [macOS guide](installer/macos/README.md).
 
 **Method 2: Manual wef-folder sideload**
 
-Mac's Word has no "Add from file" dialog -- sideloading uses the `wef`
-container folder (see [Microsoft's Mac sideloading guide](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/sideload-an-office-add-in-on-mac)):
+1. Start your HTTPS server and verify it is reachable.
+2. In Finder, use **Cmd+Shift+G** to open
+   `~/Library/Containers/com.microsoft.Word/Data/Documents/wef`; create `wef`
+   if needed.
+3. Copy `manifest.xml` there. For Docker, download it from
+   `https://<HOST>:<HOST_PORT>/manifest.xml`.
+4. Fully quit Word (**Cmd+Q**) and reopen it; then look under
+   **Home → Add-ins → Claric**.
+5. If your verified self-hosted certificate is not trusted, configure trust
+   in Keychain Access before reopening the pane.
 
-1. Make sure the server is running (`docker compose up -d`).
-2. Open Finder and press ⌘+Shift+G, then enter:
-   `~/Library/Containers/com.microsoft.Word/Data/Documents/wef`
-   (create the `wef` folder if it does not exist).
-3. Copy the `manifest.xml` into that folder. The file lives on the server:
-   `https://<HOST>:<HOST_PORT>/manifest.xml` (save it from a browser).
-4. Fully quit Word (⌘Q) and reopen it -- loaded only at launch.
-5. Go to the **Home** tab → **Add-ins** → select **Claric**.
-6. Trust the certificate in Keychain if prompted.
-
----
+See [Microsoft's Mac sideloading guide](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/sideload-an-office-add-in-on-mac).
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| Word shows "blocked because it isn't signed" | Trust the HTTPS certificate on the Windows client |
-| Word cannot load the add-in | Verify `HOST` in `.env` is reachable from Word |
-| Manifest not generated | Ensure `.env` exists before running `npm start`; with Docker, fetch it from `https://<HOST>:<HOST_PORT>/manifest.xml` |
-| Firewall issues | Allow inbound TCP 3000 (or your `HOST_PORT`) on the server |
-| LLM connection fails in production | Check `OLLAMA_PROXY_TARGET`/`VLLM_PROXY_TARGET` in `.env` and that the upstream is running; the container reaches the host via `host.docker.internal` |
-| New `*_PROXY_PATH` in `.env` does not take effect after `docker compose restart` | `restart` keeps the original env-file resolution. Run `docker compose down && docker compose up -d` to re-parse `.env` (no image rebuild needed) |
-| LLM proxy routes log only `/ollama` and `/vllm` (or none) when you expected more | Provider proxy routes are **disabled by default** in production; only paths explicitly set in `.env` are wired. Add `DEEPSEEK_PROXY_PATH=/deepseek` etc. and recreate the container (`down` + `up -d`) |
-| `curl https://localhost:<PORT>` fails with SSL "wrong version number" or no response | Another local server is bound to that port (e.g. a Next.js dev server on `:3000`). Pick a free port via `HOST_PORT` in `.env` (e.g. `3001`) and re-run `up -d`. The container still listens internally on `3000` |
-| Browser/Word refuses the cert with a hostname mismatch | The `server.pem` must cover the hostname Word connects with. Regenerate with `mkcert <your-host-or-ip>` and copy to `server.pem`/`server-key.pem` (SAN must include the host) |
-| `docker compose build` fails on `npm ci` in the builder stage | Usually a transient npm registry hiccup while pulling 800+ packages. Re-run `docker compose build --no-cache` once; if it persists, check `package-lock.json` vs `package.json` consistency |
-| Model connection fails on the static route (Pages/marketplace) with Ollama/vLLM | A static HTTPS page cannot reach `http://localhost` (mixed-content blocking). Either switch to the local-server route (`npm run manifest:local`), or front the backend with HTTPS + CORS (`OLLAMA_ORIGINS`) and enter its absolute URL as the endpoint |
-| Add-in still shows old behavior after a Pages publish | GitHub Pages assets are cached ~10 minutes. Fully quit and reopen Word; if still stale, delete `~/Library/Containers/com.microsoft.Word/Data/Library/Caches/WebKit` while Word is closed |
+| Problem | Checks and next step |
+|---------|----------------------|
+| Hosted launch document opens without the pane | Fully quit Word and reopen it; check sideloading policy and the platform installer guide |
+| PowerShell blocks the installer | Review the downloaded script and consult your administrator or approved local policy; do not bypass managed restrictions |
+| Word reports a certificate or signing warning | Verify the warning's source; for self-hosted HTTPS, check certificate trust and hostname. Trust changes do not fix organization add-in restrictions |
+| Word cannot load a self-hosted add-in | Check `HOST`, port, server availability, client reachability, and HTTPS trust |
+| Manifest not generated | Create `.env` before `npm start`; for Docker, fetch `https://<HOST>:<HOST_PORT>/manifest.xml` |
+| Firewall blocks access | Allow only the required inbound TCP port (`HOST_PORT` for Docker) from the intended clients |
+| Model connection fails | Check endpoint, model access, key, quota, network, and CORS. The hosted UI has no same-origin model proxy |
+| Local model fails in Docker | Check the upstream is running and reachable via `host.docker.internal`; verify `OLLAMA_PROXY_TARGET` or `VLLM_PROXY_TARGET` |
+| Production proxy route missing | Routes are disabled unless their `*_PROXY_PATH` is set; configure the target too if it differs from the default |
+| Changed `.env` is ignored after `docker compose restart` | Recreate the container with `docker compose down && docker compose up -d`; restart alone keeps the original env-file resolution |
+| HTTPS reports "wrong version number" or no response | Check for another process on that host port; choose a free `HOST_PORT` and recreate the container |
+| Certificate hostname mismatch | Regenerate the certificate with a SAN covering the exact hostname or IP Word uses |
+| Docker build fails at `npm ci` | Inspect the error, registry connectivity, and lockfile consistency; retry transient failures before considering a no-cache build |
+| Hosted Ollama/vLLM cannot connect | Use a local server with configured proxies, or a trusted HTTPS relay with appropriate CORS and access controls |
+| Image generation succeeds but preview fails | Check the returned image URL's accessibility and CORS separately from the generation endpoint |
+| Retry or Apply reports a partial result | Inspect the document and warnings first; retrying failed processing creates a new proposal, while partial writes may already be present |
+| Hosted add-in still shows old behavior | Allow for Pages/WebView caches, fully quit and reopen Word, then consult the platform guide before clearing Office caches |
 
 ### Deployment footnotes
 
-- **Editing `.env` requires a full recreate, not a restart.** Docker Compose resolves `env_file` at container creation and caches the result; `restart` reuses the cached config. Always use `docker compose down && docker compose up -d` after editing `.env`. The image is not rebuilt, only the container is recreated.
-- **`HOST_PORT` vs `PORT`.** The container always binds `PORT=3000` internally. `HOST_PORT` is the host-side port published by compose. Pick `HOST_PORT` carefully to avoid collisions with other local services (Next.js, dev servers, etc.).
-- **LLM proxy default behavior changed in 0.5.0.** All `*_PROXY_PATH` env vars now default to empty (= disabled). To re-enable a provider, set both `*_PROXY_PATH` and (if non-default) `*_PROXY_TARGET` in `.env`.
-- **API keys live client-side, not in `.env`.** Chat and image provider keys (OpenAI, Claude, DeepSeek, GLM, Kimi, MiniMax, zhongkeyu.com, and the configured image provider) are entered in the add-in's Settings UI and stored in localStorage. The server-side proxy only forwards requests; it does not read or inject keys.
-- **Rebuild strategy.** If the diff is `src/**` + tests + docs only → `docker compose build` (incremental, ~seconds). If `package.json`, `package-lock.json`, `webpack.config.cjs`, or `Dockerfile` changed → `docker compose build --no-cache` (~minutes).
-
----
+- **Environment changes need recreation.** `docker compose down && docker
+  compose up -d` reloads `.env` and briefly stops the service. It does not
+  rebuild the image.
+- **`HOST_PORT` vs `PORT`.** Compose publishes `HOST_PORT`; the container
+  listens on `PORT=3000` internally. Avoid collisions with other services.
+- **Production proxies are opt-in.** Set each required `*_PROXY_PATH` and,
+  when different from its default, `*_PROXY_TARGET`. Recreate the container
+  after environment changes.
+- **Keys are client-side settings.** Chat and image keys are entered in the
+  taskpane and stored in localStorage, not read from `.env` by the proxy.
+  The proxy forwards requests containing those credentials.
+- **Rebuilds.** Use `docker compose build` after source changes. Use
+  `docker compose build --no-cache` when diagnosing stale layers or needing a
+  clean dependency/toolchain rebuild; it is not required for `.env` changes.
 
 ## Environment Variables
 
 ### All deployments
 
-> LLM proxy paths (`*_PROXY_PATH`) are **disabled by default in production**
-> (`scripts/docker-server.cjs`): set a path explicitly (e.g. `/ollama`) to
-> enable that provider's route. The defaults below apply to the webpack dev
-> server, where they are enabled for local development.
+Production model proxy routes in `scripts/docker-server.cjs` are disabled by
+default. Set a path to enable each route. The development server enables
+provider paths by default; example files may opt into routes explicitly.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HOST` | `localhost` | Hostname for manifest URLs (must be reachable from Word) |
-| `PORT` | `3000` | Port for manifest URLs / server listen port |
-| `PROTOCOL` | `https` | Protocol for manifest URLs and the server |
-| `SSL_CERT_FILE` | `server.pem` | Path to SSL certificate |
-| `SSL_KEY_FILE` | `server-key.pem` | Path to SSL private key |
-| `ADDIN_GUID` | *(generated)* | Stable add-in identity; auto-generated and persisted to `.manifest-guid` on first manifest generation. Pin it in Docker so container recreation keeps the identity. |
-| `DISPLAY_NAME` | `Claric — AI Writing & Editing Assistant for Word` | Display name shown in Word and the store (store validation policy: no Microsoft/Office/Word branding as the product name; "X for Word" suffixes are fine) |
-| `SUPPORT_URL` | *(add-in root URL)* | Support page required by store validation — point it at a real support page, e.g. GitHub issues |
-| `APP_DOMAINS` | *(none)* | Comma-separated extra domains for the manifest's `AppDomains` element (the SourceLocation domain is implicitly trusted) |
-| `OLLAMA_PROXY_PATH` | *(disabled)* / `/ollama` (dev) | Proxy path for the Ollama backend (empty disables) |
-| `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama base URL (`http://host.docker.internal:11434` in Docker) |
-| `VLLM_PROXY_PATH` | *(disabled)* / `/vllm` (dev) | Proxy path for the vLLM backend (empty disables) |
-| `VLLM_PROXY_TARGET` | `http://localhost:8026` | Upstream vLLM base URL (`http://host.docker.internal:8026` in Docker) |
-| `OPENAI_PROXY_PATH` | *(disabled)* / `/openai` (dev) | Proxy path for OpenAI (empty disables; the only way to reach `api.openai.com` from the browser, since it sends no CORS headers) |
-| `OPENAI_PROXY_TARGET` | `https://api.openai.com` | Upstream OpenAI API origin |
-| `CLAUDE_PROXY_PATH` | *(disabled)* / `/claude` (dev) | Proxy path for Claude/Anthropic (empty disables) |
-| `CLAUDE_PROXY_TARGET` | `https://api.anthropic.com` | Upstream Anthropic API origin |
-| `DEEPSEEK_PROXY_PATH` | *(disabled)* / `/deepseek` (dev) | Proxy path for DeepSeek (empty disables) |
-| `DEEPSEEK_PROXY_TARGET` | `https://api.deepseek.com` | Upstream DeepSeek API origin |
-| `GLM_PROXY_PATH` | *(disabled)* / `/glm` (dev) | Proxy path for Zhipu GLM (empty disables) |
-| `GLM_PROXY_TARGET` | `https://open.bigmodel.cn` | Upstream Zhipu GLM API origin |
-| `KIMI_PROXY_PATH` | *(disabled)* / `/kimi` (dev) | Proxy path for Moonshot Kimi (empty disables) |
-| `KIMI_PROXY_TARGET` | `https://api.moonshot.cn` | Upstream Moonshot Kimi API origin |
-| `MINIMAX_PROXY_PATH` | *(disabled)* / `/minimax` (dev) | Proxy path for MiniMax international (empty disables) |
-| `MINIMAX_PROXY_TARGET` | `https://api.minimax.io` | Upstream MiniMax API origin |
-| `MINIMAX_CN_PROXY_PATH` | *(disabled)* / `/minimax-cn` (dev) | Proxy path for MiniMax China (empty disables) |
-| `MINIMAX_CN_PROXY_TARGET` | `https://api.minimaxi.com` | Upstream MiniMax China API origin |
-| `ZHONGKEYU_PROXY_PATH` | *(disabled)* / `/zhongkeyu` (dev) | Proxy path for 中科大模型 / zhongkeyu.com (empty disables) |
-| `ZHONGKEYU_PROXY_TARGET` | `https://zhongkeyu.com` | Upstream zhongkeyu.com API origin |
-| `OPENROUTER_PROXY_PATH` | *(disabled)* / `/openrouter` (dev) | Opt-in OpenRouter proxy path |
-| `OPENROUTER_PROXY_TARGET` | `https://openrouter.ai` | Upstream OpenRouter origin |
-| `SILICONFLOW_PROXY_PATH` | *(disabled)* / `/siliconflow` (dev) | Opt-in SiliconFlow proxy path |
-| `SILICONFLOW_PROXY_TARGET` | `https://api.siliconflow.cn` | Upstream SiliconFlow origin |
-| `CUSTOM_PROXY_PATH` | *(empty)* | Optional same-origin proxy path for a custom OpenAI-compatible chat or image endpoint |
-| `CUSTOM_PROXY_TARGET` | *(empty)* | Upstream custom endpoint; required together with `CUSTOM_PROXY_PATH` |
-| `LLM_PROXY_TIMEOUT_MS` | `300000` | Proxy upstream timeout in ms |
+| `HOST` | `localhost` | Hostname for manifest URLs, reachable from Word |
+| `PORT` | `3000` | Manifest/server port; check mode-specific overrides |
+| `PROTOCOL` | `https` | Manifest and server protocol |
+| `SSL_CERT_FILE` | `server.pem` | HTTPS certificate path |
+| `SSL_KEY_FILE` | `server-key.pem` | HTTPS private-key path |
+| `ADDIN_GUID` | generated | Identity persisted in `.manifest-guid`; pin for container recreation |
+| `DISPLAY_NAME` | `Claric — AI Writing & Editing Assistant for Word` | Manifest display name |
+| `SUPPORT_URL` | add-in root URL | Manifest support page; set a real support URL |
+| `APP_DOMAINS` | none | Comma-separated extra manifest domains |
+| `OLLAMA_PROXY_PATH` | disabled / `/ollama` (dev) | Enable Ollama proxy |
+| `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Docker example uses `http://host.docker.internal:11434` |
+| `VLLM_PROXY_PATH` | disabled / `/vllm` (dev) | Enable vLLM proxy |
+| `VLLM_PROXY_TARGET` | `http://localhost:8026` | Docker example uses `http://host.docker.internal:8026` |
+| `OPENAI_PROXY_PATH` | disabled / `/openai` (dev) | Enable OpenAI proxy; hosted Pages has no such route |
+| `OPENAI_PROXY_TARGET` | `https://api.openai.com` | OpenAI upstream |
+| `CLAUDE_PROXY_PATH` | disabled / `/claude` (dev) | Enable Anthropic proxy |
+| `CLAUDE_PROXY_TARGET` | `https://api.anthropic.com` | Anthropic upstream |
+| `DEEPSEEK_PROXY_PATH` | disabled / `/deepseek` (dev) | Enable DeepSeek proxy |
+| `DEEPSEEK_PROXY_TARGET` | `https://api.deepseek.com` | DeepSeek upstream |
+| `GLM_PROXY_PATH` | disabled / `/glm` (dev) | Enable Zhipu proxy |
+| `GLM_PROXY_TARGET` | `https://open.bigmodel.cn` | Zhipu upstream |
+| `KIMI_PROXY_PATH` | disabled / `/kimi` (dev) | Enable Moonshot proxy |
+| `KIMI_PROXY_TARGET` | `https://api.moonshot.cn` | Moonshot upstream |
+| `MINIMAX_PROXY_PATH` | disabled / `/minimax` (dev) | Enable MiniMax international proxy |
+| `MINIMAX_PROXY_TARGET` | `https://api.minimax.io` | MiniMax international upstream |
+| `MINIMAX_CN_PROXY_PATH` | disabled / `/minimax-cn` (dev) | Enable MiniMax China proxy |
+| `MINIMAX_CN_PROXY_TARGET` | `https://api.minimaxi.com` | MiniMax China upstream |
+| `ZHONGKEYU_PROXY_PATH` | disabled / `/zhongkeyu` (dev) | Enable 中科大模型 proxy |
+| `ZHONGKEYU_PROXY_TARGET` | `https://zhongkeyu.com` | 中科大模型 upstream |
+| `OPENROUTER_PROXY_PATH` | disabled / `/openrouter` (dev) | Enable OpenRouter proxy |
+| `OPENROUTER_PROXY_TARGET` | `https://openrouter.ai` | OpenRouter upstream |
+| `SILICONFLOW_PROXY_PATH` | disabled / `/siliconflow` (dev) | Enable SiliconFlow proxy |
+| `SILICONFLOW_PROXY_TARGET` | `https://api.siliconflow.cn` | SiliconFlow upstream |
+| `CUSTOM_PROXY_PATH` | empty | Optional custom chat, image, or MCP proxy path |
+| `CUSTOM_PROXY_TARGET` | empty | Required together with the custom path |
+| `LLM_PROXY_TIMEOUT_MS` | `300000` | Upstream timeout in milliseconds |
 
 ### Dev server only (webpack)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEV_SERVER_HOST` | `127.0.0.1` | Host to bind webpack dev server (`0.0.0.0` exposes it to the network) |
-| `DEV_SERVER_PORT` | `3000` | Port for webpack dev server |
-| `ENABLE_DEV_ENDPOINTS` | *(off)* | Set `true` for authenticated local development endpoints; see [protocol and client migration](docs/dev-harness-protocol.md). These are not a real Word E2E driver. |
-| `CLARIC_HARNESS_TOKEN` | *(generated at setup)* | Local driver token; every non-OPTIONS harness request requires `x-claric-harness-token`. Treat startup output as secret. |
-| `CLARIC_HARNESS_ORIGINS` | *(same origin only)* | Comma-separated exact extra HTTP(S) origins; wildcards are rejected. |
-| `LLM_PROXY_TLS_VERIFY` | `true` | Set `false` only for a local LLM backend with a self-signed certificate |
-| `OLLAMA_PROXY_PATH` | `/ollama` | Local proxy path for LLM requests |
-| `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama server URL |
-| `VLLM_PROXY_PATH` | `/vllm` | Local proxy path for vLLM requests |
-| `VLLM_PROXY_TARGET` | `http://localhost:8026` | Upstream vLLM server URL |
-| `DEFAULT_OLLAMA_URL` | `/ollama` | Default Ollama URL shown in UI |
-| `DEFAULT_VLLM_URL` | `/vllm` | Default vLLM URL shown in UI |
-| `DEFAULT_MODEL` | `gpt-oss:20b` | Default Ollama model shown in UI |
-| `VLLM_MODEL` | `qwen3.5-35b-a3b` | Default vLLM model shown in UI |
+| `DEV_SERVER_HOST` | `127.0.0.1` | Bind address; `0.0.0.0` exposes the server to the network |
+| `DEV_SERVER_PORT` | `3000` | Webpack server port |
+| `ENABLE_DEV_ENDPOINTS` | off | Enable authenticated local harness endpoints; not a real Word end-to-end driver |
+| `CLARIC_HARNESS_TOKEN` | generated at setup | Required via `x-claric-harness-token`; treat startup output as secret |
+| `CLARIC_HARNESS_ORIGINS` | same origin only | Exact extra HTTP(S) origins; wildcards rejected |
+| `LLM_PROXY_TLS_VERIFY` | `true` | Disable only for an explicitly trusted local test backend |
+| `OLLAMA_PROXY_PATH` | `/ollama` | Local proxy path |
+| `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Ollama upstream |
+| `VLLM_PROXY_PATH` | `/vllm` | Local proxy path |
+| `VLLM_PROXY_TARGET` | `http://localhost:8026` | vLLM upstream |
+| `DEFAULT_OLLAMA_URL` | `/ollama` | Default UI URL |
+| `DEFAULT_VLLM_URL` | `/vllm` | Default UI URL |
+| `DEFAULT_MODEL` | `gpt-oss:20b` | Default Ollama model |
+| `VLLM_MODEL` | `qwen3.5-35b-a3b` | Default vLLM model |
 
-Users can override the default URLs and models via the add-in settings UI;
-those overrides persist in localStorage.
+Users can override URLs and models in Settings; those values persist in
+localStorage. See the [development harness protocol](docs/dev-harness-protocol.md)
+for authenticated driver setup and migration.
 
 ### Docker only (docker-compose)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HOST_PORT` | `3000` | Host-side port published by compose; also used for manifest URLs (the container listens internally on `PORT`) |
-
----
+| `HOST_PORT` | `3000` | Host-side published port and external manifest port |
 
 ## Docker Image
 
@@ -667,35 +797,30 @@ Build the production image locally:
 docker build -t claric .
 ```
 
-The image is a three-stage build on `node:22-alpine`: runtime layers contain
-production dependencies only, run as the non-root `node` user, and expose a
-`/healthz` endpoint used by the Docker `HEALTHCHECK`.
-
----
+The three-stage `node:22-alpine` build includes production dependencies in the
+runtime image, runs as the non-root `node` user, and provides `/healthz` for
+the Docker health check. Protect exposed proxies with network/access controls;
+do not deploy an unrestricted public relay.
 
 ## Project Structure
 
-See `ARCHITECTURE.md` for details.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the code layout and pipeline design,
+or browse the [architecture page](https://scilence2022.github.io/Claric/architecture.html).
 
 ## Testing
 
-```bash
-npm test          # Jest suites (see current output for counts and skips)
-npm run lint      # ESLint (flat config)
-npm run coverage  # Jest coverage report
-npm run check-coverage # enforce configured coverage thresholds
-npm run typecheck # TypeScript declaration/type checks
-npm run build     # webpack production build
-npm run verify-build # verify production artifact fingerprint and metadata
-npm run verify    # lint + test + coverage + check-coverage + typecheck + build + verify-build
-```
+From a development checkout:
 
-These automated gates do not constitute real Word product acceptance. See
-[Product acceptance specification](docs/product-acceptance-spec.md) for the
-four evidence layers, platform matrix, and release status rules. The
-[product readiness analysis](docs/product-readiness-analysis.md) records the
-architecture findings, report corrections, priorities and migration strategy.
-CI additionally runs dependency auditing and container build/scanning.
+```bash
+npm test                 # Jest suites
+npm run lint             # ESLint
+npm run coverage         # Jest coverage report
+npm run check-coverage   # Enforce coverage thresholds
+npm run typecheck        # TypeScript declaration/type checks
+npm run build            # Webpack production build
+npm run verify-build     # Production artifact fingerprint and metadata
+npm run verify           # All of the above in sequence
+```
 
 For the independent image-generation path:
 
@@ -703,92 +828,57 @@ For the independent image-generation path:
 npm test -- --runInBand tests/illustration.spec.js tests/image-client.spec.js tests/image-providers.spec.js
 ```
 
-Test suites cover:
-- `prompt-state.spec.js` — PromptManager CRUD, activation, persistence, summary category
-- `prompt-persistence.spec.js` — localStorage round-trip, migration, edge cases
-- `prompt-composition.spec.js` — composeMessages, composeSummaryMessages, placeholder replacement, output rules
-- `comment-extractor.spec.js` — extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges (OOXML parsing)
-- `comments-on-range.spec.js` — extractCommentsOnRange
-- `document-generator.spec.js` — buildSummaryHtml (markdown conversion, table borders, escaping), createSummaryDocument (Word API)
-- `comment-queue.spec.js` — CommentQueue state management, bookmark naming
-- `llm-client.spec.js` — sendPrompt, sendMessages, stripThinkTags, stripMarkdown, testConnection
-- `llm-stream.spec.js` — sendMessagesStream SSE parsing, reasoning demux, [DONE] terminator, non-SSE fallback, abort, idle timeout
-- `document-parser.spec.js` — parseDocument, paragraph extraction, heading detection, style mapping
-- `document-chunker.spec.js` — chunkDocument, heading-based splitting, overlap, token limits
-- `context-extractor.spec.js` — extractContext, definitions, abbreviations, outline generation
-- `orchestrator.spec.js` — processChunksParallel, concurrency, cancellation, merged mode parsing, streaming tokens
-- `reassembler.spec.js` — paragraph alignment, line ending normalization, content validation, staged-range re-anchoring, blank-paragraph handling
-- `response-parser.spec.js` — parseDelimitedResponse, fallback classification
-- `format-ops.spec.js` — parseFormatOps allowlist sanitizing, insert ops, describeFormatOp
-- `table-ops.spec.js` — table creation spec inference (EN/ZH dimensions), creation prompt, strict response parsing/validation, limits
-- `table-patch.spec.js` — multi-cell patch prompt, JSON parsing/validation, bounds/row-op rules
-- `word-actions-table.spec.js` / `word-actions-table-create.spec.js` — table selection patch route (ordering, tracking split, staleness guards) and table creation route (empty-grid fast path, constrained generation, insertion positions, platform tracking split)
-- `illustration.spec.js` — renderer selection, SVG parsing/sanitizing, dimensions, position heuristic, image fallback
-- `image-client.spec.js` — provider-specific image request bodies/endpoints, base64/data-URL/hosted-URL normalization, timeout and payload limits
-- `image-providers.spec.js` — independent image-provider presets, origin-adaptive defaults, and supported sizes
-- `image-model.spec.js` — image tool-loop operations (resize, alignment, alt text, links, replace/delete)
-- `task-planner.spec.js` — parsePlan caps/truncation, buildPlanPrompt
-- `providers.spec.js` — chat provider preset catalog, MiniMax pair, default config
-- `char-diff.spec.js` — CJK detection, computeCharEdits, applyCharDiffStrategy
-- `word-diff.spec.js` — word/sentence diff modes, sliceSearchPieces
-- `skills.spec.js` — built-in skill registry, resolveSkill parsing, custom skill registration
-- `conversation.spec.js` — chat turn routing (skill / selection edit / doc edit / format / append / table / illustration / compound / Q&A), staged proposals, selective apply, honest warnings, concurrency guard, cancel
-- `proposal-card.spec.js` — per-change checkboxes, inline diff, locate, selective apply, warning/error states
-- `chat-view.spec.js` — model activity auto-scroll follow/disengage behavior
-- `config-persistence.spec.js` — normalizeConfig validation and legacy migration
-- `selection-with-comments.spec.js` — comment anchor splicing into selection OOXML
-- `generate-manifest.spec.js` — manifest generation from template + .env
+The [test suites](tests/) cover prompts and persistence, document extraction,
+chunking and reassembly, proposal review, routing, diff strategies, table and
+image operations, model clients, and deployment tooling. CI also audits
+dependencies and builds/scans the container.
+
+Automated gates do **not** constitute real Word product acceptance. See the
+[product acceptance specification](docs/product-acceptance-spec.md) for evidence
+layers and the platform matrix, and the
+[product readiness analysis](docs/product-readiness-analysis.md) for remaining
+risks and release criteria. Exercise representative documents in the actual
+Word hosts and model routes you intend to support.
 
 ## Acknowledgments
 
 Claric is a fork of **[word-ai-redliner](https://github.com/yuch85/word-ai-redliner)**
-by yuch85 — its original architecture (the IR pipeline, chunking, and
-formatting-preserving reassembly) is the foundation this codebase builds on.
+by yuch85. Its document pipeline, chunking, and formatting-preserving
+reassembly form the foundation of this codebase.
 
-Beyond that, Claric's reassembly also draws on insights from several excellent
-open-source projects in the document editing space. We are grateful to their
-authors for sharing their work:
+Other projects informed the document-editing approach:
 
-- **[docx-redline-js](https://github.com/AnsonLai/docx-redline-js)** by Anson Lai --
-  A JavaScript OOXML-level redlining engine whose surgical mode, paragraph
-  property cloning, and reconstruction writer patterns informed our approach to
-  preserving paragraph and run formatting during document reassembly.
-
-- **[safe-docx](https://github.com/usejunior/safe-docx)** by UseJunior --
-  A safe OOXML manipulation library whose paragraph shell cloning, template run
-  selection, multi-stage text matching, and run splitting patterns guided our
-  thinking on formatting fidelity and style resolution.
-
-- **[adeu](https://pypi.org/project/adeu/)** by Dealfluence Oy (Mikko Korpela, Uzair Ahmed) --
-  A Python OOXML redlining tool whose virtual text contract, run coalescing,
-  and deep-copy `w:pPr`/`w:rPr` preservation patterns shaped our understanding
-  of how to maintain formatting coherence through tracked change operations.
-
-- **[@xmldom/xmldom](https://github.com/xmldom/xmldom)** --
-  A W3C-compliant XML DOM implementation whose namespace-aware manipulation
-  patterns and whitespace preservation mechanisms underpin correct OOXML handling.
+- [docx-redline-js](https://github.com/AnsonLai/docx-redline-js), by Anson Lai:
+  OOXML redlining and paragraph/run formatting preservation.
+- [safe-docx](https://github.com/usejunior/safe-docx), by UseJunior:
+  paragraph cloning, text matching, and run splitting.
+- [adeu](https://pypi.org/project/adeu/), by Dealfluence Oy (Mikko Korpela,
+  Uzair Ahmed): tracked-change operations and formatting coherence.
+- [@xmldom/xmldom](https://github.com/xmldom/xmldom): namespace-aware XML
+  manipulation and whitespace handling.
 
 ## Security Notes
 
-- **API key storage**: the optional API key is stored in the add-in's
-  `localStorage` (plaintext, scoped to the add-in's HTTPS origin). Treat it
-  like a browser-saved password: use a key restricted to your LLM endpoint,
-  and prefer keyless local backends (Ollama) where possible.
-- **LLM output sanitization**: markdown from the LLM is sanitized with
-  DOMPurify before being inserted into Word documents, so prompt-injected
-  HTML cannot become live markup in a generated summary.
-- **HTTPS is mandatory** for Word add-in hosting. The production container
-  warns and refuses nothing, but Word itself will block plain HTTP.
-- **Static server hardening**: path traversal and malformed-URL crashes are
-  handled (400 responses), non-GET/HEAD methods are rejected with 405, and
-  the server shuts down gracefully on SIGTERM.
-- See `SECURITY.md` for how to report vulnerabilities.
+- **Credential storage:** localStorage is plaintext and is not a secret vault.
+  Keys travel with requests to configured endpoints and proxies. Limit key
+  scope, review host trust, and rotate credentials if exposed.
+- **Document and tool output:** generated summary HTML and SVG pass through
+  sanitization. This reduces markup risks; it does not establish factual
+  correctness or remove prompt-injection risks from model/tool workflows.
+- **Hosting:** use trusted HTTPS, restrict proxy access, and avoid exposing
+  development harness endpoints to untrusted networks. Server hardening is
+  not a substitute for deployment access controls.
+- **External services:** provider and MCP server retention, logging, access
+  control, and side effects depend on those services and their configuration.
+- Report vulnerabilities according to [SECURITY.md](SECURITY.md).
 
 ## Licensing
 
-This project is dual-licensed:
+Claric is licensed under the **[MIT License](LICENSE)**.
 
-- **MIT License** applies to the Word add-in codebase.
-- **Apache 2.0 License** applies to the diff strategies vendored from `office-word-diff` in `src/lib/word-diff/` (see `LICENSE`/`NOTICE` there).
-
-See `LICENSE` and `LICENSE-APACHE` for details.
+Specific code vendored from `office-word-diff` is licensed under
+**Apache 2.0**, as detailed in its
+[LICENSE](src/lib/word-diff/LICENSE) and [NOTICE](src/lib/word-diff/NOTICE).
+These third-party notices do not make the whole project dual-licensed.
+The installer template has separate
+[third-party notices](installer/windows/templates/THIRD-PARTY-NOTICES.md).
