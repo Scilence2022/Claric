@@ -43,6 +43,19 @@ describe('settings tabs markup contract', () => {
         expect(generalPage).not.toContain('mcpStepBudget');
     });
 
+    test('the General page exposes the conversation history budget control', () => {
+        const generalPage = html.slice(
+            html.indexOf('id="settingsPageGeneral"'),
+            html.indexOf('id="settingsPagePrompts"'),
+        );
+        expect(generalPage).toContain('id="contextBudgetInput"');
+        expect(generalPage).toContain('aria-label="Chat history token budget"');
+        expect(generalPage).toContain('min="1000"');
+        expect(generalPage).toContain('max="2000000"');
+        expect(generalPage).toContain('Default 128000');
+        expect(generalPage).toContain('CJK-aware');
+    });
+
     test('the General page exposes thinking and temperature controls', () => {
         const generalPage = html.slice(
             html.indexOf('id="settingsPageGeneral"'),

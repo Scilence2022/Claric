@@ -179,6 +179,29 @@ function setImageWorld(pictures, { paragraphs, failContextSync = false } = {}) {
 describe('prepareTableToolEdit', () => {
     beforeEach(() => jest.clearAllMocks());
 
+    test('passes prior conversation to initial and subsequent table requests', async () => {
+        const deps = makeDeps();
+        deps.conversationHistory = [
+            { role: 'user', content: 'What should the header say?' },
+            { role: 'assistant', content: 'Use Revenue.' },
+        ];
+        const sent = [];
+        const replies = ['{"tool":"get_state","args":{}}', '{"tool":"finish","args":{"summary":"reviewed"}}'];
+        sendMessages.mockImplementation(async (_config, messages) => {
+            sent.push(JSON.parse(JSON.stringify(messages)));
+            return replies.shift();
+        });
+        await prepareTableToolEdit(deps, { instruction: 'check it again', region: REGION });
+        expect(sent).toHaveLength(2);
+        for (const messages of sent) {
+            expect(messages[0].role).toBe('system');
+            expect(messages.slice(1, 3)).toEqual(deps.conversationHistory);
+            expect(messages[3].content).toContain('USER TASK: check it again');
+        }
+        expect(sent[1]).toHaveLength(6);
+        sendMessages.mockReset();
+    });
+
     test('runs the loop against the region and returns a tablePatch proposal', async () => {
         readSelectionTableRegion.mockResolvedValue(REGION);
         sendMessages.mockResolvedValueOnce('{"tool":"set_cell","args":{"row":2,"col":1,"text":"new a"}}')
@@ -318,6 +341,47 @@ describe('prepareTableToolEdit', () => {
 
 describe('prepareImageToolEdit', () => {
     beforeEach(() => jest.clearAllMocks());
+
+    test.each(['design', 'redesign', 'redesign-fallback', 'redesign-unreadable'])(
+        'nested %s requests explicitly include prior user and assistant context', async (kind) => {
+            setImageWorld(kind === 'design' ? [] : [{
+                getBase64ImageSrc: () => ({ value: kind === 'redesign-unreadable' ? '' : 'iVBORw0KGgo=' }),
+            }]);
+            const deps = makeDeps();
+            deps.conversationHistory = [
+                { role: 'user', content: 'Use a blue background.' },
+                { role: 'assistant', content: 'I suggest a circular layout.' },
+            ];
+            const sent = [];
+            const replies = [
+                JSON.stringify({ tool: kind === 'design' ? 'design_illustration' : 'replace_illustration',
+                    args: { index: 1, position: 'end', instruction: 'use that layout' } }),
+                ...(kind === 'redesign-fallback' ? [new Error('HTTP 400: no vision')] : []),
+                SVG,
+                '{"tool":"finish","args":{"summary":"done"}}',
+            ];
+            sendMessages.mockImplementation(async (_config, messages) => {
+                sent.push(JSON.parse(JSON.stringify(messages)));
+                const reply = replies.shift();
+                if (reply instanceof Error) throw reply;
+                return reply;
+            });
+            const proposal = await prepareImageToolEdit(deps, { instruction: 'use that layout' });
+            expect(proposal.ops).toHaveLength(1);
+            expect(sent[0].slice(1, 3)).toEqual(deps.conversationHistory);
+            expect(sent[sent.length - 1].slice(1, 3)).toEqual(deps.conversationHistory);
+            for (const nested of sent.slice(1, -1)) {
+                expect(nested.slice(0, 2)).toEqual(deps.conversationHistory);
+                expect(nested).toHaveLength(3);
+            }
+            if (kind === 'redesign-fallback') {
+                expect(sent[1][2].content[0].text).toBe('redesign:use that layout:with-image');
+                expect(sent[2][2].content).toBe('redesign:use that layout:text-only');
+            }
+            expect(sendPrompt).not.toHaveBeenCalled();
+            sendMessages.mockReset();
+        }
+    );
 
     test('drives design/delete/finish and returns ops + card items', async () => {
         setImageWorld([
@@ -638,16 +702,40 @@ describe('prepareImageToolEdit', () => {
 
     test('HTTP 4xx with image parts retries once without attachments', async () => {
         setImageWorld([{ getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]);
+        let rejectedMessages;
         sendMessages
             .mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
-            .mockRejectedValueOnce(new Error('HTTP 400: Bad Request'))
+            .mockImplementationOnce(async (_config, messages) => {
+                rejectedMessages = JSON.parse(JSON.stringify(messages));
+                throw new Error('HTTP 400: Bad Request');
+            })
+            .mockResolvedValueOnce('{"tool":"list_images","args":{}}')
             .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"described from alt text"}}');
 
         const deps = makeDeps();
+        deps.conversationHistory = [
+            { role: 'user', content: 'Focus on the green series.' },
+            { role: 'assistant', content: 'The green series represents revenue.' },
+        ];
         const proposal = await prepareImageToolEdit(deps, { instruction: '看图' });
 
-        expect(sendMessages).toHaveBeenCalledTimes(3);
+        expect(sendMessages).toHaveBeenCalledTimes(4);
         const retryMessages = sendMessages.mock.calls[2][1];
+        for (const [, messages] of sendMessages.mock.calls) {
+            expect(messages[0].role).toBe('system');
+            expect(messages.slice(1, 3)).toEqual(deps.conversationHistory);
+            expect(messages[3].content).toContain('看图');
+        }
+        expect(retryMessages.slice(0, 5)).toEqual(rejectedMessages.slice(0, 5));
+        const originalObservation = JSON.parse(rejectedMessages[5].content[0].text);
+        const retryObservation = JSON.parse(retryMessages[5].content[0].text);
+        expect(retryObservation.result.documentContext).toEqual(originalObservation.result.documentContext);
+        expect(retryObservation.result.note).toBe(originalObservation.result.note);
+        expect(retryObservation.result.index).toBe(originalObservation.result.index);
+        const laterMessages = sendMessages.mock.calls[3][1];
+        expect(laterMessages[5]).toEqual(retryMessages[5]);
+        expect(laterMessages.some((m) => Array.isArray(m.content)
+            && m.content.some((part) => part.type === 'image_url'))).toBe(false);
         // After the retry: the user-role observation is dropped to a text-only
         // array. The initial task user message has a string content and is not
         // in this filter, so finding any array-content user message proves

@@ -43,6 +43,10 @@ export function defaultConfig() {
         includeCommentsInSelection: false,
         mcpServers: [],
         mcpStepBudget: TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT,
+        // Chat-history allowance per request, in estimated tokens (CJK-aware).
+        // conversation-history.js holds a reserve back for the current
+        // request + output; raise it for 200K–1M-context models.
+        contextBudgetTokens: 128_000,
         autoApplyChanges: false,
         providers: defaultProviderConfig(),
         // Text-to-image generation for illustration turns. Disabled by default:
@@ -248,6 +252,9 @@ export function normalizeConfig(defaults, parsedInput) {
     }
     if (Number.isFinite(parsed.mcpStepBudget) && parsed.mcpStepBudget > 0) {
         out.mcpStepBudget = Math.min(Math.round(parsed.mcpStepBudget), 48);
+    }
+    if (Number.isFinite(parsed.contextBudgetTokens) && parsed.contextBudgetTokens > 0) {
+        out.contextBudgetTokens = Math.min(Math.round(parsed.contextBudgetTokens), 2_000_000);
     }
     if (typeof parsed.autoApplyChanges === 'boolean') {
         out.autoApplyChanges = parsed.autoApplyChanges;

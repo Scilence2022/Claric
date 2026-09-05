@@ -2689,3 +2689,203 @@ describe('turn lifecycle guards', () => {
     } finally { connect.mockRestore(); }
   });
 });
+
+describe('conversation history snapshots', () => {
+  const chatView = require('../src/taskpane/ui/chat-view.js');
+  const { buildConversationHistory } = require('../src/lib/conversation-history.js');
+
+  function setup(actions = makeActions(), extra = {}) {
+    document.body.innerHTML = '<div id="chatMessages"></div><div id="welcome"></div>';
+    chatView.initChatView();
+    chatView.clearChat();
+    const view = { ...chatView, renderWelcome: chatView.showWelcome };
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(),
+      actions, log: jest.fn(), getSelectionText: async () => '', ...extra });
+    return { conv, view, actions };
+  }
+
+  afterEach(() => { chatView.clearChat(); });
+
+  test('uses real same-session records on successive turns without duplicating the latest request', async () => {
+    const { conv, actions } = setup();
+    await conv.submit('what is the deadline?');
+    expect(actions.answerQuestion.mock.calls[0][0].conversationHistory).toEqual([]);
+    await conv.submit('what did I just ask?');
+    const history = actions.answerQuestion.mock.calls[1][0].conversationHistory;
+    expect(history).toEqual([
+      { role: 'user', content: 'what is the deadline?' },
+      { role: 'assistant', content: expect.stringContaining('the answer') },
+    ]);
+    expect(history.map((message) => message.content).join('\n')).not.toContain('what did I just ask?');
+    expect(actions.answerQuestion.mock.calls[1][1].question).toBe('what did I just ask?');
+    expect(chatView.getCurrentSession().messages).toHaveLength(4);
+  });
+
+  test('takes a detached snapshot synchronously before selection reading and user insertion', async () => {
+    let resolveSelection;
+    const { conv, actions } = setup(makeActions(), { getSelectionText: () => new Promise((resolve) => { resolveSelection = resolve; }) });
+    chatView.setCurrentSession({ id: 'restored', messages: [
+      { role: 'user', text: 'saved question' }, { role: 'assistant', text: 'saved answer',
+        proposals: [{ title: 'saved proposal', state: 'pending', items: [{ before: 'old', after: 'new' }] }] },
+    ] });
+    const running = conv.submit('what is next?');
+    const records = chatView.getCurrentSession().messages;
+    expect(records).toHaveLength(2);
+    records[0].text = 'changed after submit';
+    records[1].proposals[0].state = 'applied';
+    resolveSelection('');
+    await running;
+    const history = actions.answerQuestion.mock.calls[0][0].conversationHistory;
+    expect(history[0].content).toBe('saved question');
+    expect(history[1].content).toContain('pending; proposed only, not applied');
+    expect(history[1].content).not.toContain('selected changes were applied');
+  });
+
+  test('new chat clears context and restored/switched chats use only their own records', async () => {
+    const { conv, actions } = setup();
+    await conv.submit('what is first?');
+    conv.newChat();
+    await conv.submit('what is second?');
+    expect(actions.answerQuestion.mock.calls[1][0].conversationHistory).toEqual([]);
+    for (const id of ['saved-A', 'saved-B']) {
+      chatView.setCurrentSession({ id, messages: [{ role: 'user', text: id }, { role: 'assistant', text: `${id} answer` }] });
+      await conv.submit('what is next?');
+      expect(actions.answerQuestion.mock.lastCall[0].conversationHistory).toEqual([
+        { role: 'user', content: id }, { role: 'assistant', content: `${id} answer` },
+      ]);
+    }
+  });
+
+  test('a direct session switch during selection reading drops the stale submission', async () => {
+    let resolveSelection;
+    const { conv, actions } = setup(makeActions(), { getSelectionText: () => new Promise((resolve) => { resolveSelection = resolve; }) });
+    chatView.setCurrentSession({ id: 'old', messages: [{ role: 'user', text: 'old context' }] });
+    const running = conv.submit('what is next?');
+    chatView.setCurrentSession({ id: 'new', messages: [{ role: 'user', text: 'new context' }] });
+    resolveSelection('');
+    await running;
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+    expect(chatView.getCurrentSession().messages.map((message) => message.text)).toEqual(['new context']);
+  });
+
+  test('a switched-session late answer cannot persist or become subsequent model history', async () => {
+    let resolveAnswer;
+    const actions = makeActions({ answerQuestion: jest.fn().mockImplementationOnce(() => new Promise((resolve) => { resolveAnswer = resolve; }))
+      .mockResolvedValue('fresh answer') });
+    const onTurnCommitted = jest.fn();
+    const { conv } = setup(actions, { onTurnCommitted });
+    chatView.setCurrentSession({ id: 'old', messages: [{ role: 'user', text: 'old context' }] });
+    const running = conv.submit('what is old?');
+    await Promise.resolve();
+    chatView.setCurrentSession({ id: 'new', messages: [{ role: 'user', text: 'new context' }] });
+    resolveAnswer('late old answer');
+    await running;
+    expect(onTurnCommitted).not.toHaveBeenCalled();
+    await conv.submit('what is new?');
+    expect(actions.answerQuestion.mock.lastCall[0].conversationHistory).toEqual([{ role: 'user', content: 'new context' }]);
+  });
+
+  test('cancelled streamed output is never reused, even when the action resolves successfully after abort', async () => {
+    let resolveAnswer;
+    const actions = makeActions({ answerQuestion: jest.fn().mockImplementationOnce((_deps, options) => {
+      options.onToken('partial untrusted answer');
+      return new Promise((resolve) => { resolveAnswer = resolve; });
+    }).mockResolvedValue('next answer') });
+    const { conv } = setup(actions);
+    const running = conv.submit('what is this?');
+    await Promise.resolve();
+    conv.cancel();
+    resolveAnswer('partial untrusted answer');
+    await running;
+    await conv.submit('what happened?');
+    const content = actions.answerQuestion.mock.lastCall[0].conversationHistory[1].content;
+    expect(content).toContain('Turn cancelled');
+    expect(content).not.toContain('partial untrusted answer');
+  });
+
+  test('retry closures preserve original history when later turns add more records', async () => {
+    let retryDeps;
+    const logWithRetry = jest.fn();
+    const actions = makeActions({ runDocumentSkill: jest.fn(async (deps) => {
+      retryDeps = deps;
+      return { results: [], applicationResult: {}, chunks: [], cancelled: false };
+    }) });
+    const { conv } = setup(actions, { logWithRetry });
+    chatView.setCurrentSession({ id: 'retry-session', messages: [{ role: 'user', text: 'original context' }] });
+    await conv.submit('polish the document');
+    const snapshot = retryDeps.conversationHistory;
+    await conv.submit('what happened?');
+    await retryDeps.stageRetryProposal({ retryProposal: true, failedCount: 1, results: [{ chunk: { text: 'before' }, amendment: 'after' }],
+      chunks: [], retryFailed: jest.fn(), apply: jest.fn(), discard: jest.fn() });
+    expect(retryDeps.conversationHistory).toBe(snapshot);
+    expect(snapshot).toEqual([{ role: 'user', content: 'original context' }]);
+    const retry = jest.fn(() => retryDeps.conversationHistory);
+    retryDeps.logWithRetry('retry', 'warning', retry);
+    expect(await logWithRetry.mock.lastCall[2]()).toEqual(snapshot);
+    chatView.setCurrentSession({ id: 'another', messages: [] });
+    await logWithRetry.mock.lastCall[2]();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['what is this?', 'answerQuestion'], ['polish the document', 'runDocumentSkill'],
+    ['append a conclusion', 'prepareDocumentAppend'], ['make the document bold', 'prepareFormatProposal'],
+    ['insert a 3x3 table', 'prepareTableProposal'], ['add an image of a cat', 'prepareIllustrationProposal'],
+    ['delete the second image', 'prepareImageToolEdit'], ['delete empty paragraphs', 'prepareEmptyParagraphCleanup'],
+    ['/summarize-contract', 'runSummarySkill'], ['增加标题，并深度润色修改', 'planDocumentTasks'],
+  ])('passes the same session history into %s via %s', async (instruction, action) => {
+    const { conv, actions } = setup();
+    chatView.setCurrentSession({ id: 'saved', messages: [{ role: 'user', text: 'prior instruction' }] });
+    await conv.submit(instruction);
+    expect(actions[action]).toHaveBeenCalled();
+    expect(actions[action].mock.calls[0][0].conversationHistory).toEqual([{ role: 'user', content: 'prior instruction' }]);
+  });
+
+  test.each([
+    ['polish this', { text: 'selected text' }, 'prepareSelectionAmendment'],
+    ['summarize this table', { text: 'A B', hasMultiCellTableRegion: true }, 'prepareTableToolEdit'],
+  ])('selection context retains conversation history for %s', async (instruction, selection, action) => {
+    const { conv, actions } = setup(makeActions(), { getSelectionContent: async () => ({ images: [], ...selection }) });
+    chatView.setCurrentSession({ id: 'selection', messages: [{ role: 'user', text: 'prior instruction' }] });
+    await conv.submit(instruction);
+    expect(actions[action].mock.calls[0][0].conversationHistory).toEqual([{ role: 'user', content: 'prior instruction' }]);
+  });
+
+  test('trimming history never trims the current turn and reports its budget decision', async () => {
+    const log = jest.fn();
+    const appState = makeAppState({ config: { commentGranularity: 0, contextBudgetTokens: 16000 } });
+    const { conv, actions } = setup(makeActions(), { appState, log });
+    chatView.setCurrentSession({ id: 'large', messages: [
+      { role: 'user', text: 'old question' }, { role: 'assistant', text: 'x'.repeat(32001) },
+    ] });
+    const question = `what is ${'y'.repeat(40000)}?`;
+    await conv.submit(question);
+    const history = actions.answerQuestion.mock.calls[0][0].conversationHistory;
+    expect(history.map((message) => message.role)).toEqual(['user', 'assistant']);
+    expect(history[0].content).toBe('old question');
+    expect(history[1].content.endsWith(' [trimmed]')).toBe(true);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Conversation history trimmed'), 'info');
+    expect(actions.answerQuestion.mock.calls[0][1].question).toBe(question);
+  });
+
+  test('MCP receives the same snapshot option as ordinary actions', async () => {
+    const mcp = require('../src/lib/mcp-client.js');
+    const loop = require('../src/lib/tool-loop.js');
+    const connect = jest.spyOn(mcp, 'connectMcpServer').mockResolvedValue({
+      listTools: jest.fn().mockResolvedValue([{ name: 'search', description: 'Search', inputSchema: { type: 'object', properties: {} } }]),
+    });
+    const run = jest.spyOn(loop, 'runToolLoop').mockResolvedValue({ summary: 'MCP answer' });
+    try {
+      const { conv } = setup(makeActions(), { appState: makeAppState({ config: {
+        backend: 'test', providers: { test: { model: 'model' } }, mcpServers: [{ url: 'https://example.test' }],
+      } }) });
+      chatView.setCurrentSession({ id: 'mcp-session', messages: [{ role: 'user', text: 'previous MCP request' }] });
+      const expected = buildConversationHistory(chatView.getCurrentSession().messages);
+      await conv.submit('/mcp follow up');
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ conversationHistory: expected, taskPrompt: 'follow up' }));
+    } finally {
+      connect.mockRestore();
+      run.mockRestore();
+    }
+  });
+});

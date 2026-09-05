@@ -20,6 +20,7 @@
 
 import { sendMessages as defaultSendMessages, sendMessagesStream as defaultSendMessagesStream, stripMarkdown, stripChunkDelimiters } from './llm-client.js';
 import { formatContextPrefix as defaultFormatContextPrefix } from './context-extractor.js';
+import { withConversationHistory } from './conversation-history.js';
 import {
   parseDelimitedResponse as defaultParseDelimitedResponse,
   defangProtocolMarkers,
@@ -162,6 +163,7 @@ FORMAT YOUR RESPONSE WITH THESE EXACT DELIMITERS:
  * @param {DocumentChunk[]} chunks
  * @param {Object} options
  * @param {Object} options.config - LLM backend config { url, apiKey, model }
+ * @param {Array<{role: string, content: string}>} [options.conversationHistory=[]] - Prior turns for every chunk
  * @param {Object} options.promptManager - PromptManager instance
  * @param {DocumentContext} options.documentContext - From extractContext()
  * @param {function} options.log - addLog callback
@@ -273,14 +275,14 @@ export async function processChunksParallel(chunks, options) {
       }
 
       // Compose messages for this chunk
-      const messages = _composeChunkMessages(
+      const messages = withConversationHistory(_composeChunkMessages(
         chunk,
         documentContext,
         promptManager,
         mode,
         commentInstructions,
         formatContextPrefixFn
-      );
+      ), options.conversationHistory);
 
       // Send to LLM. When the caller wants live tokens (chat UI model
       // activity view), use the streaming transport; otherwise the plain

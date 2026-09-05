@@ -12,6 +12,8 @@
 
 import { generateBookmarkName } from './comment-queue.js';
 import { restoreProtocolMarkers } from './response-parser.js';
+import { sendMessages as defaultSendMessages } from './llm-client.js';
+import { withConversationHistory } from './conversation-history.js';
 
 /**
  * Fires a comment request asynchronously (fire-and-forget).
@@ -23,7 +25,9 @@ import { restoreProtocolMarkers } from './response-parser.js';
  * @param {string} selectionText - The user's selected text
  * @param {object} deps - Injected dependencies
  * @param {object} deps.config - LLM backend config { url, apiKey, model }
- * @param {Function} deps.sendPromptFn - LLM send function
+ * @param {Function} deps.sendPromptFn - Legacy LLM send function for empty history
+ * @param {Function} [deps.sendMessagesFn] - Role-preserving LLM send function
+ * @param {Array<{role: string, content: string}>} [deps.conversationHistory=[]] - Prior turns retained on retry
  * @param {object} deps.promptManager - PromptManager instance
  * @param {object} deps.commentQueue - CommentQueue instance
  * @param {Function} deps.log - Logging callback (message, type)
@@ -33,7 +37,7 @@ import { restoreProtocolMarkers } from './response-parser.js';
  *   the user presses Stop. Without it the request ran to completion and wrote
  *   its comment into the document after the turn was already cancelled.
  */
-function fireCommentRequest(selectionText, { config, sendPromptFn, promptManager, commentQueue, log, addLogWithRetryFn, updateStatusBarFn, signal }) {
+function fireCommentRequest(selectionText, { config, sendPromptFn, sendMessagesFn = defaultSendMessages, conversationHistory = [], promptManager, commentQueue, log, addLogWithRetryFn, updateStatusBarFn, signal }) {
     const bookmarkName = generateBookmarkName();
     const requestId = bookmarkName;  // Use bookmark name as unique ID
     const preview = selectionText.substring(0, 30);
@@ -48,7 +52,7 @@ function fireCommentRequest(selectionText, { config, sendPromptFn, promptManager
             log(`Comment request fired [${config.model}]...`, 'info');
 
             // Step 3: Delegate to resumeCommentFromBookmark for LLM + insert
-            resumeCommentFromBookmark(bookmarkName, requestId, selectionText, { config, sendPromptFn, promptManager, commentQueue, log, addLogWithRetryFn, updateStatusBarFn, signal });
+            resumeCommentFromBookmark(bookmarkName, requestId, selectionText, { config, sendPromptFn, sendMessagesFn, conversationHistory, promptManager, commentQueue, log, addLogWithRetryFn, updateStatusBarFn, signal });
         })
         .catch((error) => {
             // Bookmark capture failed (very unlikely but handle gracefully)
@@ -71,11 +75,11 @@ function fireCommentRequest(selectionText, { config, sendPromptFn, promptManager
  * @param {object} deps - Injected dependencies (same as fireCommentRequest,
  *   including the optional `signal`)
  */
-function resumeCommentFromBookmark(bookmarkName, requestId, selectionText, { config, sendPromptFn, promptManager, commentQueue, log, addLogWithRetryFn, updateStatusBarFn, signal }) {
+function resumeCommentFromBookmark(bookmarkName, requestId, selectionText, { config, sendPromptFn, sendMessagesFn = defaultSendMessages, conversationHistory = [], promptManager, commentQueue, log, addLogWithRetryFn, updateStatusBarFn, signal }) {
     // Step 1: Compose and send prompt to LLM (using original selectionText)
     const messages = promptManager.composeMessages(selectionText, 'comment');
 
-    // Flatten messages for sendPrompt (system + user -> single prompt string)
+    // Validate the original prompt before adding history; legacy callers use a flat prompt.
     let fullPrompt;
     if (messages.length === 2) {
         fullPrompt = messages[0].content + '\n\n' + messages[1].content;
@@ -88,7 +92,10 @@ function resumeCommentFromBookmark(bookmarkName, requestId, selectionText, { con
         return;
     }
 
-    sendPromptFn(config, fullPrompt, log, signal)
+    const request = conversationHistory.length
+        ? sendMessagesFn(config, withConversationHistory(messages, conversationHistory), log, signal)
+        : sendPromptFn(config, fullPrompt, log, signal);
+    request
         .then(async (responseText) => {
             // A Stop pressed while the request was in flight must not still
             // write into the document: the fetch itself may already have
@@ -146,7 +153,7 @@ function resumeCommentFromBookmark(bookmarkName, requestId, selectionText, { con
                     // Deliberately NOT forwarding `signal`: the retry is a new
                     // user action, and the original turn's controller is long
                     // since aborted — passing it would fail the retry instantly.
-                    resumeCommentFromBookmark(bookmarkName, requestId, selectionText, { config, sendPromptFn, promptManager, commentQueue, log, addLogWithRetryFn, updateStatusBarFn });
+                    resumeCommentFromBookmark(bookmarkName, requestId, selectionText, { config, sendPromptFn, sendMessagesFn, conversationHistory, promptManager, commentQueue, log, addLogWithRetryFn, updateStatusBarFn });
                 }
             );
         });
