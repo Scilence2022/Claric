@@ -72,6 +72,8 @@ describe('defaultImageProviderConfig origin adaptation', () => {
     // origins (verified), so the marketplace install talks to them directly.
     expect(cfg.openrouter.url).toBe('https://openrouter.ai');
     expect(cfg.siliconflow.url).toBe('https://api.siliconflow.cn');
+    // zhongkeyu.com mirrors its chat preset's staticOk flag.
+    expect(cfg.zhongkeyu.url).toBe('https://zhongkeyu.com');
   });
 
   test('a locally served origin uses same-origin proxy paths', () => {
@@ -81,6 +83,7 @@ describe('defaultImageProviderConfig origin adaptation', () => {
       expect(cfg.minimax.url).toBe('/minimax');
       expect(cfg.openrouter.url).toBe('/openrouter');
       expect(cfg.siliconflow.url).toBe('/siliconflow');
+      expect(cfg.zhongkeyu.url).toBe('/zhongkeyu');
     }
   });
 
@@ -164,5 +167,19 @@ describe('preset request-shape metadata', () => {
     expect(IMAGE_PROVIDER_PRESETS.siliconflow.apiPath).toBe('/v1');
     expect(IMAGE_PROVIDER_PRESETS.siliconflow.model.length).toBeGreaterThan(0);
     expect(IMAGE_PROVIDER_PRESETS.siliconflow.responseFormat).toBe('dall-e-b64');
+  });
+
+  test('zhongkeyu rides the same gateway origin as its chat preset', () => {
+    // zhongkeyu.com is a New API gateway: OpenAI-shaped /v1 surface, so the
+    // shared 'openai-images' format applies and b64_json is requested for
+    // DALL-E-compatible relays (gpt-image-* is special-cased in the client).
+    expect(IMAGE_PROVIDER_PRESETS.zhongkeyu.apiFormat).toBe('openai-images');
+    expect(IMAGE_PROVIDER_PRESETS.zhongkeyu.apiPath).toBe('/v1');
+    expect(IMAGE_PROVIDER_PRESETS.zhongkeyu.url).toBe('https://zhongkeyu.com');
+    expect(IMAGE_PROVIDER_PRESETS.zhongkeyu.proxyUrl).toBe('/zhongkeyu');
+    expect(IMAGE_PROVIDER_PRESETS.zhongkeyu.staticOk).toBe(true);
+    expect(IMAGE_PROVIDER_PRESETS.zhongkeyu.model.length).toBeGreaterThan(0);
+    expect(IMAGE_PROVIDER_PRESETS.zhongkeyu.responseFormat).toBe('dall-e-b64');
+    expect(IMAGE_PROVIDER_PRESETS.zhongkeyu.label).toContain('中科云');
   });
 });

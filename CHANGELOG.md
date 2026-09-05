@@ -22,9 +22,11 @@ that drive the GHCR image publish in CI.
 
 - **Independent image-generation providers** (`src/lib/image-client.js`,
   `src/lib/image-providers.js`) — image settings are separate from chat-provider
-  selection and support OpenAI Images, Zhipu CogView, MiniMax Images, and Custom
-  OpenAI-compatible endpoints. OpenAI Images, CogView, and Custom use
-  `/images/generations`; CogView returns a hosted URL, while MiniMax uses
+  selection and support OpenAI Images, Zhipu CogView, MiniMax Images, 中科云
+  Images (zhongkeyu.com), OpenRouter Images, SiliconFlow Images, and Custom
+  OpenAI-compatible endpoints. OpenAI Images, CogView, 中科云, OpenRouter,
+  SiliconFlow, and Custom use `/images/generations`; CogView returns a hosted
+  URL, while MiniMax uses
   `/image_generation` with `aspect_ratio` and base64 output. The client
   normalizes base64, data-URL, and hosted-URL responses for Word insertion, and
   falls back to the sanitized chat-LLM SVG route when image generation is
