@@ -712,7 +712,7 @@ OOXML tracked changes pipeline:
 Chat input file uploads, pure logic (no DOM — the input bar owns the picker and chips):
 
 - `detectAttachmentKind(name, mime)` — extension-first classification into text / image / docx / pdf (MIME fallback)
-- `validateAttachment(file, existing)` — caps: 5 files, 2 MB per text-like file, 4.5 MB per image (mirrors read_image's 6M base64-char ceiling), 10 MB total; rejections carry user-facing messages surfaced via the activity log
+- `validateAttachment(file, existing)` — caps: 5 files, 10 MiB per text/PDF/DOCX file, 4.5 MiB per image (mirrors read_image's 6M base64-char ceiling), 10 MiB total; rejections carry user-facing messages surfaced via the activity log
 - `parseAttachment(file)` — text via `file.text()`, images as base64 data URLs (chunked `btoa`, FileReader fallback for jsdom), .docx via mammoth's browser bundle, .pdf via pdf.js legacy build — both parsers **dynamically imported** so they stay out of the first-paint bundle (pdf.js worker copied to `dist/pdf.worker.min.mjs` by webpack, exempted from the asset-size gate)
 - `buildAttachmentContext(attachments)` — labeled `--- ATTACHED FILE: name ---` sections appended by `conversation.submit` to the routed question/instruction, capped at 200K chars with an omission note; images are name-listed (their bytes travel as image_url parts on QA turns)
 - `attachmentMeta(attachments)` — name/kind/size only for chat bubbles and session persistence; extracted text and data URLs never enter localStorage

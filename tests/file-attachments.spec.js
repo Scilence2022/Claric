@@ -11,18 +11,7 @@ jest.mock('mammoth/mammoth.browser.min.js', () => ({
 
 jest.mock('pdfjs-dist/legacy/build/pdf.min.mjs', () => ({
     GlobalWorkerOptions: {},
-    getDocument: jest.fn(() => ({
-        promise: Promise.resolve({
-            numPages: 2,
-            getPage: async (pageNum) => ({
-                getTextContent: async () => ({
-                    items: pageNum === 1
-                        ? [{ str: 'Hello', hasEOL: true }, { str: 'world' }]
-                        : [{ str: 'Second page' }],
-                }),
-            }),
-        }),
-    })),
+    getDocument: jest.fn(),
 }));
 
 const mammoth = require('mammoth/mammoth.browser.min.js');
@@ -87,17 +76,27 @@ describe('validateAttachment', () => {
         expect(v.error).toContain('unsupported file type');
     });
 
-    test('rejects oversized text and image files against their own caps', () => {
-        const text = validateAttachment(
-            { name: 'big.txt', size: ATTACHMENT_LIMITS.MAX_TEXT_FILE_BYTES + 1, kind: 'text' }, []);
-        expect(text.ok).toBe(false);
-        expect(text.error).toContain('per-file limit');
-        const img = validateAttachment(
-            { name: 'big.png', size: ATTACHMENT_LIMITS.MAX_IMAGE_FILE_BYTES + 1, kind: 'image' }, []);
-        expect(img.ok).toBe(false);
-        // A text-sized image is fine.
-        expect(validateAttachment(
-            { name: 'ok.png', size: ATTACHMENT_LIMITS.MAX_TEXT_FILE_BYTES, kind: 'image' }, []).ok).toBe(true);
+    test.each(['text', 'pdf', 'docx'])('%s accepts 10 MiB and rejects one byte over', (kind) => {
+        const file = { name: `big.${kind}`, size: 10 * 1024 * 1024, kind };
+        expect(validateAttachment(file)).toEqual({ ok: true });
+        expect(validateAttachment({ ...file, size: file.size + 1 })).toEqual({
+            ok: false,
+            error: expect.stringContaining('per-file limit'),
+        });
+        expect(validateAttachment(file, [{ name: 'other.txt', size: 1 }])).toEqual({
+            ok: false,
+            error: expect.stringContaining('total'),
+        });
+    });
+
+    test('keeps the image cap at 4.5 MiB', () => {
+        const file = { name: 'big.png', size: 4.5 * 1024 * 1024, kind: 'image' };
+        expect(validateAttachment(file)).toEqual({ ok: true });
+        expect(validateAttachment({ ...file, size: file.size + 1 })).toEqual({
+            ok: false,
+            error: expect.stringContaining('per-file limit'),
+        });
+        expect(validateAttachment({ ...file, size: ATTACHMENT_LIMITS.MAX_TEXT_FILE_BYTES }).ok).toBe(false);
     });
 
     test('rejects beyond the max file count', () => {
@@ -107,8 +106,9 @@ describe('validateAttachment', () => {
         expect(v.error).toContain(`${ATTACHMENT_LIMITS.MAX_FILES} attachments`);
     });
 
-    test('rejects when the running total would exceed the cap', () => {
+    test('accepts the exact aggregate cap and rejects one byte over', () => {
         const existing = [{ name: 'a.txt', size: ATTACHMENT_LIMITS.MAX_TOTAL_BYTES - 10 }];
+        expect(validateAttachment({ name: 'b.txt', size: 10, kind: 'text' }, existing)).toEqual({ ok: true });
         const v = validateAttachment({ name: 'b.txt', size: 11, kind: 'text' }, existing);
         expect(v.ok).toBe(false);
         expect(v.error).toContain('total');
@@ -153,14 +153,96 @@ describe('parseAttachment', () => {
         expect(arg.arrayBuffer).toBeInstanceOf(ArrayBuffer);
     });
 
-    test('extracts pdf text through pdf.js, joining pages', async () => {
-        const file = new File(['pdf-bytes'], 'paper.pdf');
-        const att = await parseAttachment(file);
-        expect(att.kind).toBe('pdf');
-        expect(att.text).toBe('Hello\nworld\n\nSecond page');
-        expect(pdfjs.getDocument).toHaveBeenCalledTimes(1);
-        // Worker src got assigned once (jsdom-free env: document is undefined → empty base).
-        expect(pdfjs.GlobalWorkerOptions.workerSrc).toContain('pdf.worker.min.mjs');
+    test('accepts and parses a 3.1 MiB docx', async () => {
+        const file = new File([new Uint8Array(Math.ceil(3.1 * 1024 * 1024))], 'large.docx');
+        expect(validateAttachment({ name: file.name, size: file.size, kind: detectAttachmentKind(file.name) }))
+            .toEqual({ ok: true });
+        await expect(parseAttachment(file)).resolves.toMatchObject({
+            name: 'large.docx', kind: 'docx', size: file.size, text: 'extracted docx text',
+        });
+        expect(mammoth.extractRawText.mock.calls.at(-1)[0].arrayBuffer.byteLength).toBe(file.size);
+    });
+
+    describe('PDF reader lifecycle', () => {
+        let readers;
+        let pages;
+        let doc;
+        let loadingTask;
+
+        beforeEach(() => {
+            const pageChunks = [
+                [
+                    [{ type: 'beginMarkedContent', id: 'p1' }, { str: '  Hello', hasEOL: true }],
+                    [],
+                    [{ str: 'wor' }, { type: 'endMarkedContent' }, { str: 'ld' }],
+                ],
+                [[{ str: 'Second ' }], [{ str: 'page', hasEOL: true }, { str: '' }]],
+            ];
+            readers = pageChunks.map((chunks) => {
+                const read = jest.fn();
+                for (const items of chunks) read.mockResolvedValueOnce({ done: false, value: { items } });
+                read.mockResolvedValue({ done: true });
+                return { read, releaseLock: jest.fn() };
+            });
+            pages = readers.map((reader) => ({
+                streamTextContent: jest.fn(() => ({ getReader: jest.fn(() => reader) })),
+            }));
+            doc = { numPages: pages.length, getPage: jest.fn(async (pageNum) => pages[pageNum - 1]) };
+            loadingTask = { promise: Promise.resolve(doc), destroy: jest.fn().mockResolvedValue() };
+            pdfjs.getDocument.mockReset().mockReturnValue(loadingTask);
+        });
+
+        test('uses reader-only streams, retaining chunk/EOL/page formatting and skipping nontext items', async () => {
+            const att = await parseAttachment(new File(['pdf-bytes'], 'paper.pdf'));
+            expect(att.kind).toBe('pdf');
+            expect(att.text).toBe('Hello\nworld\n\nSecond page');
+            expect(pdfjs.getDocument).toHaveBeenCalledTimes(1);
+            expect(pdfjs.GlobalWorkerOptions.workerSrc).toContain('pdf.worker.min.mjs');
+            expect(doc.getPage.mock.calls).toEqual([[1], [2]]);
+            for (const [index, page] of pages.entries()) {
+                const stream = page.streamTextContent.mock.results[0].value;
+                expect(stream[Symbol.asyncIterator]).toBeUndefined();
+                expect(stream.getReader).toHaveBeenCalledTimes(1);
+                expect(readers[index].releaseLock).toHaveBeenCalledTimes(1);
+            }
+            expect(readers[0].read).toHaveBeenCalledTimes(4);
+            expect(readers[1].read).toHaveBeenCalledTimes(3);
+            expect(loadingTask.destroy).toHaveBeenCalledTimes(1);
+        });
+
+        test.each(['load', 'page', 'stream', 'reader', 'read'])('%s failure cleans up without masking the parse error', async (stage) => {
+            const failure = new Error(`${stage} failed`);
+            if (stage === 'load') loadingTask.promise = Promise.reject(failure);
+            if (stage === 'page') doc.getPage.mockImplementation(async (pageNum) => {
+                if (pageNum === 2) throw failure;
+                return pages[0];
+            });
+            if (stage === 'stream') pages[0].streamTextContent.mockImplementation(() => { throw failure; });
+            if (stage === 'reader') pages[0].streamTextContent.mockReturnValue({
+                getReader: () => { throw failure; },
+            });
+            if (stage === 'read') readers[0].read.mockReset()
+                .mockResolvedValueOnce({ done: false, value: { items: [{ str: 'partial' }] } })
+                .mockRejectedValue(failure);
+            for (const reader of readers) reader.releaseLock.mockImplementation(() => { throw new Error('release failed'); });
+            loadingTask.destroy.mockRejectedValue(new Error('destroy failed'));
+
+            await expect(parseAttachment(new File(['x'], 'broken.pdf')))
+                .rejects.toThrow(`broken.pdf: ${stage} failed`);
+            expect(readers[0].releaseLock).toHaveBeenCalledTimes(['page', 'read'].includes(stage) ? 1 : 0);
+            expect(readers[1].releaseLock).not.toHaveBeenCalled();
+            expect(loadingTask.destroy).toHaveBeenCalledTimes(1);
+        });
+
+        test.each(['sync', 'async'])('%s cleanup failures do not discard successfully extracted text', async (mode) => {
+            readers[0].releaseLock.mockImplementation(() => { throw new Error('release failed'); });
+            if (mode === 'sync') loadingTask.destroy.mockImplementation(() => { throw new Error('destroy failed'); });
+            else loadingTask.destroy.mockRejectedValue(new Error('destroy failed'));
+            await expect(parseAttachment(new File(['x'], 'paper.pdf')))
+                .resolves.toMatchObject({ text: 'Hello\nworld\n\nSecond page' });
+            for (const reader of readers) expect(reader.releaseLock).toHaveBeenCalledTimes(1);
+            expect(loadingTask.destroy).toHaveBeenCalledTimes(1);
+        });
     });
 
     test('wraps parser failures with the file name', async () => {
@@ -267,6 +349,12 @@ describe('ATTACHMENT_KIND / limits sanity', () => {
     test('kinds are frozen constants', () => {
         expect(Object.isFrozen(ATTACHMENT_KIND)).toBe(true);
         expect(Object.isFrozen(ATTACHMENT_LIMITS)).toBe(true);
-        expect(ATTACHMENT_LIMITS.MAX_IMAGE_FILE_BYTES).toBeGreaterThan(ATTACHMENT_LIMITS.MAX_TEXT_FILE_BYTES);
+        expect(ATTACHMENT_LIMITS).toEqual({
+            MAX_FILES: 5,
+            MAX_TEXT_FILE_BYTES: 10 * 1024 * 1024,
+            MAX_IMAGE_FILE_BYTES: 4.5 * 1024 * 1024,
+            MAX_TOTAL_BYTES: 10 * 1024 * 1024,
+            MAX_CONTEXT_CHARS: 200000,
+        });
     });
 });

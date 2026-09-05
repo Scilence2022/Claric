@@ -30,7 +30,7 @@ export const ATTACHMENT_KIND = Object.freeze({
  */
 export const ATTACHMENT_LIMITS = Object.freeze({
     MAX_FILES: 5,
-    MAX_TEXT_FILE_BYTES: 2 * 1024 * 1024,
+    MAX_TEXT_FILE_BYTES: 10 * 1024 * 1024,
     MAX_IMAGE_FILE_BYTES: 4.5 * 1024 * 1024, // ≈ 6M base64 chars on the wire
     MAX_TOTAL_BYTES: 10 * 1024 * 1024,
     MAX_CONTEXT_CHARS: 200000,
@@ -292,12 +292,39 @@ async function _extractPdfText(file) {
             pdfjs.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.mjs';
         }
     }
-    const doc = await pdfjs.getDocument({ data: await _readArrayBuffer(file) }).promise;
-    const parts = [];
-    for (let p = 1; p <= doc.numPages; p++) {
-        const page = await doc.getPage(p);
-        const content = await page.getTextContent();
-        parts.push(content.items.map((item) => item.str + (item.hasEOL ? '\n' : '')).join(''));
+    const loadingTask = pdfjs.getDocument({ data: await _readArrayBuffer(file) });
+    try {
+        const doc = await loadingTask.promise;
+        const parts = [];
+        for (let p = 1; p <= doc.numPages; p++) {
+            const page = await doc.getPage(p);
+            const reader = page.streamTextContent().getReader();
+            const chunks = [];
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    for (const item of value.items) {
+                        if (typeof item.str === 'string') {
+                            chunks.push(item.str + (item.hasEOL ? '\n' : ''));
+                        }
+                    }
+                }
+            } finally {
+                try {
+                    reader.releaseLock();
+                } catch (_err) {
+                    // Cleanup must not replace the extraction result or error.
+                }
+            }
+            parts.push(chunks.join(''));
+        }
+        return parts.join('\n\n').trim();
+    } finally {
+        try {
+            await loadingTask.destroy();
+        } catch (_err) {
+            // Cleanup must not replace the extraction result or error.
+        }
     }
-    return parts.join('\n\n').trim();
 }
