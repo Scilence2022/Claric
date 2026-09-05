@@ -42,10 +42,21 @@ const MAX_TASK_INSTRUCTION_CHARS = 500;
  * ordered task list.
  *
  * @param {string} instruction - The user's compound instruction
- * @param {boolean} hasSelection - Whether the document has a non-empty selection
+ * @param {boolean|object} hasSelection - Whether the document has a non-empty selection,
+ *   or selection facts ({ hasSelection, hasImageSelection, hasTextSelection,
+ *   hasMultiCellTableRegion })
  * @returns {string}
  */
 export function buildPlanPrompt(instruction, hasSelection) {
+    const facts = typeof hasSelection === 'object' && hasSelection !== null
+        ? hasSelection
+        : { hasSelection: !!hasSelection };
+    const selectionLabel = facts.hasSelection
+        ? (facts.hasImageSelection ? 'an image selection in the document' : 'a text selection in the document')
+        : 'NO text selection';
+    const selectionKind = facts.hasImageSelection
+        ? (facts.hasTextSelection ? 'The selection contains image(s) and text.' : 'The selection contains image(s) only.')
+        : (facts.hasTextSelection ? 'The selection contains text only.' : 'No image or text selection is active.');
     return (
         'You are the task planner of a Microsoft Word add-in. The user instruction below may mix several ' +
         'request types, or may be ambiguous about which pipeline it belongs to. Split it into an ordered ' +
@@ -61,8 +72,9 @@ export function buildPlanPrompt(instruction, hasSelection) {
         '- "illustration": design and insert an illustration (SVG artwork).\n' +
         '- "qa": answer a question in chat (no document change).\n' +
         '- "image_management": modify IMAGES anywhere in the document — size, alignment, alt text, ' +
-        'hyperlink, delete, replace. Editing the visual CONTENT of an image (designed replacement) stays ' +
-        'on "illustration".\n' +
+        'hyperlink, delete, replace, or a visible Figure legend/caption. Figure caption work must inspect ' +
+        'the selected image pixels and nearby Word context; do not treat selected text as visual evidence. ' +
+        'Editing the visual CONTENT of an image (designed replacement) stays on "illustration".\n' +
         '- "table_management": modify an EXISTING table anywhere in the document — cell text, row ops, ' +
         'merges, AND visual styling (table style, borders incl. three-line tables, cell shading/alignment, ' +
         'fonts, header rows, layout, column widths). Creating a NEW table stays on "table".\n\n' +
@@ -74,8 +86,9 @@ export function buildPlanPrompt(instruction, hasSelection) {
         '(include needed context, e.g. which paragraph to edit).\n' +
         '- If the instruction is really a single request, output a single-task array.\n' +
         '- Cover everything the user asked for; add nothing they did not ask for.\n\n' +
-        `CONTEXT: the user currently has ${hasSelection ? 'a text selection in the document' : 'NO text selection'}.\n\n` +
-        'USER INSTRUCTION:\n' + (instruction || '').trim()
+        `CONTEXT: the user currently has ${selectionLabel}. ${selectionKind}\n` +
+        (facts.hasMultiCellTableRegion ? 'The selection covers a multi-cell table region.\n' : '') +
+        '\nUSER INSTRUCTION:\n' + (instruction || '').trim()
     );
 }
 

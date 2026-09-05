@@ -33,13 +33,14 @@ function visibleText(node) {
     let text = '';
     for (const child of Array.from(node.childNodes || [])) {
         if (child.nodeType !== 1) continue;
-        const name = child.localName;
+        const element = /** @type {Element} */ (child);
+        const name = element.localName;
         if (HIDDEN_CONTAINERS.has(name) || SKIP_ELEMENTS.has(name)) continue;
-        if (name === 't') { text += child.textContent || ''; continue; }
+        if (name === 't') { text += element.textContent || ''; continue; }
         if (name === 'tab') { text += '\t'; continue; }
         if (name === 'br' || name === 'cr') { text += '\n'; continue; }
         if (name === 'noBreakHyphen') { text += '‑'; continue; }
-        text += visibleText(child);
+        text += visibleText(element);
     }
     return text;
 }
@@ -121,9 +122,12 @@ export function extractTopLevelParagraphTexts(ooxml) {
     const root = documentPartRoot(ooxml);
     if (!root) return null;
     const body = bodyOrRoot(root);
+    /** @type {Element[]} */
     const paragraphs = [];
     for (const child of Array.from(body.childNodes || [])) {
-        if (child.nodeType === 1 && child.localName === 'p') paragraphs.push(child);
+        if (child.nodeType !== 1) continue;
+        const element = /** @type {Element} */ (child);
+        if (element.localName === 'p') paragraphs.push(element);
     }
     return paragraphs.map(visibleText);
 }

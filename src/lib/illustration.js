@@ -174,7 +174,7 @@ export function extractSvgTextLabels(svg) {
     for (const el of nodes.slice().reverse()) {
         const own = Array.from(el.childNodes || [])
             .filter((n) => n.nodeType === 3)
-            .map((n) => n.data)
+            .map((n) => (/** @type {Text} */ (n)).data)
             .join('')
             .trim();
         if (!own) continue;
@@ -223,9 +223,10 @@ export function editSvgTextLabels(svg, edits) {
         for (const el of nodes) {
             for (const child of Array.from(el.childNodes || [])) {
                 if (child.nodeType !== 3) continue;
-                const hits = child.data.split(edit.old).length - 1;
+                const textNode = /** @type {Text} */ (child);
+                const hits = textNode.data.split(edit.old).length - 1;
                 if (hits > 0) {
-                    child.data = child.data.split(edit.old).join(edit.new);
+                    textNode.data = textNode.data.split(edit.old).join(edit.new);
                     count += hits;
                 }
             }
