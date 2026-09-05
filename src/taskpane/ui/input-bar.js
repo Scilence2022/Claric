@@ -22,6 +22,7 @@ const ATTACHMENT_ICONS = Object.freeze({
     [ATTACHMENT_KIND.TEXT]: '¶',
     [ATTACHMENT_KIND.DOCX]: 'W',
     [ATTACHMENT_KIND.PDF]: '§',
+    [ATTACHMENT_KIND.IMAGE]: '▦',
 });
 
 /**
@@ -65,8 +66,10 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         errorEl.hidden = true;
     }
 
-    // Parsed attachments pending submission ({name, kind, size, text?,
-    // dataUrl?}). Cleared on submit and on new chat.
+    // Attachments pending submission ({name, kind, size, text?, dataUrl?,
+    // pending?}). A picked file gets a `pending: true` placeholder chip
+    // immediately; parsing swaps in the parsed object. Cleared on submit
+    // and on new chat.
     let attachments = [];
 
     let processing = false;
@@ -189,10 +192,17 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         }
         attachments.forEach((att, index) => {
             const chip = document.createElement('span');
-            chip.className = 'attachment-chip';
-            chip.title = `${att.name} (${formatBytes(att.size)})`;
+            chip.className = 'attachment-chip' + (att.pending ? ' attachment-chip-pending' : '');
+            chip.title = att.pending
+                ? `${att.name} (${formatBytes(att.size)}) — parsing…`
+                : `${att.name} (${formatBytes(att.size)})`;
 
-            if (att.kind === ATTACHMENT_KIND.IMAGE && att.dataUrl) {
+            if (att.pending) {
+                const spinner = document.createElement('span');
+                spinner.className = 'attachment-chip-spinner';
+                spinner.setAttribute('aria-hidden', 'true');
+                chip.appendChild(spinner);
+            } else if (att.kind === ATTACHMENT_KIND.IMAGE && att.dataUrl) {
                 const thumb = document.createElement('img');
                 thumb.className = 'attachment-chip-thumb';
                 thumb.src = att.dataUrl;
@@ -210,6 +220,13 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
             name.className = 'attachment-chip-name';
             name.textContent = att.name;
             chip.appendChild(name);
+
+            if (att.pending) {
+                const status = document.createElement('span');
+                status.className = 'attachment-chip-status';
+                status.textContent = 'Parsing…';
+                chip.appendChild(status);
+            }
 
             const remove = document.createElement('button');
             remove.type = 'button';
@@ -231,13 +248,18 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     let parsing = false;
     let attachmentErrors = [];
 
-    /** Validates and parses each picked file; failures remain visible until reset. */
+    /**
+     * Validates each picked file and shows a pending chip for it immediately,
+     * then parses files one by one: a parsed result swaps into its chip and a
+     * failure removes the chip (errors remain visible until reset).
+     */
     async function addFiles(fileList) {
         if (parsing || processing) return;
         const generation = attachmentGeneration;
         parsing = true;
         if (attachBtn) attachBtn.disabled = true;
         sendBtn.setAttribute('aria-busy', 'true');
+        const queue = [];
         for (const file of Array.from(fileList || [])) {
             if (generation !== attachmentGeneration) return;
             const kind = detectAttachmentKind(file.name, file.type);
@@ -248,15 +270,28 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
                 if (typeof onLog === 'function') onLog(verdict.error, 'warning');
                 continue;
             }
+            const placeholder = { name: file.name, kind, size: file.size, pending: true };
+            attachments.push(placeholder);
+            queue.push({ file, placeholder });
+        }
+        renderChips();
+        for (const { file, placeholder } of queue) {
+            if (generation !== attachmentGeneration) return;
             try {
                 const parsed = await parseAttachment(file);
                 if (generation !== attachmentGeneration) return;
-                attachments.push(parsed);
+                const index = attachments.indexOf(placeholder);
+                if (index === -1) continue; // removed while pending — drop the result
+                attachments[index] = parsed;
+                renderChips();
             } catch (err) {
                 if (generation !== attachmentGeneration) return;
+                const index = attachments.indexOf(placeholder);
+                if (index !== -1) attachments.splice(index, 1);
                 attachmentErrors.push(err.message);
                 showError(attachmentErrors.join('\n'));
                 if (typeof onLog === 'function') onLog(err.message, 'error');
+                renderChips();
             }
         }
         parsing = false;
