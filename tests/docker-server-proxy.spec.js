@@ -25,6 +25,18 @@ const {
 
 describe('docker-server proxy target validation', () => {
     test.each([
+        ['OPENROUTER', '/openrouter', 'https://openrouter.ai'],
+        ['SILICONFLOW', '/siliconflow', 'https://api.siliconflow.cn'],
+    ])('%s routes remain opt-in and accept their configured target', (provider, proxyPath, target) => {
+        const env = { [`${provider}_PROXY_TARGET`]: target, LLM_PROXY_TIMEOUT_MS: 300000 };
+        expect(buildProxyRoutes(env)).toEqual([]);
+        const routes = buildProxyRoutes({ ...env, [`${provider}_PROXY_PATH`]: proxyPath });
+        expect(routes).toHaveLength(1);
+        expect(routes[0].proxyPath).toBe(proxyPath);
+        expect(routes[0].targetUrl.origin).toBe(target);
+    });
+
+    test.each([
         'https://api.example.com',
         'http://localhost:11434',
         'http://127.0.0.1:8026',
@@ -139,6 +151,11 @@ describe('docker-server LLM proxy path validation', () => {
         decoy = await startRecordingServer();
     });
 
+    beforeEach(() => {
+        upstream.hits.length = 0;
+        decoy.hits.length = 0;
+    });
+
     afterAll(async () => {
         for (const route of routes) {
             if (route.agent) route.agent.destroy();
@@ -192,6 +209,22 @@ describe('docker-server LLM proxy path validation', () => {
 
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(decoy.hits).toEqual([]);
+    });
+
+    test.each(['OPENROUTER', 'SILICONFLOW'])('%s opt-in route reaches its configured upstream', async (provider) => {
+        const proxyPath = `/${provider.toLowerCase()}`;
+        const [route] = buildProxyRoutes({
+            [`${provider}_PROXY_PATH`]: proxyPath,
+            [`${provider}_PROXY_TARGET`]: `http://127.0.0.1:${upstream.port}`,
+            LLM_PROXY_TIMEOUT_MS: 2000,
+        });
+        routes.push(route);
+        const url = `${proxyPath}/v1/models`;
+        const { res, done } = makeRes();
+        handleProxyRequest(route, makeReq('GET', url), res, url);
+        expect((await done).body).toBe('upstream-ok');
+        expect(upstream.hits).toHaveLength(1);
+        expect(upstream.hits[0].url).toBe('/v1/models');
     });
 
     test('still proxies a normal same-origin path to the configured upstream', async () => {
@@ -257,6 +290,6 @@ describe('docker-server LLM proxy path validation', () => {
         expect(res.headers['access-control-allow-methods']).toContain('POST');
 
         await new Promise((resolve) => setTimeout(resolve, 50));
-        expect(upstream.hits).toHaveLength(1); // only the pass-through test above
+        expect(upstream.hits).toHaveLength(0);
     });
 });

@@ -146,7 +146,7 @@ function observationFromResult(mcpResult, { maxChars = MAX_MCP_RESULT_CHARS } = 
 /**
  * Creates the tool-loop executor that routes loop tool calls to MCP
  * servers. Failures become error observations (the loop feeds them back to
- * the model) — only transport-level surprises would throw.
+ * the model); cancellation errors propagate to the caller.
  *
  * @param {Map<string, {client: object, originalName: string, serverName: string}>} mapping
  * @param {object} [options]
@@ -167,6 +167,7 @@ export function createMcpToolExecutor(mapping, { maxChars = MAX_MCP_RESULT_CHARS
             }
             return observation;
         } catch (err) {
+            if (err && err.name === 'AbortError') throw err;
             return { ok: false, error: `MCP call failed: ${err.message}` };
         }
     };
@@ -217,6 +218,7 @@ export function createResourceClient(clients) {
                             lines.push(`${serverName} | ${r && r.uri} | ${(r && r.name) || ''}`);
                         }
                     } catch (_err) {
+                        if (_err && _err.name === 'AbortError') throw _err;
                         // A server without resource support simply lists nothing.
                     }
                 }
@@ -236,6 +238,7 @@ export function createResourceClient(clients) {
                         .join('\n');
                     return { content: [{ type: 'text', text: texts || '(empty resource)' }] };
                 } catch (err) {
+                    if (err && err.name === 'AbortError') throw err;
                     return { isError: true, content: [{ type: 'text', text: `Read failed: ${err.message}` }] };
                 }
             }
@@ -261,6 +264,7 @@ export async function importServerPrompts(serverName, client) {
     try {
         prompts = await client.listPrompts();
     } catch (err) {
+        if (err && err.name === 'AbortError') throw err;
         return { imported, errors: [`Listing prompts failed: ${err.message}`] };
     }
     for (const prompt of prompts) {
@@ -289,6 +293,7 @@ export async function importServerPrompts(serverName, client) {
                 imported: true,
             });
         } catch (err) {
+            if (err && err.name === 'AbortError') throw err;
             errors.push(`${prompt.name}: ${err.message}`);
         }
     }

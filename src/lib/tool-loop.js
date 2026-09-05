@@ -328,20 +328,25 @@ export async function runToolLoop({
     let lastFingerprint = null;
     let repeatCount = 0;
     let evictedMessages = 0;
-
-    while (steps < maxSteps) {
+    const checkAbort = () => {
         if (signal && signal.aborted) {
             throw new DOMException('The operation was aborted.', 'AbortError');
         }
+    };
+
+    while (steps < maxSteps) {
+        checkAbort();
         // Fit BEFORE sending, including the observation just added. This is a
         // hard invariant over the actual request, not an accounting estimate.
         evictedMessages = _fitMessagesForSend(messages, evictedMessages);
         const rawReply = await send(messages);
+        checkAbort();
         const reply = rawReply.length > TOOL_LOOP_LIMITS.MAX_RESPONSE_CHARS
             ? rawReply.slice(0, TOOL_LOOP_LIMITS.MAX_RESPONSE_CHARS)
             : rawReply;
         steps++;
         if (onStep) onStep({ step: steps, call: null, ok: null, text: reply });
+        checkAbort();
         messages.push({ role: 'assistant', content: reply });
 
         let call;
@@ -365,6 +370,7 @@ export async function runToolLoop({
         if (name === FINISH_TOOL) {
             summary = typeof toolArgs.summary === 'string' ? toolArgs.summary : '';
             if (onStep) onStep({ step: steps, call: { tool: name, args: toolArgs }, ok: true, text: summary });
+            checkAbort();
             return { finished: true, reason: 'finish', steps, summary, calls };
         }
         if (!known.has(name)) {
@@ -385,6 +391,7 @@ export async function runToolLoop({
                     + 'Stopping to avoid a loop — change the arguments, try a different tool, '
                     + 'or call finish with what you have.';
                 if (onStep) onStep({ step: steps, call: { tool: name, args: toolArgs }, ok: false, text: error });
+                checkAbort();
                 return { finished: false, reason: 'repeat-limit', steps, summary: null, calls };
             }
         } else {
@@ -393,12 +400,16 @@ export async function runToolLoop({
         }
 
         let observation;
+        checkAbort();
         try {
             observation = await execute(name, toolArgs);
+            checkAbort();
             if (!observation || typeof observation !== 'object') {
                 observation = { ok: false, error: 'Tool returned no observation.' };
             }
         } catch (err) {
+            if (err && err.name === 'AbortError') throw err;
+            checkAbort();
             observation = { ok: false, error: `Tool execution failed: ${err.message}` };
         }
         calls.push({ tool: name, ok: observation.ok !== false });
@@ -413,5 +424,6 @@ export async function runToolLoop({
         }
     }
 
+    checkAbort();
     return { finished: false, reason: 'step-limit', steps, summary: null, calls };
 }

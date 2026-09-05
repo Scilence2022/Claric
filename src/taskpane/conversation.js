@@ -629,6 +629,35 @@ export function createConversation(deps) {
     // persisting (after a turn settles, and before newChat wipes the array).
     // The bootstrap wires this to sessions.saveSession(...).
     const onTurnCommitted = typeof deps.onTurnCommitted === 'function' ? deps.onTurnCommitted : null;
+    let sessionEpoch = 0;
+    let submissionOwner = null;
+    const stagedResources = new Set();
+
+    function stagedResource(cleanup) {
+        const resource = {
+            writing: false, requested: false, cleaned: false, promise: null,
+            async dispose() {
+                resource.requested = true;
+                if (resource.writing || resource.cleaned) return resource.promise;
+                resource.cleaned = true;
+                resource.promise = Promise.resolve().then(cleanup).catch((error) => {
+                    log(`Proposal cleanup failed: ${error.message}`, 'warning');
+                }).finally(() => stagedResources.delete(resource));
+                return resource.promise;
+            },
+            async apply(fn) {
+                if (resource.requested) throw new Error('This proposal has been discarded.');
+                resource.writing = true;
+                try { return await fn(); }
+                finally {
+                    resource.writing = false;
+                    await resource.dispose();
+                }
+            },
+        };
+        stagedResources.add(resource);
+        return resource;
+    }
 
     /**
      * Fires onTurnCommitted with the current session snapshot. Best-effort —
@@ -654,10 +683,19 @@ export function createConversation(deps) {
      * @returns {object} action deps for one turn
      */
     function actionDepsFor(msg) {
+        const epoch = sessionEpoch;
         return {
             appState,
-            logWithRetry,
+            logWithRetry: typeof logWithRetry === 'function' ? (message, type, retry) => logWithRetry(message, type, () => {
+                if (epoch !== sessionEpoch || isBusy()) return;
+                return retry({ setBusy: (busy) => input.setProcessing(busy || isBusy()) });
+            }) : undefined,
             updateStatusBar,
+            isCurrentSession: () => epoch === sessionEpoch,
+            stageRetryProposal: async (outcome) => {
+                if (epoch !== sessionEpoch) return;
+                await stageDocumentProposal(outcome, msg, actionDepsFor(msg));
+            },
             log: (message, type) => {
                 log(message, type);
                 msg.appendLogLine(message);
@@ -670,7 +708,8 @@ export function createConversation(deps) {
      * @returns {boolean}
      */
     function isBusy() {
-        return appState.isProcessing || appState.isProcessingDoc || appState.isProcessingSummary;
+        return !!submissionOwner || appState.isProcessing || appState.isProcessingDoc || appState.isProcessingSummary
+            || !!appState.processDocController || !!appState.chatController;
     }
 
     /**
@@ -687,30 +726,19 @@ export function createConversation(deps) {
      * @private
      */
     function _beginChatTurn(turnController, flag = 'isProcessing') {
-        const myController = turnController || new AbortController();
+        const myController = turnController || submissionOwner?.controller || new AbortController();
         appState[flag] = true;
         appState.chatController = myController;
         input.setProcessing(true);
         return myController;
     }
 
-    /**
-     * Releases what _beginChatTurn claimed. The busy flag and the input
-     * always clear (an unreleased flag wedges every later turn behind
-     * isBusy()); the shared controller is only nulled when this turn owns
-     * it — a compound sub-task must leave its parent's controller in place.
-     *
-     * @param {AbortController} myController
-     * @param {AbortController} [turnController]
-     * @param {'isProcessing'|'isProcessingSummary'} [flag]
-     * @private
-     */
+    /** Releases only this runner's ownership; submit owns the outer lock. */
     function _endChatTurn(myController, turnController, flag = 'isProcessing') {
+        if (appState.chatController !== myController || submissionOwner?.controller === myController) return;
         appState[flag] = false;
-        if (appState.chatController === myController && !turnController) {
-            appState.chatController = null;
-        }
-        input.setProcessing(false);
+        if (!turnController) appState.chatController = null;
+        input.setProcessing(isBusy());
     }
 
     /**
@@ -744,21 +772,15 @@ export function createConversation(deps) {
      * @returns {object} createProposalCard card api
      */
     function makeProposalCard(args) {
-        // Tracks the controller this card currently has registered, so a late
-        // settle can never release a controller it does not own (e.g. one a
-        // follow-up run took over after an in-flight apply was cancelled).
+        const epoch = sessionEpoch;
         let ownRegisteredController = null;
         return _createProposalCardRaw({
-            isBlocked: () => (isBusy()
+            isBlocked: () => (epoch !== sessionEpoch ? 'This proposal belongs to a previous chat. Draft a new proposal.' : isBusy()
                 ? 'A run is currently processing — wait for it to finish before applying.'
                 : null),
             registerController: (controller) => {
                 if (controller === null) {
-                    // Apply settled (either the caller settled terminal state
-                    // or cancel() already freed the controller) — release the
-                    // UI only if the current controller is one THIS card
-                    // registered; a foreign run's controller must survive a
-                    // late card-apply settle untouched.
+                    // A settling card may release only its own write lock.
                     if (ownRegisteredController
                         && appState.processDocController === ownRegisteredController) {
                         appState.isProcessingDoc = false;
@@ -782,7 +804,7 @@ export function createConversation(deps) {
                 input.setProcessing(true);
             },
             setApplyBusy: (busy) => {
-                input.setProcessing(busy);
+                if (busy) input.setProcessing(true);
             },
             ...args,
         });
@@ -812,6 +834,10 @@ export function createConversation(deps) {
                 gateApply: gated,
             });
             msg.hideProgress();
+            if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
+                msg.setStatus('Cancelled — already-applied changes remain in the document.');
+                return;
+            }
 
             if (outcome.staged) {
                 await stageDocumentProposal(outcome, msg, turnDeps);
@@ -838,14 +864,10 @@ export function createConversation(deps) {
                 msg.markError(`Document processing failed: ${error.message}`);
             }
         } finally {
-            // Only release state if we're still the active turn: cancel()
-            // may have already nulled the controller to free the UI, and an
-            // already-cancelled orphan whose background work settles late
-            // must NOT clobber a follow-up turn's processing flags.
             if (appState.processDocController === myController) {
                 appState.isProcessingDoc = false;
                 appState.processDocController = null;
-                input.setProcessing(false);
+                input.setProcessing(isBusy());
             }
         }
     }
@@ -859,9 +881,12 @@ export function createConversation(deps) {
         // Only offer chunks whose amendment actually differs from the
         // original text — an LLM echo of the input is not a proposal.
         const amendedChunks = outcome.results.filter((r) => r.status === 'fulfilled'
-            && r.amendment
-            && _normalizeText(r.amendment) !== _normalizeText(chunkOriginalText(r)));
+            && ((r.amendment && _normalizeText(r.amendment) !== _normalizeText(chunkOriginalText(r)))
+                || (outcome.retryProposal && r.comment)));
 
+        if (outcome.failedCount > 0 && outcome.retryProposal && amendedChunks.length > 0 && turnDeps.logWithRetry) {
+            turnDeps.logWithRetry(`${outcome.failedCount} section(s) still failed. Click to retry.`, 'warning', outcome.retryFailed);
+        }
         if (amendedChunks.length === 0) {
             if (outcome.failedCount > 0) {
                 // Chunks failed (possibly all of them): report the real cause
@@ -884,7 +909,10 @@ export function createConversation(deps) {
                         // The retry fires from the activity log long after this
                         // turn returned, so it owns its own input lock — hand it
                         // the setter, since word-actions cannot reach the input.
-                        () => outcome.retryFailed({ setBusy: (busy) => input.setProcessing(busy) })
+                        () => {
+                            if (!turnDeps.isCurrentSession() || isBusy()) return;
+                            return outcome.retryFailed({ setBusy: (busy) => input.setProcessing(busy || isBusy()) });
+                        }
                     );
                 }
                 return;
@@ -913,7 +941,7 @@ export function createConversation(deps) {
                     id: r.chunk.id,
                     label: citation.label,
                     before: chunkOriginalText(r),
-                    after: r.amendment,
+                    after: r.amendment || (outcome.retryProposal ? `Comment: ${r.comment}` : ''),
                     searchText: citation.searchText,
                 };
             }),
@@ -936,9 +964,8 @@ export function createConversation(deps) {
                     }
                     const applyErrors = applicationResult.errors || [];
                     for (const applyError of applyErrors) log(`Apply: ${applyError}`, 'warning');
-                    if (applicationResult.amendmentsApplied === 0) {
-                        // Honest terminal state: settling on "Applied" would be
-                        // a lie when nothing (or only comments) landed.
+                    if (applicationResult.amendmentsApplied === 0
+                        && !(outcome.retryProposal && applicationResult.commentsInserted > 0)) {
                         card.markWarning(applyErrors.length
                             ? `Nothing applied: ${applyErrors[0]}`
                             : 'Nothing applied — the staged edits already match the document.');
@@ -957,12 +984,6 @@ export function createConversation(deps) {
                 } catch (error) {
                     log(`Apply failed: ${error.message}`, 'error');
                     card.markError(error.message);
-                } finally {
-                    // Busy flags are NOT reset here: the card's apply handler
-                    // releases them via registerController(null), which checks
-                    // that we still own the shared controller — an
-                    // unconditional reset used to clobber a newer run's state
-                    // when cancel() had already freed the UI.
                 }
             },
             onReject: async () => {
@@ -984,7 +1005,7 @@ export function createConversation(deps) {
                     id: r.chunk.id,
                     label: citation.label,
                     before: chunkOriginalText(r),
-                    after: r.amendment,
+                    after: r.amendment || (outcome.retryProposal ? `Comment: ${r.comment}` : ''),
                     searchText: citation.searchText,
                 };
             }),
@@ -1197,7 +1218,13 @@ export function createConversation(deps) {
                 onToken: (t) => msg.appendModelToken({ id: 'format' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'format' }, 'reasoning', t),
             });
+            const resource = stagedResource(() => actions.discardFormatProposal?.(turnDeps, proposal));
+            if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
+                await resource.dispose();
+                return;
+            }
             if (!proposal.ops || proposal.ops.length === 0) {
+                await resource.dispose();
                 msg.setStatus('The model proposed no changes.');
                 return;
             }
@@ -1213,11 +1240,13 @@ export function createConversation(deps) {
                     searchText: op.match ? op.match.trim().slice(0, 60) : undefined,
                 })),
                 onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
-                onApply: async (selectedIds) => {
+                onApply: async (selectedIds, applyCtx = {}) => {
                     try {
                         const ops = proposal.ops.filter((_, index) => selectedIds.includes(index));
-                        const fmtResult = await actions.applyFormatProposal(turnDeps, { ...proposal, ops });
-                        if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0) {
+                        const fmtResult = await resource.apply(() => actions.applyFormatProposal(turnDeps, { ...proposal, ops }, applyCtx));
+                        if (fmtResult?.interrupted || fmtResult?.partial) {
+                            card.markWarning('Formatting stopped; changes may already be applied. Review the document and draft a new proposal.');
+                        } else if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0) {
                             card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
                         } else {
                             card.markApplied();
@@ -1227,7 +1256,8 @@ export function createConversation(deps) {
                         card.markError(error.message);
                     }
                 },
-                onReject: () => {
+                onReject: async () => {
+                    await resource.dispose();
                     log('Proposal rejected by user.', 'info');
                 },
             });
@@ -1339,7 +1369,13 @@ export function createConversation(deps) {
                 onToken: (t) => msg.appendModelToken({ id: 'illustration' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'illustration' }, 'reasoning', t),
             });
+            const resource = stagedResource(() => actions.discardIllustrationProposal?.(turnDeps, proposal));
+            if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
+                await resource.dispose();
+                return;
+            }
             if (!proposal.svg && !proposal.imageBase64) {
+                await resource.dispose();
                 msg.setStatus('The model produced no usable illustration.');
                 return;
             }
@@ -1358,16 +1394,21 @@ export function createConversation(deps) {
                 countsText,
                 ...preview,
                 comment: null,
-                onApply: async () => {
+                onApply: async (_ids, applyCtx = {}) => {
                     try {
-                        await actions.applyIllustrationProposal(turnDeps, proposal);
-                        card.markApplied();
+                        const result = await resource.apply(() => actions.applyIllustrationProposal(turnDeps, proposal, applyCtx));
+                        if (result?.partial || result?.interrupted) {
+                            card.markWarning('Illustration stopped; the image may already be inserted. Review the document and draft a new proposal.');
+                        } else {
+                            card.markApplied();
+                        }
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
                         card.markError(error.message);
                     }
                 },
-                onReject: () => {
+                onReject: async () => {
+                    await resource.dispose();
                     log('Proposal rejected by user.', 'info');
                 },
             });
@@ -1463,7 +1504,7 @@ export function createConversation(deps) {
             previewSvg,
             comment: null,
             items: cardItems,
-            onApply: async (selectedIds) => {
+            onApply: async (selectedIds, applyCtx = {}) => {
                 try {
                     // One checkbox per op — honor the user's unchecking.
                     const picked = new Set(selectedIds);
@@ -1472,8 +1513,10 @@ export function createConversation(deps) {
                         card.markWarning('No operations selected.');
                         return;
                     }
-                    const result = await actions.applyImageOps(turnDeps, { ...proposal, ops });
-                    if (result && result.warnings && result.warnings.length > 0) {
+                    const result = await actions.applyImageOps(turnDeps, { ...proposal, ops }, applyCtx);
+                    if (result?.interrupted || result?.partial) {
+                        card.markWarning('Image operations stopped; changes may already be applied. Review the document and draft a new proposal.');
+                    } else if (result && result.warnings && result.warnings.length > 0) {
                         card.markWarning(`Applied with warning: ${result.warnings[0]}`);
                     } else {
                         card.markApplied();
@@ -1767,35 +1810,35 @@ export function createConversation(deps) {
             ? Math.round(Number(appState.config.mcpStepBudget))
             : TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT;
 
-        log(`Connecting to ${servers.length} MCP server(s)...`, 'info');
-        const connected = [];
-        for (const server of servers) {
-            const label = server.name || server.url;
-            try {
-                const client = await connectMcpServer({ url: server.url, token: server.token, log });
-                const mcpTools = await client.listTools();
-                connected.push({ name: label, client, mcpTools });
-                log(`MCP "${label}": ${mcpTools.length} tool(s) available.`, 'info');
-            } catch (err) {
-                log(`MCP server "${label}" failed: ${err.message}`, 'warning');
-            }
-        }
-        if (connected.length === 0) {
-            msg.appendText('No MCP server could be reached — see the activity log for details.');
-            return;
-        }
-
-        // The resource pseudo-server exposes mcp_list_resources /
-        // mcp_read_resource so the model can pull reference material itself.
-        connected.push({ name: 'resources', client: createResourceClient(connected), mcpTools: RESOURCE_TOOL_SPECS });
-        const { loopTools, mapping } = buildLoopTools(connected);
-        if (loopTools.length <= RESOURCE_TOOL_SPECS.length) {
-            msg.appendText('The configured MCP servers expose no tools.');
-            return;
-        }
-
         const myController = _beginChatTurn(turnController);
         try {
+            log(`Connecting to ${servers.length} MCP server(s)...`, 'info');
+            const connected = [];
+            for (const server of servers) {
+                if (myController.signal.aborted) throw new DOMException('Cancelled.', 'AbortError');
+                const label = server.name || server.url;
+                try {
+                    const client = await connectMcpServer({ url: server.url, token: server.token, log, signal: myController.signal });
+                    if (myController.signal.aborted) throw new DOMException('Cancelled.', 'AbortError');
+                    const mcpTools = await client.listTools();
+                    if (myController.signal.aborted) throw new DOMException('Cancelled.', 'AbortError');
+                    connected.push({ name: label, client, mcpTools });
+                    log(`MCP "${label}": ${mcpTools.length} tool(s) available.`, 'info');
+                } catch (err) {
+                    if (err.name === 'AbortError' || myController.signal.aborted) throw err;
+                    log(`MCP server "${label}" failed: ${err.message}`, 'warning');
+                }
+            }
+            if (connected.length === 0) {
+                msg.appendText('No MCP server could be reached — see the activity log for details.');
+                return;
+            }
+            connected.push({ name: 'resources', client: createResourceClient(connected), mcpTools: RESOURCE_TOOL_SPECS });
+            const { loopTools, mapping } = buildLoopTools(connected);
+            if (loopTools.length <= RESOURCE_TOOL_SPECS.length) {
+                msg.appendText('The configured MCP servers expose no tools.');
+                return;
+            }
             const config = getActiveBackendConfig(appState);
             const taskPrompt = instruction + (selectionText
                 ? `\n\n--- SELECTED TEXT (focus) ---\n${selectionText}`
@@ -2143,7 +2186,27 @@ export function createConversation(deps) {
             log('Already processing. Cancel the current run first.', 'warning');
             return;
         }
+        const owner = { controller: new AbortController(), epoch: sessionEpoch };
+        submissionOwner = owner;
+        appState.chatController = owner.controller;
+        appState.isProcessing = true;
+        input.setProcessing(true);
+        try {
+            await submitOwned(effective, list, owner);
+        } finally {
+            if (submissionOwner === owner) {
+                submissionOwner = null;
+                if (appState.chatController === owner.controller) {
+                    appState.chatController = null;
+                    appState.isProcessing = false;
+                    appState.isProcessingSummary = false;
+                }
+                input.setProcessing(isBusy());
+            }
+        }
+    }
 
+    async function submitOwned(effective, list, owner) {
         let selectionText = '';
         // Metadata only — base64 payloads never leave the selection readers
         // (preview thumbnails come from watchSelection's own read).
@@ -2164,6 +2227,7 @@ export function createConversation(deps) {
             selectionImages = [];
             hasMultiCellTableRegion = false;
         }
+        if (owner.controller.signal.aborted || owner.epoch !== sessionEpoch) return;
         const hasSelection = !!selectionText || selectionImages.length > 0 || hasMultiCellTableRegion;
         const hasImageSelection = selectionImages.length > 0;
         const hasTextSelection = !!selectionText;
@@ -2193,7 +2257,18 @@ export function createConversation(deps) {
         view.addUserMessage(effective, attachmentMeta(list));
         input.setValue('');
 
-        const msg = view.createAssistantMessage();
+        const rawMessage = view.createAssistantMessage();
+        const msg = new Proxy(rawMessage, {
+            get(target, key) {
+                const value = target[key];
+                if (typeof value !== 'function') return value;
+                return (...args) => {
+                    if (owner.epoch !== sessionEpoch) return;
+                    if (owner.controller.signal.aborted && key === 'attachProposal') return;
+                    return value.apply(target, args);
+                };
+            },
+        });
         const turnDeps = actionDepsFor(msg);
 
         try {
@@ -2204,39 +2279,20 @@ export function createConversation(deps) {
         } catch (error) {
             msg.markError(error.message || String(error));
         } finally {
-            // Collapse the per-turn work log and model activity to one-line summaries.
             msg.collapseLog();
             msg.collapseModelOutput();
-            // Snapshot the assistant message into the live session array,
-            // then notify bootstrap so the session is persisted.
-            if (typeof msg.finalizeForHistory === 'function') {
-                msg.finalizeForHistory();
+            if (owner.epoch === sessionEpoch) {
+                if (typeof msg.finalizeForHistory === 'function') msg.finalizeForHistory();
+                _commitSession();
             }
-            _commitSession();
         }
     }
 
-    /**
-     * Cancels the in-flight run (any chat turn or the document pipeline).
-     *
-     * Both flags/controllers cover all turn types: the document-scope UI
-     * flags are released immediately so the user can interact with the
-     * input and any pending proposal card without waiting for the
-     * in-flight fetches to settle; chat turns (QA, selection edit, append,
-     * format, table, illustration, summary, compound planning/sub-tasks)
-     * share one AbortController in chatController — aborting it makes the
-     * active fetch reject, and each runner's finally releases its own UI
-     * state when the rejection lands. Compound turns thread the same
-     * controller into every sub-task, so one cancel stops the whole
-     * chain instead of just the current task.
-     */
+    /** Cancellation is cooperative; owners retain locks until their finally. */
     function cancel() {
         let aborted = false;
         if (appState.processDocController) {
             appState.processDocController.abort();
-            appState.processDocController = null;
-            appState.isProcessingDoc = false;
-            input.setProcessing(false);
             aborted = true;
         }
         if (appState.chatController) {
@@ -2255,6 +2311,8 @@ export function createConversation(deps) {
         }
         // Persist the outgoing session BEFORE clearing the live array.
         _commitSession();
+        sessionEpoch++;
+        for (const resource of stagedResources) void resource.dispose();
         view.clearChat();
         view.renderWelcome();
         input.setValue('');

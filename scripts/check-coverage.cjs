@@ -49,42 +49,95 @@ const THRESHOLDS = [
   },
 ];
 
+const METRICS = ['statements', 'branches', 'functions', 'lines'];
 const summaryPath = path.join(__dirname, '..', 'coverage', 'coverage-summary.json');
-const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
 
-const failures = [];
-for (const group of THRESHOLDS) {
-  const metrics = {};
-  for (const metric of ['statements', 'branches', 'functions', 'lines']) {
-    metrics[metric] = { covered: 0, total: 0 };
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function checkCoverage(summary, thresholds = THRESHOLDS) {
+  const failures = [];
+  if (!isObject(summary) || !isObject(summary.total)) {
+    return ['summary must be an object with a total object'];
   }
-  let files = 0;
+  if (!Array.isArray(thresholds) || thresholds.length === 0) {
+    return ['thresholds must be a non-empty array'];
+  }
+  for (const [index, group] of thresholds.entries()) {
+    if (!isObject(group) || typeof group.name !== 'string' || !group.name.trim() ||
+        typeof group.match !== 'function' || !isObject(group.min)) {
+      failures.push(`threshold group ${index}: requires name, match function, and min object`);
+      continue;
+    }
+    if (Object.keys(group.min).some((metric) => !METRICS.includes(metric))) {
+      failures.push(`group "${group.name}": unknown threshold metric`);
+    }
+    for (const metric of METRICS) {
+      const min = group.min[metric];
+      if (!Number.isFinite(min) || min < 0 || min > 100) {
+        failures.push(`group "${group.name}" ${metric}: threshold must be a finite number between 0 and 100`);
+      }
+    }
+  }
   for (const [file, data] of Object.entries(summary)) {
-    if (file === 'total' || !group.match(file)) continue;
-    files++;
-    for (const metric of Object.keys(metrics)) {
-      metrics[metric].covered += data[metric].covered;
-      metrics[metric].total += data[metric].total;
+    for (const metric of METRICS) {
+      const value = isObject(data) && data[metric];
+      if (!isObject(value) || !Number.isFinite(value.total) || !Number.isFinite(value.covered) ||
+          value.total < 0 || value.covered < 0 || value.covered > value.total) {
+        failures.push(`file "${file}" ${metric}: requires finite counts with 0 <= covered <= total`);
+      }
     }
   }
-  if (files === 0) {
-    failures.push(`group "${group.name}": no files matched — is coverage/coverage-summary.json present?`);
-    continue;
-  }
-  for (const [metric, min] of Object.entries(group.min)) {
-    const { covered, total } = metrics[metric];
-    const pct = total > 0 ? (covered / total) * 100 : 0;
-    if (pct < min) {
-      failures.push(
-        `group "${group.name}" ${metric}: ${pct.toFixed(2)}% < required ${min}%`
-      );
+  if (failures.length > 0) return failures;
+
+  for (const group of thresholds) {
+    const metrics = Object.fromEntries(METRICS.map((metric) => [metric, { covered: 0, total: 0 }]));
+    let files = 0;
+    for (const [file, data] of Object.entries(summary)) {
+      if (file === 'total' || !group.match(file)) continue;
+      files++;
+      for (const metric of METRICS) {
+        metrics[metric].covered += data[metric].covered;
+        metrics[metric].total += data[metric].total;
+      }
+    }
+    if (files === 0) {
+      failures.push(`group "${group.name}": no files matched`);
+      continue;
+    }
+    for (const metric of METRICS) {
+      const { covered, total } = metrics[metric];
+      if (!Number.isFinite(total) || !Number.isFinite(covered) || total <= 0 || covered < 0 || covered > total) {
+        failures.push(`group "${group.name}" ${metric}: requires finite counts with total > 0 and 0 <= covered <= total`);
+        continue;
+      }
+      const pct = (covered / total) * 100;
+      const min = group.min[metric];
+      if (pct < min) {
+        failures.push(`group "${group.name}" ${metric}: ${pct.toFixed(2)}% < required ${min}%`);
+      }
     }
   }
+  return failures;
 }
 
-if (failures.length > 0) {
-  console.error('Coverage gates not met:');
-  for (const failure of failures) console.error(`  - ${failure}`);
-  process.exit(1);
+function main() {
+  let failures;
+  try {
+    failures = checkCoverage(JSON.parse(fs.readFileSync(summaryPath, 'utf8')));
+  } catch (error) {
+    failures = [`cannot read coverage summary JSON: ${error.message}`];
+  }
+  if (failures.length > 0) {
+    console.error('Coverage gates not met:');
+    for (const failure of failures) console.error(`  - ${failure}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log('Coverage gates met.');
 }
-console.log('Coverage gates met.');
+
+if (require.main === module) main();
+
+module.exports = { checkCoverage };

@@ -163,7 +163,7 @@ function setImageWorld(pictures, { paragraphs, failContextSync = false } = {}) {
         run: jest.fn(async (cb) => {
             runCount += 1;
             return cb({
-                document: { body: { inlinePictures: { items, load: jest.fn() } } },
+                document: { load: jest.fn(), changeTrackingMode: 'TrackMineOnly', body: { inlinePictures: { items, load: jest.fn() } } },
                 sync: failContextSync && runCount === 3
                     ? jest.fn().mockRejectedValue(new Error('context sync failed'))
                     : jest.fn().mockResolvedValue(undefined),
@@ -1106,7 +1106,7 @@ describe('applyImageOps', () => {
 
         const writeRange = caption.getRange.mock.results.at(-1).value;
         expect(writeRange.insertText).toHaveBeenCalledWith('Figure 4. Improved legend', 'Replace');
-        expect(result).toEqual({ applied: 1, warnings: [] });
+        expect(result).toEqual({ applied: 1, warnings: [], interrupted: false, partial: false });
     });
 
     test('figureCaption skips a stale caption instead of writing another paragraph', async () => {
@@ -1215,5 +1215,36 @@ describe('prepareTableToolEdit (multi-table)', () => {
         expect(taskPrompt).toContain('table 1 (3x2):');
         expect(taskPrompt).toContain('table 2 (2x1):');
         expect(taskPrompt).toContain('tableIndex');
+    });
+});
+
+describe('image write safety', () => {
+    beforeEach(() => jest.clearAllMocks());
+    test('stops at the next operation boundary and refuses to replay an attempted operation', async () => {
+        const controller = new AbortController();
+        const [first, second] = setImageWorld([{ delete: jest.fn(() => controller.abort()) }, {}]);
+        const proposal = { snapshotCount: 2, ops: [{ type: 'delete', index: 1 }, { type: 'delete', index: 2 }] };
+        const result = await applyImageOps(makeDeps(), proposal, { signal: controller.signal });
+        expect(result).toMatchObject({ applied: 1, partial: true, interrupted: true });
+        expect(first.delete).toHaveBeenCalledTimes(1);
+        expect(second.delete).not.toHaveBeenCalled();
+        await expect(applyImageOps(makeDeps(), proposal)).rejects.toThrow(/already attempted/);
+    });
+    test('checks cancellation after rasterization before inserting', async () => {
+        const controller = new AbortController();
+        const { svgToPngBase64 } = require('../src/taskpane/word-actions.js');
+        svgToPngBase64.mockImplementationOnce(async () => { controller.abort(); return { base64: 'png' }; });
+        setImageWorld([]);
+        const result = await applyImageOps(makeDeps(), { snapshotCount: 0, ops: [{ type: 'insert', svg: SVG }] }, { signal: controller.signal });
+        expect(result).toMatchObject({ applied: 0, interrupted: true, partial: false });
+        expect(insertPngPicture).not.toHaveBeenCalled();
+    });
+    test('restores original tracking mode after an uncertain write failure', async () => {
+        const [pic] = setImageWorld([{ delete: jest.fn(() => { throw new Error('host failure'); }) }]);
+        const doc = { load: jest.fn(), changeTrackingMode: 'TrackMineOnly', body: { inlinePictures: { items: [pic], load: jest.fn() } } };
+        Word.run.mockImplementation(async (fn) => fn({ document: doc, sync: async () => {} }));
+        const result = await applyImageOps(makeDeps(), { snapshotCount: 1, ops: [{ type: 'delete', index: 1 }] });
+        expect(result.partial).toBe(true);
+        expect(doc.changeTrackingMode).toBe('TrackMineOnly');
     });
 });

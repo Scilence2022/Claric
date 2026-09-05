@@ -3,8 +3,8 @@
  *
  * Builds the staged edit-proposal card shown in chat for amendment turns
  * (selection-scope edits and gated document-scope runs). The LLM's proposed
- * rewrite is NOT applied until the user clicks "Apply as tracked changes";
- * "Reject" dismisses the card.
+ * rewrite is applied through the user's Apply action or authorized auto-apply;
+ * "Reject" dismisses a pending card without writing.
  *
  * When `items` are given, the card carries an expandable change list — one
  * checkbox row per change, with an optional inline diff (before/after) and
@@ -387,7 +387,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         }
 
         changeBoxes.forEach((box) => box.addEventListener('change', () => {
-            applyBtn.disabled = changeBoxes.every((b) => !b.checked);
+            applyBtn.disabled = state === 'settled' || state === 'applying' || !selectedIds().length;
         }));
         el.appendChild(details);
     }
@@ -403,6 +403,12 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     const appliedIdSet = new Set();
     let applyController = null;
     let applyInFlight = false;
+    let state = 'pending';
+    function setState(next) {
+        state = next;
+        el.dataset.state = next;
+    }
+    setState('pending');
 
     /**
      * Visually marks one change item as applied (checked + disabled, row
@@ -442,6 +448,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
 
     /** Disables both buttons and shows a terminal status line. */
     function settle(text, className) {
+        if (state === 'settled') return;
+        setState('settled');
+        changeBoxes.forEach((box) => { box.disabled = true; });
         applyBtn.disabled = true;
         rejectBtn.disabled = true;
         el.classList.add(className);
@@ -457,7 +466,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
      * @param {Array<string|number>} [remainingIds] - Ids still pending
      */
     function setPaused(message) {
-        applyBtn.disabled = false;
+        if (state === 'settled') return;
+        setState('paused');
+        applyBtn.disabled = changeBoxes.length > 0 && !selectedIds().length;
         applyBtn.textContent = 'Continue applying';
         rejectBtn.disabled = true; // partial apply — reject would be misleading
         status.style.display = '';
@@ -466,7 +477,8 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     }
 
     async function runApply() {
-        if (applyInFlight) return;
+        if (applyInFlight || state === 'settled' || state === 'applying') return;
+        if (changeBoxes.length && !selectedIds().length) return;
         if (typeof isBlocked === 'function') {
             const reason = isBlocked();
             if (reason) {
@@ -487,6 +499,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             return;
         }
         applyInFlight = true;
+        setState('applying');
         _anyCardApplyInFlight = true;
         applyBtn.disabled = true;
         rejectBtn.disabled = true;
@@ -502,6 +515,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
                 signal: applyController.signal,
                 onChunkApplied: markItemApplied,
             });
+            if (state === 'applying') api.markApplied();
+        } catch (error) {
+            api.markError(error.message || String(error));
         } finally {
             applyInFlight = false;
             _anyCardApplyInFlight = false;
@@ -547,8 +563,10 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         setPaused,
         /** Re-enables Apply after a failed attempt so the user can retry. */
         markError(message) {
-            applyBtn.disabled = changeBoxes.length > 0 && changeBoxes.every((b) => !b.checked);
-            rejectBtn.disabled = false;
+            if (state === 'settled') return;
+            setState('error');
+            applyBtn.disabled = changeBoxes.length > 0 && !selectedIds().length;
+            rejectBtn.disabled = appliedIdSet.size > 0;
             status.style.display = '';
             status.textContent = `Apply failed: ${message}`;
             el.classList.add('proposal-error');
@@ -559,6 +577,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     // method to sync the proposal's history metadata; calling settle()
     // directly would leave saved sessions stuck at "pending".
     rejectBtn.addEventListener('click', () => {
+        if (state === 'settled' || applyInFlight || appliedIdSet.size > 0) return;
         api.markRejected();
         if (onReject) onReject();
     });

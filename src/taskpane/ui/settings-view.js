@@ -34,6 +34,11 @@ import { appState, getActiveBackendConfig, getActiveImageConfig, debounce, persi
 import { BUILTIN_SKILLS, RESERVED_MCP_SKILL } from '../skills.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
 
+import { containFocus } from './dialog.js';
+
+let _releaseSettingsFocus = null;
+let _releasePromptFocus = null;
+let _modelIndex = -1;
 let _onConfigChanged = () => {};
 let _lastFocusedElement = null;
 let _availableModels = [];
@@ -49,11 +54,12 @@ let _imageFormProvider = null;
  *
  * @param {object} deps
  * @param {function()} [deps.onConfigChanged] - Called after config changes (model pill refresh)
+ * @param {boolean} [deps.bindOpenButton] - False when bootstrap owns the lazy open handler
  */
-export function initSettings({ onConfigChanged } = {}) {
+export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
     _onConfigChanged = onConfigChanged || (() => {});
 
-    document.getElementById('settingsBtn').addEventListener('click', openSettings);
+    if (bindOpenButton) document.getElementById('settingsBtn').addEventListener('click', openSettings);
     document.getElementById('settingsCloseBtn').addEventListener('click', closeSettings);
     document.getElementById('settingsSaveBtn').addEventListener('click', () => {
         // Explicit Save gives visible feedback (settings are auto-saved too);
@@ -61,8 +67,20 @@ export function initSettings({ onConfigChanged } = {}) {
         const ok = saveSettings();
         showSaveConfirmation(ok);
     });
-    for (const tab of document.querySelectorAll('.settings-tab')) {
+    const tabs = [...document.querySelectorAll('.settings-tab')];
+    for (const [index, tab] of tabs.entries()) {
+        tab.tabIndex = tab.classList.contains('active') ? 0 : -1;
+        tab.setAttribute('aria-controls', `settingsPage${capitalize(tab.dataset.tab)}`);
         tab.addEventListener('click', () => switchSettingsTab(tab.dataset.tab));
+        tab.addEventListener('keydown', (event) => {
+            const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+                : event.key === 'ArrowRight' ? (index + 1) % tabs.length
+                    : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : -1;
+            if (next < 0) return;
+            event.preventDefault();
+            switchSettingsTab(tabs[next].dataset.tab);
+            tabs[next].focus();
+        });
     }
     document.getElementById('settingsOverlay').addEventListener('click', (e) => {
         if (e.target.id === 'settingsOverlay') closeSettings();
@@ -99,13 +117,36 @@ export function initSettings({ onConfigChanged } = {}) {
     modelInput.addEventListener('focus', openModelDropdown);
     modelInput.addEventListener('click', openModelDropdown);
     modelInput.addEventListener('blur', () => {
-        // Item clicks use mousedown + preventDefault, so blur only means the
-        // user genuinely left the field; close on the next tick.
-        setTimeout(closeModelDropdown, 150);
+        // Pointer selection prevents blur, so a real blur can close immediately.
+        closeModelDropdown();
     });
+    modelInput.setAttribute('aria-autocomplete', 'list');
     modelInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !document.getElementById('modelDropdown').hidden) {
-            e.stopPropagation(); // close the dropdown, not the settings panel
+        if (e.isComposing || e.keyCode === 229) return;
+        const dropdown = document.getElementById('modelDropdown');
+        if (e.key === 'Escape' && !dropdown.hidden) {
+            e.preventDefault();
+            e.stopPropagation();
+            closeModelDropdown();
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (dropdown.hidden) openModelDropdown();
+            const options = [...dropdown.querySelectorAll('[role="option"]')];
+            if (!options.length) return;
+            _modelIndex = _modelIndex < 0
+                ? (e.key === 'ArrowDown' ? 0 : options.length - 1)
+                : (_modelIndex + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+            options.forEach((option, index) => {
+                option.setAttribute('aria-selected', String(index === _modelIndex));
+                option.classList.toggle('active', index === _modelIndex);
+            });
+            modelInput.setAttribute('aria-activedescendant', options[_modelIndex].id);
+            options[_modelIndex].scrollIntoView?.({ block: 'nearest' });
+        } else if (e.key === 'Enter' && !dropdown.hidden && _modelIndex >= 0) {
+            e.preventDefault();
+            const option = dropdown.querySelectorAll('[role="option"]')[_modelIndex];
+            if (option) selectModel(option.textContent);
+        } else if (e.key === 'Tab') {
             closeModelDropdown();
         }
     });
@@ -204,13 +245,19 @@ export function openSettings() {
     // Re-render on every open so the lists reflect edits made elsewhere.
     renderSkillImportList();
     renderMcpServerList();
+    if (!_releaseSettingsFocus) {
+        _releaseSettingsFocus = containFocus(document.getElementById('settingsPanel') || document.getElementById('settingsOverlay'), closeSettings, document.getElementById('settingsCloseBtn'));
+    }
 }
 
 /** Closes the settings slide-over and restores the docked panel layout. */
 export function closeSettings() {
+    if (_releasePromptFocus) hideSavePromptModal();
     closeModelDropdown();
     resetPanelGeometry();
     document.getElementById('settingsOverlay').setAttribute('hidden', '');
+    _releaseSettingsFocus?.();
+    _releaseSettingsFocus = null;
 }
 
 /**
@@ -224,6 +271,7 @@ function switchSettingsTab(name) {
         const active = tab.dataset.tab === name;
         tab.classList.toggle('active', active);
         tab.setAttribute('aria-selected', String(active));
+        tab.tabIndex = active ? 0 : -1;
     }
     for (const page of document.querySelectorAll('.settings-page')) {
         page.toggleAttribute('hidden', page.id !== `settingsPage${capitalize(name)}`);
@@ -256,6 +304,17 @@ function saveSettings() {
         ? temperatureValue
         : 1;
     config.trackChangesEnabled = document.getElementById('trackChangesCheckbox').checked;
+    if (!config.trackChangesEnabled && config.autoApplyChanges) {
+        config.autoApplyChanges = false;
+        const toggle = document.getElementById('autoApplyToggle');
+        if (toggle) toggle.checked = false;
+        const feedback = document.getElementById('inputError');
+        if (feedback) {
+            feedback.textContent = [feedback.hidden ? '' : feedback.textContent, 'Auto-apply disabled because Track Changes is off.'].filter(Boolean).join('\n');
+            feedback.hidden = false;
+        }
+        addLog('Auto-apply disabled because Track Changes is off.', 'warning');
+    }
     config.lineDiffEnabled = document.getElementById('lineDiffCheckbox').checked;
     config.docExtraction = {
         richness: document.getElementById('docRichnessSelect').value
@@ -612,7 +671,7 @@ export async function testConnectionUI() {
             setConnectionStatus('error', `${backendLabel}: API key required`);
             addLog(`${backendLabel} authentication failed: ${error.message}`, 'error');
         } else {
-            setConnectionStatus('error', `${backendLabel}: Connection Error`);
+            setConnectionStatus('error', `${backendLabel}: Connection Error. Check the endpoint, network and browser CORS access, then Refresh.`);
             addLog(`${backendLabel} connection failed: ${error.message}`, 'error');
         }
         console.error('Connection error:', error);
@@ -665,6 +724,11 @@ function renderModelDropdown(filter = '') {
         : _availableModels;
 
     dropdown.innerHTML = '';
+    _modelIndex = -1;
+    const input = document.getElementById('modelSelect');
+    input.removeAttribute('aria-activedescendant');
+    dropdown.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
     if (matches.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'model-dropdown-empty';
@@ -678,6 +742,8 @@ function renderModelDropdown(filter = '') {
         const item = document.createElement('div');
         item.className = 'model-dropdown-item' + (id === current ? ' current' : '');
         item.setAttribute('role', 'option');
+        item.id = `model-option-${dropdown.childElementCount}`;
+        item.setAttribute('aria-selected', 'false');
         item.textContent = id;
         // mousedown + preventDefault keeps focus in the input (no blur) so
         // the click reliably selects instead of being swallowed by blur.
@@ -702,6 +768,8 @@ function closeModelDropdown() {
     const dropdown = document.getElementById('modelDropdown');
     if (!dropdown) return;
     dropdown.hidden = true;
+    _modelIndex = -1;
+    document.getElementById('modelSelect').removeAttribute('aria-activedescendant');
     document.getElementById('modelSelect').setAttribute('aria-expanded', 'false');
 }
 
@@ -875,12 +943,14 @@ function showSavePromptModal(category) {
     document.getElementById('savePromptCategory').textContent = `Saving to: ${capitalize(category)}`;
     document.getElementById('promptName').value = '';
     document.getElementById('promptDescription').value = '';
-    document.getElementById('promptName').focus();
+    _releasePromptFocus = containFocus(modal, hideSavePromptModal, document.getElementById('promptName'));
 }
 
 /** Hides the save prompt modal and restores focus to the invoking control. */
 function hideSavePromptModal() {
     document.getElementById('savePromptModal').classList.remove('active');
+    _releasePromptFocus?.();
+    _releasePromptFocus = null;
     if (_lastFocusedElement && typeof _lastFocusedElement.focus === 'function') {
         _lastFocusedElement.focus();
     }

@@ -10,7 +10,7 @@ AI-powered Microsoft Word add-in for tracked changes, document summarization, an
 - **Coverage**: `npm run coverage` followed by `npm run check-coverage`
 - **Lint**: `npm run lint` (ESLint 9 flat config)
 - **Typecheck**: `npm run typecheck`
-- **Verify all (same as CI)**: `npm run verify` (lint + test + coverage + check-coverage + typecheck + build)
+- **Verify source and build**: `npm run verify` (lint + test + coverage + check-coverage + typecheck + build + verify-build). CI additionally audits dependencies and scans the container; real Word acceptance is separate.
 - **Node**: >=22 (see .nvmrc / package.json engines)
 
 ## Architecture

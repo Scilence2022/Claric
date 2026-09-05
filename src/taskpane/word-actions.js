@@ -2544,29 +2544,62 @@ export async function planDocumentTasks(deps, {
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @returns {Promise<{ instruction: string, scope: string, ops: Array<object>, model: string }>}
  */
+function checkOperationSignal(signal) {
+    if (signal?.aborted) {
+        const error = new Error('Operation cancelled.');
+        error.name = 'AbortError';
+        throw error;
+    }
+}
+
+let formatAnchorSequence = 0;
+
 export async function prepareFormatProposal(deps, { instruction, scope = 'selection', selectionText, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
-
-    let scopeText = '';
-    if (scope === 'selection') {
-        scopeText = (selectionText && selectionText.trim())
-            || (await readSelectionText(deps)).selectionText;
-    } else {
-        const richness = (appState.config.docExtraction || {}).richness || 'structured';
-        log('Extracting document text for context...', 'info');
-        scopeText = await extractDocumentStructured({ richness });
+    checkOperationSignal(signal);
+    const anchor = await Word.run(async (context) => {
+        const range = scope === 'document' ? context.document.body.getRange() : context.document.getSelection();
+        if (typeof range.insertBookmark !== 'function' || typeof context.document.getBookmarkRangeOrNullObject !== 'function') {
+            throw new Error('This Word host cannot anchor formatting safely. No changes were applied.');
+        }
+        range.load('text');
+        await context.sync();
+        checkOperationSignal(signal);
+        if (scope === 'selection' && selectionText && range.text.trim() !== selectionText.trim()) {
+            throw new Error('The selection changed before formatting was prepared. Draft a new proposal.');
+        }
+        const bookmark = `_claric_fmt_${Date.now().toString(36)}_${++formatAnchorSequence}`;
+        range.insertBookmark(bookmark);
+        await context.sync();
+        const baseline = typeof range.getOoxml === 'function' ? range.getOoxml() : null;
+        if (baseline) await context.sync();
+        return { bookmark, text: range.text, ooxml: baseline?.value };
+    });
+    try {
+        checkOperationSignal(signal);
+        const prompt = buildFormatPrompt(instruction, anchor.text, scope);
+        const backendConfig = getActiveBackendConfig(appState);
+        log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
+        const rawResponse = (onToken || onReasoning)
+            ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
+            : await sendPrompt(backendConfig, prompt, log, signal);
+        checkOperationSignal(signal);
+        const ops = parseFormatOps(rawResponse, log);
+        if (!ops.length) await discardFormatProposal(deps, { anchor });
+        return { instruction, scope, ops, anchor, model: backendConfig.model };
+    } catch (error) {
+        await discardFormatProposal(deps, { anchor });
+        throw error;
     }
+}
 
-    const prompt = buildFormatPrompt(instruction, scopeText, scope);
-    const backendConfig = getActiveBackendConfig(appState);
-    log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
-    const rawResponse = (onToken || onReasoning)
-        ? await sendPromptStream(backendConfig, prompt, { onContent: onToken, onReasoning }, log, signal)
-        : await sendPrompt(backendConfig, prompt, log, signal);
-
-    const ops = parseFormatOps(rawResponse, log);
-    log(`Parsed ${ops.length} formatting op(s) from the model response.`, 'info');
-    return { instruction, scope, ops, model: backendConfig.model };
+export async function discardFormatProposal(deps, proposal) {
+    if (!proposal?.anchor?.bookmark || proposal.anchor.cleaned) return;
+    await Word.run(async (context) => {
+        context.document.deleteBookmark(proposal.anchor.bookmark);
+        await context.sync();
+    });
+    proposal.anchor.cleaned = true;
 }
 
 /**
@@ -2582,64 +2615,82 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
  * @param {object} proposal - Result of prepareFormatProposal
  * @returns {Promise<{ applied: boolean, appliedRanges: number, insertedParagraphs: number }>}
  */
-export async function applyFormatProposal(deps, proposal) {
+export async function applyFormatProposal(deps, proposal, { signal } = {}) {
     const { appState, log } = deps;
-    const { ops, scope } = proposal || {};
-    if (!Array.isArray(ops) || ops.length === 0) {
-        throw new Error('No formatting ops to apply.');
-    }
-
+    const { ops, anchor } = proposal || {};
+    if (!Array.isArray(ops) || !ops.length) throw new Error('No formatting ops to apply.');
+    if (!anchor?.bookmark || typeof anchor.text !== 'string') throw new Error('Formatting target is not anchored. Draft a new proposal.');
+    if (anchor.attempted) throw new Error('This formatting proposal has already been attempted. Review the document and draft a new proposal.');
+    checkOperationSignal(signal);
     let appliedRanges = 0;
     let insertedParagraphs = 0;
+    let interrupted = false;
+    let partial = false;
     await Word.run(async (context) => {
+        const scopeRange = context.document.getBookmarkRangeOrNullObject(anchor.bookmark);
+        scopeRange.load('isNullObject,text');
+        if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
+        await context.sync();
+        checkOperationSignal(signal);
+        if (scopeRange.isNullObject || scopeRange.text !== anchor.text) {
+            throw new Error('The anchored formatting target changed or disappeared. Draft a new proposal.');
+        }
+        if (anchor.ooxml !== undefined) {
+            const current = scopeRange.getOoxml();
+            await context.sync();
+            checkOperationSignal(signal);
+            if (current.value !== anchor.ooxml) throw new Error('The anchored formatting baseline changed. Draft a new proposal.');
+        }
+        const previousMode = context.document.changeTrackingMode;
         if (Word.ChangeTrackingMode) {
             context.document.changeTrackingMode = appState.config.trackChangesEnabled
-                ? Word.ChangeTrackingMode.trackAll
-                : Word.ChangeTrackingMode.off;
+                ? Word.ChangeTrackingMode.trackAll : Word.ChangeTrackingMode.off;
         }
-        const scopeRange = scope === 'document'
-            ? context.document.body
-            : context.document.getSelection();
-
-        let applied = 0;
-        let inserted = 0;
-        for (const op of ops) {
-            if (op.insert) {
-                inserted += await _applyInsertOp(context, scopeRange, op, log);
-                continue;
-            }
-            const targets = await _resolveFormatTargets(context, scopeRange, op);
-            if (targets.length === 0) {
-                log(`Format op found no target (${op.match || op.paragraphStyle || 'scope'})`, 'warning');
-                continue;
-            }
-            for (const target of targets) {
-                if (op.font) _applyFontOps(target.font, op.font, log);
-                if (op.paragraph) {
-                    const paragraphs = target.paragraphs;
-                    paragraphs.load('items');
+        try {
+            for (const op of ops) {
+                checkOperationSignal(signal);
+                if (op.insert) {
+                    anchor.attempted = true;
+                    insertedParagraphs += await _applyInsertOp(context, scopeRange, op, log);
                     await context.sync();
-                    for (const paragraph of paragraphs.items) {
-                        _applyParagraphOps(paragraph, op.paragraph, log);
-                    }
-                    if (_hasListOps(op.paragraph)) {
-                        await _applyListOps(context, paragraphs.items, op.paragraph, log);
-                    }
+                    continue;
                 }
-                applied++;
+                const targets = await _resolveFormatTargets(context, scopeRange, op);
+                for (const target of targets) {
+                    checkOperationSignal(signal);
+                    let paragraphs;
+                    if (op.paragraph) {
+                        paragraphs = target.paragraphs;
+                        paragraphs.load('items');
+                        await context.sync();
+                        checkOperationSignal(signal);
+                    }
+                    anchor.attempted = true;
+                    if (op.font) _applyFontOps(target.font, op.font, log);
+                    if (paragraphs) {
+                        for (const paragraph of paragraphs.items) _applyParagraphOps(paragraph, op.paragraph, log);
+                        if (_hasListOps(op.paragraph)) await _applyListOps(context, paragraphs.items, op.paragraph, log);
+                    }
+                    await context.sync();
+                    appliedRanges++;
+                }
             }
-            await context.sync();
+            interrupted = !!signal?.aborted;
+        } catch (error) {
+            interrupted = error.name === 'AbortError';
+            if (!anchor.attempted && !interrupted) throw error;
+            partial = !!anchor.attempted;
+            log(`Formatting stopped: ${error.message}. Review the document before drafting another proposal.`, 'warning');
+        } finally {
+            if (Word.ChangeTrackingMode) {
+                context.document.changeTrackingMode = previousMode;
+                await context.sync();
+            }
         }
-
-        if (Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
-            await context.sync();
-        }
-        appliedRanges = applied;
-        insertedParagraphs = inserted;
-        log(`Applied formatting to ${applied} range(s) and inserted ${inserted} paragraph(s) across ${ops.length} op(s).`, 'success');
     });
-    return { applied: appliedRanges > 0 || insertedParagraphs > 0, appliedRanges, insertedParagraphs };
+    if (anchor.attempted) await discardFormatProposal(deps, proposal);
+    return { applied: appliedRanges > 0 || insertedParagraphs > 0, appliedRanges, insertedParagraphs,
+        interrupted, partial: partial || (interrupted && !!anchor.attempted) };
 }
 
 /**
@@ -2870,7 +2921,50 @@ const MAX_ILLUSTRATION_WIDTH_PT = 450;
  *   previewSrc?: string, renderer: 'svg'|'image', position: string,
  *   positionLabel: string, model: string, sizeLabel: string }>}
  */
-export async function prepareIllustrationProposal(deps, { instruction, onToken, onReasoning, signal } = {}) {
+export async function prepareIllustrationProposal(deps, args = {}) {
+    const { instruction, signal } = args;
+    checkOperationSignal(signal);
+    let anchor;
+    if (illustrationPositionFromInstruction(instruction) === 'cursor') {
+        anchor = await Word.run(async (context) => {
+            const range = context.document.getSelection();
+            if (typeof range.insertBookmark !== 'function' || typeof range.getOoxml !== 'function'
+                || typeof context.document.getBookmarkRangeOrNullObject !== 'function') {
+                throw new Error('This Word host cannot safely anchor the illustration cursor.');
+            }
+            range.load('text');
+            await context.sync();
+            checkOperationSignal(signal);
+            const bookmark = `_claric_img_${Date.now().toString(36)}_${++formatAnchorSequence}`;
+            range.insertBookmark(bookmark);
+            await context.sync();
+            const baseline = range.getOoxml();
+            await context.sync();
+            if (typeof baseline.value !== 'string' || !baseline.value) {
+                context.document.deleteBookmark(bookmark);
+                await context.sync();
+                throw new Error('The illustration cursor baseline is unavailable.');
+            }
+            return { bookmark, text: range.text, ooxml: baseline.value };
+        });
+    }
+    try {
+        checkOperationSignal(signal);
+        const proposal = await designIllustrationProposal(deps, args);
+        checkOperationSignal(signal);
+        if (!proposal.svg && !proposal.imageBase64) await discardIllustrationProposal(deps, { anchor });
+        return { ...proposal, anchor };
+    } catch (error) {
+        await discardIllustrationProposal(deps, { anchor });
+        throw error;
+    }
+}
+
+export async function discardIllustrationProposal(deps, proposal) {
+    return discardFormatProposal(deps, proposal);
+}
+
+async function designIllustrationProposal(deps, { instruction, onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
@@ -2944,57 +3038,63 @@ export async function prepareIllustrationProposal(deps, { instruction, onToken, 
  * @param {object} proposal - Result of prepareIllustrationProposal
  * @returns {Promise<{ inserted: boolean }>}
  */
-export async function applyIllustrationProposal(deps, proposal) {
+export async function applyIllustrationProposal(deps, proposal, { signal } = {}) {
     const { appState, log } = deps;
-    const imageBase64 = ((proposal && proposal.imageBase64) || '').trim();
+    checkOperationSignal(signal);
+    if (proposal?.attempted) throw new Error('This illustration was already attempted. Review the document and draft a new proposal.');
+    let base64 = ((proposal && proposal.imageBase64) || '').trim();
     const svg = ((proposal && proposal.svg) || '').trim();
-    if (!imageBase64 && !svg) {
-        throw new Error('No illustration to apply — the model returned no usable image.');
-    }
-
-    // Raster payloads carry no intrinsic dimensions here; the picture's own
-    // synced width drives the content-width scaling in finalizeInsertedPicture,
-    // so only the log line needs a fallback description.
-    let base64 = imageBase64;
-    let sizeDesc = 'generated image';
-    if (!base64) {
-        const rasterized = await svgToPngBase64(svg);
-        base64 = rasterized.base64;
-        sizeDesc = `${rasterized.width}x${rasterized.height}px PNG`;
-    }
-
-    const position = proposal.position === 'start' || proposal.position === 'cursor'
-        ? proposal.position
-        : 'end';
-
+    if (!base64 && !svg) throw new Error('No illustration to apply — the model returned no usable image.');
+    if (!base64) base64 = (await svgToPngBase64(svg)).base64;
+    checkOperationSignal(signal);
+    const position = proposal.position === 'start' || proposal.position === 'cursor' ? proposal.position : 'end';
+    let inserted = false;
+    let partial = false;
     await Word.run(async (context) => {
-        if (Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = appState.config.trackChangesEnabled
-                ? Word.ChangeTrackingMode.trackAll
-                : Word.ChangeTrackingMode.off;
-        }
-        try {
-            const picture = insertPngPicture(context, {
-                base64,
-                position,
-            });
+        let cursorRange;
+        if (position === 'cursor') {
+            if (!proposal.anchor?.bookmark || !proposal.anchor.ooxml) throw new Error('The illustration cursor is not anchored. Draft a new proposal.');
+            const range = context.document.getBookmarkRangeOrNullObject(proposal.anchor.bookmark);
+            range.load('isNullObject,text');
             await context.sync();
-            // Scaling reads the synced width; alt text is best-effort.
+            checkOperationSignal(signal);
+            if (range.isNullObject || range.text !== proposal.anchor.text || typeof range.getOoxml !== 'function') {
+                throw new Error('The illustration cursor anchor changed or disappeared.');
+            }
+            const baseline = range.getOoxml();
+            await context.sync();
+            checkOperationSignal(signal);
+            if (baseline.value !== proposal.anchor.ooxml) throw new Error('The illustration cursor baseline changed.');
+            cursorRange = range.getRange(Word.RangeLocation.end);
+        }
+        if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
+        await context.sync();
+        checkOperationSignal(signal);
+        const previousMode = context.document.changeTrackingMode;
+        if (Word.ChangeTrackingMode) context.document.changeTrackingMode = appState.config.trackChangesEnabled
+            ? Word.ChangeTrackingMode.trackAll : Word.ChangeTrackingMode.off;
+        try {
+            proposal.attempted = true;
+            const picture = cursorRange
+                ? cursorRange.insertInlinePictureFromBase64(base64, Word.InsertLocation.start)
+                : insertPngPicture(context, { base64, position });
+            if (cursorRange) picture.load('width,height');
+            await context.sync();
+            inserted = true;
             finalizeInsertedPicture(context, picture, (proposal.instruction || 'Illustration').slice(0, 200));
-            // Persist the SVG source beside the picture so later edits can
-            // re-edit the vector markup (no-op for raster-model payloads and
-            // where the shared custom-XML-parts API is unavailable).
             if (svg) await attachSvgSource(picture, svg);
             await context.sync();
+        } catch (error) {
+            partial = true;
+            log(`Illustration stopped: ${error.message}. The image may already be inserted; review before retrying.`, 'warning');
         } finally {
             if (Word.ChangeTrackingMode) {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                context.document.changeTrackingMode = previousMode;
                 await context.sync();
             }
         }
-        log(`Inserted illustration at ${illustrationPositionLabel(position)} (${sizeDesc}).`, 'success');
     });
-    return { inserted: true };
+    return { inserted, partial: partial || (!!signal?.aborted && !!proposal.attempted), interrupted: !!signal?.aborted };
 }
 
 /**
@@ -3257,7 +3357,10 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         if (failedChunks.length === 0) {
             return Promise.resolve();
         }
-        return retryFailedChunks(deps, { failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress, setBusy });
+        return retryFailedChunks(deps, {
+            failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress, setBusy,
+            documentContext, commentInstructions, concurrency, onChunkToken,
+        });
     };
 
     /**
@@ -3278,13 +3381,13 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         return { staged: true, results, chunks, apply, discard, retryFailed, failedCount: failed, cancelledCount: cancelled };
     }
 
-    const applicationResult = await apply();
-    return { results, applicationResult, chunks, cancelled: cancelled > 0 };
+    const applicationResult = await apply(undefined, { signal });
+    return { results, applicationResult, chunks, cancelled: cancelled > 0 || !!signal?.aborted };
 }
 
 /**
  * Retries processing only the failed chunks of a document-scope run.
- * Re-runs the orchestrator on the failed chunk subset and applies results.
+ * Re-runs the original failed chunks and stages results for confirmation.
  *
  * @param {object} deps - { appState, log }
  * @param {object} args
@@ -3299,102 +3402,109 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
  *   while the composer still looked idle (Send button active, text editable),
  *   and the run had no visible "in progress" state at all.
  */
-export async function retryFailedChunks(deps, { failedResults, bookmarkMap, backendConfig, promptShim, onProgress, setBusy = () => {} } = {}) {
+const retryLifecycles = new WeakMap();
+
+export async function retryFailedChunks(deps, {
+    failedResults, bookmarkMap, backendConfig, promptShim, onProgress,
+    documentContext = null, commentInstructions = '', concurrency = 4,
+    onChunkToken, setBusy = () => {}, lifecycle,
+} = {}) {
     const { appState, log } = deps;
-
-    if (appState.isProcessingDoc) {
-        log('Document processing is already running. Wait for it to finish before retrying.', 'warning');
+    if (deps.isCurrentSession && !deps.isCurrentSession()) return;
+    const state = lifecycle || retryLifecycles.get(bookmarkMap)
+        || { revision: 0, pending: false, inFlight: false, consumed: new Set(), uncertain: new Set() };
+    retryLifecycles.set(bookmarkMap, state);
+    if (state.pending || state.inFlight) {
+        log('A retry proposal is already pending or processing. Apply or dismiss it before retrying.', 'warning');
         return;
     }
-    // Never clobber a live controller: isProcessingDoc can be false while a
-    // proposal-card apply still owns processDocController, and overwriting it
-    // would make that apply uncancellable. Mirrors the same defense in
-    // makeProposalCard.registerController.
-    if (appState.processDocController) {
-        log('Another document operation is still settling. Try the retry again in a moment.', 'warning');
+    failedResults = failedResults.filter((r) => !state.consumed.has(r.chunkId) && !state.uncertain.has(r.chunkId));
+    if (!failedResults.length) return;
+    if (appState.isProcessing || appState.isProcessingDoc || appState.isProcessingSummary
+        || appState.chatController || appState.processDocController) {
+        log('Another operation is still settling. Wait before retrying.', 'warning');
         return;
     }
-
-    log(`Retrying ${failedResults.length} failed chunk(s)...`, 'info');
+    state.inFlight = true;
+    const revision = ++state.revision;
     const myController = new AbortController();
     appState.isProcessingDoc = true;
     appState.processDocController = myController;
     setBusy(true);
-
     try {
-        // Re-drive the ORIGINAL chunk objects. ChunkResult.chunk carries the
-        // full DocumentChunk (paragraphs, overlap, id), which is what the
-        // orchestrator's composer and the reassembler's alignment both need;
-        // rebuilding text-only stubs here used to crash every retry chunk
-        // inside chunk.paragraphs.map and re-reject it instantly.
-        const retryChunks = failedResults.map((r) => r.chunk).filter(Boolean);
-
-        const results = await processChunksParallel(retryChunks, {
-            config: backendConfig,
-            promptManager: promptShim,
-            // No context prefix on retries: rebuilding the full document
-            // context is not worth a re-extraction, and orchestrator treats
-            // a null context as "no prefix" rather than crashing.
-            documentContext: null,
-            log,
-            onProgress,
-            signal: appState.processDocController.signal,
-            concurrency: 4,
-            timeoutMs: 300000,
-            commentInstructions: '',
+        const chunks = failedResults.map((r) => r.chunk).filter(Boolean);
+        const results = await processChunksParallel(chunks, {
+            config: backendConfig, promptManager: promptShim, documentContext,
+            log, onProgress, onChunkToken, signal: myController.signal,
+            concurrency, timeoutMs: 300000, commentInstructions,
         });
-
-        // Retry chunks are rebuilt without paragraphs, so carry the staged
-        // original texts forward explicitly: applyChunkResults uses them to
-        // re-anchor bookmark ranges that drifted since staging.
-        const chunkOriginals = new Map();
-        for (const r of failedResults) {
-            if (r.chunk && Array.isArray(r.chunk.paragraphs) && r.chunk.paragraphs.length > 0) {
-                chunkOriginals.set(r.chunkId, r.chunk.paragraphs.map((p) => p.text));
-            }
-        }
-
-        const applicationResult = await applyChunkResults(results, bookmarkMap, {
-            trackChangesEnabled: appState.config.trackChangesEnabled,
-            lineDiffEnabled: appState.config.lineDiffEnabled,
-            log,
-            chunkOriginals,
-        });
-
-        const stillFailed = results.filter(r => r.status === 'rejected').length;
-        log(
-            `Retry complete: ${applicationResult.amendmentsApplied} amendments, ` +
-            `${applicationResult.commentsInserted} comments` +
-            (stillFailed > 0 ? `, ${stillFailed} still failed` : ''),
-            stillFailed > 0 ? 'warning' : 'success'
-        );
-
-        // The retry is the failed chunks' second chance: clean up their
-        // bookmarks either way so nothing lingers in the document. (The
-        // original apply() kept exactly these bookmarks alive for this call.)
-        const retriedBookmarks = new Map(
-            failedResults
-                .map((r) => [r.chunkId, bookmarkMap.get(r.chunkId)])
-                .filter(([, name]) => name)
-        );
-        if (retriedBookmarks.size > 0) {
-            await cleanupBookmarks(retriedBookmarks);
-        }
+        if (myController.signal.aborted || (deps.isCurrentSession && !deps.isCurrentSession())) return;
+        const retryBookmarks = new Map(failedResults
+            .map((r) => [r.chunkId, bookmarkMap.get(r.chunkId)]).filter(([, name]) => name));
+        const failedCount = results.filter((r) => r.status === 'rejected').length;
+        state.pending = results.some((r) => r.status === 'fulfilled' && (r.amendment || r.comment));
+        let closed = false;
+        let applying = false;
+        const outcome = {
+            staged: true, retryProposal: true, revision, results, chunks, failedCount,
+            cancelledCount: results.filter((r) => r.status === 'cancelled').length,
+            apply: async (ids, { signal, onChunkApplied } = {}) => {
+                if (closed || revision !== state.revision || applying) throw new Error('This retry proposal is no longer active.');
+                checkOperationSignal(signal);
+                applying = true;
+                const selected = results.filter((r) => r.status === 'fulfilled' && !state.consumed.has(r.chunkId)
+                    && (!Array.isArray(ids) || ids.includes(r.chunkId)));
+                try {
+                    const result = await applyChunkResults(selected, retryBookmarks, {
+                        trackChangesEnabled: appState.config.trackChangesEnabled,
+                        lineDiffEnabled: appState.config.lineDiffEnabled,
+                        log, signal,
+                        onChunkApplied: (id, detail) => {
+                            state.consumed.add(id);
+                            if (onChunkApplied) onChunkApplied(id, detail);
+                        },
+                        chunkOriginals: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.text)])),
+                    });
+                    for (const id of result.appliedChunkIds || []) state.consumed.add(id);
+                    const completed = new Map([...retryBookmarks].filter(([id]) => state.consumed.has(id)));
+                    if (completed.size) await cleanupBookmarks(completed);
+                    if (!result.interrupted) { closed = true; state.pending = false; }
+                    return result;
+                } catch (error) {
+                    for (const r of selected) if (!state.consumed.has(r.chunkId)) state.uncertain.add(r.chunkId);
+                    closed = true;
+                    state.pending = false;
+                    log('Retry application failed with uncertain writes. Review the document before drafting fresh edits.', 'warning');
+                    throw error;
+                } finally {
+                    applying = false;
+                }
+            },
+            discard: async () => {
+                if (applying) throw new Error('Wait for the retry write to settle before dismissing.');
+                closed = true;
+                if (revision === state.revision) state.pending = false;
+            },
+            retryFailed: (opts = {}) => retryFailedChunks(deps, {
+                failedResults, bookmarkMap, backendConfig, promptShim, onProgress,
+                documentContext, commentInstructions, concurrency, onChunkToken, ...opts, lifecycle: state,
+            }),
+        };
+        log(`Retry prepared for confirmation: ${results.length - failedCount} section(s), ${failedCount} still failed.`,
+            failedCount ? 'warning' : 'info');
+        if (deps.stageRetryProposal) await deps.stageRetryProposal(outcome);
+        return outcome;
     } catch (error) {
-        if (error.name === 'AbortError') {
-            log('Retry cancelled.', 'warning');
-        } else {
-            log(`Retry failed: ${error.message}`, 'error');
-        }
+        state.pending = false;
+        log(error.name === 'AbortError' ? 'Retry cancelled.' : `Retry failed: ${error.message}`,
+            error.name === 'AbortError' ? 'warning' : 'error');
     } finally {
-        // Only release what we still own: cancel() may have nulled the
-        // controller to free the UI, and a late-settling orphan must not clear
-        // a follow-up run's flags (same ownership rule as runDocumentTurn).
+        state.inFlight = false;
         if (appState.processDocController === myController) {
             appState.isProcessingDoc = false;
             appState.processDocController = null;
+            setBusy(false);
         }
-        setBusy(false);
     }
 }
 

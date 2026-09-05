@@ -2220,7 +2220,7 @@ describe('createConversation.newChat', () => {
 });
 
 describe('createConversation.cancel', () => {
-  test('aborts the document and chat controllers and releases the UI immediately', () => {
+  test('aborts controllers without releasing a still-settling write lock', () => {
     const docController = new AbortController();
     const chatController = new AbortController();
     const appState = makeAppState({
@@ -2238,12 +2238,8 @@ describe('createConversation.cancel', () => {
     // the assertion still proves cancellation propagated to the LLM layer.
     expect(docController.signal.aborted).toBe(true);
     expect(chatController.signal.aborted).toBe(true);
-    // Cancel also frees the UI immediately so the user can interact again
-    // without waiting for the in-flight fetch to settle. The orphan promise
-    // guards its own finally on controller identity (see runDocumentTurn).
-    expect(appState.processDocController).toBeNull();
-    expect(appState.isProcessingDoc).toBe(false);
-    expect(input.setProcessing).toHaveBeenCalledWith(false);
+    expect(appState.processDocController).toBe(docController);
+    expect(input.setProcessing).not.toHaveBeenCalledWith(false);
   });
 
   test('is a no-op when no controllers are active', () => {
@@ -2285,9 +2281,11 @@ describe('createConversation.cancel', () => {
     const orphanedController = appState.processDocController;
 
     conv.cancel();
-    expect(appState.processDocController).toBeNull();
-    expect(appState.isProcessingDoc).toBe(false);
-    expect(input.setProcessing).toHaveBeenLastCalledWith(false);
+    expect(appState.processDocController).toBe(orphanedController);
+    expect(appState.isProcessingDoc).toBe(true);
+    expect(input.setProcessing).toHaveBeenLastCalledWith(true);
+    await conv.submit('what is this?');
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
 
     // Simulate a follow-up turn that re-acquires the document flags.
     appState.isProcessingDoc = true;
@@ -2564,5 +2562,130 @@ describe('turn lifecycle guards', () => {
     // Without a table selection the flag is false, not absent.
     expect(routeTurn('增加标题，并深度润色修改', { hasSelection: false, skills: BUILTIN_SKILLS })
       .hasMultiCellTableRegion).toBe(false);
+  });
+
+  test('takes ownership synchronously before selection read and drops a new-chat late read', async () => {
+    let resolveSelection;
+    const getSelectionText = jest.fn(() => new Promise((resolve) => { resolveSelection = resolve; }));
+    const view = makeView(); const input = makeInput(); const appState = makeAppState();
+    const actions = makeActions();
+    const conv = createConversation({ appState, view, input, actions, getSelectionText, log: jest.fn() });
+    const first = conv.submit('what is this?');
+    expect(appState.isProcessing).toBe(true);
+    await conv.submit('what is that?');
+    expect(getSelectionText).toHaveBeenCalledTimes(1);
+    conv.newChat();
+    resolveSelection('old selection');
+    await first;
+    expect(view.addUserMessage).not.toHaveBeenCalled();
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+    expect(appState.isProcessing).toBe(false);
+  });
+
+  test('late model output after newChat cannot finalize into the new session', async () => {
+    let resolveAnswer;
+    const actions = makeActions({ answerQuestion: jest.fn(() => new Promise((resolve) => { resolveAnswer = resolve; })) });
+    const view = makeView(); const onTurnCommitted = jest.fn();
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), actions,
+      getSelectionText: async () => '', onTurnCommitted, log: jest.fn() });
+    const first = conv.submit('what is this?');
+    await Promise.resolve();
+    conv.newChat();
+    resolveAnswer('late answer');
+    await first;
+    expect(view._msg.setText).not.toHaveBeenCalledWith('late answer');
+    expect(view._msg.finalizeForHistory).not.toHaveBeenCalled();
+    expect(onTurnCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['format', 'image'])('%s card forwards its signal and holds the write lock until settlement', async (kind) => {
+    let settle;
+    let signal;
+    const actionName = kind === 'format' ? 'applyFormatProposal' : 'applyImageOps';
+    const actions = makeActions({ [actionName]: jest.fn((_deps, _proposal, ctx) => {
+      signal = ctx.signal;
+      return new Promise((resolve) => { settle = resolve; });
+    }) });
+    const appState = makeAppState(); const view = makeView(); const input = makeInput();
+    const conv = createConversation({ appState, view, input, actions, log: jest.fn(), getSelectionText: async () => '' });
+    await conv.submit(kind === 'format' ? 'bold the document' : 'delete images');
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    card.el.querySelector('.btn-primary').click();
+    await Promise.resolve();
+    expect(signal).toBeInstanceOf(AbortSignal);
+    conv.cancel();
+    expect(signal.aborted).toBe(true);
+    expect(appState.isProcessingDoc).toBe(true);
+    await conv.submit('what is this?');
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+    settle({ interrupted: true, partial: true, appliedRanges: 1, insertedParagraphs: 0, applied: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(appState.isProcessingDoc).toBe(false);
+    expect(card.el.textContent).toContain('Review the document');
+  });
+
+  test.each(['cancel', 'newChat'])('cleans an unattached late format proposal after %s', async (action) => {
+    let resolve;
+    const proposal = { anchor: { bookmark: '_late' }, ops: [{ font: { bold: true } }] };
+    const actions = makeActions({ prepareFormatProposal: jest.fn(() => new Promise((done) => { resolve = done; })), discardFormatProposal: jest.fn() });
+    const view = makeView();
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), actions, log: jest.fn(), getSelectionText: async () => '' });
+    const running = conv.submit('bold the document');
+    await Promise.resolve();
+    conv[action]();
+    resolve(proposal);
+    await running;
+    expect(actions.discardFormatProposal).toHaveBeenCalledWith(expect.anything(), proposal);
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+  });
+
+  test('newChat defers format anchor disposal until the Word write settles', async () => {
+    let settle;
+    const actions = makeActions({ applyFormatProposal: jest.fn(() => new Promise((done) => { settle = done; })), discardFormatProposal: jest.fn() });
+    const view = makeView();
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), actions, log: jest.fn(), getSelectionText: async () => '' });
+    await conv.submit('bold the document');
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    card.el.querySelector('.btn-primary').click();
+    conv.newChat();
+    await Promise.resolve();
+    expect(actions.discardFormatProposal).not.toHaveBeenCalled();
+    settle({ appliedRanges: 1, insertedParagraphs: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(actions.discardFormatProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test('newChat disposes pending illustration and blocks its old card', async () => {
+    const actions = makeActions({ discardIllustrationProposal: jest.fn() });
+    const view = makeView();
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), actions, log: jest.fn(), getSelectionText: async () => '' });
+    await conv.submit('draw an illustration');
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    conv.newChat();
+    await Promise.resolve();
+    card.el.querySelector('.btn-primary').click();
+    expect(actions.discardIllustrationProposal).toHaveBeenCalledTimes(1);
+    expect(actions.applyIllustrationProposal).not.toHaveBeenCalled();
+  });
+
+  test('MCP cancellation reaches connect before listTools and skips subsequent servers', async () => {
+    const mcp = require('../src/lib/mcp-client.js');
+    let signal;
+    const connect = jest.spyOn(mcp, 'connectMcpServer').mockImplementation((opts) => {
+      signal = opts.signal;
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError'))));
+    });
+    try {
+      const appState = makeAppState({ config: { mcpServers: [{ url: 'https://one.test' }, { url: 'https://two.test' }] } });
+      const conv = createConversation({ appState, view: makeView(), input: makeInput(), actions: makeActions(), log: jest.fn(), getSelectionText: async () => '' });
+      const running = conv.submit('/mcp list tools');
+      await Promise.resolve();
+      expect(signal).toBe(appState.chatController.signal);
+      conv.cancel();
+      await running;
+      expect(signal.aborted).toBe(true);
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(appState.isProcessing).toBe(false);
+    } finally { connect.mockRestore(); }
   });
 });

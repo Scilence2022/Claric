@@ -32,22 +32,8 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Test
-        run: npm test
-
-      - name: Coverage gates
-        run: |
-          npm run coverage
-          npm run check-coverage
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Build
-        run: npm run build
+      - name: Verify source and production build
+        run: npm run verify
 
   docker:
     name: Docker image build

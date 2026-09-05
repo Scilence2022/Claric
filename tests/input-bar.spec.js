@@ -102,6 +102,35 @@ describe('setSelectionPreview', () => {
 
 
 describe('skills "+" menu and auto-apply toggle', () => {
+    beforeEach(() => {
+        document.body.innerHTML = '<textarea id="chatInput"></textarea><button id="sendBtn"></button><div id="skillPicker" hidden></div><button id="modelPill"></button><input type="checkbox" id="autoApplyToggle"><div id="inputError" hidden></div>';
+    });
+
+    test('a failed DOM confirmation never authorizes auto-apply', async () => {
+        const setAutoApply = jest.fn();
+        initInputBar({ onSubmit: jest.fn(), onCancel: jest.fn(), getSkills: () => [], onOpenSettings: jest.fn(), setAutoApply });
+        const append = jest.spyOn(document.body, 'appendChild').mockImplementationOnce(() => { throw new Error('Unavailable'); });
+        const toggle = document.getElementById('autoApplyToggle');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        await Promise.resolve();
+        append.mockRestore();
+        expect(toggle.checked).toBe(false);
+        expect(setAutoApply).not.toHaveBeenCalled();
+        expect(document.getElementById('inputError').textContent).toContain('Confirmation unavailable');
+    });
+
+    test('tracking disabled refuses auto-apply with an inline reason', () => {
+        const setAutoApply = jest.fn();
+        initInputBar({ onSubmit: jest.fn(), onCancel: jest.fn(), getSkills: () => [], onOpenSettings: jest.fn(), getTrackChanges: () => false, setAutoApply });
+        const toggle = document.getElementById('autoApplyToggle');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        expect(toggle.checked).toBe(false);
+        expect(setAutoApply).not.toHaveBeenCalled();
+        expect(document.getElementById('inputError').textContent).toContain('requires Track Changes');
+        expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    });
     test('"+" opens a menu of all skills; picking one inserts the slash command', () => {
         document.body.innerHTML = `
             <textarea id="chatInput"></textarea>
@@ -127,12 +156,21 @@ describe('skills "+" menu and auto-apply toggle', () => {
         expect(items).toHaveLength(2);
         expect(items[0].textContent).toContain('/mcp');
 
+        const textarea = document.getElementById('chatInput');
+        textarea.value = '/m';
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        const picker = document.getElementById('skillPicker');
+        expect(textarea.getAttribute('aria-controls')).toBe('skillPicker');
+        expect(picker.getAttribute('aria-activedescendant')).toBe('skill-picker-option-0');
+        expect(picker.querySelector('[role="option"]')).not.toBeNull();
+
         items[0].click();
         expect(menu.hasAttribute('hidden')).toBe(true);
         expect(document.getElementById('chatInput').value).toBe('/mcp ');
     });
 
-    test('auto-apply toggle initializes from config and persists changes', () => {
+    test('auto-apply toggle initializes from config and persists changes', async () => {
+        window.confirm = jest.fn(() => { throw new Error('WebView'); });
         let stored = false;
         initInputBar({
             onSubmit: jest.fn(), onCancel: jest.fn(), onOpenSettings: jest.fn(),
@@ -144,7 +182,57 @@ describe('skills "+" menu and auto-apply toggle', () => {
         expect(toggle.checked).toBe(false);
         toggle.checked = true;
         toggle.dispatchEvent(new Event('change'));
+        expect(stored).toBe(false);
+        document.querySelector('[data-confirm="enable"]').click();
+        await Promise.resolve();
+        expect(window.confirm).not.toHaveBeenCalled();
         expect(stored).toBe(true);
+    });
+
+    test('cancelling auto-apply confirmation leaves it disabled and unpersisted', () => {
+        window.confirm = jest.fn(() => false);
+        let stored = false;
+        initInputBar({
+            onSubmit: jest.fn(), onCancel: jest.fn(), onOpenSettings: jest.fn(),
+            getSkills: () => [],
+            getAutoApply: () => stored,
+            setAutoApply: (v) => { stored = v; },
+        });
+        const toggle = document.getElementById('autoApplyToggle');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change'));
+        document.querySelector('[data-confirm="cancel"]').click();
+        expect(window.confirm).not.toHaveBeenCalled();
+        expect(toggle.checked).toBe(false);
+        expect(stored).toBe(false);
+    });
+});
+
+describe('IME composition and Enter handling', () => {
+    test('does not submit while composing and submits after composition ends', () => {
+        document.body.innerHTML = `
+            <textarea id="chatInput"></textarea>
+            <button id="sendBtn"></button>
+            <div id="skillPicker" hidden></div>
+            <div id="skillsMenu" hidden></div>
+            <button id="addSkillBtn"></button>
+            <input type="checkbox" id="autoApplyToggle">
+            <button id="modelPill"></button>`;
+        const onSubmit = jest.fn();
+        initInputBar({ onSubmit, onCancel: jest.fn(), getSkills: () => [], onOpenSettings: jest.fn() });
+        const textarea = document.getElementById('chatInput');
+        textarea.value = '中';
+        textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+        const composingEnter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+        textarea.dispatchEvent(composingEnter);
+        expect(composingEnter.defaultPrevented).toBe(false);
+        expect(onSubmit).not.toHaveBeenCalled();
+
+        textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+        const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+        textarea.dispatchEvent(enter);
+        expect(enter.defaultPrevented).toBe(true);
+        expect(onSubmit).toHaveBeenCalledWith('中', []);
     });
 });
 
@@ -246,6 +334,7 @@ describe('file attachment chips', () => {
                 <span id="selectionPreviewImages" hidden></span>
             </div>
             <div id="attachmentChips" hidden></div>
+            <div id="inputError" role="alert" aria-live="assertive" hidden></div>
             <button id="attachBtn"></button>
             <input type="file" id="attachmentInput" hidden multiple>`;
         const onSubmit = jest.fn();
@@ -320,11 +409,20 @@ describe('file attachment chips', () => {
         await flush();
         expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
         expect(onLog).toHaveBeenCalledWith(expect.stringContaining('unsupported file type'), 'warning');
+        const error = document.getElementById('inputError');
+        expect(error.hidden).toBe(false);
+        expect(error.textContent).toContain('unsupported file type');
 
         const big = { name: 'huge.txt', type: 'text/plain', size: 3 * 1024 * 1024, text: async () => 'x' };
         pick([big]);
         await flush();
         expect(onLog).toHaveBeenCalledWith(expect.stringContaining('per-file limit'), 'warning');
+        expect(error.hidden).toBe(false);
+        expect(error.textContent).toContain('per-file limit');
+
+        document.getElementById('chatInput').dispatchEvent(new Event('input', { bubbles: true }));
+        expect(error.hidden).toBe(false);
+        expect(error.textContent).toContain('archive.zip');
     });
 
     test('image files render a thumbnail chip', async () => {
@@ -334,6 +432,35 @@ describe('file attachment chips', () => {
         const thumb = document.querySelector('.attachment-chip-thumb');
         expect(thumb).not.toBeNull();
         expect(thumb.src).toMatch(/^data:image\/png;base64,/);
+    });
+
+    test('batch failures survive later success and ordinary typing until reset', async () => {
+        const { bar, pick } = setupWithAttachments();
+        pick([new File(['x'], 'bad.zip'), new File(['ok'], 'good.txt')]);
+        await flush();
+        const error = document.getElementById('inputError');
+        expect(error.textContent).toContain('bad.zip');
+        expect(document.querySelectorAll('.attachment-chip')).toHaveLength(1);
+        document.getElementById('chatInput').dispatchEvent(new Event('input'));
+        expect(error.hidden).toBe(false);
+        bar.clearAttachments();
+        expect(error.hidden).toBe(true);
+    });
+
+    test('pending parse blocks sending and cannot leak after a new session', async () => {
+        const { bar, pick, onSubmit } = setupWithAttachments();
+        let resolve;
+        pick([{ name: 'old.txt', size: 4, type: 'text/plain', text: () => new Promise((r) => { resolve = r; }) }]);
+        document.getElementById('chatInput').value = 'send';
+        document.getElementById('sendBtn').click();
+        expect(onSubmit).not.toHaveBeenCalled();
+        bar.clearAttachments();
+        pick([new File(['new'], 'new.txt')]);
+        resolve('old');
+        await flush();
+        expect([...document.querySelectorAll('.attachment-chip-name')].map((el) => el.textContent)).toEqual(['new.txt']);
+        document.getElementById('sendBtn').click();
+        expect(onSubmit.mock.calls[0][1][0].name).toBe('new.txt');
     });
 
     test('clearAttachments empties the list', async () => {

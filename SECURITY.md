@@ -20,9 +20,9 @@ security problems.
 
 What this project does and does not promise:
 
-- **LLM output sanitization** — markdown produced by the LLM is sanitized
-  with DOMPurify before insertion into Word documents, mitigating
-  prompt-injection turning into live markup in generated summaries.
+- **LLM output sanitization** — generated summary markup is sanitized with
+  DOMPurify before insertion into Word. This limits active markup; it does not
+  prevent semantic prompt injection, incorrect edits, or external tool side effects.
 - **Static server** — the production server (`scripts/docker-server.cjs`)
   rejects path traversal, malformed percent-encoded URLs, URLs containing
   control characters (a decoded NUL used to crash the process via
@@ -38,14 +38,20 @@ What this project does and does not promise:
   files are mounted read-only into the container.
 - **API keys** — stored client-side in `localStorage` scoped to the add-in
   origin. They are sent only to the endpoint URL configured in Settings.
-  Verify the endpoint URL before entering a key: the add-in sends the key
-  as an `Authorization: Bearer` header to whatever URL is configured.
+  Verify the endpoint URL before entering a key. Most providers use
+  `Authorization: Bearer`; Claude uses `x-api-key`. A configured relay receives
+  credentials before forwarding them. Claric does not encrypt browser storage
+  or protect credentials against compromised same-origin scripts.
 - **Dev server is dev-only** — the webpack dev server binds `127.0.0.1` by
-  default (set `DEV_SERVER_HOST=0.0.0.0` to expose it) and allows all hosts.
+  default (set `DEV_SERVER_HOST=0.0.0.0` to expose it). Its host allowlist defaults
+  to loopback names; additional hosts must be explicitly configured and the
+  special `all` value is filtered out. This is not authentication.
   The E2E/coding-agent endpoints (`/log`, `/api/e2e-loop/*`, `/api/test-cases`,
-  `/api/prompts`) write files under the project root and use permissive CORS;
-  they are registered only when `ENABLE_DEV_ENDPOINTS=true`. Never expose the
-  dev server beyond your development machine.
+  `/api/prompts`) write bounded snapshots under the project root. They require
+  a driver token and exact allowed Origin, and are registered only when
+  `ENABLE_DEV_ENDPOINTS=true`. Treat the one-time startup token output as a secret.
+  See [dev harness protocol](docs/dev-harness-protocol.md) for migration and
+  storage limits. Never expose the dev server beyond your development machine.
 
 ## Known trade-offs
 
