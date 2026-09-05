@@ -3,7 +3,7 @@
 ## Overview
 
 Claric is a Microsoft Word add-in built around a chat-driven taskpane. Free-text
-instructions are routed by intent to one of six pipelines:
+instructions are routed by intent to specialized pipelines, including:
 
 1. **AI Redlining (edit)** — select text or address the whole document, send to LLM with a prompt, apply the response as word-level tracked changes
 2. **Formatting (format/insert)** — LLM-planned style/font/paragraph ops, plus short structural inserts (e.g. an article title), applied as tracked changes
@@ -16,8 +16,12 @@ instructions are routed by intent to one of six pipelines:
 Compound instructions are decomposed by an LLM task planner into ordered tasks
 across these pipelines (the planner has no `cleanup` task type — a planned
 task whose instruction is a cleanup is intercepted and routed to the
-deterministic pipeline). Every document mutation is staged as a proposal card —
-nothing is written until the user applies it.
+deterministic pipeline). Document-edit proposals are staged before application.
+With auto-apply off (the default), the user applies them manually. Enabling the
+persisted `autoApplyChanges` setting authorizes pending cards staged in that mode
+to apply sequentially when the turn finalizes; no separate click is required.
+Generated summaries create a separate document rather than editing the source.
+Native revision support for structural operations depends on the Word host.
 
 The add-in runs as an Office.js taskpane, served over HTTPS via webpack dev server (development) or a static Node.js server (Docker/production).
 
@@ -221,7 +225,7 @@ src/
       status-bar.js            # Activity log drawer, comment pending bar,
                                #   connection status
 
-tests/                         # Jest unit tests (~1360 tests, 62 suites)
+tests/                         # Jest unit tests (current counts in test output)
   conversation.spec.js         # Turn routing (all intent families + compound +
                                #   ambiguous), staging, selective apply, warnings
   reassembler.spec.js          # Alignment, bookmarks, re-anchoring, blank
@@ -789,15 +793,20 @@ Prompts persist under `wordAI.prompts.{category}` and `wordAI.active.{category}`
 ## Testing
 
 ```bash
-npm test          # ~1300 tests, 60 suites, ~1s
+npm test          # Jest suites (current output records counts and skips)
 npm run lint      # ESLint 9 flat config (eslint.config.cjs)
+npm run coverage  # Jest coverage report
+npm run check-coverage # independent global, lib and taskpane gates
 npm run build     # webpack production build
-npm run verify    # lint + test + typecheck + build (what CI runs, plus npm audit --omit=dev)
+npm run verify-build # verify production artifact fingerprint and metadata
+npm run verify    # lint + test + coverage + check-coverage + typecheck + build + verify-build
 ```
 
 Tests run in node or jsdom environments (per-spec `@jest-environment`
-docblock) with mocked Word API globals. TDD workflow: failing tests written
-before implementation for each feature.
+docblock) with mocked Word API globals. CI additionally audits production
+dependencies and builds/scans the container. Neither mocks nor these gates
+establish real Word behavior; see the [product acceptance specification](docs/product-acceptance-spec.md)
+for the evidence layers, platform matrix and release requirements.
 
 ## Docker
 

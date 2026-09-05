@@ -10,6 +10,7 @@
     "test": "jest",
     "coverage": "jest --coverage --coverageReporters=text --coverageReporters=json-summary",
     "check-coverage": "node scripts/check-coverage.cjs",
+    "verify-build": "node scripts/verify-build.cjs",
     "manifest": "node scripts/generate-manifest.cjs",
     "manifest:local": "node scripts/manifest-mode.cjs local",
     "manifest:store": "node scripts/manifest-mode.cjs store",
@@ -21,7 +22,7 @@
     "install:macos": "node scripts/sideload-addin.cjs",
     "uninstall:macos": "node scripts/sideload-addin.cjs --remove",
     "typecheck": "tsc",
-    "verify": "npm run lint && npm test && npm run coverage && npm run check-coverage && npm run typecheck && npm run build",
+    "verify": "npm run lint && npm test && npm run coverage && npm run check-coverage && npm run typecheck && npm run build && npm run verify-build",
     "icons": "node scripts/generate-icons.cjs"
   },
   "type": "module",

@@ -211,10 +211,7 @@ describe('retryFailedChunks', () => {
         });
     });
 
-    it('cleans up the retried chunks\' bookmarks after the retry settles', async () => {
-        // The original apply() keeps FAILED chunks' bookmarks alive precisely
-        // so this retry can target them; once the retry settles they must be
-        // removed again (only the retried subset — unrelated bookmarks stay).
+    it('stages the retry without writing and cleans only confirmed applied bookmarks', async () => {
         const chunk = { id: 'chunk-3', paragraphs: [{ text: 'Body.' }], overlapBefore: '' };
         processChunksParallel.mockResolvedValue([
             {
@@ -228,16 +225,95 @@ describe('retryFailedChunks', () => {
         });
 
         const deps = makeDeps();
-        await retryFailedChunks(deps, {
+        deps.stageRetryProposal = jest.fn();
+        const outcome = await retryFailedChunks(deps, {
             failedResults: [makeFailedResult(chunk)],
             bookmarkMap: new Map([['chunk-3', '_wdp_keep3'], ['chunk-other', '_wdp_other']]),
             backendConfig: { model: 'm' },
             promptShim: {},
         });
-
+        expect(deps.stageRetryProposal).toHaveBeenCalledWith(outcome);
+        expect(applyChunkResults).not.toHaveBeenCalled();
+        expect(cleanupBookmarks).not.toHaveBeenCalled();
+        const signal = new AbortController().signal;
+        await outcome.apply(['chunk-3'], { signal });
+        expect(applyChunkResults.mock.calls[0][2].signal).toBe(signal);
         expect(cleanupBookmarks).toHaveBeenCalledTimes(1);
         const [cleanedMap] = cleanupBookmarks.mock.calls[0];
         expect([...cleanedMap.keys()]).toEqual(['chunk-3']);
         expect(cleanedMap.get('chunk-3')).toBe('_wdp_keep3');
+    });
+
+    it('retains failed anchors and original parameters through repeated retries', async () => {
+        const chunk = { id: 'c', paragraphs: [{ text: 'Body' }] };
+        const failed = makeFailedResult(chunk);
+        processChunksParallel.mockResolvedValue([failed]);
+        const documentContext = { definitions: ['term'] };
+        const deps = makeDeps();
+        const outcome = await retryFailedChunks(deps, { failedResults: [failed],
+            bookmarkMap: new Map([['c', '_anchor']]), backendConfig: { model: 'm' }, promptShim: {},
+            documentContext, commentInstructions: 'Keep citations', concurrency: 2 });
+        expect(applyChunkResults).not.toHaveBeenCalled();
+        expect(cleanupBookmarks).not.toHaveBeenCalled();
+        await outcome.retryFailed();
+        expect(processChunksParallel.mock.calls[1][1]).toMatchObject({ documentContext, commentInstructions: 'Keep citations', concurrency: 2 });
+        expect(cleanupBookmarks).not.toHaveBeenCalled();
+    });
+
+    it('blocks duplicate generation until dismissal and invalidates the old revision', async () => {
+        const chunk = { id: 'c', paragraphs: [{ text: 'old' }] };
+        const args = { failedResults: [makeFailedResult(chunk)], bookmarkMap: new Map([['c', '_c']]) };
+        const deps = makeDeps();
+        let resolve;
+        processChunksParallel.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+        const running = retryFailedChunks(deps, args);
+        await retryFailedChunks(deps, args);
+        expect(processChunksParallel).toHaveBeenCalledTimes(1);
+        const fulfilled = { chunkId: 'c', chunk, status: 'fulfilled', amendment: 'new' };
+        resolve([fulfilled]);
+        const first = await running;
+        await retryFailedChunks(deps, args);
+        expect(processChunksParallel).toHaveBeenCalledTimes(1);
+        await first.discard();
+        expect(cleanupBookmarks).not.toHaveBeenCalled();
+        processChunksParallel.mockResolvedValue([fulfilled]);
+        const second = await retryFailedChunks(deps, args);
+        expect(second.revision).toBeGreaterThan(first.revision);
+        await expect(first.apply(['c'])).rejects.toThrow(/no longer active/);
+        expect(applyChunkResults).not.toHaveBeenCalled();
+    });
+
+    it('consumes applied chunks but preserves partial failures for the original retry link', async () => {
+        const chunks = ['a', 'b'].map((id) => ({ id, paragraphs: [{ text: id }] }));
+        const args = { failedResults: chunks.map(makeFailedResult), bookmarkMap: new Map([['a', '_a'], ['b', '_b']]) };
+        const deps = makeDeps();
+        processChunksParallel.mockResolvedValue([
+            { chunkId: 'a', chunk: chunks[0], status: 'fulfilled', amendment: 'new' }, makeFailedResult(chunks[1]),
+        ]);
+        const first = await retryFailedChunks(deps, args);
+        applyChunkResults.mockResolvedValue({ appliedChunkIds: ['a'], interrupted: false });
+        await first.apply(['a']);
+        expect([...cleanupBookmarks.mock.calls[0][0].keys()]).toEqual(['a']);
+        processChunksParallel.mockResolvedValue([makeFailedResult(chunks[1])]);
+        await retryFailedChunks(deps, args);
+        expect(processChunksParallel.mock.calls[1][0].map((c) => c.id)).toEqual(['b']);
+        await expect(first.apply(['a'])).rejects.toThrow(/no longer active/);
+    });
+
+    it('releases a failed generation for retry without cleaning its anchors', async () => {
+        const chunk = { id: 'c', paragraphs: [{ text: 'old' }] };
+        const args = { failedResults: [makeFailedResult(chunk)], bookmarkMap: new Map([['c', '_c']]) };
+        const deps = makeDeps();
+        processChunksParallel.mockRejectedValueOnce(new Error('network failed')).mockResolvedValueOnce([makeFailedResult(chunk)]);
+        await retryFailedChunks(deps, args);
+        await retryFailedChunks(deps, args);
+        expect(processChunksParallel).toHaveBeenCalledTimes(2);
+        expect(cleanupBookmarks).not.toHaveBeenCalled();
+    });
+
+    it.each(['isProcessing', 'isProcessingSummary', 'chatController'])('refuses retry during %s ownership', async (key) => {
+        const deps = makeDeps({ [key]: key === 'chatController' ? new AbortController() : true });
+        await retryFailedChunks(deps, { failedResults: [], bookmarkMap: new Map() });
+        expect(processChunksParallel).not.toHaveBeenCalled();
     });
 });

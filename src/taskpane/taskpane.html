@@ -41,6 +41,8 @@
             </div>
         </header>
 
+        <div id="connectionError" class="connection-error" role="status" hidden></div>
+
         <!-- Chat message area -->
         <main id="chatMessages" class="chat-messages" aria-live="polite">
             <div id="welcome" class="welcome">
@@ -79,6 +81,7 @@
                 <span id="selectionPreviewImages" class="selection-preview-images" hidden></span>
             </div>
             <div id="attachmentChips" class="attachment-chips" hidden></div>
+            <div id="inputError" class="input-error" role="alert" aria-live="assertive" hidden></div>
             <div class="composer">
                 <textarea id="chatInput" class="chat-input" rows="1"
                     placeholder="Ask for help, or / for commands"
@@ -88,7 +91,7 @@
                     <input type="file" id="attachmentInput" hidden multiple
                         accept=".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.png,.jpg,.jpeg,.gif,.webp,.docx,.pdf">
                     <button type="button" id="addSkillBtn" class="composer-icon-btn" title="Slash commands" aria-label="Slash commands" aria-haspopup="menu" aria-expanded="false">+</button>
-                    <label class="mac-switch" id="autoApplyControl" title="Automatically apply proposed tracked changes">
+                    <label class="mac-switch" id="autoApplyControl" title="Automatically apply proposed changes; some structural changes may not be tracked">
                         <input type="checkbox" id="autoApplyToggle" aria-label="Auto-apply changes">
                         <span class="mac-switch-slider"></span>
                     </label>
@@ -129,6 +132,7 @@
                 <div class="settings-body">
                     <div id="settingsPageGeneral" class="settings-page" role="tabpanel" aria-labelledby="settingsTabGeneral">
                     <p class="settings-section-label">LLM Backend</p>
+                    <p id="settingsConnectionStatus" class="help-text" role="status"></p>
                     <div class="form-group">
                         <label for="backendSelect">Provider:</label>
                         <select id="backendSelect" class="form-control">

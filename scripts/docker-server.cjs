@@ -34,6 +34,8 @@
  *   MINIMAX_CN_PROXY_TARGET - upstream MiniMax CN API origin (https://api.minimaxi.com)
  *   ZHONGKEYU_PROXY_PATH  - proxy path for zhongkeyu.com (default empty = disabled; set to e.g. /zhongkeyu to enable)
  *   ZHONGKEYU_PROXY_TARGET - upstream zhongkeyu.com API origin (https://zhongkeyu.com)
+ *   OPENROUTER_PROXY_PATH / OPENROUTER_PROXY_TARGET - opt-in path and upstream (https://openrouter.ai)
+ *   SILICONFLOW_PROXY_PATH / SILICONFLOW_PROXY_TARGET - opt-in path and upstream (https://api.siliconflow.cn)
  *   LLM_PROXY_TIMEOUT_MS  - upstream request timeout (default 300000 = 5 min)
  *
  * Why proxy LLM traffic at all: the add-in's UI defaults its backend URLs
@@ -124,6 +126,10 @@ function getEnv() {
     MINIMAX_CN_PROXY_TARGET: process.env.MINIMAX_CN_PROXY_TARGET || 'https://api.minimaxi.com',
     ZHONGKEYU_PROXY_PATH: process.env.ZHONGKEYU_PROXY_PATH || '',
     ZHONGKEYU_PROXY_TARGET: process.env.ZHONGKEYU_PROXY_TARGET || 'https://zhongkeyu.com',
+    OPENROUTER_PROXY_PATH: process.env.OPENROUTER_PROXY_PATH || '',
+    OPENROUTER_PROXY_TARGET: process.env.OPENROUTER_PROXY_TARGET || 'https://openrouter.ai',
+    SILICONFLOW_PROXY_PATH: process.env.SILICONFLOW_PROXY_PATH || '',
+    SILICONFLOW_PROXY_TARGET: process.env.SILICONFLOW_PROXY_TARGET || 'https://api.siliconflow.cn',
     CUSTOM_PROXY_PATH: process.env.CUSTOM_PROXY_PATH || '',
     CUSTOM_PROXY_TARGET: process.env.CUSTOM_PROXY_TARGET || '',
     LLM_PROXY_TIMEOUT_MS: parseInt(process.env.LLM_PROXY_TIMEOUT_MS || String(DEFAULT_LLM_PROXY_TIMEOUT_MS), 10)
@@ -146,6 +152,7 @@ function getContentType(filePath) {
     case '.html':
       return 'text/html; charset=utf-8';
     case '.js':
+    case '.mjs':
       return 'application/javascript; charset=utf-8';
     case '.css':
       return 'text/css; charset=utf-8';
@@ -242,6 +249,8 @@ function buildProxyRoutes(env) {
     ['MINIMAX_PROXY_PATH', 'MINIMAX_PROXY_TARGET'],
     ['MINIMAX_CN_PROXY_PATH', 'MINIMAX_CN_PROXY_TARGET'],
     ['ZHONGKEYU_PROXY_PATH', 'ZHONGKEYU_PROXY_TARGET'],
+    ['OPENROUTER_PROXY_PATH', 'OPENROUTER_PROXY_TARGET'],
+    ['SILICONFLOW_PROXY_PATH', 'SILICONFLOW_PROXY_TARGET'],
     ['CUSTOM_PROXY_PATH', 'CUSTOM_PROXY_TARGET'],
   ];
 

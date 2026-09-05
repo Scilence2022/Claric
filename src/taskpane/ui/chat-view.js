@@ -400,36 +400,18 @@ function _normalizeMessage(m) {
  */
 function _wrapProposalCard(card, meta, onStateChange) {
     const notify = typeof onStateChange === 'function' ? onStateChange : () => {};
-    const origApplied = card.markApplied;
-    const origRejected = card.markRejected;
-    const origWarning = card.markWarning;
-    const origError = card.markError;
-    card.markApplied = function () {
-        meta.state = 'applied';
-        const result = origApplied.call(card);
-        notify();
-        return result;
-    };
-    card.markRejected = function () {
-        meta.state = 'rejected';
-        const result = origRejected.call(card);
-        notify();
-        return result;
-    };
-    card.markWarning = function (msg) {
-        meta.state = 'warning';
-        if (msg) meta.detail = String(msg);
-        const result = origWarning.call(card, msg);
-        notify();
-        return result;
-    };
-    card.markError = function (msg) {
-        meta.state = 'error';
-        if (msg) meta.detail = String(msg);
-        const result = origError.call(card, msg);
-        notify();
-        return result;
-    };
+    for (const [method, state] of Object.entries({ markApplied: 'applied', markRejected: 'rejected', markWarning: 'warning', markError: 'error' })) {
+        const original = card[method];
+        if (typeof original !== 'function') continue;
+        card[method] = function (message) {
+            if (['applied', 'rejected', 'warning'].includes(meta.state)) return;
+            const result = original.call(card, message);
+            meta.state = state;
+            if (message && (state === 'warning' || state === 'error')) meta.detail = String(message);
+            notify();
+            return result;
+        };
+    }
 }
 
 /**
@@ -601,6 +583,8 @@ export function renderStaticProposalCard(p) {
  * }}
  */
 export function createAssistantMessage() {
+    const sessionMessages = _currentSessionMessages;
+    const isCurrentSession = () => sessionMessages === _currentSessionMessages;
     const el = document.createElement('div');
     el.className = 'chat-message chat-message-assistant';
 
@@ -694,7 +678,7 @@ export function createAssistantMessage() {
      * bootstrap so the session is re-persisted.
      */
     function _syncFinalizedProposals() {
-        if (!finalizedRecord) return;
+        if (!finalizedRecord || !isCurrentSession()) return;
         finalizedRecord.proposals = trackedProposals.map(_proposalRecordFromMeta);
         finalizedRecord.ts = new Date().toISOString();
         _currentSessionUpdatedAt = finalizedRecord.ts;
@@ -879,10 +863,11 @@ export function createAssistantMessage() {
             // the turn's own busy-flag teardown.
             if (
                 appState.config.autoApplyChanges === true &&
+                appState.config.trackChangesEnabled !== false &&
                 meta && meta.state === 'pending' &&
                 typeof card.applyAll === 'function'
             ) {
-                pendingAutoApplyCards.push(card);
+                pendingAutoApplyCards.push({ card, meta });
             }
         },
         addCitationPills(citations, onSelect) {
@@ -910,13 +895,19 @@ export function createAssistantMessage() {
         finalizeForHistory() {
             if (finalized) return;
             finalized = true;
+            if (!isCurrentSession()) {
+                pendingAutoApplyCards.length = 0;
+                return;
+            }
             if (pendingAutoApplyCards.length > 0) {
                 const cardsToApply = pendingAutoApplyCards.splice(0);
                 // Sequential drain: a card's apply owns the cross-card
                 // mutex and the document busy flags while in flight, so
                 // concurrent applyAll calls would refuse each other.
                 setTimeout(async () => {
-                    for (const cardToApply of cardsToApply) {
+                    for (const { card: cardToApply, meta } of cardsToApply) {
+                        if (!isCurrentSession() || el.classList.contains('chat-message-error') || appState.config.autoApplyChanges !== true || appState.config.trackChangesEnabled === false) break;
+                        if (meta.state !== 'pending') continue;
                         try {
                             await cardToApply.applyAll();
                         } catch (_err) {

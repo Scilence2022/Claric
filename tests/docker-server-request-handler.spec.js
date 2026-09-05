@@ -87,6 +87,25 @@ describe('docker-server request boundary validation', () => {
         expect(result.statusCode).toBe(400);
     });
 
+    test('serves .mjs workers as JavaScript without depending on dist', async () => {
+        const fs = require('fs');
+        const read = jest.spyOn(fs, 'readFile').mockImplementation((file, callback) => {
+            expect(file).toMatch(/pdf\.worker\.min\.mjs$/);
+            callback(null, Buffer.from('self.onmessage = () => {};'));
+        });
+        try {
+            const { res, done } = makeRes();
+            requestHandler(makeReq('GET', '/pdf.worker.min.mjs'), res);
+            const result = await done;
+            expect(result.statusCode).toBe(200);
+            expect(res.headers['content-type']).toBe('application/javascript; charset=utf-8');
+            expect(res.headers['x-content-type-options']).toBe('nosniff');
+            expect(result.body).toBe('self.onmessage = () => {};');
+        } finally {
+            read.mockRestore();
+        }
+    });
+
     test('missing static assets stay a plain 404', async () => {
         const { res, done } = makeRes();
         requestHandler(makeReq('GET', '/no-such-asset-xyz.png'), res);

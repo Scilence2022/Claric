@@ -29,6 +29,34 @@ function makeCard(overrides = {}) {
 }
 
 describe('createProposalCard', () => {
+  test.each(['markApplied', 'markRejected', 'markWarning'])('%s prevents all subsequent writes and state revival', async (method) => {
+    const onApply = jest.fn();
+    const card = makeCard({ onApply, items: makeItems() });
+    card[method]('done');
+    card.markError('retry');
+    card.setPaused('resume');
+    await card.applyAll();
+    expect(onApply).not.toHaveBeenCalled();
+    expect(card.el.dataset.state).toBe('settled');
+  });
+
+  test('thrown apply errors allow a manual retry without repeating completed items', async () => {
+    let card;
+    const onApply = jest.fn(async (_ids, progress) => {
+      if (onApply.mock.calls.length === 1) {
+        progress.onChunkApplied('a', { applied: true });
+        throw new Error('network');
+      }
+      card.markApplied();
+    });
+    card = makeCard({ onApply, items: makeItems() });
+    await card.applyAll();
+    expect(card.el.dataset.state).toBe('error');
+    await card.applyAll();
+    expect(onApply.mock.calls[1][0]).toEqual(['b', 'c']);
+    await card.applyAll();
+    expect(onApply).toHaveBeenCalledTimes(2);
+  });
   test('previewSvg renders inline sanitized SVG (no img, no active content)', () => {
     // Regression: SVG previews used to ship as base64 data-URL <img>s, which
     // decode fine in Chromium but fail on some hosts (WKWebView taskpane).

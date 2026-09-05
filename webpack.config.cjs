@@ -415,11 +415,8 @@ module.exports = (env, argv) => {
             // pdf.js worker for .pdf attachments (see src/lib/file-attachments.js).
             // Loaded on demand by pdf.js itself, never by the app bundle.
             //
-            // noErrorOnMissing so the worker alone never kills a build: the
-            // .pdf attachment path degrades to "unsupported file" at runtime,
-            // while a pdfjs-dist layout change on upgrade (or an install
-            // without the optional parser) still yields a working add-in.
-            // PDF support is one attachment type, not a build dependency.
+            // Development can run without the optional worker copy;
+            // verify-build requires it before a production release.
             from: 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs',
             to: 'pdf.worker.min.mjs',
             noErrorOnMissing: true
@@ -434,33 +431,30 @@ module.exports = (env, argv) => {
         'process.env.DEFAULT_VLLM_MODEL': JSON.stringify(ENV.DEFAULT_VLLM_MODEL),
       }),
       // Writes dist/build-info.json (content-derived fingerprint + UTC timestamp)
-      // once the bundle is fully emitted. The plugin walks dist/ and hashes each
-      // file's bytes so the digest is reproducible across runs, host machines,
-      // and CI vs local. Only runs in production mode so dev-server rebuilds
+      // after successful compilation, hashing only this compilation's emitted
+      // assets. output.clean removes stale files; verify-build independently
+      // walks the output directory to detect extras or missing assets.
+      // Only runs in production mode so dev-server rebuilds
       // do not churn the file. Read at taskpane startup (fire-and-forget, see
       // src/taskpane/taskpane.js).
       {
         apply: (compiler) => {
           compiler.hooks.done.tap('claric-build-info', (stats) => {
             if (stats.compilation.options.mode !== 'production') return;
-            const distDir = path.resolve(__dirname, 'dist');
-            if (!fs.existsSync(distDir)) return;
+            const distDir = stats.compilation.outputOptions.path;
+            if (stats.hasErrors()) {
+              fs.rmSync(path.join(distDir, 'build-info.json'), { force: true });
+              return;
+            }
             const fileHashes = [];
-            const walk = (dir) => {
-              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                const full = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                  walk(full);
-                } else if (entry.isFile()) {
-                  const rel = path.relative(distDir, full);
-                  const digest = crypto.createHash('sha256')
-                    .update(fs.readFileSync(full))
-                    .digest('hex');
-                  fileHashes.push(`${rel}:${digest}`);
-                }
-              }
-            };
-            walk(distDir);
+            for (const asset of stats.compilation.getAssets()) {
+              const rel = asset.name.replace(/\\/g, '/');
+              if (rel === 'build-info.json') continue;
+              const digest = crypto.createHash('sha256')
+                .update(fs.readFileSync(path.join(distDir, rel)))
+                .digest('hex');
+              fileHashes.push(`${rel}:${digest}`);
+            }
             fileHashes.sort();
             const hash = crypto.createHash('sha256')
               .update(fileHashes.join('\n'))
@@ -497,8 +491,8 @@ module.exports = (env, argv) => {
       headers: (req) => corsHeaders(req, ENV.DEV_SERVER_CORS_ORIGINS),
       setupMiddlewares: process.env.ENABLE_DEV_ENDPOINTS === 'true'
         // Dev-only E2E/coding-agent endpoints (see scripts/dev-e2e-middlewares.cjs).
-        // Off by default: they write files and use wildcard CORS, so they are
-        // never registered unless explicitly requested.
+        // Off by default; the local driver protocol requires its own token
+        // and exact Origin checks before accessing persisted snapshots.
         ? require('./scripts/dev-e2e-middlewares.cjs')
         : undefined,
       proxy: buildLlmProxies(ENV)
@@ -507,14 +501,9 @@ module.exports = (env, argv) => {
       extensions: ['.js', '.json']
     },
     performance: {
-      // The taskpane bundle legitimately exceeds webpack's 244 KiB default
-      // hint: it is served same-origin to WebView2, so there is no cold
-      // network fetch and a single ~510 KiB bundle is acceptable. This is a
-      // hard gate (hints: 'error' fails the build), calibrated just above
-      // the current size, to catch accidental size regressions. Exempt the
-      // lazily-loaded parser chunks (mammoth/pdf.js for file attachments)
-      // and the pdf.js worker copy: they are fetched on demand, never on
-      // first paint.
+      // Size gates prevent bundle regressions; same-origin delivery still
+      // incurs network and parsing costs. The PDF worker is loaded on demand
+      // and exempt from the per-asset limit, not from artifact verification.
       hints: 'error',
       maxAssetSize: 700 * 1024,
       maxEntrypointSize: 540 * 1024,

@@ -15,6 +15,7 @@ import {
     parseAttachment,
     formatBytes,
 } from '../../lib/file-attachments.js';
+import { confirmAutoApply } from './dialog.js';
 
 /** Type icons for attachment chips (text glyphs, matching the composer style). */
 const ATTACHMENT_ICONS = Object.freeze({
@@ -33,12 +34,13 @@ const ATTACHMENT_ICONS = Object.freeze({
  * @param {function(): Array<object>} deps.getSkills - Returns the current skill list
  * @param {function()} deps.onOpenSettings - Opens the settings slide-over
  * @param {function(): boolean} [deps.getAutoApply] - Current auto-apply setting
+ * @param {function(): boolean} [deps.getTrackChanges] - Current tracking setting
  * @param {function(boolean)} [deps.setAutoApply] - Persists an auto-apply change
  * @param {function(string, string)} [deps.onLog] - Activity-log sink for
  *   attachment validation/parse failures
  * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), setSelectionPreview: function(object|string), clearAttachments: function() }}
  */
-export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getAutoApply, setAutoApply, onLog }) {
+export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getAutoApply, getTrackChanges, setAutoApply, onLog }) {
     const textarea = document.getElementById('chatInput');
     const sendBtn = document.getElementById('sendBtn');
     const picker = document.getElementById('skillPicker');
@@ -49,12 +51,26 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     const attachBtn = document.getElementById('attachBtn');
     const attachInput = document.getElementById('attachmentInput');
     const chipsEl = document.getElementById('attachmentChips');
+    const errorEl = document.getElementById('inputError');
+
+    function showError(message) {
+        if (!errorEl) return;
+        errorEl.textContent = String(message || 'Something went wrong.');
+        errorEl.hidden = false;
+    }
+
+    function clearError() {
+        if (!errorEl) return;
+        errorEl.textContent = '';
+        errorEl.hidden = true;
+    }
 
     // Parsed attachments pending submission ({name, kind, size, text?,
     // dataUrl?}). Cleared on submit and on new chat.
     let attachments = [];
 
     let processing = false;
+    let composing = false;
     let pickerItems = [];
     let pickerIndex = 0;
 
@@ -81,6 +97,8 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         skills.forEach((skill, i) => {
             const item = document.createElement('button');
             item.type = 'button';
+            item.id = `skill-picker-option-${i}`;
+            item.setAttribute('role', 'option');
             item.className = 'skill-picker-item' + (i === pickerIndex ? ' active' : '');
 
             const name = document.createElement('span');
@@ -95,6 +113,8 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
             item.addEventListener('click', () => pickSkill(skill));
             picker.appendChild(item);
         });
+        picker.setAttribute('aria-activedescendant', `skill-picker-option-${pickerIndex}`);
+        textarea.setAttribute('aria-controls', 'skillPicker');
         picker.removeAttribute('hidden');
     }
 
@@ -108,6 +128,8 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
 
     function closePicker() {
         picker.setAttribute('hidden', '');
+        picker.removeAttribute('aria-activedescendant');
+        textarea.removeAttribute('aria-controls');
         pickerItems = [];
     }
 
@@ -115,6 +137,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     function movePicker(delta) {
         if (pickerItems.length === 0) return;
         pickerIndex = (pickerIndex + delta + pickerItems.length) % pickerItems.length;
+        picker.setAttribute('aria-activedescendant', `skill-picker-option-${pickerIndex}`);
         picker.querySelectorAll('.skill-picker-item').forEach((el, i) => {
             const active = i === pickerIndex;
             el.classList.toggle('active', active);
@@ -143,6 +166,10 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
 
     function submitCurrent() {
         const text = textarea.value;
+        if (parsing) {
+            showError([...attachmentErrors, 'Attachments are still loading. Wait before sending.'].join('\n'));
+            return;
+        }
         if ((!text.trim() && attachments.length === 0) || processing) return;
         closePicker();
         recordHistory(text);
@@ -200,21 +227,43 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         chipsEl.removeAttribute('hidden');
     }
 
-    /** Validates and parses each picked file; failures log and skip. */
+    let attachmentGeneration = 0;
+    let parsing = false;
+    let attachmentErrors = [];
+
+    /** Validates and parses each picked file; failures remain visible until reset. */
     async function addFiles(fileList) {
+        if (parsing || processing) return;
+        const generation = attachmentGeneration;
+        parsing = true;
+        if (attachBtn) attachBtn.disabled = true;
+        sendBtn.setAttribute('aria-busy', 'true');
         for (const file of Array.from(fileList || [])) {
+            if (generation !== attachmentGeneration) return;
             const kind = detectAttachmentKind(file.name, file.type);
             const verdict = validateAttachment({ name: file.name, size: file.size, kind }, attachments);
             if (!verdict.ok) {
+                attachmentErrors.push(`${file.name}: ${verdict.error}`);
+                showError(attachmentErrors.join('\n'));
                 if (typeof onLog === 'function') onLog(verdict.error, 'warning');
                 continue;
             }
             try {
-                attachments.push(await parseAttachment(file));
+                const parsed = await parseAttachment(file);
+                if (generation !== attachmentGeneration) return;
+                attachments.push(parsed);
             } catch (err) {
+                if (generation !== attachmentGeneration) return;
+                attachmentErrors.push(`${file.name}: ${err.message}`);
+                showError(attachmentErrors.join('\n'));
                 if (typeof onLog === 'function') onLog(err.message, 'error');
             }
         }
+        parsing = false;
+        if (attachBtn) attachBtn.disabled = processing;
+        sendBtn.removeAttribute('aria-busy');
+        if (attachmentErrors.length) showError(attachmentErrors.join('\n'));
+        else clearError();
         renderChips();
     }
 
@@ -226,9 +275,20 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         });
     }
 
+    textarea.addEventListener('compositionstart', () => {
+        composing = true;
+        closePicker();
+    });
+
+    textarea.addEventListener('compositionend', () => {
+        composing = false;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
     textarea.addEventListener('input', () => {
         autosize();
         historyIndex = null; // manual edit — ↑ restarts from the newest entry
+        if (composing) return;
         const value = textarea.value;
         if (value.startsWith('/')) {
             const spaceIdx = value.indexOf(' ');
@@ -240,6 +300,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     });
 
     textarea.addEventListener('keydown', (e) => {
+        if (composing || e.isComposing || e.keyCode === 229) return;
         const pickerOpen = !picker.hasAttribute('hidden');
         if (pickerOpen) {
             if (e.key === 'ArrowDown') { e.preventDefault(); movePicker(1); return; }
@@ -370,7 +431,31 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         if (typeof getAutoApply === 'function') {
             autoApplyToggle.checked = getAutoApply() === true;
         }
-        autoApplyToggle.addEventListener('change', () => {
+        let confirming = false;
+        autoApplyToggle.addEventListener('change', async () => {
+            if (confirming) return;
+            if (autoApplyToggle.checked) {
+                autoApplyToggle.checked = false;
+                if (getTrackChanges?.() === false) {
+                    showError('Auto-apply requires Track Changes. Enable Track Changes in Settings first.');
+                    return;
+                }
+                confirming = true;
+                let confirmed = false;
+                try {
+                    confirmed = await confirmAutoApply();
+                } catch (_error) {
+                    showError('Confirmation unavailable. Auto-apply remains disabled.');
+                } finally {
+                    confirming = false;
+                }
+                if (!confirmed) return;
+                if (getTrackChanges?.() === false) {
+                    showError('Auto-apply requires Track Changes. Enable Track Changes in Settings first.');
+                    return;
+                }
+                autoApplyToggle.checked = true;
+            }
             if (typeof setAutoApply === 'function') setAutoApply(autoApplyToggle.checked);
         });
     }
@@ -384,7 +469,9 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
             sendBtn.classList.toggle('cancel-mode', isProcessing);
             sendBtn.textContent = isProcessing ? '■' : '↑';
             sendBtn.title = isProcessing ? 'Cancel' : 'Send';
+            sendBtn.setAttribute('aria-label', isProcessing ? 'Cancel' : 'Send');
             textarea.disabled = isProcessing;
+            if (attachBtn) attachBtn.disabled = isProcessing || parsing;
         },
         /** Sets the textarea content (used by skill chips). */
         setValue(text) {
@@ -398,6 +485,12 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         },
         /** Drops pending attachments (new chat / history switch). */
         clearAttachments() {
+            attachmentGeneration += 1;
+            parsing = false;
+            attachmentErrors = [];
+            clearError();
+            sendBtn.removeAttribute('aria-busy');
+            if (attachBtn) attachBtn.disabled = processing;
             attachments = [];
             renderChips();
         },

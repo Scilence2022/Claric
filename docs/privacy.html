@@ -38,10 +38,10 @@
 
   <p>Claric is an AI editing assistant for Microsoft Word. This policy explains
   exactly what data moves, where it goes, and what stays on your machine. The
-  short version: <strong>Claric itself has no servers and collects
-  nothing</strong> — your document text goes only to the AI endpoint
-  <em>you</em> configure, and everything else lives in your browser's local
-  storage on your own machine.</p>
+  short version: Claric has no built-in analytics collection. Document content,
+  selected images and attachments may be sent to your configured chat, image or
+  MCP providers, directly or through your operator's relay. Settings and chat
+  history are stored locally in the add-in's browser storage.</p>
 
   <h2>1. Who is responsible for your data</h2>
   <p>Claric is distributed as a self-hosted add-in. The person or organization
@@ -51,28 +51,28 @@
   operator; questions about the software itself go to
   <a href="https://github.com/Scilence2022/Claric/issues">GitHub Issues</a>.</p>
 
-  <h2>2. What leaves your machine — and only when you send a request</h2>
+  <h2>2. What leaves your machine</h2>
   <ul>
     <li><strong>Document content you ask about.</strong> When you request an
-    edit, review, summary, or answer, the relevant text — your selection, the
-    document sections being processed, document comments, or tracked changes —
-    is sent to the AI endpoint <strong>you configured in Settings</strong>
-    (for example, your local Ollama server, or a cloud provider such as
-    DeepSeek, Zhipu GLM, Moonshot Kimi, or MiniMax).</li>
-    <li><strong>Where it goes is up to you.</strong> If you configure a local
-    model, the document text never leaves your computer. If you configure a
-    cloud provider, the text goes to that provider and is subject to
-    <em>their</em> privacy terms — review them before sending confidential
-    documents.</li>
+    edit, review, summary, or answer, relevant selections, document sections,
+    comments and tracked changes are sent to your configured AI endpoint.</li>
+    <li><strong>Images, attachments and external tools.</strong> Selected images,
+    extracted attachment text, image-generation prompts and MCP tool arguments
+    may go to separately configured services. Startup and connection tests also
+    contact configured endpoints; image connection tests may generate a billable image.</li>
+    <li><strong>Every configured route matters.</strong> A local chat model does
+    not make a cloud image provider, remote MCP server or relay local. Information
+    sent to a provider is subject to its privacy and retention terms. Review all
+    routes before processing confidential documents.</li>
   </ul>
 
-  <h2>3. What never leaves your machine</h2>
+  <h2>3. Local storage and credentials</h2>
   <ul>
     <li><strong>Your API keys</strong> are stored in the add-in's browser
-    local storage and are sent only to the endpoint you configured (or, when
-    same-origin proxying is enabled by your operator, only through that proxy
-    to the provider you chose). They are never sent to Claric's developers or
-    any third party.</li>
+    local storage and sent to configured endpoints, through your operator's
+    proxy when enabled. These endpoints and relays receive your credentials;
+    verify them before entering a key. Claric does not encrypt browser storage,
+    and same-origin scripts can access it.</li>
     <li><strong>Your settings, saved prompts, and chat history</strong> live
     in local storage on your machine and can be erased at any time (browser
     site-data controls, or in-app via the history panel).</li>
@@ -89,12 +89,14 @@
 
   <h2>5. Your choices and controls</h2>
   <ul>
-    <li>Choose <strong>where your text goes</strong> — local model for full
-    confidentiality, or a cloud provider you trust.</li>
-    <li>Every AI-proposed edit is <strong>staged for your review</strong>;
-    nothing is written into your document until you apply it.</li>
-    <li>Delete saved sessions and prompts from the add-in UI at any time;
-    clearing browser site data removes all locally stored settings and keys.</li>
+    <li>Review chat, image and MCP routes independently before sending content.
+    A local model alone does not guarantee confidentiality of all operations.</li>
+    <li>Edits are staged by default. Enabling Auto-apply explicitly authorizes
+    automatic document changes without a separate click on each proposal.
+    Stopping an operation does not undo changes already submitted to Word.</li>
+    <li>Delete saved sessions and prompts from the add-in UI;
+    clearing browser site data removes locally stored settings and keys. Local
+    deletion does not delete data already retained by a provider or relay.</li>
   </ul>
 
   <h2>6. Children</h2>

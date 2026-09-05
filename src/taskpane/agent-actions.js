@@ -1122,102 +1122,97 @@ export async function prepareImageToolEdit(deps, {
  *   user-filtered subset — unchecked card items are skipped)
  * @returns {Promise<{ applied: number, warnings: string[] }>}
  */
-export async function applyImageOps(deps, proposal) {
+function checkImageSignal(signal) {
+    if (signal?.aborted) {
+        const error = new Error('Image operation cancelled.');
+        error.name = 'AbortError';
+        throw error;
+    }
+}
+
+const attemptedImageOps = new WeakSet();
+
+export async function applyImageOps(deps, proposal, { signal } = {}) {
     const { appState, log } = deps;
     const ops = (proposal && proposal.ops) || [];
     if (ops.length === 0) throw new Error('No image operations to apply.');
-
+    if (ops.some((op) => attemptedImageOps.has(op))) throw new Error('These image operations were already attempted. Review the document and draft a new proposal.');
+    checkImageSignal(signal);
     const indexOps = ops.filter((op) => op.type !== 'insert');
     const insertOps = ops.filter((op) => op.type === 'insert');
-
     let applied = 0;
+    let attempted = false;
+    let interrupted = false;
+    let partial = false;
     const warnings = [];
-
     await Word.run(async (context) => {
         const pictures = context.document.body.inlinePictures;
         pictures.load('items');
+        if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
         await context.sync();
+        checkImageSignal(signal);
         const items = pictures.items || [];
         if (items.length !== (proposal.snapshotCount || 0)) {
-            throw new Error(
-                `The document's images changed since this proposal was drafted ` +
-                `(${proposal.snapshotCount} → ${items.length}). Draft a new edit instead.`
-            );
+            throw new Error(`The document's images changed since this proposal was drafted (${proposal.snapshotCount} → ${items.length}). Draft a new edit instead.`);
         }
         for (const pic of items) {
             pic.load('width,height,altTextDescription,altTextTitle,hyperlink,lockAspectRatio');
-            if (pic.paragraph && typeof pic.paragraph.load === 'function') {
-                pic.paragraph.load('alignment');
-            }
+            if (pic.paragraph && typeof pic.paragraph.load === 'function') pic.paragraph.load('alignment');
         }
         await context.sync();
-
+        checkImageSignal(signal);
         if (Array.isArray(proposal.snapshotIdentities)) {
-            if (proposal.snapshotIdentities.length !== items.length) {
-                throw new Error('The image identity snapshot is incomplete. Draft a new edit instead.');
-            }
-            const identityMismatch = items.some((pic, i) => {
-                const hasSvgSource = !!svgSourceIdFromPicture(pic);
-                const current = _snapshotEntryFromPicture(pic, i + 1, { hasSvgSource }).identityKey;
-                return current !== proposal.snapshotIdentities[i];
-            });
-            if (identityMismatch) {
+            if (proposal.snapshotIdentities.length !== items.length) throw new Error('The image identity snapshot is incomplete. Draft a new edit instead.');
+            if (items.some((pic, i) => _snapshotEntryFromPicture(pic, i + 1, {
+                hasSvgSource: !!svgSourceIdFromPicture(pic),
+            }).identityKey !== proposal.snapshotIdentities[i])) {
                 throw new Error('The document images changed since this proposal was drafted. Draft a new edit instead.');
             }
         }
-
-        if (Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = appState.config.trackChangesEnabled
-                ? Word.ChangeTrackingMode.trackAll
-                : Word.ChangeTrackingMode.off;
-        }
-
+        const previousMode = context.document.changeTrackingMode;
+        if (Word.ChangeTrackingMode) context.document.changeTrackingMode = appState.config.trackChangesEnabled
+            ? Word.ChangeTrackingMode.trackAll : Word.ChangeTrackingMode.off;
         try {
-            // Phase 1: index-addressed ops against the snapshot mapping.
             for (const op of indexOps) {
+                checkImageSignal(signal);
                 const pic = items[op.index - 1];
                 if (!pic) {
                     warnings.push(`Image ${op.index} no longer exists — op skipped.`);
                     continue;
                 }
-                try {
-                    const appliedOp = await _applyImageIndexOp(context, pic, op, log, warnings);
-                    if (appliedOp !== false) applied++;
-                } catch (opErr) {
-                    const warning = `Image op (${op.type} on #${op.index}) failed: ${opErr.message || opErr} — skipped.`;
-                    warnings.push(warning);
-                    log(warning, 'warning');
-                }
+                attempted = true;
+                attemptedImageOps.add(op);
+                const appliedOp = await _applyImageIndexOp(context, pic, op, log, warnings, signal);
+                if (appliedOp !== false) applied++;
             }
-            await context.sync();
-
-            // Phase 2: inserts (never shift the snapshot indexes above).
             for (const op of insertOps) {
+                checkImageSignal(signal);
                 const { base64 } = await svgToPngBase64(op.svg);
-                const pic = insertPngPicture(context, {
-                    base64,
-                    position: op.position,
-                });
+                checkImageSignal(signal);
+                attempted = true;
+                attemptedImageOps.add(op);
+                const pic = insertPngPicture(context, { base64, position: op.position });
                 await context.sync();
                 finalizeInsertedPicture(context, pic, op.instruction);
-                // Persist the SVG source beside the picture so later edits
-                // can re-edit the vector markup (no-op where the shared
-                // custom-XML-parts API is unavailable).
                 await attachSvgSource(pic, op.svg);
                 await context.sync();
                 applied++;
             }
+            interrupted = !!signal?.aborted;
+        } catch (error) {
+            interrupted = error.name === 'AbortError';
+            partial = attempted;
+            if (!attempted && !interrupted) throw error;
+            warnings.push(`Image operations stopped: ${error.message}. Changes may already be applied; review before drafting a new proposal.`);
         } finally {
             if (Word.ChangeTrackingMode) {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                context.document.changeTrackingMode = previousMode;
                 await context.sync();
             }
         }
     });
-
-    log(`Applied ${applied} image operation(s)` +
-        (warnings.length ? ` (${warnings.length} skipped)` : '') + '.', 'success');
-    return { applied, warnings };
+    log(`Applied ${applied} image operation(s).`, warnings.length || interrupted ? 'warning' : 'success');
+    return { applied, warnings, interrupted, partial: partial || (interrupted && attempted) };
 }
 
 /** Maps an image alignment keyword onto the Word Alignment string value. */
@@ -1244,7 +1239,7 @@ function _normalizeCaptionText(value) {
  *
  * @private
  */
-async function _applyFigureCaption(context, pic, op, log, warnings) {
+async function _applyFigureCaption(context, pic, op, log, warnings, signal) {
     const containing = pic && pic.paragraph;
     const method = op.position === 'before' ? 'getPreviousOrNullObject' : 'getNextOrNullObject';
     if (!containing || typeof containing[method] !== 'function') {
@@ -1347,6 +1342,7 @@ async function _applyFigureCaption(context, pic, op, log, warnings) {
         log(warning, 'warning');
         return false;
     }
+    checkImageSignal(signal);
     contentRange.insertText(op.after, replace);
     await context.sync();
     return true;
@@ -1355,14 +1351,14 @@ async function _applyFigureCaption(context, pic, op, log, warnings) {
 /**
  * Applies one index-addressed image op (delete / resize / altText / align /
  * link / replace / figureCaption). Syncs the queued commands before returning
- * so a failure in one op doesn't poison the next batch. Each op is wrapped by
- * its caller's try/catch — failures degrade to a warning instead of failing
- * the apply.
+ * so cancellation can stop at an operation boundary. Uncertain write failures
+ * stop the batch and require document review rather than automatic replay.
  *
  * @returns {Promise<boolean>} false when a guarded operation was skipped
  * @private
  */
-async function _applyImageIndexOp(context, pic, op, log, warnings) {
+async function _applyImageIndexOp(context, pic, op, log, warnings, signal) {
+    checkImageSignal(signal);
     switch (op.type) {
         case 'delete': {
             const oldSourceId = svgSourceIdFromPicture(pic);
@@ -1440,6 +1436,7 @@ async function _applyImageIndexOp(context, pic, op, log, warnings) {
             // (the title slot carries the new SVG-source link instead).
             const altText = pic.altTextDescription || op.instruction || 'Illustration';
             const { base64 } = await svgToPngBase64(op.svg);
+            checkImageSignal(signal);
             const range = pic.getRange(Word.RangeLocation.start);
             const newPic = range.insertInlinePictureFromBase64(base64, Word.InsertLocation.before);
             newPic.load('width,height');
@@ -1454,7 +1451,7 @@ async function _applyImageIndexOp(context, pic, op, log, warnings) {
             return;
         }
         case 'figureCaption':
-            return _applyFigureCaption(context, pic, op, log, warnings);
+            return _applyFigureCaption(context, pic, op, log, warnings, signal);
         default:
             throw new Error(`Unknown image op type "${op.type}".`);
     }

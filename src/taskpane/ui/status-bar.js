@@ -144,10 +144,8 @@ export function updateCommentStatusBar(count) {
 }
 
 /**
- * Updates the header connection indicator. The visible state is a colored
- * dot only (green = connected, yellow = connecting, red = error); the label
- * text is hidden and carried on the dot as a hover tooltip / aria-label so
- * the reason (e.g. "API key required") is not lost.
+ * Updates the connection dot, the visible error message and Settings status.
+ * The dot also carries the status as a tooltip and accessible label.
  *
  * @param {string} state - 'connecting' | 'connected' | 'error'
  * @param {string} text - Status label text
@@ -168,6 +166,14 @@ export function setConnectionStatus(state, text) {
     if (container) {
         container.title = text;
         container.setAttribute('aria-label', text);
+    }
+    for (const id of ['connectionError', 'settingsConnectionStatus']) {
+        const feedback = document.getElementById(id);
+        if (feedback) {
+            feedback.textContent = text;
+            feedback.hidden = id === 'connectionError' && state !== 'error';
+            feedback.classList.toggle('connection-error', state === 'error');
+        }
     }
 }
 

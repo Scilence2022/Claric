@@ -11,8 +11,8 @@ concurrency:
   group: deploy-pages
   cancel-in-progress: false
 
-# This workflow is self-contained: it runs the same lint + test + build
-# gates the CI workflow (`.github/workflows/ci.yml`) runs, then ships the
+# This workflow is self-contained: it runs the same production audit and
+# shared npm run verify gates as CI, then ships the
 # bundle to Scilence2022/claric-addin. Keeping it independent means a deploy
 # never waits on CI's unrelated docker build, and a CI failure (e.g.
 # Trivy vulnerability scan) can't block a Pages release.
@@ -23,10 +23,6 @@ jobs:
     permissions:
       contents: read
     env:
-      # PAGES_REPO_TOKEN is a PAT (classic or fine-grained) with `Contents:
-      # read and write` on Scilence2022/claric-addin. The default
-      # GITHUB_TOKEN cannot push to a different repo.
-      PAGES_REPO_TOKEN: ${{ secrets.PAGES_REPO_TOKEN }}
       CLARIC_ADDIN_REPO: Scilence2022/claric-addin
       CLARIC_ADDIN_LOCAL: /tmp/claric-addin-bootstrap
     steps:
@@ -42,14 +38,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
-      - name: Test
-        run: npm test
-
-      - name: Build production bundle
-        run: npm run build
+      - name: Verify source and production build
+        run: npm run verify
 
       - name: Write minimal .env for manifest generation
         # Manifest identity must be stable across deploys so existing Word

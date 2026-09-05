@@ -26,7 +26,7 @@ import { reapOrphanChunkBookmarks } from '../lib/reassembler.js';
 import * as chatView from './ui/chat-view.js';
 import { renderWelcomeChips, selectWelcomeSkills } from './ui/welcome.js';
 import { initInputBar } from './ui/input-bar.js';
-import { initSettings, openSettings, testConnectionUI } from './ui/settings-view.js';
+import { createSettingsLoader } from './settings-loader.js';
 import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer } from './ui/status-bar.js';
 import { initHistoryView, openHistory } from './ui/history-view.js';
 import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession } from './sessions.js';
@@ -88,19 +88,23 @@ function initialize() {
         }
     }
 
+    const settings = createSettingsLoader({ onConfigChanged: updateModelPill, log: addLog });
+    document.getElementById('settingsBtn').addEventListener('click', settings.open);
+
     // Input bar + conversation orchestration
     const input = initInputBar({
         onSubmit: (text, attachments) => conversation.submit(text, attachments),
         onCancel: () => conversation.cancel(),
         getSkills: () => listSkills(appState.promptManager),
-        onOpenSettings: openSettings,
+        onOpenSettings: settings.open,
         onLog: addLog,
         getAutoApply: () => appState.config.autoApplyChanges === true,
+        getTrackChanges: () => appState.config.trackChangesEnabled,
         setAutoApply: (value) => {
             appState.config.autoApplyChanges = value === true;
             persistSettings(appState);
             addLog(value
-                ? 'Auto-apply enabled — proposed changes will be applied automatically as tracked changes.'
+                ? 'Auto-apply enabled. Proposed changes will write automatically; some structural changes may not be tracked.'
                 : 'Auto-apply disabled — proposed changes will wait for your review.',
                 'info');
         },
@@ -130,9 +134,6 @@ function initialize() {
     chatView.setProposalStateChangeHandler(() => {
         persistCurrentSession(chatView.getCurrentSession());
     });
-
-    // Settings slide-over (provider settings + prompt management)
-    initSettings({ onConfigChanged: updateModelPill });
 
     // Header buttons
     document.getElementById('historyBtn').addEventListener('click', openHistory);
@@ -204,8 +205,8 @@ function initialize() {
     appState.platform = getHostPlatform();
     addLog(`Host platform: ${appState.platform}`, 'info');
 
-    // Auto-test connection and load models
-    testConnectionUI();
+    // Auto-test connection and load models after the settings chunk is ready.
+    void settings.testConnection();
 
     // Log build fingerprint (dist content hash + UTC timestamp). Fire-and-forget:
     // the asset may be served from a stale cache or unreachable; a missing

@@ -395,6 +395,17 @@ body {
     color: var(--secondary-text);
 }
 
+/* Composer validation feedback (file uploads and other input errors) */
+.input-error {
+    margin-bottom: var(--spacing-xs);
+    color: var(--error-color);
+    font-size: var(--font-size-sm);
+}
+
+.input-error[hidden] {
+    display: none;
+}
+
 /* Attachment chips (file uploads pending above the composer) */
 .attachment-chips {
     display: flex;
@@ -1661,6 +1672,40 @@ textarea.form-control {
     display: flex;
 }
 
+.confirm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(0, 0, 0, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.confirm-dialog {
+    width: min(360px, 100%);
+    max-height: 90vh;
+    overflow: auto;
+    background: var(--primary-bg);
+    border-radius: 8px;
+    padding: 20px;
+    overflow-wrap: anywhere;
+}
+
+.confirm-dialog h2 { font-size: 18px; }
+.confirm-dialog p { margin-top: 12px; }
+.modal-actions, .proposal-card-actions, .proposal-card-head { flex-wrap: wrap; }
+.settings-panel, .model-combobox, .proposal-card-title { min-width: 0; }
+.help-text, .proposal-card-status, .model-dropdown-item { overflow-wrap: anywhere; }
+:where(button, input, select, textarea, a, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent-color, #0078d4);
+    outline-offset: 2px;
+}
+.input-error { white-space: pre-line; }
+.connection-error { color: var(--error-color, #b42318); overflow-wrap: anywhere; }
+.model-dropdown-item.active { background: var(--secondary-bg); outline: 1px solid var(--accent-color, #0078d4); }
+
 .modal-content {
     background: var(--primary-bg);
     border-radius: var(--border-radius-lg);
@@ -1746,12 +1791,14 @@ textarea.form-control {
     resize: none;
 }
 
-.composer .chat-input:focus {
-    outline: none;
+.composer .chat-input:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: -2px;
 }
 
 .composer-toolbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--spacing-sm);
     padding: 2px var(--spacing-xs) 0;

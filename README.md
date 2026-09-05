@@ -16,20 +16,22 @@ you want in plain English or Chinese — *polish this paragraph*, *make this
 Heading 2*, *add a 4×3 milestone table*, *draw an illustration*, *continue
 writing*, *clean up the empty paragraphs*, *summarize all comments* — and
 Claric routes each request to the right pipeline, stages the result as
-proposal cards, and writes only what you approve into the document as native
-tracked changes. Nothing changes without your sign-off.
+proposal cards, and applies document edits through manual approval or your
+explicit opt-in to persistent auto-apply. Text edits use native tracked changes;
+structural revision support depends on the Word host (see Table Creation).
 
-- **Review-first** — every edit arrives as a proposal card with an inline
-  before/after diff; tick the ones you want, reject the rest.
-- **Real revisions, not rewrites** — word-level tracked changes with
-  formatting preserved end to end; your supervisor sees an ordinary redline.
+- **Review-first** — editing proposals are reviewable before application;
+  with auto-apply off, select the changes you want and reject the rest.
+- **Real revisions, not rewrites** — text edits support word-level tracked
+  changes and aim to preserve formatting; fidelity and structural revision
+  support must be verified for the document and Word host in use.
 - **Whole documents, not snippets** — heading-aware chunking, parallel LLM
   dispatch, and formatting-preserving reassembly for full-length files.
 - **Beyond text** — tables, illustrations, comments, summaries, MCP tools,
   and slash-command skills in the same pane.
 - **Bring your own model** — 11 chat providers plus independent image
-  generation; run local (Ollama / vLLM) or cloud, and keys stay in your
-  browser.
+  generation; run local (Ollama / vLLM) or cloud. Keys are stored in browser
+  localStorage and sent to configured endpoints, including through proxies.
 - **Bilingual** — instructions and edits work in English and 中文.
 
 ## Screenshots
@@ -70,7 +72,7 @@ More screenshots on the [website](https://scilence2022.github.io/Claric/).
 
 ### Staged Proposals & Per-Change Review
 
-Every document mutation is staged as a proposal card — nothing is written until you apply it:
+Document-edit proposals are staged before application. With auto-apply off (the default), they wait for manual Apply; opting into persistent auto-apply authorizes pending cards to apply after the turn settles:
 
 - Selection edits show before/after character counts; document-scope runs show per-section citation pills that jump to that section in the document
 - One checkbox per change, an inline deleted/inserted diff preview (diff-match-patch semantic cleanup), and a locate button that selects the source text in the document
@@ -619,6 +621,10 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 | `MINIMAX_CN_PROXY_TARGET` | `https://api.minimaxi.com` | Upstream MiniMax China API origin |
 | `ZHONGKEYU_PROXY_PATH` | *(disabled)* / `/zhongkeyu` (dev) | Proxy path for 中科大模型 / zhongkeyu.com (empty disables) |
 | `ZHONGKEYU_PROXY_TARGET` | `https://zhongkeyu.com` | Upstream zhongkeyu.com API origin |
+| `OPENROUTER_PROXY_PATH` | *(disabled)* / `/openrouter` (dev) | Opt-in OpenRouter proxy path |
+| `OPENROUTER_PROXY_TARGET` | `https://openrouter.ai` | Upstream OpenRouter origin |
+| `SILICONFLOW_PROXY_PATH` | *(disabled)* / `/siliconflow` (dev) | Opt-in SiliconFlow proxy path |
+| `SILICONFLOW_PROXY_TARGET` | `https://api.siliconflow.cn` | Upstream SiliconFlow origin |
 | `CUSTOM_PROXY_PATH` | *(empty)* | Optional same-origin proxy path for a custom OpenAI-compatible chat or image endpoint |
 | `CUSTOM_PROXY_TARGET` | *(empty)* | Upstream custom endpoint; required together with `CUSTOM_PROXY_PATH` |
 | `LLM_PROXY_TIMEOUT_MS` | `300000` | Proxy upstream timeout in ms |
@@ -629,7 +635,9 @@ container folder (see [Microsoft's Mac sideloading guide](https://learn.microsof
 |----------|---------|-------------|
 | `DEV_SERVER_HOST` | `127.0.0.1` | Host to bind webpack dev server (`0.0.0.0` exposes it to the network) |
 | `DEV_SERVER_PORT` | `3000` | Port for webpack dev server |
-| `ENABLE_DEV_ENDPOINTS` | *(off)* | Set `true` to register the dev-only E2E/coding-agent endpoints (`/log`, `/api/e2e-loop/*`, `/api/test-cases`, `/api/prompts`) — they write files and use wildcard CORS; see `scripts/dev-e2e-middlewares.cjs` |
+| `ENABLE_DEV_ENDPOINTS` | *(off)* | Set `true` for authenticated local development endpoints; see [protocol and client migration](docs/dev-harness-protocol.md). These are not a real Word E2E driver. |
+| `CLARIC_HARNESS_TOKEN` | *(generated at setup)* | Local driver token; every non-OPTIONS harness request requires `x-claric-harness-token`. Treat startup output as secret. |
+| `CLARIC_HARNESS_ORIGINS` | *(same origin only)* | Comma-separated exact extra HTTP(S) origins; wildcards are rejected. |
 | `LLM_PROXY_TLS_VERIFY` | `true` | Set `false` only for a local LLM backend with a self-signed certificate |
 | `OLLAMA_PROXY_PATH` | `/ollama` | Local proxy path for LLM requests |
 | `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Upstream Ollama server URL |
@@ -672,14 +680,22 @@ See `ARCHITECTURE.md` for details.
 ## Testing
 
 ```bash
-npm test          # 1,702 tests across 67 suites
+npm test          # Jest suites (see current output for counts and skips)
 npm run lint      # ESLint (flat config)
 npm run coverage  # Jest coverage report
 npm run check-coverage # enforce configured coverage thresholds
 npm run typecheck # TypeScript declaration/type checks
 npm run build     # webpack production build
-npm run verify    # lint + test + coverage + check-coverage + typecheck + build
+npm run verify-build # verify production artifact fingerprint and metadata
+npm run verify    # lint + test + coverage + check-coverage + typecheck + build + verify-build
 ```
+
+These automated gates do not constitute real Word product acceptance. See
+[Product acceptance specification](docs/product-acceptance-spec.md) for the
+four evidence layers, platform matrix, and release status rules. The
+[product readiness analysis](docs/product-readiness-analysis.md) records the
+architecture findings, report corrections, priorities and migration strategy.
+CI additionally runs dependency auditing and container build/scanning.
 
 For the independent image-generation path:
 

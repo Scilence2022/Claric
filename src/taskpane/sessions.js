@@ -53,7 +53,12 @@ function readIndex() {
         const raw = localStorage.getItem(INDEX_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
+        return Array.isArray(parsed) ? parsed.filter((entry) => entry
+            && typeof entry === 'object' && !Array.isArray(entry)
+            && typeof entry.id === 'string' && entry.id.trim()).map((entry) => ({
+            ...entry,
+            updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
+        })) : [];
     } catch (_err) {
         return [];
     }
@@ -335,6 +340,10 @@ export function saveSession(messages, opts = {}) {
                 try { localStorage.removeItem(sessionKey(m.id)); } catch (_err2) { /* ignore */ }
             }
         }
+        idx.splice(1);
+        if (!writeIndex(existing ? [meta] : [])) {
+            throw new Error('Session recovery failed: the history index could not be updated (storage quota).');
+        }
         writeSession(session);
     }
 
@@ -362,9 +371,15 @@ export function deleteSession(id) {
  * Wipes every persisted session and the index. Safe to call when empty.
  */
 export function clearAllSessions() {
-    const idx = readIndex();
-    for (const m of idx) {
-        try { localStorage.removeItem(sessionKey(m.id)); } catch (_err) { /* ignore */ }
+    try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith(SESSION_KEY_PREFIX)) {
+                try { localStorage.removeItem(key); } catch (_err) { /* ignore */ }
+            }
+        }
+    } catch (_err) {
+        // Storage access can be disabled by the host.
     }
     try { localStorage.removeItem(INDEX_KEY); } catch (_err) { /* ignore */ }
 }

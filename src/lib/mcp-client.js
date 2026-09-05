@@ -95,8 +95,23 @@ let nextRequestId = 1;
  *
  * @private
  */
-async function rpcPost(url, { body, token, sessionId, fetchFn, timeoutMs }) {
+async function rpcPost(url, { body, token, sessionId, fetchFn, timeoutMs, signal }) {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    let timer;
+    let onAbort;
+    let abortError;
     try {
+        if (signal && signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+        const cancelled = new Promise((_, reject) => {
+            const abort = (message) => {
+                abortError = new DOMException(message, 'AbortError');
+                reject(abortError);
+                if (controller) controller.abort();
+            };
+            onAbort = () => abort('The operation was aborted.');
+            if (signal) signal.addEventListener('abort', onAbort, { once: true });
+            timer = setTimeout(() => abort('MCP request timed out.'), timeoutMs);
+        });
         const headers = {
             'Content-Type': 'application/json',
             'Accept': 'application/json, text/event-stream',
@@ -104,19 +119,19 @@ async function rpcPost(url, { body, token, sessionId, fetchFn, timeoutMs }) {
         if (token) headers['Authorization'] = `Bearer ${token}`;
         if (sessionId) headers['Mcp-Session-Id'] = sessionId;
 
-        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        const timer = setTimeout(() => controller && controller.abort(), timeoutMs);
-        let response;
-        try {
-            response = await fetchFn(url, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(body),
-                signal: controller ? controller.signal : undefined,
-            });
-        } finally {
-            clearTimeout(timer);
-        }
+        const response = await Promise.race([
+            cancelled,
+            Promise.resolve().then(() => {
+                if (abortError) throw abortError;
+                return fetchFn(url, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(body),
+                    signal: controller ? controller.signal : undefined,
+                });
+            }),
+        ]);
+        if (abortError) throw abortError;
 
         if (!response.ok) {
             throw new Error(`MCP HTTP ${response.status}: ${response.statusText || 'request failed'}`);
@@ -127,7 +142,8 @@ async function rpcPost(url, { body, token, sessionId, fetchFn, timeoutMs }) {
 
         const contentType = (response.headers && response.headers.get('content-type')) || '';
         let message = null;
-        const text = await response.text();
+        const text = await Promise.race([cancelled, response.text()]);
+        if (abortError) throw abortError;
         if (contentType.includes('text/event-stream')) {
             for (const line of text.split(/\r?\n/)) {
                 if (!line.startsWith('data:')) continue;
@@ -162,29 +178,34 @@ async function rpcPost(url, { body, token, sessionId, fetchFn, timeoutMs }) {
         }
         return { sessionId: sessionIdFromServer, message };
     } catch (err) {
-        throw safeMcpError(err, token);
+        throw safeMcpError(abortError || err, token);
+    } finally {
+        clearTimeout(timer);
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
     }
 }
 
 /**
  * Connects to an MCP server and returns a handle with typed helpers.
+ * Each helper accepts a final options object whose signal overrides the default.
  *
  * @param {object} args
  * @param {string} args.url - MCP server endpoint (HTTPS, local HTTP, or same-origin relative path)
  * @param {string} [args.token] - Bearer token for the Authorization header
  * @param {function} [args.fetchFn] - Injectable fetch (defaults to global)
  * @param {function} [args.log] - Logging callback (message, type)
- * @param {number} [args.timeoutMs=30000] - Per-request timeout
+ * @param {number} [args.timeoutMs=30000] - Per-request deadline including response body
+ * @param {AbortSignal} [args.signal] - Default signal for handshake and subsequent requests
  * @param {string} [args.protocolVersion=MCP_PROTOCOL_VERSION]
  * @returns {Promise<{serverInfo: {name: string, version: string}, protocolVersion: string,
- *   listTools: function(): Promise<Array>, callTool: function(string, object): Promise<object>,
- *   listPrompts: function(): Promise<Array>, getPrompt: function(string, object=): Promise<object>,
- *   listResources: function(): Promise<Array>, readResource: function(string): Promise<object>}>}
- * @throws {Error} On HTTP errors, JSON-RPC errors, or handshake failures
+ *   listTools: function({signal?: AbortSignal}=): Promise<Array>, callTool: function(string, object, {signal?: AbortSignal}=): Promise<object>,
+ *   listPrompts: function({signal?: AbortSignal}=): Promise<Array>, getPrompt: function(string, object=, {signal?: AbortSignal}=): Promise<object>,
+ *   listResources: function({signal?: AbortSignal}=): Promise<Array>, readResource: function(string, {signal?: AbortSignal}=): Promise<object>}>}
+ * @throws {Error} On HTTP errors, JSON-RPC errors, cancellation, or handshake failures
  */
 export async function connectMcpServer({
     url, token, fetchFn = (typeof fetch === 'function' ? fetch : null), log = () => {},
-    timeoutMs = 30000, protocolVersion = MCP_PROTOCOL_VERSION,
+    timeoutMs = 30000, protocolVersion = MCP_PROTOCOL_VERSION, signal,
 }) {
     if (!fetchFn) throw new Error('MCP client requires a fetch implementation');
     if (!url || typeof url !== 'string') throw new Error('MCP client requires a server URL');
@@ -195,7 +216,7 @@ export async function connectMcpServer({
 
     let sessionId = null;
 
-    const request = async (method, params) => {
+    const request = async (method, params, requestSignal = signal) => {
         const id = nextRequestId++;
         const { sessionId: returned, message } = await rpcPost(endpoint, {
             body: { jsonrpc: '2.0', id, method, params },
@@ -203,6 +224,7 @@ export async function connectMcpServer({
             sessionId,
             fetchFn,
             timeoutMs,
+            signal: requestSignal,
         });
         if (returned) sessionId = returned;
         return message;
@@ -215,6 +237,7 @@ export async function connectMcpServer({
             sessionId,
             fetchFn,
             timeoutMs,
+            signal,
         });
         if (returned) sessionId = returned;
     };
@@ -234,45 +257,45 @@ export async function connectMcpServer({
         serverInfo,
         protocolVersion: result.protocolVersion || protocolVersion,
         /** Lists the server's tools (MCP tools/list). */
-        listTools: async () => {
-            const message = await request('tools/list', {});
+        listTools: async ({ signal: requestSignal = signal } = {}) => {
+            const message = await request('tools/list', {}, requestSignal);
             return (message && message.result && Array.isArray(message.result.tools)) ? message.result.tools : [];
         },
         /** Calls one tool (MCP tools/call); returns the raw result {content, isError}. */
-        callTool: async (name, args) => {
-            const message = await request('tools/call', { name, arguments: args || {} });
+        callTool: async (name, args, { signal: requestSignal = signal } = {}) => {
+            const message = await request('tools/call', { name, arguments: args || {} }, requestSignal);
             return (message && message.result) || { content: [], isError: true };
         },
         /** Lists the server's prompt templates; servers without prompt
          *  support (JSON-RPC "Method not found") degrade to an empty list. */
-        listPrompts: async () => {
+        listPrompts: async ({ signal: requestSignal = signal } = {}) => {
             try {
-                const message = await request('prompts/list', {});
+                const message = await request('prompts/list', {}, requestSignal);
                 return (message && message.result && Array.isArray(message.result.prompts)) ? message.result.prompts : [];
             } catch (err) {
-                if (/-32601|Method not found/i.test(err.message)) return [];
+                if (err.name !== 'AbortError' && /-32601|Method not found/i.test(err.message)) return [];
                 throw err;
             }
         },
         /** Fetches one prompt template (MCP prompts/get); returns the raw result. */
-        getPrompt: async (name, args) => {
-            const message = await request('prompts/get', { name, arguments: args || {} });
+        getPrompt: async (name, args, { signal: requestSignal = signal } = {}) => {
+            const message = await request('prompts/get', { name, arguments: args || {} }, requestSignal);
             return (message && message.result) || { messages: [] };
         },
         /** Lists the server's resources; servers without resource support
          *  degrade to an empty list. */
-        listResources: async () => {
+        listResources: async ({ signal: requestSignal = signal } = {}) => {
             try {
-                const message = await request('resources/list', {});
+                const message = await request('resources/list', {}, requestSignal);
                 return (message && message.result && Array.isArray(message.result.resources)) ? message.result.resources : [];
             } catch (err) {
-                if (/-32601|Method not found/i.test(err.message)) return [];
+                if (err.name !== 'AbortError' && /-32601|Method not found/i.test(err.message)) return [];
                 throw err;
             }
         },
         /** Reads one resource (MCP resources/read); returns the raw result. */
-        readResource: async (uri) => {
-            const message = await request('resources/read', { uri });
+        readResource: async (uri, { signal: requestSignal = signal } = {}) => {
+            const message = await request('resources/read', { uri }, requestSignal);
             return (message && message.result) || { contents: [] };
         },
     };
