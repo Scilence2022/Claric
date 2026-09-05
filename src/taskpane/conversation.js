@@ -143,6 +143,24 @@ export function looksLikeIllustrationIntent(text) {
 }
 
 /**
+ * Figure legend/caption intent markers. These words identify content that
+ * needs both the image pixels and the nearby Word paragraphs; they are kept
+ * separate from generic image-management verbs so a mixed text+image
+ * selection does not leave the text pipeline accidentally.
+ */
+const FIGURE_LEGEND_INTENT_RE = /\b(?:legend|caption)s?\b|\b(?:figure|fig\.?)[^\n]{0,24}\b(?:legend|caption)s?\b|图注|图例|图题|图说明|图片说明|图像说明/i;
+
+/**
+ * True when free text explicitly targets a figure legend or caption.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikeFigureLegendIntent(text) {
+    return FIGURE_LEGEND_INTENT_RE.test((text || '').trim());
+}
+
+/**
  * Image-tool intent markers: the user wants EXISTING images MANAGED —
  * deleted/replaced/resized/relabeled — or SEVERAL illustrations designed at
  * once. Single-image design stays on the dedicated illustration turn (its
@@ -153,7 +171,8 @@ const IMAGE_TOOL_INTENT_RE = /(删除|移除|去掉|替换|更换|重设|缩放|
 
 /**
  * True when free text asks for image management or multi-image design.
- * Questions stay Q&A; single-image design stays on the illustration turn.
+ * Figure legend/caption requests are handled by routeTurn only when an image
+ * is actually selected, so a text-only caption selection keeps its text path.
  *
  * @param {string} text - Trimmed chat input
  * @returns {boolean}
@@ -392,9 +411,12 @@ function filterTablePatchBySelection(tablePatch, selectedIds) {
  *   selection (selected text OR selected image(s) OR a multi-cell table
  *   region)
  * @param {boolean} [ctx.hasImageSelection=false] - True when the selection
- *   contains image(s) and NO text: every instruction then enters the image
- *   tool session (object + tools) — questions included, since visual reading
- *   is the read_image tool, not injected bytes
+ *   contains one or more images. When `hasTextSelection` is omitted, the
+ *   legacy meaning is image-only; callers with mixed content must provide
+ *   `hasTextSelection: true`.
+ * @param {boolean} [ctx.hasTextSelection] - True when the selection contains
+ *   text. Mixed image+text selections keep the text pipeline unless the user
+ *   explicitly targets a figure legend/caption.
  * @param {boolean} [ctx.hasMultiCellTableRegion=false] - True when the
  *   selection covers multiple cells of a single table (whole table or a
  *   rectangular sub-region): any instruction enters the table tool session
@@ -405,34 +427,79 @@ function filterTablePatchBySelection(tablePatch, selectedIds) {
  * @returns {{ type: string, skill?: object, args?: string, instruction?: string, question?: string, scope?: string } | null}
  *   Null for empty input.
  */
-export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMultiCellTableRegion = false, skills, allowCompound = true } = {}) {
+export function routeTurn(text, {
+    hasSelection,
+    hasImageSelection = false,
+    hasTextSelection,
+    hasMultiCellTableRegion = false,
+    skills,
+    allowCompound = true,
+} = {}) {
     const trimmed = (text || '').trim();
     if (!trimmed) return null;
+
+    const imageSelected = !!hasImageSelection;
+    // Legacy callers omitted hasTextSelection for image-only selections. New
+    // callers state it explicitly so mixed image+text selections remain clear.
+    const textSelected = hasTextSelection === undefined
+        ? (!!hasSelection && !imageSelected)
+        : !!hasTextSelection;
+    const selectionPresent = !!hasSelection || imageSelected || textSelected || !!hasMultiCellTableRegion;
+    const figureIntent = looksLikeFigureLegendIntent(trimmed);
 
     const resolved = resolveSkill(trimmed, skills);
     if (resolved) {
         return { type: TURN_TYPE.SKILL, skill: resolved.skill, args: resolved.args };
     }
+
+    // A selected image is the required visual anchor for figure legend/caption
+    // review or editing. Nearby selected text is context only, never visual
+    // evidence. A text-only caption selection remains on the normal text path.
+    // Without a selection, an imperative request can inspect all document
+    // images; a question remains ordinary document Q&A until an image is
+    // selected so the host has a concrete visual target.
+    if (figureIntent && (imageSelected || (!selectionPresent && !looksLikeQuestion(trimmed)))
+        && !hasMultiCellTableRegion) {
+        return {
+            type: TURN_TYPE.IMAGE_TOOL,
+            instruction: trimmed,
+            hasSelection: selectionPresent,
+            hasImageSelection: imageSelected,
+            hasTextSelection: textSelected,
+        };
+    }
+
     // Compound instructions hit several intent families at once; the task
     // planner decomposes them into per-pipeline tasks, executed in order.
     // Document-scope image/table intents ONLY compound when the selection
-    // wouldn't already route to IMAGE_TOOL/TABLE_TOOL directly — otherwise
-    // a single image selection shouldn't trigger a planner call.
+    // would not already route to IMAGE_TOOL/TABLE_TOOL directly.
     if (allowCompound) {
         const families = countIntentFamilies(trimmed);
-        const docCompound = !hasImageSelection && looksLikeDocumentImageIntent(trimmed) ? 1 : 0;
+        const docCompound = !imageSelected && looksLikeDocumentImageIntent(trimmed) ? 1 : 0;
         const tableDocCompound = !hasMultiCellTableRegion && looksLikeDocumentTableIntent(trimmed) ? 1 : 0;
         if (families + docCompound + tableDocCompound >= 2) {
-            // The flag rides along so a planning failure can re-route with the
-            // same selection facts (runCompoundTurn's fallback).
-            return { type: TURN_TYPE.COMPOUND, instruction: trimmed, hasMultiCellTableRegion };
+            return {
+                type: TURN_TYPE.COMPOUND,
+                instruction: trimmed,
+                hasSelection: selectionPresent,
+                hasImageSelection: imageSelected,
+                hasTextSelection: textSelected,
+                hasMultiCellTableRegion,
+            };
         }
     }
+
     // Image-management intent wins over the single-illustration branch:
     // deleting/replacing/resizing existing images or designing several at
     // once needs the multi-step tool loop, not one streaming SVG design.
     if (looksLikeImageToolIntent(trimmed)) {
-        return { type: TURN_TYPE.IMAGE_TOOL, instruction: trimmed };
+        return {
+            type: TURN_TYPE.IMAGE_TOOL,
+            instruction: trimmed,
+            hasSelection: selectionPresent,
+            hasImageSelection: imageSelected,
+            hasTextSelection: textSelected,
+        };
     }
     // Illustration intent wins over the append/edit branches: the artifact
     // nouns (插图/配图/svg...) name an image to design and insert, not text
@@ -454,36 +521,38 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMu
     }
     // Format intent wins over the selection/edit branches too: formatting ops
     // never rewrite text, so they must not enter the text-diff pipelines.
-    // A format instruction that names the table's look (边框/底纹/表头/...)
-    // paired with a multi-cell table selection enters the table tool session
-    // instead — its style tools (set_table_style/set_borders/...) own the
-    // table. Image-only selections take document scope — format ops target
-    // text. Other multi-cell table regions also take document scope — format
-    // ops target paragraphs, not table cells.
     if (looksLikeFormatIntent(trimmed)) {
         if (hasMultiCellTableRegion && TABLE_STYLE_HINT_RE.test(trimmed)) {
             return { type: TURN_TYPE.TABLE_TOOL, instruction: trimmed };
         }
-        return { type: TURN_TYPE.FORMAT, instruction: trimmed, scope: hasSelection && !hasImageSelection && !hasMultiCellTableRegion ? 'selection' : 'document' };
+        return {
+            type: TURN_TYPE.FORMAT,
+            instruction: trimmed,
+            scope: selectionPresent && textSelected && !hasMultiCellTableRegion ? 'selection' : 'document',
+        };
     }
     // Cleanup intent is document-scope and deterministic: empty paragraphs
     // are invisible to the parser/LLM, so no text pipeline could serve this.
     if (looksLikeCleanupIntent(trimmed)) {
         return { type: TURN_TYPE.CLEANUP, instruction: trimmed };
     }
-    if (hasSelection) {
+    if (selectionPresent) {
         // Image-only selection: the selection enters as a controllable image
         // OBJECT (snapshot index + metadata + tool list). Questions are
         // answered through read_image inside the session; edits through the
         // op tools — the text pipelines have nothing to operate on.
-        if (hasImageSelection) {
-            return { type: TURN_TYPE.IMAGE_TOOL, instruction: trimmed };
+        if (imageSelected && !textSelected) {
+            return {
+                type: TURN_TYPE.IMAGE_TOOL,
+                instruction: trimmed,
+                hasSelection: true,
+                hasImageSelection: true,
+                hasTextSelection: false,
+            };
         }
         // Multi-cell table region: the table enters as a controllable TABLE
         // OBJECT (grid + get_state / set_cell / insert_row / delete_row
-        // tools). Mirrors image selection: questions answered inside the
-        // session via get_state, edits via the cell/row op tools. Intra-cell
-        // text selections skip this branch and stay on the flat text path.
+        // tools). Intra-cell text selections stay on the flat text path.
         if (hasMultiCellTableRegion) {
             return { type: TURN_TYPE.TABLE_TOOL, instruction: trimmed };
         }
@@ -500,10 +569,7 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMu
         return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
     }
     // Document-scope image/table intent (no selection, plural-marked):
-    // mutates EVERY image/table in the document through the same tool loop,
-    // while a selection would have routed to IMAGE_TOOL/TABLE_TOOL above.
-    // Runs before the edit branch: "把图片都加上标题" is an image op, not a
-    // document amendment.
+    // mutates EVERY image/table in the document through the same tool loop.
     if (looksLikeDocumentTableIntent(trimmed)) {
         return { type: TURN_TYPE.DOCUMENT_TABLE_TOOL, instruction: trimmed };
     }
@@ -518,11 +584,16 @@ export function routeTurn(text, { hasSelection, hasImageSelection = false, hasMu
         return { type: TURN_TYPE.DOC_QA, question: trimmed };
     }
     // Zero intent-family hits and not a question lead: the instruction is
-    // ambiguous. Let the task planner classify it into the right pipeline
-    // (a cheap call — the planner never sees document text). Planning
-    // failure falls back to single-intent routing (Q&A) in runCompoundTurn.
+    // ambiguous. Let the task planner classify it into the right pipeline.
     if (allowCompound) {
-        return { type: TURN_TYPE.COMPOUND, instruction: trimmed, hasMultiCellTableRegion };
+        return {
+            type: TURN_TYPE.COMPOUND,
+            instruction: trimmed,
+            hasSelection: false,
+            hasImageSelection: false,
+            hasTextSelection: false,
+            hasMultiCellTableRegion: false,
+        };
     }
     return { type: TURN_TYPE.DOC_QA, question: trimmed };
 }
@@ -1320,12 +1391,13 @@ export function createConversation(deps) {
      * document's images, and the recorded ops stage in a proposal card with
      * one selectable change per op. Apply runs only the checked ops.
      */
-    async function runImageToolTurn(turn, msg, turnDeps, selectionImages, turnController) {
+    async function runImageToolTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController) {
         const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Working through the image task (tool loop)...');
             const proposal = await actions.prepareImageToolEdit(turnDeps, {
                 instruction: turn.instruction,
+                selectionText,
                 selectionImages,
                 signal: myController.signal,
                 onStep: (s) => msg.appendModelToken({ id: 'tools' }, 'content',
@@ -1795,12 +1867,16 @@ export function createConversation(deps) {
      * pipeline runner expects.
      *
      * @param {{ type: string, instruction: string }} task
-     * @param {boolean} hasSelection
+     * @param {{ hasSelection?: boolean, hasImageSelection?: boolean,
+     *   hasTextSelection?: boolean, hasMultiCellTableRegion?: boolean }} facts
      * @returns {{ type: string, instruction?: string, question?: string, scope?: string }}
      * @private
      */
-    function turnForTask(task, hasSelection) {
+    function turnForTask(task, { hasSelection, hasImageSelection, hasTextSelection, hasMultiCellTableRegion } = {}) {
         const instruction = task.instruction;
+        const imageSelected = !!hasImageSelection;
+        const textSelected = !!hasTextSelection;
+        const selectionPresent = !!hasSelection || imageSelected || textSelected || !!hasMultiCellTableRegion;
         // A planner task that is really an empty-paragraph cleanup must not
         // enter the text pipelines — the parser/LLM never see blank
         // paragraphs, so only the deterministic cleanup can serve it,
@@ -1814,11 +1890,26 @@ export function createConversation(deps) {
                 // inserting a title into a selection would misplace it.
                 return { type: TURN_TYPE.FORMAT, instruction, scope: 'document' };
             case 'format':
-                return { type: TURN_TYPE.FORMAT, instruction, scope: hasSelection ? 'selection' : 'document' };
+                return {
+                    type: TURN_TYPE.FORMAT,
+                    instruction,
+                    scope: selectionPresent && textSelected && !hasMultiCellTableRegion ? 'selection' : 'document',
+                };
             case 'edit':
-                return hasSelection
+                if (imageSelected && looksLikeFigureLegendIntent(instruction) && !hasMultiCellTableRegion) {
+                    return {
+                        type: TURN_TYPE.IMAGE_TOOL,
+                        instruction,
+                        hasSelection: selectionPresent,
+                        hasImageSelection: true,
+                        hasTextSelection: textSelected,
+                    };
+                }
+                return selectionPresent && textSelected && !hasMultiCellTableRegion
                     ? { type: TURN_TYPE.SELECTION_EDIT, instruction }
-                    : { type: TURN_TYPE.DOC_EDIT, instruction };
+                    : (imageSelected && !hasTextSelection
+                        ? { type: TURN_TYPE.IMAGE_TOOL, instruction, hasSelection: true, hasImageSelection: true }
+                        : { type: TURN_TYPE.DOC_EDIT, instruction });
             case 'append':
                 return { type: TURN_TYPE.DOC_APPEND, instruction };
             case 'table':
@@ -1826,9 +1917,17 @@ export function createConversation(deps) {
             case 'illustration':
                 return { type: TURN_TYPE.ILLUSTRATION, instruction };
             case 'image_management':
-                // Whole-document image tool session — separate card; user
-                // reviews & selectively applies alongside any text edits.
-                return { type: TURN_TYPE.DOCUMENT_IMAGE_TOOL, instruction };
+                // A planned image task keeps a selected image as its object
+                // anchor. Without one, it is a whole-document image session.
+                return imageSelected && !hasMultiCellTableRegion
+                    ? {
+                        type: TURN_TYPE.IMAGE_TOOL,
+                        instruction,
+                        hasSelection: selectionPresent,
+                        hasImageSelection: true,
+                        hasTextSelection: textSelected,
+                    }
+                    : { type: TURN_TYPE.DOCUMENT_IMAGE_TOOL, instruction };
             case 'table_management':
                 // First table in the document (v1 limitation; follow-up
                 // turns can target additional tables).
@@ -1847,32 +1946,39 @@ export function createConversation(deps) {
      * back to single-intent routing of the whole instruction (the
      * pre-planner behavior).
      */
-    async function runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController) {
+    async function runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController) {
         // One shared controller for the whole compound turn: cancel() aborts
         // the in-flight sub-task AND stops the remaining planned tasks.
         const myController = _beginChatTurn(turnController);
+        const selectionFacts = {
+            hasSelection: !!selectionText || selectionImages.length > 0 || !!hasMultiCellTableRegion,
+            hasImageSelection: selectionImages.length > 0,
+            hasTextSelection: !!selectionText,
+            hasMultiCellTableRegion: !!hasMultiCellTableRegion,
+        };
         try {
             msg.setStatus('Planning tasks...');
             const plan = await actions.planDocumentTasks(turnDeps, {
                 instruction: turn.instruction,
-                hasSelection: !!selectionText,
+                ...selectionFacts,
                 signal: myController.signal,
                 onToken: (t) => msg.appendModelToken({ id: 'plan' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'plan' }, 'reasoning', t),
             });
             if (!plan.tasks || plan.tasks.length === 0) {
                 log('Task planning failed; falling back to single-intent routing.', 'warning');
-                // Same three selection facts submit() routed on — dropping
-                // the table-region flag would re-route a multi-cell table
-                // selection as if nothing were selected.
-                const hasTableRegion = !!turn.hasMultiCellTableRegion;
+                // Re-route with the exact selection facts used for planning;
+                // mixed image/text selections must remain image-aware.
                 const fallback = routeTurn(turn.instruction, {
-                    hasSelection: !!selectionText || selectionImages.length > 0 || hasTableRegion,
-                    hasImageSelection: !selectionText && !hasTableRegion && selectionImages.length > 0,
-                    hasMultiCellTableRegion: hasTableRegion,
+                    ...selectionFacts,
                     skills: [], allowCompound: false,
                 });
-                if (fallback) await dispatchTurn(fallback, msg, turnDeps, selectionText, selectionImages, myController);
+                if (fallback) {
+                    await dispatchTurn(
+                        fallback, msg, turnDeps, selectionText, selectionImages,
+                        !!hasMultiCellTableRegion, myController
+                    );
+                }
                 return;
             }
             log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
@@ -1883,7 +1989,10 @@ export function createConversation(deps) {
                 // compound turn's busy flag between tasks.
                 appState.isProcessing = true;
                 input.setProcessing(true);
-                await dispatchTurn(turnForTask(task, !!selectionText), msg, turnDeps, selectionText, selectionImages, myController);
+                await dispatchTurn(
+                    turnForTask(task, selectionFacts), msg, turnDeps,
+                    selectionText, selectionImages, !!hasMultiCellTableRegion, myController
+                );
                 // A cancelled task ends the whole compound turn — the
                 // remaining tasks must not start.
                 if (myController.signal.aborted) {
@@ -1975,7 +2084,7 @@ export function createConversation(deps) {
      * optional turnController lets a compound turn share its AbortController
      * with every sub-task, so one cancel stops the whole chain.
      */
-    async function dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController) {
+    async function dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController) {
         if (turn.type === TURN_TYPE.SKILL) {
             await runSkillTurn(turn.skill, turn.args, !!selectionText, msg, turnDeps, selectionText, selectionImages, turnController);
         } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
@@ -1985,7 +2094,7 @@ export function createConversation(deps) {
         } else if (turn.type === TURN_TYPE.ILLUSTRATION) {
             await runIllustrationTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.IMAGE_TOOL) {
-            await runImageToolTurn(turn, msg, turnDeps, selectionImages, turnController);
+            await runImageToolTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController);
         } else if (turn.type === TURN_TYPE.TABLE) {
             await runTableTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.TABLE_TOOL) {
@@ -1999,7 +2108,7 @@ export function createConversation(deps) {
         } else if (turn.type === TURN_TYPE.CLEANUP) {
             await runCleanupTurn(msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.COMPOUND) {
-            await runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, turnController);
+            await runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController);
         } else if (turn.type === TURN_TYPE.DOC_EDIT) {
             // Free-text edit instruction without a selection: run the
             // whole-document amendment pipeline with the user's text as
@@ -2056,11 +2165,13 @@ export function createConversation(deps) {
             hasMultiCellTableRegion = false;
         }
         const hasSelection = !!selectionText || selectionImages.length > 0 || hasMultiCellTableRegion;
-        const hasImageSelection = !selectionText && !hasMultiCellTableRegion && selectionImages.length > 0;
+        const hasImageSelection = selectionImages.length > 0;
+        const hasTextSelection = !!selectionText;
 
         const turn = routeTurn(effective, {
             hasSelection,
             hasImageSelection,
+            hasTextSelection,
             hasMultiCellTableRegion,
             skills: listSkills(appState.promptManager),
         });
@@ -2086,7 +2197,10 @@ export function createConversation(deps) {
         const turnDeps = actionDepsFor(msg);
 
         try {
-            await dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages);
+            await dispatchTurn(
+                turn, msg, turnDeps, selectionText, selectionImages,
+                hasMultiCellTableRegion
+            );
         } catch (error) {
             msg.markError(error.message || String(error));
         } finally {
@@ -2154,18 +2268,23 @@ export function createConversation(deps) {
 /**
  * Normalizes a selection-reader result into { text, images }. Legacy
  * string readers (getSelectionText overrides, test mocks) map to text-only;
- * object results carry image metadata ({ width, height, altText }) with any
- * base64 payload stripped.
+ * object results carry image metadata ({ width, height, altText, identityKey })
+ * with any base64 payload stripped.
  *
  * @param {string|{text?: string, images?: Array<object>}} result
- * @returns {{ text: string, images: Array<{width: number, height: number, altText: string}> }}
+ * @returns {{ text: string, images: Array<{width: number, height: number, altText: string, identityKey?: string}> }}
  */
 function _normalizeSelection(result) {
     if (typeof result === 'string') return { text: result, images: [] };
     if (result && Array.isArray(result.images)) {
         return {
             text: result.text || '',
-            images: result.images.map(({ width, height, altText }) => ({ width, height, altText: altText || '' })),
+            images: result.images.map(({ width, height, altText, identityKey }) => ({
+                width,
+                height,
+                altText: altText || '',
+                ...(typeof identityKey === 'string' && identityKey ? { identityKey } : {}),
+            })),
         };
     }
     return { text: '', images: [] };

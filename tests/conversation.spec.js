@@ -224,11 +224,31 @@ describe('routeTurn', () => {
       .toBe(TURN_TYPE.IMAGE_TOOL);
   });
 
-  test('mixed text+image selection keeps text routing (edit/question)', () => {
-    expect(routeTurn('make it formal', { hasSelection: true, hasImageSelection: false, skills: BUILTIN_SKILLS }).type)
-      .toBe(TURN_TYPE.SELECTION_EDIT);
-    expect(routeTurn('what does this say?', { hasSelection: true, hasImageSelection: false, skills: BUILTIN_SKILLS }).type)
-      .toBe(TURN_TYPE.DOC_QA);
+  test('figure legend review-edit requests use the selected image tool session', () => {
+    const facts = {
+      hasSelection: true, hasImageSelection: true, hasTextSelection: false,
+      skills: BUILTIN_SKILLS,
+    };
+    expect(routeTurn('选择图像的 Figure legends 是否有改进的空间？如果有请改进', facts).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+    expect(routeTurn('Review this Figure caption and improve it if needed', facts).type)
+      .toBe(TURN_TYPE.IMAGE_TOOL);
+  });
+
+  test('mixed image+text selection keeps text routing except for figure caption work', () => {
+    const mixed = {
+      hasSelection: true, hasImageSelection: true, hasTextSelection: true,
+      skills: BUILTIN_SKILLS,
+    };
+    expect(routeTurn('make it formal', mixed).type).toBe(TURN_TYPE.SELECTION_EDIT);
+    expect(routeTurn('what does this say?', mixed).type).toBe(TURN_TYPE.DOC_QA);
+    expect(routeTurn('评估图注，如有需要请改进', mixed).type).toBe(TURN_TYPE.IMAGE_TOOL);
+
+    const textOnly = {
+      hasSelection: true, hasImageSelection: false, hasTextSelection: true,
+      skills: BUILTIN_SKILLS,
+    };
+    expect(routeTurn('改进这段 Figure caption', textOnly).type).toBe(TURN_TYPE.SELECTION_EDIT);
   });
 
   test('image-only selection takes document scope for format intent', () => {
@@ -803,6 +823,34 @@ describe('createConversation.submit', () => {
     expect(args.instruction).toBe('描述这张图');
     // Metadata only — the base64 payload never leaves the selection reader.
     expect(args.selectionImages).toEqual([{ width: 300, height: 200, altText: 'sunset' }]);
+  });
+
+  test('mixed image+caption selection passes both contexts to the image tool', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions,
+      getSelectionContent: async () => ({
+        text: 'Figure 2. Existing caption',
+        totalImages: 1,
+        images: [{
+          dataUrl: 'data:image/png;base64,X', width: 300, height: 200,
+          altText: 'architecture figure', identityKey: 'image-key-2',
+        }],
+      }),
+    });
+
+    await conv.submit('选择图像的 Figure legends 是否有改进的空间？如果有请改进');
+
+    expect(actions.prepareImageToolEdit).toHaveBeenCalledTimes(1);
+    const args = actions.prepareImageToolEdit.mock.calls[0][1];
+    expect(args.selectionText).toBe('Figure 2. Existing caption');
+    expect(args.selectionImages).toEqual([{
+      width: 300, height: 200, altText: 'architecture figure', identityKey: 'image-key-2',
+    }]);
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
   });
 
   test('image tool loop with a read-only outcome answers in chat (no card)', async () => {

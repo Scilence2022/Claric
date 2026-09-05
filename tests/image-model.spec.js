@@ -4,7 +4,10 @@
  * validation on every record* API, and the proposal-card item shapes.
  */
 
-const { createImageModel, IMAGE_TOOL_SPECS, IMAGE_POSITIONS, normalizeImageLink } = require('../src/lib/image-model.js');
+const {
+    createImageModel, IMAGE_TOOL_SPECS, IMAGE_POSITIONS, IMAGE_CAPTION_POSITIONS,
+    normalizeImageLink,
+} = require('../src/lib/image-model.js');
 
 const SNAPSHOT = [
     { index: 1, width: 300, height: 200, altText: 'sunset' },
@@ -150,6 +153,75 @@ describe('createImageModel', () => {
         expect('beforeSrc' in plain.describeOps()[0]).toBe(false);
     });
 
+    test('recordFigureCaption requires a read_image candidate and stages a text diff', () => {
+        const candidate = {
+            text: 'Figure 1. Old caption',
+            position: 'after',
+            distance: 1,
+            style: 'Caption',
+            styleBuiltIn: 'Caption',
+            captionStrength: 'strong',
+            reason: 'Word built-in Caption style',
+            ooxmlAvailable: true,
+            truncated: false,
+        };
+        const model = createImageModel(SNAPSHOT);
+        const args = {
+            index: 1,
+            position: 'after',
+            distance: 1,
+            before: candidate.text,
+            after: 'Figure 1. Improved caption',
+            evidence: { strength: candidate.captionStrength, reason: candidate.reason },
+            style: { style: candidate.style, styleBuiltIn: candidate.styleBuiltIn },
+        };
+
+        expect(model.recordFigureCaption(args).error).toMatch(/Call read_image/);
+        model.noteImageRead(1, { visualInputAvailable: true, captionCandidates: [candidate] });
+        expect(model.recordFigureCaption(args).ok).toBe(true);
+        expect(model.ops[0]).toEqual({
+            type: 'figureCaption',
+            index: 1,
+            position: 'after',
+            distance: 1,
+            before: 'Figure 1. Old caption',
+            after: 'Figure 1. Improved caption',
+            evidence: { captionStrength: 'strong', reason: candidate.reason },
+            style: { style: 'Caption', styleBuiltIn: 'Caption' },
+        });
+        expect(model.describeOps()[0]).toMatchObject({
+            before: 'Figure 1. Old caption',
+            after: 'Figure 1. Improved caption',
+            searchText: 'Figure 1. Old caption',
+        });
+    });
+
+    test('recordFigureCaption rejects ordinary text and unavailable visual input', () => {
+        const baseArgs = {
+            index: 1,
+            position: 'after',
+            distance: 1,
+            before: 'nearby text',
+            after: 'edited nearby text',
+            evidence: { strength: 'none', reason: 'no caption-specific style or figure-label prefix' },
+            style: { style: 'Normal', styleBuiltIn: 'Normal' },
+        };
+        const ordinary = createImageModel(SNAPSHOT);
+        ordinary.noteImageRead(1, {
+            visualInputAvailable: true,
+            captionCandidates: [{
+                text: 'nearby text', position: 'after', distance: 1,
+                style: 'Normal', styleBuiltIn: 'Normal', captionStrength: 'none',
+                reason: 'no caption-specific style or figure-label prefix', truncated: false,
+            }],
+        });
+        expect(ordinary.recordFigureCaption(baseArgs).error).toMatch(/strong\/weak captionCandidate/);
+
+        const unavailable = createImageModel(SNAPSHOT);
+        unavailable.noteImageRead(1, { visualInputAvailable: false, assessmentStatus: 'unable_to_assess' });
+        expect(unavailable.recordFigureCaption(baseArgs).error).toMatch(/not available to assess/);
+    });
+
     test('list_images surfaces the stored-SVG-source capability flag', () => {
         const model = createImageModel([
             { index: 1, width: 300, height: 200, altText: 'sunset', hasSvgSource: true },
@@ -203,10 +275,11 @@ describe('IMAGE_TOOL_SPECS', () => {
     test('covers the full management surface incl. visual reading', () => {
         expect(IMAGE_TOOL_SPECS.map((t) => t.name)).toEqual([
             'list_images', 'read_image', 'design_illustration', 'replace_illustration',
-            'edit_illustration_text',
+            'edit_illustration_text', 'edit_figure_caption',
             'delete_image', 'resize_image', 'align_image', 'set_alt_text', 'set_image_link',
         ]);
         expect(IMAGE_POSITIONS).toEqual(['start', 'end', 'cursor']);
+        expect(IMAGE_CAPTION_POSITIONS).toEqual(['before', 'after']);
         // read_image is host-executed (agent-actions attaches the picture to
         // the next observation) — it stages no draft op of its own.
         const read = IMAGE_TOOL_SPECS.find((t) => t.name === 'read_image');

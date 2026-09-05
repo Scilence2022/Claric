@@ -114,14 +114,27 @@ function setImageWorld(pictures, { paragraphs, failContextSync = false } = {}) {
     nullParagraph.getNextOrNullObject = jest.fn(() => nullParagraph);
 
     const paragraphSpecs = paragraphs || pictures.map(() => ({}));
-    const paragraphItems = paragraphSpecs.map((spec) => ({
-        isNullObject: false,
-        text: '',
-        style: 'Normal',
-        styleBuiltIn: 'Normal',
-        load: jest.fn(),
-        ...spec,
-    }));
+    const paragraphItems = paragraphSpecs.map((spec) => {
+        const xmlText = String(spec.text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        const range = {
+            getOoxml: jest.fn(() => ({
+                value: `<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>${xmlText}</w:t></w:r></w:p>`,
+            })),
+            insertText: jest.fn(),
+        };
+        return {
+            isNullObject: false,
+            text: '',
+            style: 'Normal',
+            styleBuiltIn: 'Normal',
+            load: jest.fn(),
+            getRange: jest.fn(() => range),
+            ...spec,
+        };
+    });
     paragraphItems.forEach((paragraph, i) => {
         paragraph.getPreviousOrNullObject = jest.fn(() => paragraphItems[i - 1] || nullParagraph);
         paragraph.getNextOrNullObject = jest.fn(() => paragraphItems[i + 1] || nullParagraph);
@@ -156,8 +169,8 @@ function setImageWorld(pictures, { paragraphs, failContextSync = false } = {}) {
                     : jest.fn().mockResolvedValue(undefined),
             });
         }),
-        RangeLocation: { start: 'Start', end: 'End' },
-        InsertLocation: { start: 'Start', end: 'End', before: 'Before' },
+        RangeLocation: { start: 'Start', end: 'End', content: 'Content' },
+        InsertLocation: { start: 'Start', end: 'End', before: 'Before', replace: 'Replace' },
         ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' },
     };
     return items;
@@ -433,6 +446,35 @@ describe('prepareImageToolEdit', () => {
         ]);
     });
 
+    test('read_image then edit_figure_caption stages a visible Word-caption proposal', async () => {
+        setImageWorld(
+            [{ paragraphIndex: 0, getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }],
+            { paragraphs: [
+                { text: 'Figure image' },
+                { text: 'Figure 3. Old legend', style: 'Caption', styleBuiltIn: 'Caption' },
+                { text: 'Following text' },
+            ] }
+        );
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"edit_figure_caption","args":{'
+                + '"index":1,"position":"after","distance":1,'
+                + '"before":"Figure 3. Old legend","after":"Figure 3. Improved legend",'
+                + '"evidence":{"strength":"strong","reason":"Word built-in Caption style"},'
+                + '"style":{"style":"Caption","styleBuiltIn":"Caption"}}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"caption improved"}}');
+
+        const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '评估 Figure legend，如有问题请改进' });
+
+        expect(proposal.ops).toEqual([expect.objectContaining({
+            type: 'figureCaption', index: 1, position: 'after', distance: 1,
+            before: 'Figure 3. Old legend', after: 'Figure 3. Improved legend',
+        })]);
+        expect(proposal.items[0]).toMatchObject({
+            before: 'Figure 3. Old legend', after: 'Figure 3. Improved legend',
+        });
+    });
+
     test('read_image handles null paragraph proxies at both document edges', async () => {
         setImageWorld(
             [{ getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }],
@@ -518,7 +560,24 @@ describe('prepareImageToolEdit', () => {
         expect(observation.role).toBe('user');
         expect(typeof observation.content).toBe('string');
         expect(JSON.parse(observation.content).error).toMatch(/does not exist/);
-        expect(proposal.answer).toBe('index missing');
+        expect(proposal.answer).toContain('index missing');
+        expect(proposal.answer).toContain('Unable to assess image pixels');
+        expect(proposal.assessmentStatus).toBe('unable_to_assess');
+    });
+
+    test('read_image rejects unsupported bytes instead of claiming visual input is available', async () => {
+        setImageWorld([{ getBase64ImageSrc: () => ({ value: 'Qk0AAAAA' }) }]); // BMP magic
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"unsupported image"}}');
+
+        const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '检查图例' });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content);
+        expect(observation.error).toMatch(/format is not supported/);
+        expect(proposal.assessmentStatus).toBe('unable_to_assess');
+        expect(proposal.visualInputAvailable).toBe(false);
     });
 
     test('selection metadata maps onto snapshot indexes in the task prompt', async () => {
@@ -555,6 +614,28 @@ describe('prepareImageToolEdit', () => {
         expect(messages[1].content).toContain('could not be matched to a snapshot index');
     });
 
+    test('ambiguous selected-image metadata never defaults to the first picture', async () => {
+        setImageWorld([
+            { width: 300, height: 200, altTextDescription: 'same' },
+            { width: 300, height: 200, altTextDescription: 'same' },
+        ]);
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"delete_image","args":{"index":1}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"selection is ambiguous"}}');
+
+        const proposal = await prepareImageToolEdit(makeDeps(), {
+            instruction: '删除这张图',
+            selectionImages: [{ width: 300, height: 200, altText: 'same' }],
+        });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content);
+        expect(observation.error).toMatch(/matches multiple document images/);
+        expect(proposal.noOps).toBe(true);
+        expect(proposal.ops).toEqual([]);
+        expect(sendMessages.mock.calls[0][1][1].content).toContain('selection is ambiguous');
+    });
+
     test('HTTP 4xx with image parts retries once without attachments', async () => {
         setImageWorld([{ getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]);
         sendMessages
@@ -579,7 +660,10 @@ describe('prepareImageToolEdit', () => {
         expect(strippedObservations[0].content.length).toBeGreaterThan(0);
         expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/retrying without image attachments/), 'warning');
         expect(proposal.noOps).toBe(true);
-        expect(proposal.answer).toBe('described from alt text');
+        expect(proposal.answer).toContain('described from alt text');
+        expect(proposal.answer).toContain('Unable to assess image pixels');
+        expect(proposal.assessmentStatus).toBe('unable_to_assess');
+        expect(proposal.visualInputAvailable).toBe(false);
     });
 
     test('abort during a loop send propagates without a retry', async () => {
@@ -638,18 +722,36 @@ describe('prepareImageToolEdit', () => {
         expect(texts.join('\n')).not.toContain('reassembler');
     });
 
-    test('replace_illustration grounds the nested design call in the source image', async () => {
+    test('conditional Figure review cannot edit before read_image succeeds', async () => {
+        setImageWorld([{ getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]);
+        sendMessages
+            .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legend"}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"unable to assess without reading"}}');
+
+        const proposal = await prepareImageToolEdit(makeDeps(), {
+            instruction: '选择图像的 Figure legends 是否有改进的空间？如果有请改进',
+        });
+
+        const messages = sendMessages.mock.calls[1][1];
+        const observation = JSON.parse(messages[messages.length - 2].content);
+        expect(observation.error).toMatch(/Figure legend or caption/);
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(proposal.noOps).toBe(true);
+        expect(proposal.assessmentStatus).toBe('unable_to_assess');
+    });
+
+    test('replace_illustration grounds a Figure edit in an explicit read_image', async () => {
         setImageWorld([{ altTextDescription: 'fig1', getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]);
         sendMessages
+            .mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
             .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legends"}}')
             .mockResolvedValueOnce(SVG)
             .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesigned"}}');
 
         const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '改进这张图的图例' });
 
-        // sendMessages call 2 is the nested design call: one user message
-        // whose content carries the redesign prompt plus the source pixels.
-        const designMessages = sendMessages.mock.calls[1][1];
+        // The nested design call follows the loop's read_image and replace calls.
+        const designMessages = sendMessages.mock.calls[2][1];
         expect(designMessages).toHaveLength(1);
         expect(designMessages[0].role).toBe('user');
         expect(designMessages[0].content).toEqual([
@@ -665,39 +767,34 @@ describe('prepareImageToolEdit', () => {
         ]);
     });
 
-    test('replace_illustration falls back to text-only redesign when the image is unreadable', async () => {
+    test('Figure replacement refuses a blind redesign when the image is unreadable', async () => {
         setImageWorld([{ altTextDescription: 'fig1' }]); // no getBase64ImageSrc
         sendMessages
+            .mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
             .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legends"}}')
-            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesigned"}}');
-        sendPrompt.mockResolvedValueOnce(SVG);
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"unable to assess"}}');
 
         const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '改进这张图的图例' });
 
-        expect(sendPrompt).toHaveBeenCalledWith(
-            expect.anything(), 'redesign:improve legends:text-only', expect.anything(), undefined
-        );
-        expect(proposal.ops).toEqual([
-            { type: 'replace', index: 1, instruction: 'improve legends', svg: SVG },
-        ]);
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(proposal.noOps).toBe(true);
+        expect(proposal.ops).toEqual([]);
+        expect(proposal.assessmentStatus).toBe('unable_to_assess');
     });
 
-    test('replace_illustration retries text-only when the backend rejects the source image', async () => {
+    test('Figure replacement does not fall back when the nested backend rejects pixels', async () => {
         setImageWorld([{ altTextDescription: 'fig1', getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }) }]);
         sendMessages
+            .mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
             .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legends"}}')
             .mockRejectedValueOnce(new Error('HTTP 400: Bad Request'))
-            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesigned"}}');
-        sendPrompt.mockResolvedValueOnce(SVG);
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesign unavailable"}}');
 
-        const deps = makeDeps();
-        const proposal = await prepareImageToolEdit(deps, { instruction: '改进这张图的图例' });
+        const proposal = await prepareImageToolEdit(makeDeps(), { instruction: '改进这张图的图例' });
 
-        expect(sendPrompt).toHaveBeenCalledWith(
-            expect.anything(), 'redesign:improve legends:text-only', expect.anything(), undefined
-        );
-        expect(deps.log).toHaveBeenCalledWith(expect.stringMatching(/redesigning text-only/), 'warning');
-        expect(proposal.ops[0]).toMatchObject({ type: 'replace', index: 1, svg: SVG });
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(proposal.noOps).toBe(true);
+        expect(proposal.ops).toEqual([]);
     });
 
     test('replace_illustration feeds the stored SVG source to the design call', async () => {
@@ -706,8 +803,9 @@ describe('prepareImageToolEdit', () => {
             altTextTitle: 'claric-svg:part-1',
             getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }),
         }]);
-        loadSvgSource.mockResolvedValueOnce(OLD_SVG);
+        loadSvgSource.mockResolvedValue(OLD_SVG);
         sendMessages
+            .mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
             .mockResolvedValueOnce('{"tool":"replace_illustration","args":{"index":1,"instruction":"improve legends"}}')
             .mockResolvedValueOnce(SVG)
             .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"redesigned"}}');
@@ -720,7 +818,7 @@ describe('prepareImageToolEdit', () => {
             'improve legends', expect.anything(),
             expect.objectContaining({ hasSourceImage: true, sourceSvg: OLD_SVG })
         );
-        const designMessages = sendMessages.mock.calls[1][1];
+        const designMessages = sendMessages.mock.calls[2][1];
         expect(designMessages[0].content[0].text).toBe('redesign:improve legends:with-image:with-source');
         expect(proposal.ops[0]).toEqual({
             type: 'replace', index: 1, instruction: 'improve legends', svg: SVG,
@@ -785,7 +883,7 @@ describe('prepareImageToolEdit', () => {
             altTextTitle: 'claric-svg:part-1',
             getBase64ImageSrc: () => ({ value: 'iVBORw0KGgo=' }),
         }]);
-        loadSvgSource.mockResolvedValueOnce(OLD_SVG);
+        loadSvgSource.mockResolvedValue(OLD_SVG);
         editSvgTextLabels.mockReturnValueOnce({
             svg: OLD_SVG,
             applied: [],
@@ -793,12 +891,13 @@ describe('prepareImageToolEdit', () => {
             labels: ['Alpha', 'Beta'],
         });
         sendMessages
+            .mockResolvedValueOnce('{"tool":"read_image","args":{"index":1}}')
             .mockResolvedValueOnce('{"tool":"edit_illustration_text","args":{"index":1,"edits":[{"old":"Dispach","new":"Dispatch"}]}}')
             .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"retrying with the right label"}}');
 
         await prepareImageToolEdit(makeDeps(), { instruction: '修图例错字' });
 
-        const messages = sendMessages.mock.calls[1][1];
+        const messages = sendMessages.mock.calls[2][1];
         const observation = JSON.parse(messages[messages.length - 2].content);
         expect(observation.error).toMatch(/No edit matched/);
         expect(observation.error).toContain('"Alpha"');
@@ -983,6 +1082,83 @@ describe('applyImageOps', () => {
         expect(attachSvgSource).toHaveBeenCalledWith(newPic, SVG);
         expect(deleteSvgSource).not.toHaveBeenCalled();
         expect(pic.delete).toHaveBeenCalled();
+    });
+
+    test('figureCaption applies only to the adjacent validated Caption paragraph', async () => {
+        const [pic] = setImageWorld(
+            [{ paragraphIndex: 0 }],
+            { paragraphs: [
+                { text: 'Figure image' },
+                { text: 'Figure 4. Old legend', style: 'Caption', styleBuiltIn: 'Caption' },
+            ] }
+        );
+        const caption = pic.paragraph.getNextOrNullObject();
+
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{
+                type: 'figureCaption', index: 1, position: 'after', distance: 1,
+                before: 'Figure 4. Old legend', after: 'Figure 4. Improved legend',
+                evidence: { captionStrength: 'strong', reason: 'Word built-in Caption style' },
+                style: { style: 'Caption', styleBuiltIn: 'Caption' },
+            }],
+        });
+
+        const writeRange = caption.getRange.mock.results.at(-1).value;
+        expect(writeRange.insertText).toHaveBeenCalledWith('Figure 4. Improved legend', 'Replace');
+        expect(result).toEqual({ applied: 1, warnings: [] });
+    });
+
+    test('figureCaption skips a stale caption instead of writing another paragraph', async () => {
+        const [pic] = setImageWorld(
+            [{ paragraphIndex: 0 }],
+            { paragraphs: [
+                { text: 'Figure image' },
+                { text: 'Figure 4. Changed by user', style: 'Caption', styleBuiltIn: 'Caption' },
+            ] }
+        );
+        const caption = pic.paragraph.getNextOrNullObject();
+
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{
+                type: 'figureCaption', index: 1, position: 'after', distance: 1,
+                before: 'Figure 4. Old legend', after: 'Figure 4. Improved legend',
+                evidence: { captionStrength: 'strong', reason: 'Word built-in Caption style' },
+                style: { style: 'Caption', styleBuiltIn: 'Caption' },
+            }],
+        });
+
+        expect(caption.getRange.mock.results.every(({ value }) => !value.insertText.mock.calls.length)).toBe(true);
+        expect(result.applied).toBe(0);
+        expect(result.warnings[0]).toMatch(/changed since this proposal/);
+    });
+
+    test('figureCaption skips when OOXML is unavailable and fields cannot be ruled out', async () => {
+        const [pic] = setImageWorld(
+            [{ paragraphIndex: 0 }],
+            { paragraphs: [
+                { text: 'Figure image' },
+                { text: 'Figure 4. Old legend', style: 'Caption', styleBuiltIn: 'Caption' },
+            ] }
+        );
+        const caption = pic.paragraph.getNextOrNullObject();
+        const unsafeRange = { insertText: jest.fn() };
+        caption.getRange.mockImplementation(() => unsafeRange);
+
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 1,
+            ops: [{
+                type: 'figureCaption', index: 1, position: 'after', distance: 1,
+                before: 'Figure 4. Old legend', after: 'Figure 4. Improved legend',
+                evidence: { captionStrength: 'strong', reason: 'Word built-in Caption style' },
+                style: { style: 'Caption', styleBuiltIn: 'Caption' },
+            }],
+        });
+
+        expect(unsafeRange.insertText).not.toHaveBeenCalled();
+        expect(result.applied).toBe(0);
+        expect(result.warnings[0]).toMatch(/cannot be verified as safe plain text/);
     });
 
     test('delete drops the stored SVG source part', async () => {

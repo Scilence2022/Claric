@@ -57,7 +57,8 @@ import {
 } from '../lib/illustration.js';
 import { generateImage } from '../lib/image-client.js';
 import { buildPlanPrompt, parsePlan } from '../lib/task-planner.js';
-import { attachSvgSource } from './svg-source-store.js';
+import { imageIdentityKey } from '../lib/image-model.js';
+import { attachSvgSource, svgSourceIdFromPicture } from './svg-source-store.js';
 import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 
 /**
@@ -840,7 +841,8 @@ const MAX_SELECTION_IMAGES = 6;
  * readSelectionSnippet).
  *
  * @returns {Promise<{ text: string,
- *   images: Array<{ base64: string, dataUrl: string, width: number, height: number, altText: string }>,
+ *   images: Array<{ base64?: string, dataUrl?: string, width: number, height: number,
+ *     altText: string, identityKey: string, visualInputAvailable: boolean }>,
  *   totalImages: number,
  *   hasMultiCellTableRegion: boolean,
  *   tableRegion: null | { startRow: number, endRow: number, startCol: number, endCol: number } }>}
@@ -883,19 +885,36 @@ export async function readSelectionContent() {
             const shown = items.slice(0, MAX_SELECTION_IMAGES);
             const reads = [];
             for (const pic of shown) {
-                pic.load('width,height,altTextDescription');
+                pic.load('width,height,altTextDescription,altTextTitle,hyperlink,lockAspectRatio');
+                if (pic.paragraph && typeof pic.paragraph.load === 'function') {
+                    pic.paragraph.load('alignment');
+                }
                 reads.push({ pic, b64: pic.getBase64ImageSrc() });
             }
             if (reads.length > 0) await context.sync();
-            images = reads
-                .filter(({ b64 }) => b64.value)
-                .map(({ pic, b64 }) => ({
-                    base64: b64.value,
-                    dataUrl: imageDataUrl(b64.value),
+            images = reads.map(({ pic, b64 }) => {
+                const sourceId = svgSourceIdFromPicture(pic);
+                const alignment = pic.paragraph && pic.paragraph.alignment
+                    ? String(pic.paragraph.alignment).toLowerCase() : null;
+                const identityKey = imageIdentityKey({
+                    width: pic.width,
+                    height: pic.height,
+                    altTextDescription: pic.altTextDescription || '',
+                    altTextTitle: sourceId ? '' : (pic.altTextTitle || ''),
+                    hyperlink: pic.hyperlink || '',
+                    lockAspectRatio: pic.lockAspectRatio,
+                    alignment,
+                    sourceId: sourceId || '',
+                });
+                return {
+                    ...(b64.value ? { base64: b64.value, dataUrl: imageDataUrl(b64.value) } : {}),
                     width: pic.width,
                     height: pic.height,
                     altText: pic.altTextDescription || '',
-                }));
+                    identityKey,
+                    visualInputAvailable: !!b64.value,
+                };
+            });
 
             // Multi-cell shape: inside a table BUT not wholly inside a single
             // anchor cell — same predicate as readSelectionTableRegion's gate.
@@ -2479,14 +2498,26 @@ export async function applyEmptyParagraphCleanup(deps) {
  * @param {object} args
  * @param {string} args.instruction - The user's compound instruction
  * @param {boolean} [args.hasSelection] - Whether the document has a non-empty selection
+ * @param {boolean} [args.hasImageSelection] - Whether the selection contains image(s)
+ * @param {boolean} [args.hasTextSelection] - Whether the selection contains text
+ * @param {boolean} [args.hasMultiCellTableRegion] - Whether the selection spans table cells
  * @param {function} [args.onToken] - Called with each streamed content token
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @returns {Promise<{ tasks: Array<{ type: string, instruction: string }> | null, model: string }>}
  */
-export async function planDocumentTasks(deps, { instruction, hasSelection = false, onToken, onReasoning, signal } = {}) {
+export async function planDocumentTasks(deps, {
+    instruction, hasSelection = false, hasImageSelection = false,
+    hasTextSelection = false, hasMultiCellTableRegion = false,
+    onToken, onReasoning, signal,
+} = {}) {
     const { appState, log } = deps;
 
-    const prompt = buildPlanPrompt(instruction, hasSelection);
+    const prompt = buildPlanPrompt(instruction, {
+        hasSelection,
+        hasImageSelection,
+        hasTextSelection,
+        hasMultiCellTableRegion,
+    });
     const backendConfig = getActiveBackendConfig(appState);
     log(`Planning tasks [${backendConfig.model}]...`, 'info');
     const rawResponse = (onToken || onReasoning)
