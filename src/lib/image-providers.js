@@ -110,6 +110,24 @@ export const IMAGE_PROVIDER_PRESETS = {
         // Keep the UI's three document-friendly orientations plus auto.
         sizes: IMAGE_SIZES,
     },
+    // zhongkeyu.com ("中科云") is the same New API gateway as the chat preset
+    // in providers.js: one OpenAI-compatible /v1 surface relaying many
+    // upstreams, so image generation rides /v1/images/generations. New API
+    // relays commonly expose gpt-image-* (the client omits response_format
+    // for those) plus DALL-E-compatible models (b64_json requested); the
+    // model field stays user-editable for whatever the gateway account
+    // enables. The staticOk flag mirrors the chat preset.
+    zhongkeyu: {
+        label: '中科云 Images',
+        url: 'https://zhongkeyu.com',
+        proxyUrl: '/zhongkeyu',
+        apiPath: '/v1',
+        model: 'gpt-image-1',
+        keyHint: 'zhongkeyu.com',
+        staticOk: true,
+        apiFormat: 'openai-images',
+        responseFormat: 'dall-e-b64',
+    },
     // OpenRouter routes text-to-image requests through /api/v1/images (a
     // variant of the OpenAI /v1/images/generations shape — see the API
     // reference). Their endpoint returns b64_json directly, so the standard

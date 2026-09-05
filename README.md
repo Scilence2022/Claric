@@ -161,8 +161,9 @@ each proposal before any application.
 Moonshot Kimi, MiniMax (international), MiniMax China, 中科大模型 (zhongkeyu.com),
 OpenRouter, SiliconFlow, and Custom (OpenAI-compatible).
 
-**Image presets:** OpenAI Images, Zhipu CogView, MiniMax Images, OpenRouter
-Images, SiliconFlow Images, and Custom (OpenAI-compatible). Chat and image
+**Image presets:** OpenAI Images, Zhipu CogView, MiniMax Images, 中科云 Images
+(zhongkeyu.com), OpenRouter Images, SiliconFlow Images, and Custom
+(OpenAI-compatible). Chat and image
 configuration are independent. An API-compatible endpoint must also support
 the selected model and request format; not every model offered by a gateway
 supports every Claric operation. Current defaults live in
