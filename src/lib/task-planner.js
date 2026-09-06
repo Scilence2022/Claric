@@ -94,6 +94,22 @@ export function buildPlanPrompt(instruction, hasSelection) {
 }
 
 /**
+ * Re-applies {@link normalizeCompound} to an already-parsed task list so it
+ * carries the canonical per-task fields (`taskId`, `attemptId`, normalized
+ * `type` / `instruction`, de-duplicated `dependsOn` / `resources`,
+ * default `state`). Used after {@link parsePlan} hands the model output to
+ * the executor — the planner's own output uses raw string `instruction`
+ * values which the task runtime normalizes on first use.
+ *
+ * @param {Array<object>} tasks - Tasks produced by parsePlan
+ * @param {string} [graphId] - Optional graph id; auto-generated when absent
+ * @returns {Array<object>} Normalized task list
+ */
+export function normalizePlan(tasks, graphId) {
+    return normalizeCompound({ graphId, tasks }).tasks;
+}
+
+/**
  * Parses and validates the planner's JSON task list. Tolerates code fences
  * and surrounding prose; drops malformed entries and unknown types, caps
  * the list at MAX_TASKS. Returns null when nothing usable remains — the
@@ -103,10 +119,6 @@ export function buildPlanPrompt(instruction, hasSelection) {
  * @param {function} [log] - Logging callback
  * @returns {Array<{ type: string, instruction: string }> | null}
  */
-export function normalizePlan(tasks, graphId) {
-    return normalizeCompound({ graphId, tasks }).tasks;
-}
-
 export function parsePlan(raw, log = () => {}) {
     if (!raw) return null;
 
