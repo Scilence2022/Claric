@@ -24,6 +24,7 @@
  */
 
 import { extractJsonArray } from './json-utils.js';
+import { normalizeCompound } from './task-runtime/task-model.js';
 
 /** Pipeline task types the planner may emit (allowlist for parsePlan). */
 const TASK_TYPES = [
@@ -102,6 +103,10 @@ export function buildPlanPrompt(instruction, hasSelection) {
  * @param {function} [log] - Logging callback
  * @returns {Array<{ type: string, instruction: string }> | null}
  */
+export function normalizePlan(tasks, graphId) {
+    return normalizeCompound({ graphId, tasks }).tasks;
+}
+
 export function parsePlan(raw, log = () => {}) {
     if (!raw) return null;
 

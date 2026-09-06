@@ -40,6 +40,7 @@ import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card
 import { describeFormatOp } from '../lib/format-ops.js';
 import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib/file-attachments.js';
 import { buildConversationHistory } from '../lib/conversation-history.js';
+import { executeTaskGraph } from '../lib/task-runtime/task-graph.js';
 
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
@@ -2030,24 +2031,21 @@ export function createConversation(deps) {
                 return;
             }
             log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
-            for (let i = 0; i < plan.tasks.length; i++) {
-                const task = plan.tasks[i];
-                msg.setStatus(`Task ${i + 1}/${plan.tasks.length} [${task.type}]: ${task.instruction}`);
-                // Sub-runners toggle isProcessing individually; re-assert the
-                // compound turn's busy flag between tasks.
+            await executeTaskGraph({ tasks: plan.tasks }, async (task) => {
+                msg.setStatus(`Task [${task.type}]: ${task.instruction}`);
                 appState.isProcessing = true;
                 input.setProcessing(true);
                 await dispatchTurn(
                     turnForTask(task, selectionFacts), msg, turnDeps,
                     selectionText, selectionImages, !!hasMultiCellTableRegion, myController
                 );
-                // A cancelled task ends the whole compound turn — the
-                // remaining tasks must not start.
-                if (myController.signal.aborted) {
-                    log(`Compound turn cancelled — skipping ${plan.tasks.length - i - 1} remaining task(s).`, 'warning');
-                    break;
-                }
-            }
+                if (myController.signal.aborted) throw new Error('Compound turn cancelled.');
+            }, {
+                signal: myController.signal,
+                onEvent: (event) => {
+                    msg.appendModelToken({ id: 'task-runtime-events' }, 'content', `${JSON.stringify(event)}\\n`);
+                },
+            });
             msg.setStatus('');
         } catch (error) {
             _reportTurnError(msg, error);

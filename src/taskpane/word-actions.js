@@ -29,6 +29,7 @@ import {
     stripChunkDelimiters,
 } from '../lib/llm-client.js';
 import { buildTableUserPrompt, parseTablePatchResponse } from '../lib/table-patch.js';
+import { normalizePlan } from '../lib/task-planner.js';
 import {
     inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
     validateTableCreationSpec,
@@ -2528,7 +2529,8 @@ export async function planDocumentTasks(deps, {
     log(`Planning tasks [${backendConfig.model}]...`, 'info');
     const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
 
-    const tasks = parsePlan(rawResponse, log);
+    const parsedTasks = parsePlan(rawResponse, log);
+    const tasks = parsedTasks ? normalizePlan(parsedTasks) : null;
     if (tasks) log(`Planned ${tasks.length} task(s): ${tasks.map((t) => t.type).join(' → ')}`, 'success');
     return { tasks, model: backendConfig.model };
 }
