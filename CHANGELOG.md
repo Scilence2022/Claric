@@ -91,6 +91,19 @@ that drive the GHCR image publish in CI.
   `uninstall:windows` wrap both, and `npm run sideload` now installs on
   Windows instead of printing manual menu paths.
 
+### Fixed
+
+- **Task runtime typecheck** (`src/lib/task-planner.js`,
+  `src/lib/task-runtime/task-graph.js`) — JSDoc was placed on
+  `normalizePlan` that described `parsePlan`'s signature, and
+  `executeTaskGraph`'s destructured `{ onEvent, signal }` defaulted to a
+  bare `{}` whose typed members were unknown to `tsc`, so the recent task
+  graph runtime commit (#130 task graph runtime for compound turns) failed
+  `npm run typecheck` and blocked Pages deploy. The JSDoc is now anchored
+  on the right functions and the options bag carries an explicit typedef
+  so `onEvent` and `signal` resolve as optional members; no runtime
+  behavior changes.
+
 ## [1.0.2] — 2026-08-31
 
 ### Fixed

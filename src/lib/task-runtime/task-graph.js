@@ -14,6 +14,27 @@ export function validateTaskGraph(graph) {
     return { valid: errors.length === 0, errors, graph: normalized };
 }
 
+/**
+ * @typedef {object} TaskGraphExecuteOptions
+ * @property {(event: { type: string, [key: string]: any }) => void} [onEvent]
+ *   Callback invoked for each task-lifecycle event (GRAPH_STARTED,
+ *   TASK_STARTED, TASK_SUCCEEDED / TASK_FAILED / GRAPH_FINISHED).
+ * @property {AbortSignal} [signal]
+ *   Optional signal; when aborted, in-flight tasks are cancelled and the
+ *   graph stops dispatching new work.
+ */
+
+/**
+ * Runs the dependency-respecting dispatch loop: every pass picks all
+ * `READY` tasks whose dependencies have `SUCCEEDED`, runs them under a
+ * resource lock, and emits lifecycle events. Detects cycles and missing
+ * dependencies up front via {@link validateTaskGraph}.
+ *
+ * @param {object} input - Compound graph payload ({ graphId?, tasks })
+ * @param {(task: object, ctx: { signal?: AbortSignal }) => Promise<any>} execute
+ * @param {TaskGraphExecuteOptions} [options]
+ * @returns {Promise<{ graph: object, results: Map<string, any> }>}
+ */
 export async function executeTaskGraph(input, execute, { onEvent, signal } = {}) {
     const checked = validateTaskGraph(input); if (!checked.valid) throw new Error(checked.errors.join('; '));
     const graph = checked.graph; const locks = createResourceLocks(); const emit = createEventSink(onEvent); const results = new Map();
