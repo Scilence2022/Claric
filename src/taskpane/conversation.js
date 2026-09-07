@@ -1757,7 +1757,7 @@ export function createConversation(deps) {
      * rides along as object references for mixed text+image selections.
      * questionImages (chat file-upload attachments) carry dataUrls and are
      * sent to the model as image_url parts, with a text-only fallback when
-     * the backend rejects image inputs.
+     * the backend rejects image inputs outside a library-file tool loop.
      */
     async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, selectionImages, turnController, questionImages) {
         const myController = _beginChatTurn(turnController);
@@ -2131,6 +2131,23 @@ export function createConversation(deps) {
      * with every sub-task, so one cancel stops the whole chain.
      */
     async function dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController) {
+        const qa = turn.type === TURN_TYPE.DOC_QA
+            || (turn.type === TURN_TYPE.SKILL && ['chat', 'context'].includes(turn.skill.category));
+        if (!qa && turn.type !== TURN_TYPE.COMPOUND && turnDeps.fileReferences?.length) {
+            const signal = turnController?.signal || submissionOwner?.controller.signal;
+            const { buildLibraryTaskContext } = await import(/* webpackChunkName: "file-question" */ '../lib/file-question.js');
+            const { context, warnings } = await buildLibraryTaskContext(turnDeps.fileReferences, signal);
+            if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+            if (!turnDeps.isCurrentSession()) return;
+            for (const warning of warnings) turnDeps.log(warning, 'warning');
+            if (turn.type === TURN_TYPE.CLEANUP) {
+                turnDeps.log('Attachment content is not used by deterministic empty-paragraph cleanup.', 'warning');
+            } else if (turn.type === TURN_TYPE.SKILL) {
+                turn = { ...turn, args: (turn.args || '') + context };
+            } else {
+                turn = { ...turn, instruction: (turn.instruction || '') + context };
+            }
+        }
         if (turn.type === TURN_TYPE.SKILL) {
             await runSkillTurn(turn.skill, turn.args, !!selectionText, msg, turnDeps, selectionText, selectionImages, turnController);
         } else if (turn.type === TURN_TYPE.SELECTION_EDIT) {
@@ -2173,9 +2190,9 @@ export function createConversation(deps) {
      *
      * @param {string} text
      * @param {Array<{name: string, kind: string, size: number, text?: string, dataUrl?: string}>} [attachments] -
-     *   Parsed files from the input bar. Extracted text (txt/md/docx/pdf) is
-     *   appended to the routed question/instruction as labeled sections;
-     *   images ride QA turns as image_url parts (turn.questionImages).
+     *   Temporary file text is appended to the routed question/instruction;
+     *   temporary images ride QA turns as image_url parts. Library references
+     *   stay metadata-only in turnDeps.fileReferences for on-demand QA reads.
      */
     async function submit(text, attachments) {
         const list = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
@@ -2250,16 +2267,18 @@ export function createConversation(deps) {
         });
         if (!turn) return;
 
-        // Attachments: extracted text joins the routed prompt as labeled
-        // sections; images become image_url parts on QA turns (other
-        // pipelines are text-only — the context block lists them by name).
-        if (list.length > 0) {
-            const context = buildAttachmentContext(list);
+        const fileReferences = list.filter((attachment) => attachment.fileId).map((attachment) => ({
+            fileId: attachment.fileId, versionId: attachment.versionId,
+            name: attachment.name, kind: attachment.kind, size: attachment.size, mimeType: attachment.mimeType,
+        }));
+        const temporaryAttachments = list.filter((attachment) => !attachment.fileId);
+        if (temporaryAttachments.length > 0) {
+            const context = buildAttachmentContext(temporaryAttachments);
             if (context) {
                 if (typeof turn.question === 'string') turn.question += context;
                 else if (typeof turn.instruction === 'string') turn.instruction += context;
             }
-            turn.questionImages = splitAttachments(list).imageAttachments;
+            turn.questionImages = splitAttachments(temporaryAttachments).imageAttachments;
         }
 
         view.hideWelcome();
@@ -2280,6 +2299,7 @@ export function createConversation(deps) {
             },
         });
         const turnDeps = actionDepsFor(msg, owner.conversationHistory, owner.isCurrentSession);
+        turnDeps.fileReferences = fileReferences;
 
         try {
             await dispatchTurn(

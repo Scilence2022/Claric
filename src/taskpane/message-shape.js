@@ -32,7 +32,7 @@ export function newId(prefix) {
 /**
  * Keeps only display metadata from an attachment list. Extracted text and
  * image data URLs never reach the session store (localStorage is ~5 MB) or
- * the restored DOM — the chip row and history only need name/kind/size.
+ * the restored DOM — only display metadata and versioned library references persist.
  * Re-exported from the upload layer so the reduction has one definition.
  *
  * @param {Array<{name: string, kind: string, size: number}>} attachments

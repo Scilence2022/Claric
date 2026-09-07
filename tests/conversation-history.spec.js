@@ -67,6 +67,16 @@ describe('buildConversationHistory', () => {
     expect(content).not.toMatch(/ORIGINAL_CONTENT|SECRET/);
   });
 
+  test('library history requires reattachment instead of granting access or embedding payloads', () => {
+    const content = buildConversationHistory([{ ...user('Read'), attachments: [{
+      name: 'report.pdf', kind: 'pdf', fileId: 'file_123', versionId: 'version_456',
+      text: 'PRIVATE_CONTENT', dataUrl: 'PRIVATE_BYTES',
+    }] }])[0].content;
+    expect(content).toContain('Reattach from Files to authorize reading');
+    expect(content).toContain('may have been deleted');
+    expect(content).not.toMatch(/PRIVATE_|file_123|version_456/);
+  });
+
   test('bounds metadata and diff fields, explicitly logging shortened content', () => {
     const log = jest.fn();
     const history = buildConversationHistory([user('edit'), assistant('', { proposals: [{

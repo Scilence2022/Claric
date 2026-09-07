@@ -13,6 +13,12 @@
  * happen. jsdom is used because the proposal-card path touches the DOM.
  */
 
+jest.mock('../src/lib/file-store.js', () => {
+  const actual = jest.requireActual('../src/lib/file-store.js');
+  return { ...actual, ...actual.createFileStore({ adapter: actual.createMemoryFileAdapter() }) };
+});
+const { saveFile, deleteFile } = require('../src/lib/file-store.js');
+const { ATTACHMENT_LIMITS } = require('../src/lib/file-attachments.js');
 const { routeTurn, createConversation, TURN_TYPE, chunkCitation, looksLikeChainedInstruction } = require('../src/taskpane/conversation.js');
 const { BUILTIN_SKILLS, listSkills } = require('../src/taskpane/skills.js');
 
@@ -2110,6 +2116,105 @@ describe('createConversation.submit', () => {
 });
 
 describe('createConversation.submit with file attachments', () => {
+  test.each([false, true])('library references use per-submission deps without eager bodies, compound=%s', async (compound) => {
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({
+      tasks: [{ type: 'qa', instruction: 'What does the reference say?' }], model: 'm',
+    })) });
+    const view = makeView();
+    view.getCurrentSession.mockReturnValue({ id: 's-test', messages: [
+      { role: 'user', content: 'Previous reference', attachments: [{ fileId: 'old', versionId: 'old-v', name: 'old.pdf', kind: 'pdf', size: 10 }] },
+    ] });
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Selected clause',
+    });
+    const reference = { fileId: 'file_current', versionId: 'version_current', name: 'ref.pdf', kind: 'pdf', size: 42 };
+    await conv.submit(compound ? '增加标题，并深度润色修改' : 'What does the reference say?', [
+      { ...reference, text: 'DO NOT EAGERLY SEND THIS LIBRARY BODY', dataUrl: 'DO NOT SEND IMAGE BYTES' },
+    ]);
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    const [deps, args] = actions.answerQuestion.mock.calls[0];
+    expect(deps.fileReferences).toEqual([reference]);
+    expect(args.question).not.toContain('DO NOT');
+    expect(args.questionImages || []).toEqual([]);
+    expect(args.selectionText).toBe('Selected clause');
+    if (compound) expect(actions.planDocumentTasks.mock.calls[0][0].fileReferences).toEqual([reference]);
+    await conv.submit('What is the next step?');
+    expect(actions.answerQuestion.mock.calls[1][0].fileReferences).toEqual([]);
+  });
+
+  test.each([
+    ['polish this', 'prepareSelectionAmendment', 'promptTemplate'],
+    ['make the document bold', 'prepareFormatProposal', 'instruction'],
+    ['append a conclusion', 'prepareDocumentAppend', 'instruction'],
+    ['delete the second image', 'prepareImageToolEdit', 'instruction'],
+    ['/copy-edit', 'prepareSelectionAmendment', 'promptTemplate'],
+  ])('library attachment text remains available to %s without rerouting to QA', async (instruction, action, field) => {
+    const reference = await saveFile(new File(['Use the saved reference text'], 'reference.txt'));
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'Selected clause',
+    });
+    await conv.submit(instruction, [{ ...reference, text: 'STALE COMPOSER PAYLOAD' }]);
+    expect(actions[action]).toHaveBeenCalledTimes(1);
+    expect(actions[action].mock.calls[0][1][field]).toContain('Use the saved reference text');
+    expect(actions[action].mock.calls[0][1][field]).not.toContain('STALE COMPOSER PAYLOAD');
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+  });
+
+  test('compound tasks inject library text only at non-QA dispatch, not into planning or QA', async () => {
+    const reference = await saveFile(new File(['Reference for editing only'], 'reference.txt'));
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { type: 'qa', instruction: 'What does the reference say?' },
+      { type: 'edit', instruction: 'polish this' },
+    ], model: 'm' })) });
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Selected clause',
+    });
+    await conv.submit('增加标题，并深度润色修改', [reference]);
+    expect(actions.planDocumentTasks.mock.calls[0][1].instruction).not.toContain('Reference for editing only');
+    expect(actions.answerQuestion.mock.calls[0][1].question).not.toContain('Reference for editing only');
+    expect(actions.answerQuestion.mock.calls[0][0].fileReferences[0].fileId).toBe(reference.fileId);
+    expect(actions.prepareSelectionAmendment.mock.calls[0][1].promptTemplate).toContain('Reference for editing only');
+  });
+
+  test.each(['deleted', 'version'])('non-QA attachment %s errors prevent using cached composer text', async (kind) => {
+    const reference = await saveFile(new File(['saved text'], 'reference.txt'));
+    if (kind === 'deleted') await deleteFile(reference.fileId);
+    else reference.versionId = 'wrong-version';
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Selected clause',
+    });
+    await conv.submit('polish this', [{ ...reference, text: 'stale text' }]);
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalled();
+  });
+
+  test('non-QA text is bounded and image/truncation limitations are visible', async () => {
+    const text = await saveFile(new File(['Reference text '.repeat(20000)], 'long-reference.txt'));
+    const image = await saveFile(new File([new Uint8Array([1, 2, 3])], 'figure.png', { type: 'image/png' }));
+    const actions = makeActions();
+    const view = makeView();
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Selected clause',
+    });
+    await conv.submit('polish this', [text, image]);
+    const prompt = actions.prepareSelectionAmendment.mock.calls[0][1].promptTemplate;
+    expect(prompt).toContain('Reference text');
+    expect(prompt).toContain('text truncated or omitted');
+    expect(prompt).toContain('image content is unavailable');
+    expect(prompt.length).toBeLessThan(ATTACHMENT_LIMITS.MAX_CONTEXT_CHARS + 1000);
+    expect(prompt).not.toContain('data:image');
+    expect(view._msg.appendLogLine).toHaveBeenCalledWith(expect.stringContaining('image content is unavailable'));
+    expect(view._msg.appendLogLine).toHaveBeenCalledWith(expect.stringContaining('text truncated or omitted'));
+  });
+
   test('text attachments append labeled sections to the QA question', async () => {
     const view = makeView();
     const actions = makeActions();

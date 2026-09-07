@@ -192,7 +192,7 @@ export function splitAttachments(attachments) {
 /**
  * Strips attachments down to display/persistence metadata. Image data URLs
  * and extracted text never enter the session store (localStorage is ~5 MB);
- * the chip list and history only need name/kind/size.
+ * only display metadata and optional versioned library references persist.
  *
  * This is the single definition of that reduction: taskpane/message-shape.js
  * re-exports it for the session save/load legs, so a chip row, a persisted
@@ -200,17 +200,23 @@ export function splitAttachments(attachments) {
  * Entries without a name are dropped — parseAttachment always assigns one, so
  * a nameless entry is corrupt input, not an unnamed file.
  *
- * @param {Array<{name: string, kind: string, size: number}>} attachments
- * @returns {Array<{name: string, kind: string, size: number}>}
+ * @param {Array<{name: string, kind: string, size: number, fileId?: string, versionId?: string}>} attachments
+ * @returns {Array<{name: string, kind: string, size: number, fileId?: string, versionId?: string, source?: string}>}
  */
 export function attachmentMeta(attachments) {
     return (Array.isArray(attachments) ? attachments : [])
         .filter((a) => a && typeof a === 'object' && a.name)
-        .map((a) => ({
-            name: String(a.name),
-            kind: typeof a.kind === 'string' && a.kind ? a.kind : ATTACHMENT_KIND.TEXT,
-            size: Number(a.size) || 0,
-        }));
+        .map((a) => {
+            const library = typeof a.fileId === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(a.fileId)
+                && typeof a.versionId === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(a.versionId)
+                ? { fileId: a.fileId, versionId: a.versionId, source: 'library' } : {};
+            return {
+                name: String(a.name),
+                kind: typeof a.kind === 'string' && a.kind ? a.kind : ATTACHMENT_KIND.TEXT,
+                size: Number(a.size) || 0,
+                ...library,
+            };
+        });
 }
 
 /**

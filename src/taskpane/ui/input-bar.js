@@ -39,7 +39,7 @@ const ATTACHMENT_ICONS = Object.freeze({
  * @param {function(boolean)} [deps.setAutoApply] - Persists an auto-apply change
  * @param {function(string, string)} [deps.onLog] - Activity-log sink for
  *   attachment validation/parse failures
- * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), setSelectionPreview: function(object|string), clearAttachments: function() }}
+ * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), setSelectionPreview: function(object|string), clearAttachments: function(), addAttachment: function(object): boolean }}
  */
 export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getAutoApply, getTrackChanges, setAutoApply, onLog }) {
     const textarea = document.getElementById('chatInput');
@@ -71,6 +71,9 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     // immediately; parsing swaps in the parsed object. Cleared on submit
     // and on new chat.
     let attachments = [];
+    const rawFiles = new WeakMap();
+    const savingFiles = new WeakSet();
+    let saving = 0;
 
     let processing = false;
     let composing = false;
@@ -169,8 +172,8 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
 
     function submitCurrent() {
         const text = textarea.value;
-        if (parsing) {
-            showError([...attachmentErrors, 'Attachments are still loading. Wait before sending.'].join('\n'));
+        if (parsing || saving) {
+            showError([...attachmentErrors, saving ? 'Attachments are still saving. Wait before sending.' : 'Attachments are still loading. Wait before sending.'].join('\n'));
             return;
         }
         if ((!text.trim() && attachments.length === 0) || processing) return;
@@ -228,6 +231,23 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
                 chip.appendChild(status);
             }
 
+            if (!att.pending && rawFiles.has(att)) {
+                const save = document.createElement('button');
+                save.type = 'button';
+                save.className = 'attachment-chip-save';
+                save.textContent = savingFiles.has(att) ? 'Saving…' : 'Save';
+                save.title = 'Save to library';
+                save.setAttribute('aria-label', `Save ${att.name} to library`);
+                save.disabled = processing || parsing || saving > 0;
+                save.addEventListener('click', () => saveToLibrary(att));
+                chip.appendChild(save);
+            } else if (att.fileId) {
+                const saved = document.createElement('span');
+                saved.className = 'attachment-chip-status';
+                saved.textContent = 'Saved';
+                chip.appendChild(saved);
+            }
+
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'attachment-chip-remove';
@@ -247,6 +267,59 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     let attachmentGeneration = 0;
     let parsing = false;
     let attachmentErrors = [];
+
+    async function saveToLibrary(att) {
+        if (processing || parsing || saving || !rawFiles.has(att)) return;
+        const generation = attachmentGeneration;
+        saving += 1;
+        savingFiles.add(att);
+        renderChips();
+        try {
+            const { saveFile } = await import(/* webpackChunkName: "file-store" */ '../../lib/file-store.js');
+            const meta = await saveFile(rawFiles.get(att));
+            if (generation !== attachmentGeneration) return;
+            const index = attachments.indexOf(att);
+            if (index !== -1) {
+                attachments[index] = Object.freeze({ ...att, fileId: meta.fileId, versionId: meta.versionId, source: meta.source });
+                rawFiles.delete(att);
+            }
+            if (meta.parseError) showError(`Saved to library: ${meta.parseError}`);
+        } catch (err) {
+            if (generation === attachmentGeneration) showError(err.message || 'Could not save file to library.');
+        } finally {
+            savingFiles.delete(att);
+            if (generation === attachmentGeneration) {
+                saving -= 1;
+                renderChips();
+            }
+        }
+    }
+
+    function addAttachment(parsed) {
+        if (processing || parsing || saving || attachments.some((att) => att.pending)) {
+            showError('Wait for the current message or attachments to finish before attaching a library file.');
+            return false;
+        }
+        const valid = parsed && typeof parsed.name === 'string' && parsed.name.trim()
+            && Object.values(ATTACHMENT_KIND).includes(parsed.kind)
+            && Number.isFinite(parsed.size) && parsed.size >= 0 && !parsed.pending
+            && (parsed.kind === ATTACHMENT_KIND.IMAGE
+                ? typeof parsed.dataUrl === 'string' && /^data:image\/(png|jpeg|gif|webp);base64,[a-zA-Z0-9+/]*={0,2}$/.test(parsed.dataUrl) && parsed.dataUrl.length <= 6 * 1024 * 1024
+                : typeof parsed.text === 'string');
+        const verdict = valid ? validateAttachment(parsed, attachments) : { ok: false, error: 'Invalid library attachment.' };
+        if (!verdict.ok) {
+            showError(verdict.error);
+            return false;
+        }
+        const snapshot = { name: parsed.name, kind: parsed.kind, size: parsed.size };
+        for (const key of ['text', 'dataUrl', 'fileId', 'versionId', 'source']) {
+            if (typeof parsed[key] === 'string') snapshot[key] = parsed[key];
+        }
+        attachments.push(Object.freeze(snapshot));
+        clearError();
+        renderChips();
+        return true;
+    }
 
     /**
      * Validates each picked file and shows a pending chip for it immediately,
@@ -283,6 +356,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
                 const index = attachments.indexOf(placeholder);
                 if (index === -1) continue; // removed while pending — drop the result
                 attachments[index] = parsed;
+                rawFiles.set(parsed, file);
                 renderChips();
             } catch (err) {
                 if (generation !== attachmentGeneration) return;
@@ -498,6 +572,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     modelPill.addEventListener('click', () => onOpenSettings());
 
     return {
+        addAttachment,
         /** Morphs the send button between Send and Cancel; toggles input disable. */
         setProcessing(isProcessing) {
             processing = isProcessing;
@@ -507,6 +582,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
             sendBtn.setAttribute('aria-label', isProcessing ? 'Cancel' : 'Send');
             textarea.disabled = isProcessing;
             if (attachBtn) attachBtn.disabled = isProcessing || parsing;
+            renderChips();
         },
         /** Sets the textarea content (used by skill chips). */
         setValue(text) {
@@ -521,6 +597,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         /** Drops pending attachments (new chat / history switch). */
         clearAttachments() {
             attachmentGeneration += 1;
+            saving = 0;
             parsing = false;
             attachmentErrors = [];
             clearError();

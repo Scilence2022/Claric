@@ -173,7 +173,10 @@ export function buildConversationHistory(records, { log, config } = {}) {
             for (const attachment of take(record.attachments, MAX_ATTACHMENTS)) {
                 if (!attachment || !(typeof attachment.name === 'string' && attachment.name.trim())) continue;
                 const kind = typeof attachment.kind === 'string' ? attachment.kind : '';
-                parts.push(`Attachment: ${detail(attachment.name)}${kind ? ` (${detail(kind)})` : ''}. Original file contents/bytes are not available in this history; reattach the file if needed.`);
+                const availability = typeof attachment.fileId === 'string' && typeof attachment.versionId === 'string'
+                    ? 'Original file contents/bytes are not available in this history. Reattach from Files to authorize reading the saved resource; it may have been deleted.'
+                    : 'Original file contents/bytes are not available in this history; reattach the file if needed.';
+                parts.push(`Attachment: ${detail(attachment.name)}${kind ? ` (${detail(kind)})` : ''}. ${availability}`);
             }
         } else {
             if (cancelled) parts.push('Turn cancelled; incomplete assistant output omitted.');
