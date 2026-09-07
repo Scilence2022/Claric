@@ -35,7 +35,7 @@ export function validateTaskGraph(graph) {
  * @param {TaskGraphExecuteOptions} [options]
  * @returns {Promise<{ graph: object, results: Map<string, any> }>}
  */
-export async function executeTaskGraph(input, execute, { onEvent, signal } = {}) {
+export async function executeTaskGraph(input, execute, { onEvent = undefined, signal = undefined } = {}) {
     const checked = validateTaskGraph(input); if (!checked.valid) throw new Error(checked.errors.join('; '));
     const graph = checked.graph; const locks = createResourceLocks(); const emit = createEventSink(onEvent); const results = new Map();
     emit(TASK_EVENTS.GRAPH_STARTED, { graphId: graph.graphId });

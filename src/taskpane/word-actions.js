@@ -3685,6 +3685,8 @@ function _selectedImagesBlock(imageMeta, note) {
  */
 export async function answerQuestion(deps, { question, skillTemplate, selectionText, selectionImages, questionImages, onToken, onReasoning, onStatus, signal } = {}) {
     const { appState, log } = deps;
+    const fileReferences = Array.isArray(deps.fileReferences) ? deps.fileReferences : [];
+    if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
 
     const richness = (appState.config.docExtraction || {}).richness || 'structured';
     log('Extracting document text for context...', 'info');
@@ -3693,7 +3695,7 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
 
     let prompt = '';
     const contextPrompt = appState.promptManager.getActivePrompt('context');
-    if (contextPrompt && !deps.conversationHistory?.length) {
+    if (contextPrompt && !deps.conversationHistory?.length && !fileReferences.length) {
         prompt += contextPrompt.template + '\n\n';
     }
     if (skillTemplate) {
@@ -3729,8 +3731,7 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
         prompt += _selectedImagesBlock(imageMeta, 'the user is asking about these pictures');
     } else {
         // Bare caret: inject where the user is working so document-scope
-        // answers can weight the current section (no tool-call path exists;
-        // all context is injected before the request).
+        // answers can weight the current section.
         const cursorContext = await readCursorContext(deps);
         if (cursorContext) {
             prompt += '\n\n--- CURSOR LOCATION (where the user is in the document) ---\n' + cursorContext.contextText;
@@ -3751,6 +3752,16 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
     ], deps.conversationHistory);
     const uploaded = (Array.isArray(questionImages) ? questionImages : [])
         .filter((img) => img && typeof img.dataUrl === 'string' && img.dataUrl);
+    if (fileReferences.length) {
+        const { answerFileQuestion } = await import(/* webpackChunkName: "file-question" */ '../lib/file-question.js');
+        return answerFileQuestion({
+            prompt, contextPrompt: contextPrompt?.template, fileReferences,
+            conversationHistory: deps.conversationHistory, questionImages: uploaded,
+            signal, onStatus, onToken,
+            send: async (messages) => (await sendMessagesStream(
+                backendConfig, messages, { onReasoning }, log, signal, 300000)).content,
+        });
+    }
     if (uploaded.length > 0) {
         // Text-only backends may reject image parts; retry only the current request without them.
         const parts = [

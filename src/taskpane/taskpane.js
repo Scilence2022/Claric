@@ -111,6 +111,28 @@ function initialize() {
         },
     });
 
+    let files;
+    const filesButton = document.getElementById('filesBtn');
+    filesButton?.addEventListener('click', async () => {
+        filesButton.disabled = true;
+        filesButton.setAttribute('aria-busy', 'true');
+        try {
+            if (!files) {
+                const { initFileLibraryView } = await import(/* webpackChunkName: "file-library" */ './ui/file-library-view.js');
+                files = initFileLibraryView({ onAttach: (attachment) => input.addAttachment(attachment) });
+            }
+            filesButton.disabled = false;
+            filesButton.focus();
+            await files.open();
+        } catch (error) {
+            addLog(`Could not open Files: ${error.message}`, 'error');
+            chatView.addSystemNote(`Could not open Files: ${error.message}`);
+        } finally {
+            filesButton.disabled = false;
+            filesButton.removeAttribute('aria-busy');
+        }
+    });
+
     const conversation = createConversation({
         appState,
         view: {

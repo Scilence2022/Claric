@@ -87,6 +87,35 @@ describe('normalizeAttachments', () => {
         ]);
     });
 
+    test('preserves bounded library references through session normalization without content', () => {
+        const attachment = {
+            name: 'reference.pdf', kind: 'pdf', size: 123, fileId: 'file_123',
+            versionId: 'version_456', source: 'library', text: 'private contents',
+            dataUrl: 'data:image/png;base64,abc', body: { secret: true },
+        };
+        const message = normalizeMessage({ role: 'user', attachments: [attachment] });
+        expect(message.attachments).toEqual([{
+            name: 'reference.pdf', kind: 'pdf', size: 123,
+            fileId: 'file_123', versionId: 'version_456', source: 'library',
+        }]);
+        expect(__testing.stripMessage(message)).toEqual(message);
+        expect(normalizeMessage(message)).toEqual(message);
+        expect(JSON.stringify(message)).not.toContain('private contents');
+        expect(JSON.stringify(message)).not.toContain('data:image');
+    });
+
+    test('does not preserve malformed or incomplete library references', () => {
+        for (const reference of [
+            { fileId: '../secret', versionId: 'v1' },
+            { fileId: 'x'.repeat(129), versionId: 'v1' },
+            { fileId: 'file_123' },
+            { fileId: 'file_123', versionId: {} },
+        ]) {
+            expect(normalizeAttachments([{ name: 'a', ...reference }]))
+                .toEqual([{ name: 'a', kind: 'text', size: 0 }]);
+        }
+    });
+
     test('drops nameless and non-object entries', () => {
         expect(normalizeAttachments([null, 'x', { size: 5 }, { name: '' }])).toEqual([]);
         expect(normalizeAttachments(null)).toEqual([]);

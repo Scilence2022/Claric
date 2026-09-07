@@ -29,6 +29,9 @@
                 <button id="historyBtn" class="icon-btn" data-tooltip="Chat history" aria-label="Chat history">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 </button>
+                <button id="filesBtn" class="icon-btn" data-tooltip="Files" aria-label="Files" aria-haspopup="dialog" aria-controls="filesOverlay">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V4h6l2 3h10v13H3z"/></svg>
+                </button>
                 <button id="logBtn" class="icon-btn" data-tooltip="Activity log" aria-label="Activity log">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>
                 </button>
@@ -454,6 +457,42 @@
                 </div>
             </div>
             <div id="historyBody" class="history-body"></div>
+        </aside>
+    </div>
+
+    <div id="filesOverlay" class="history-overlay file-library-overlay" hidden>
+        <aside id="filesPanel" class="history-panel" role="dialog" aria-modal="true" aria-labelledby="filesTitle">
+            <div class="history-header">
+                <h2 id="filesTitle">Files</h2>
+                <div class="history-header-actions">
+                    <button id="filesUploadBtn" type="button" class="btn btn-compact">Import files</button>
+                    <button id="filesCloseBtn" type="button" class="icon-btn" aria-label="Close Files">&times;</button>
+                </div>
+            </div>
+            <input id="filesInput" type="file" hidden multiple accept=".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.png,.jpg,.jpeg,.gif,.webp,.docx,.pdf">
+            <div class="file-library-toolbar">
+                <label for="filesSearch">Search files</label>
+                <input id="filesSearch" type="search" class="form-control" placeholder="Search by name">
+                <label for="filesKind">File type</label>
+                <select id="filesKind" class="form-control">
+                    <option value="">All types</option>
+                    <option value="pdf">PDF</option>
+                    <option value="image">Images</option>
+                    <option value="docx">DOCX</option>
+                    <option value="text">Text</option>
+                </select>
+                <p class="help-text">Stored in this browser, independently of chats. Importing saves a copy; attaching sends it with your current message.</p>
+                <p id="filesStatus" class="help-text" role="status" aria-live="polite"></p>
+                <p id="filesError" class="input-error" role="alert" hidden></p>
+            </div>
+            <div class="history-body">
+                <section id="filesPreview" class="file-library-preview" tabindex="-1" aria-label="File details" hidden></section>
+                <ul id="filesList" class="file-library-list" aria-label="Saved files"></ul>
+                <div class="file-library-actions">
+                    <button id="filesPreviousBtn" type="button" class="btn btn-compact" disabled>Previous files</button>
+                    <button id="filesNextBtn" type="button" class="btn btn-compact" disabled>Next files</button>
+                </div>
+            </div>
         </aside>
     </div>
 
