@@ -53,6 +53,89 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     const attachInput = document.getElementById('attachmentInput');
     const chipsEl = document.getElementById('attachmentChips');
     const errorEl = document.getElementById('inputError');
+    const app = textarea.closest('.app');
+    let dragDepth = 0;
+
+    function clearDropFeedback() {
+        dragDepth = 0;
+        app?.classList.remove('file-drag-over', 'file-drag-busy');
+        window.removeEventListener('blur', clearDropFeedback);
+    }
+
+    function isFileDrag(event) {
+        const transfer = event.dataTransfer;
+        return !!transfer && (Array.from(transfer.types || []).includes('Files')
+            || Array.from(transfer.items || []).some((item) => item.kind === 'file')
+            || transfer.files?.length > 0);
+    }
+
+    function rejectFiles(message) {
+        attachmentErrors.push(message);
+        showError(attachmentErrors.join('\n'));
+        if (typeof onLog === 'function') onLog(message, 'warning');
+    }
+
+    function attachmentsBusy() {
+        return processing || parsing || saving > 0;
+    }
+
+    function rejectBusyFiles() {
+        rejectFiles('Files were not attached. Wait for the current message or attachments to finish, then try again.');
+    }
+
+    if (app) {
+        const showDropFeedback = (event) => {
+            if (!isFileDrag(event)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = attachmentsBusy() ? 'none' : 'copy';
+            if (event.type === 'dragenter') dragDepth += 1;
+            app.classList.add('file-drag-over');
+            app.classList.toggle('file-drag-busy', attachmentsBusy());
+            window.addEventListener('blur', clearDropFeedback);
+        };
+        app.addEventListener('dragenter', showDropFeedback, true);
+        app.addEventListener('dragover', showDropFeedback, true);
+        app.addEventListener('dragleave', (event) => {
+            if (!isFileDrag(event) && !dragDepth) return;
+            dragDepth = Math.max(0, dragDepth - 1);
+            if (!dragDepth || (event.relatedTarget && !app.contains(event.relatedTarget))) clearDropFeedback();
+        }, true);
+        app.addEventListener('dragend', clearDropFeedback, true);
+        app.addEventListener('blur', clearDropFeedback, true);
+        app.addEventListener('drop', (event) => {
+            clearDropFeedback();
+            if (!isFileDrag(event)) return;
+            event.preventDefault();
+            app.classList.add('file-drop-error');
+            if (attachmentsBusy()) {
+                rejectBusyFiles();
+                return;
+            }
+            const transfer = event.dataTransfer;
+            const items = Array.from(transfer.items || []).filter((item) => item.kind === 'file');
+            const files = [];
+            if (items.length) {
+                for (const [index, item] of items.entries()) {
+                    try {
+                        const entry = item.webkitGetAsEntry?.();
+                        if (entry?.isDirectory) {
+                            rejectFiles(`${entry.name || 'Folder'}: folders are not supported. Drop individual files instead.`);
+                            continue;
+                        }
+                        const file = item.getAsFile?.() || transfer.files?.[index];
+                        if (file) files.push(file);
+                        else rejectFiles('A dropped item could not be read. Drop individual files instead of folders.');
+                    } catch (_error) {
+                        rejectFiles('A dropped item could not be read. Drop individual files instead of folders.');
+                    }
+                }
+            } else {
+                files.push(...Array.from(transfer.files || []));
+                if (!files.length) rejectFiles('No readable files were dropped. Drop individual files instead of folders.');
+            }
+            addFiles(files);
+        }, true);
+    }
 
     function showError(message) {
         if (!errorEl) return;
@@ -61,6 +144,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     }
 
     function clearError() {
+        app?.classList.remove('file-drop-error');
         if (!errorEl) return;
         errorEl.textContent = '';
         errorEl.hidden = true;
@@ -272,6 +356,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         if (processing || parsing || saving || !rawFiles.has(att)) return;
         const generation = attachmentGeneration;
         saving += 1;
+        clearDropFeedback();
         savingFiles.add(att);
         renderChips();
         try {
@@ -322,12 +407,16 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     }
 
     /**
-     * Validates each picked file and shows a pending chip for it immediately,
+     * Validates each picked or dropped file and shows a pending chip immediately,
      * then parses files one by one: a parsed result swaps into its chip and a
      * failure removes the chip (errors remain visible until reset).
      */
     async function addFiles(fileList) {
-        if (parsing || processing) return;
+        clearDropFeedback();
+        if (attachmentsBusy()) {
+            rejectBusyFiles();
+            return;
+        }
         const generation = attachmentGeneration;
         parsing = true;
         if (attachBtn) attachBtn.disabled = true;
@@ -576,6 +665,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         /** Morphs the send button between Send and Cancel; toggles input disable. */
         setProcessing(isProcessing) {
             processing = isProcessing;
+            if (processing) clearDropFeedback();
             sendBtn.classList.toggle('cancel-mode', isProcessing);
             sendBtn.textContent = isProcessing ? '■' : '↑';
             sendBtn.title = isProcessing ? 'Cancel' : 'Send';
@@ -596,6 +686,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         },
         /** Drops pending attachments (new chat / history switch). */
         clearAttachments() {
+            clearDropFeedback();
             attachmentGeneration += 1;
             saving = 0;
             parsing = false;
