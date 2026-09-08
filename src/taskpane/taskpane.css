@@ -72,6 +72,43 @@ body {
     height: 100vh;
 }
 
+.app.file-drag-over::after {
+    content: 'Drop files to attach';
+    position: fixed;
+    inset: var(--spacing-sm);
+    z-index: 110;
+    border: 2px dashed var(--accent-color);
+    border-radius: var(--border-radius-md);
+    background: rgba(16, 163, 127, 0.06);
+    color: var(--accent-hover);
+    padding: var(--spacing-md);
+    font-weight: 600;
+    text-align: center;
+    pointer-events: none;
+}
+
+.app.file-drag-over.file-drag-busy::after {
+    content: 'Busy — wait before attaching files';
+    border-color: var(--error-color);
+    color: var(--error-color);
+    background: transparent;
+}
+
+.app.file-drop-error #inputError:not([hidden]) {
+    position: fixed;
+    bottom: var(--spacing-sm);
+    left: var(--spacing-sm);
+    right: var(--spacing-sm);
+    z-index: 110;
+    max-height: 30vh;
+    overflow-y: auto;
+    padding: var(--spacing-sm);
+    border: 1px solid var(--error-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--primary-bg);
+    box-shadow: var(--shadow-sm);
+}
+
 .header {
     display: flex;
     align-items: center;
