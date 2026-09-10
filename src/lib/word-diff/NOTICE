@@ -8,12 +8,33 @@ and the computeDiff function in index.js were vendored from:
   commit 81315f2fae23ba8cf9f40c13bdfd17d0e444d137
 
 licensed under the Apache License, Version 2.0 (see LICENSE in this
-directory). They were vendored so this project can co-evolve the
-diff-application layer (e.g. the CJK char-level strategy in char-diff.js)
-with the rest of the codebase, independent of upstream availability and
-licensing changes.
+directory). The pinned source identifies the inherited implementation;
+local adaptations must be maintained and reviewed separately.
 
-Modifications relative to upstream: files renamed to kebab-case, import
-paths adjusted to the local directory, and the unused exports
-(OfficeWordDiff class, applyWordDiff, getDiffStats, logger utilities) were
-not vendored. char-diff.js is original code of this project.
+Inherited machinery includes regex token encoding, diff-match-patch
+computation and decoding, computeDiff, token/range mapping, batched Word
+searches, tracked application, and token-to-sentence-to-block fallbacks.
+The upstream README already demonstrates applyAISuggestion(aiGeneratedText)
+with GPT/Claude-generated text and preview statistics; it does not supply
+a model client or proposal-management system.
+
+Modifications relative to the pinned upstream source:
+- Files renamed to kebab-case and imports adjusted; unused OfficeWordDiff,
+  applyWordDiff, getDiffStats and logger utilities were not vendored.
+- token-map.js computes client-side token positions and selects needed
+  anchors, deduplicates searches, assigns greedy substring occurrence
+  indices within coarse ranges (including embedded matches), and coalesces
+  deletion spans.
+- sentence-diff.js preserves repeated sentence occurrences, counts sentences
+  per diff chunk, and handles single-sentence and all-deleted fallbacks.
+- Application strategies accept options.trackChanges and use finally-based
+  cleanup. These changes do not provide atomic application or restoration
+  of arbitrary prior document or tracking state.
+
+char-diff.js has no counterpart at the pinned upstream revision. It adds a
+CJK Word adapter using existing diff-match-patch diff_main and diff_cleanupMerge,
+with script detection, occurrence-indexed spans and insertion anchors,
+surrogate-safe search pieces, cursor fallback, reverse application, and an
+operation cap. It is not a new character-diff algorithm. Claric's proposal
+lifecycle, endpoint clients, document orchestration and structured-tool
+integration are separate additions relative to this pinned source.

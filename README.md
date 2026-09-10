@@ -226,10 +226,25 @@ review warnings if the document changed after staging. See
 
 ### AI Redlining
 
-Text editing supports word-level tracked changes and a CJK character-level
-diff strategy. The diff layer attempts to preserve run formatting and can
-fall back to sentence or block replacement. Check the resulting formatting
-and revision marks in Word, particularly in complex documents.
+Text editing supports word-level tracked changes and a CJK Word adapter.
+The `diff-wordmode.js`, `token-map.js`, `sentence-diff.js`, `block-replace.js`,
+and `computeDiff` in `index.js` derive from
+[`yuch85/office-word-diff`](https://github.com/yuch85/office-word-diff) commit
+`81315f2fae23ba8cf9f40c13bdfd17d0e444d137` under Apache-2.0. That source already
+provides token differencing, range mapping, batched searches, tracked
+application, token/sentence/block fallbacks, and an AI-text application
+example with preview statistics. Claric adapts token positions and occurrence
+mapping, coalesces deletion spans, preserves repeated sentences, and adds
+tracking options and cleanup. The local `char-diff.js` has no counterpart at
+that pin: it adapts existing diff-match-patch computation to CJK Word ranges,
+with occurrence-indexed anchors, surrogate-safe searches, cursor fallback,
+reverse application, and an operation cap; it is not a new diff algorithm.
+Claric integrates these paths with proposal management, model clients, and
+document orchestration. Details are in
+[`src/lib/word-diff/NOTICE`](src/lib/word-diff/NOTICE). The diff layer attempts
+to preserve run formatting and can fall back to sentence or block replacement.
+Check the resulting formatting and revision marks in Word, particularly in
+complex documents.
 
 ### Whole-Document Processing
 
@@ -880,9 +895,14 @@ Other projects informed the document-editing approach:
 
 Claric is licensed under the **[MIT License](LICENSE)**.
 
-Specific code vendored from `office-word-diff` is licensed under
-**Apache 2.0**, as detailed in its
-[LICENSE](src/lib/word-diff/LICENSE) and [NOTICE](src/lib/word-diff/NOTICE).
+Files vendored and adapted from `office-word-diff` commit
+`81315f2fae23ba8cf9f40c13bdfd17d0e444d137` retain their **Apache 2.0** attribution.
+The exact upstream-derived files and substantive local modifications are listed in
+[`src/lib/word-diff/NOTICE`](src/lib/word-diff/NOTICE), and the local license is
+[`src/lib/word-diff/LICENSE`](src/lib/word-diff/LICENSE). The pinned upstream
+revision has no `char-diff.js` counterpart or Claric workflow integration;
+the CJK Word adapter uses the separately vendored Apache-2.0 diff-match-patch
+library rather than introducing a new character-diff algorithm.
 These third-party notices do not make the whole project dual-licensed.
 The installer template has separate
 [third-party notices](installer/windows/templates/THIRD-PARTY-NOTICES.md).
