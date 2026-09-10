@@ -33,6 +33,8 @@ import { listSessions, loadSession as loadStoredSession, saveSession, deleteSess
 import { getProviderPreset } from '../lib/providers.js';
 import { getHostPlatform } from '../lib/platform.js';
 
+let coordinationClient = null;
+
 if (typeof Office !== 'undefined') {
     Office.onReady((info) => {
         if (info.host === Office.HostType.Word) {
@@ -52,6 +54,8 @@ function initialize() {
 
     // Status bar (log drawer, comment pending bar)
     initStatusBar();
+
+    void startCoordination().catch((error) => addLog(`Coordination client unavailable: ${error.message}`, 'warning'));
 
     // Chat view
     chatView.initChatView();
@@ -250,6 +254,31 @@ function initialize() {
 
     addLog('Claric initialized.', 'info');
     input.focus();
+}
+
+async function startCoordination() {
+    const { createCoordinationClient } = await import(/* webpackChunkName: "coordination-client" */ './coordination-client.js');
+    coordinationClient = createCoordinationClient({
+        onSnapshot: (snapshot) => {
+            const others = Object.values(snapshot.presence || {}).filter((entry) => entry.clientId !== coordinationClient?.identity.instanceId);
+            const documents = new Set(others.map((entry) => entry.documentId).filter(Boolean));
+            addLog(`Coordination snapshot: ${others.length} other taskpane(s), ${documents.size} document(s), sequence ${snapshot.sequence}.`, 'info');
+            const metadataKeys = Object.keys(snapshot.metadata || {});
+            if (metadataKeys.length > 0) addLog(`Coordination metadata (${metadataKeys.join(', ')}): ${metadataKeys.map((key) => `${key}=${String(snapshot.metadata[key])}`).join(', ')}`, 'info');
+        },
+        onError: (error) => addLog(`Coordination unavailable: ${error.message}`, 'warning'),
+    });
+    const identity = coordinationClient.identity;
+    addLog(`Coordination identity: instance ${identity.instanceId}, workspace ${identity.workspaceId}, document ${identity.documentId}${identity.documentEphemeral ? ' (ephemeral fallback)' : ''}.`, 'info');
+    void coordinationClient.start();
+    const stop = () => {
+        if (coordinationClient) void coordinationClient.stop();
+        coordinationClient = null;
+    };
+    if (typeof window !== 'undefined') {
+        window.addEventListener('pagehide', stop, { once: true });
+        window.addEventListener('beforeunload', stop, { once: true });
+    }
 }
 
 /**

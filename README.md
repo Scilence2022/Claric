@@ -402,7 +402,11 @@ whether requests work. Production is **not zero-configuration**.
 | `npm run publish:addin` | Maintainer operation: build, switch manifest, and push artifacts to `Scilence2022/claric-addin` |
 
 For a local session, configure the environment and certificates, run
-`npm run manifest:local`, start `npm start` (or `docker compose up -d`), then
+`npm run manifest:local`, start `npm start` (or `docker compose up -d`). To run
+stage-one local coordination for multiple taskpanes, use
+`COORDINATION_TOKEN=... npm run coordination-server`; it listens only on
+`127.0.0.1` and exposes HTTP health, snapshot, and event relay endpoints (no
+WebSocket yet). Then
 run `npm run sideload` and restart Word. Verify your port after switching
 manifest modes. Publishing changes the remote hosted build and requires the
 appropriate repository permissions; it is not part of installation.
@@ -778,6 +782,15 @@ provider paths by default; example files may opt into routes explicitly.
 | `CUSTOM_PROXY_PATH` | empty | Optional custom chat, image, or MCP proxy path |
 | `CUSTOM_PROXY_TARGET` | empty | Required together with the custom path |
 | `LLM_PROXY_TIMEOUT_MS` | `300000` | Upstream timeout in milliseconds |
+| `COORDINATION_HOST` | `127.0.0.1` | Local coordination server bind address; loopback only |
+| `COORDINATION_PORT` | `3010` | Local coordination HTTP port |
+| `COORDINATION_TOKEN` | empty | Optional bearer token required by coordination endpoints |
+| `COORDINATION_ALLOWED_ORIGIN` | `*` | CORS response origin for the local browser transport; keep the server loopback-only |
+
+The taskpane uses the coordination server through HTTP snapshot polling and event
+POSTs. It registers presence only; snapshots cannot trigger Word writes. A future
+WebSocket transport can replace polling without changing the client identity or
+scope contract, but is not enabled yet.
 
 ### Dev server only (webpack)
 

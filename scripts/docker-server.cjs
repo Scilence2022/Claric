@@ -54,6 +54,7 @@ const http = require('http');
 const https = require('https');
 const { generateManifest } = require('./generate-manifest.cjs');
 const { DEFAULT_LLM_PROXY_TIMEOUT_MS } = require('./llm-constants.cjs');
+const { createCoordinationHandler } = require('./coordination-server.cjs');
 
 const rootDir = path.resolve(__dirname, '..');
 const distDir = path.join(rootDir, 'dist');
@@ -99,6 +100,7 @@ function parseProxyTarget(value) {
 
 // LLM proxy routes, built once in startServer from environment variables.
 let PROXY_ROUTES = [];
+let COORDINATION_HANDLER = createCoordinationHandler();
 
 function getEnv() {
   return {
@@ -410,6 +412,13 @@ function handleRequest(req, res) {
   // eslint-disable-next-line no-control-regex -- matching control characters is the purpose of this validation
   if (/[\u0000-\u001f\u007f]/.test(urlPath)) {
     sendError(res, 400, 'Bad request');
+    return;
+  }
+
+  if (urlPath.startsWith('/coordination/')) {
+    COORDINATION_HANDLER(req, res).catch(() => {
+      if (!res.headersSent) sendError(res, 500, 'Internal server error');
+    });
     return;
   }
 
