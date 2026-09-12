@@ -125,6 +125,10 @@ body {
     margin-top: var(--spacing-xs);
 }
 
+.cross-document-connection-status.connected { color: var(--success-color); }
+.cross-document-connection-status.warning { color: var(--warning-color); }
+.cross-document-connection-status.error { color: var(--error-color); }
+
 .cross-document-bar {
     display: flex;
     flex-wrap: wrap;

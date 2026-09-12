@@ -47,13 +47,13 @@
         <div id="connectionError" class="connection-error" role="status" hidden></div>
         <details class="cross-document-settings">
             <summary>Cross-document workspace</summary>
-            <p>Connect only documents you want to share. Connected instances can read this document and request edits; every edit requires review here.</p>
+            <p>Documents link automatically through the same-origin coordination service. Connected instances can read this document and request edits; every edit requires review here.</p>
             <label for="crossDocumentUrl">Local coordination URL</label>
             <input id="crossDocumentUrl" type="url" placeholder="Same-origin /coordination" autocomplete="off">
             <label for="crossDocumentToken">Pairing token (if configured)</label>
             <input id="crossDocumentToken" type="password" autocomplete="off">
-            <button id="crossDocumentConnectBtn" type="button" class="btn btn-compact">Connect this document</button>
-            <span id="crossDocumentConnectionStatus" role="status">Disconnected — no cross-document access.</span>
+            <button id="crossDocumentConnectBtn" type="button" class="btn btn-compact">Disconnect this document</button>
+            <span id="crossDocumentConnectionStatus" class="cross-document-connection-status" role="status">Connecting automatically…</span>
         </details>
         <section id="crossDocumentBar" class="cross-document-bar" hidden aria-label="Open Claric documents">
             <label for="crossDocumentTarget">Send task to:</label>

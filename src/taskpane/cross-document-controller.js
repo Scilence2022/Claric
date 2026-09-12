@@ -6,41 +6,144 @@ import { addLog } from './ui/status-bar.js';
 
 let coordinationClient = null;
 
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+
+function errorStatus(error) {
+    if (Number.isInteger(error?.status)) return error.status;
+    const match = String(error?.message || '').match(/\b(401|403)\b/);
+    return match ? Number(match[1]) : null;
+}
+
+function isAuthorizationError(error) {
+    return [401, 403].includes(errorStatus(error));
+}
+
+function connectionLabel(button, connected) {
+    if (button) button.textContent = connected ? 'Disconnect this document' : 'Connect this document';
+}
+
 export function initCrossDocumentConnection(localIdentity) {
     const button = document.getElementById('crossDocumentConnectBtn');
     const urlInput = document.getElementById('crossDocumentUrl');
     const tokenInput = document.getElementById('crossDocumentToken');
     const status = document.getElementById('crossDocumentConnectionStatus');
     if (!button || !urlInput || !tokenInput || !status) return;
+
     let stop = null;
-    button.addEventListener('click', async () => {
-        button.disabled = true;
+    let retryTimer = null;
+    let retryAttempt = 0;
+    let connecting = false;
+    let manuallyDisconnected = false;
+    let authorizationStopped = false;
+    let generation = 0;
+
+    const clearRetry = () => {
+        if (retryTimer !== null) clearTimeout(retryTimer);
+        retryTimer = null;
+    };
+
+    const disconnect = async (manual = false) => {
+        generation += 1;
+        clearRetry();
+        if (manual) {
+            manuallyDisconnected = true;
+            authorizationStopped = false;
+            retryAttempt = 0;
+        }
+        const currentStop = stop;
+        stop = null;
+        if (currentStop) await currentStop();
+        connectionLabel(button, false);
+    };
+
+    const scheduleReconnect = (error) => {
+        if (manuallyDisconnected || authorizationStopped || retryTimer !== null) return;
+        const statusCode = errorStatus(error);
+        const message = String(error?.message || '');
+        if (statusCode !== null && ![404, 503].includes(statusCode)) return;
+        if (statusCode === null && /^(Use a local|An HTTPS taskpane|Cross-document work requires)/.test(message)) {
+            status.textContent = `Not connected: ${message}`;
+            status.className = 'cross-document-connection-status error';
+            return;
+        }
+        const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
+        retryAttempt += 1;
+        status.textContent = `Unavailable — retrying in ${Math.ceil(delay / 1000)}s.`;
+        status.className = 'cross-document-connection-status warning';
+        retryTimer = setTimeout(() => {
+            retryTimer = null;
+            void connect();
+        }, delay);
+    };
+
+    const handleUnavailable = (error) => {
+        if (isAuthorizationError(error)) {
+            authorizationStopped = true;
+            clearRetry();
+            void disconnect().finally(() => {
+                status.textContent = 'Authorization required — enter a pairing token in Advanced settings, then connect again.';
+                status.className = 'cross-document-connection-status error';
+                connectionLabel(button, false);
+            });
+            return;
+        }
+        void disconnect().finally(() => scheduleReconnect(error));
+    };
+
+    const connect = async () => {
+        if (connecting || manuallyDisconnected || authorizationStopped) return;
+        connecting = true;
+        const currentGeneration = generation;
+        const baseUrl = urlInput.value.trim() || '/coordination';
         try {
-            if (stop) {
-                await stop();
-                stop = null;
-                button.textContent = 'Connect this document';
-                status.textContent = 'Disconnected — no cross-document access.';
-                return;
-            }
-            const baseUrl = urlInput.value.trim() || '/coordination';
             const parsed = new URL(baseUrl, location.href);
             if (parsed.username || parsed.password || parsed.search || parsed.hash
                 || !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
                 || !['https:', 'http:'].includes(parsed.protocol)) throw new Error('Use a local HTTP(S) coordination URL without credentials or query parameters');
             if (location.protocol === 'https:' && parsed.protocol !== 'https:') throw new Error('An HTTPS taskpane requires an HTTPS coordination endpoint');
             status.textContent = 'Connecting…';
-            stop = await startCoordination({ identity: localIdentity, baseUrl: parsed.href.replace(/\/$/, ''), token: tokenInput.value });
+            status.className = 'cross-document-connection-status';
+            const candidateStop = await startCoordination({ identity: localIdentity, baseUrl: parsed.href.replace(/\/$/, ''), token: tokenInput.value }, handleUnavailable);
+            if (currentGeneration !== generation || manuallyDisconnected) {
+                await candidateStop();
+                return;
+            }
+            stop = candidateStop;
+            retryAttempt = 0;
+            authorizationStopped = false;
             tokenInput.value = '';
-            button.textContent = 'Disconnect this document';
+            connectionLabel(button, true);
             status.textContent = 'Connected — reads allowed; edits require local review.';
+            status.className = 'cross-document-connection-status connected';
         } catch (error) {
-            status.textContent = `Not connected: ${error.message}`;
-        } finally { button.disabled = false; }
+            if (currentGeneration === generation && !manuallyDisconnected) handleUnavailable(error);
+        } finally {
+            connecting = false;
+        }
+    };
+
+    button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+            if (stop || connecting || retryTimer !== null) {
+                await disconnect(true);
+                status.textContent = 'Disconnected — automatic reconnection is paused.';
+                status.className = 'cross-document-connection-status';
+                return;
+            }
+            manuallyDisconnected = false;
+            authorizationStopped = false;
+            retryAttempt = 0;
+            await connect();
+        } finally {
+            button.disabled = false;
+        }
     });
+    window.addEventListener('pagehide', () => { void disconnect(true); }, { once: true });
+    void connect();
 }
 
-async function startCoordination(connectionOptions) {
+async function startCoordination(connectionOptions, onUnavailable = null) {
     const [{ createCoordinationClient }, { createDocumentAgent }, { createContextRequestManager }, { createRemoteTaskRunner }, { createDistributedTaskRuntime }] = await Promise.all([
         import(/* webpackChunkName: "coordination-client" */ './coordination-client.js'),
         import(/* webpackChunkName: "document-agent" */ './document-agent.js'),
@@ -77,13 +180,13 @@ async function startCoordination(connectionOptions) {
         onError: (error) => {
             online = false;
             renderCrossDocumentTargets(new Map());
-            addLog(`Coordination unavailable: ${error.message}`, 'warning');
+            onUnavailable?.(error);
         },
     });
     coordinationClient = client;
     try {
         await client.start();
-        if (client.transport.version !== 2) throw new Error('Cross-document work requires a v2 coordination server');
+        if (client.transport.version !== 2) throw Object.assign(new Error('Cross-document work requires a v2 coordination server'), { status: 404 });
     } catch (error) {
         await client.stop();
         coordinationClient = null;
@@ -146,8 +249,11 @@ async function startCoordination(connectionOptions) {
             void message.finalizeForHistory();
         },
     });
+    let stopped = false;
     const stop = async () => {
-        distributed.dispose();
+        if (stopped) return;
+        stopped = true;
+        distributed?.dispose();
         online = false;
         listeners.abort();
         contextManager?.dispose();

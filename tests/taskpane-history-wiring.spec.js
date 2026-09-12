@@ -44,7 +44,7 @@ it('invalidates the outgoing conversation before restoring a selected history se
   try {
     require('../src/taskpane/taskpane.js');
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('/coordination'))).toBe(false);
+    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('/coordination'))).toBe(true);
     const session = { id: 'restored-session', messages: [{ role: 'user', text: 'Earlier question' }] };
     initHistoryView.mock.calls[0][0].onLoadSession(session);
     expect(events).toEqual(['invalidate', 'restore']);

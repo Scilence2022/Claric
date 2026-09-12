@@ -407,14 +407,19 @@ restart Word. Verify your port after switching manifest modes. Publishing change
 the remote hosted build and requires repository permissions; it is not part of installation.
 
 The development server and Node production server both expose `/coordination`.
-In each Word taskpane, expand **Cross-document workspace** and explicitly connect
-only the documents you want to share. The blank URL uses same-origin `/coordination`.
-Enter the pairing token if the server was configured with `COORDINATION_TOKEN`.
-No token is saved by this connection form. Connected peers may request bounded
-context and edit tasks; changes require review in the target taskpane, regardless
-of the source's auto-apply setting. **Read context** reads the selected peer's
-document. **Send edit task** sends the composer instruction to that peer's selected
-passage. Disconnecting stops access and invalidates pending target runtimes.
+After initialization, each Word taskpane automatically registers and discovers
+same-workspace documents through the same-origin `/coordination` endpoint. Expand
+**Cross-document workspace** to inspect the endpoint or enter a pairing token if the
+server was configured with `COORDINATION_TOKEN`. No token is saved by this form.
+A temporary service outage does not affect single-document chat: the taskpane uses
+bounded background retries, while 401/403 authorization failures stop retries and
+ask for a pairing token. Connected peers may request bounded context and edit tasks;
+changes require review in the target taskpane, regardless of the source's auto-apply
+setting. **Read context** reads the selected peer's document. **Send edit task** sends
+the composer instruction to that peer's selected passage. **Disconnect this document**
+is the advanced manual override: it stops access and pauses automatic reconnection
+until the button is clicked again. The URL remains subject to loopback, origin,
+HTTPS, server credential, target identity, and token validation.
 
 `npm run coordination-server` starts a separate loopback-only service on port 3010.
 An HTTPS taskpane must connect to HTTPS: configure both `COORDINATION_CERT_FILE`
