@@ -45,6 +45,25 @@
         </header>
 
         <div id="connectionError" class="connection-error" role="status" hidden></div>
+        <details class="cross-document-settings">
+            <summary>Cross-document workspace</summary>
+            <p>Connect only documents you want to share. Connected instances can read this document and request edits; every edit requires review here.</p>
+            <label for="crossDocumentUrl">Local coordination URL</label>
+            <input id="crossDocumentUrl" type="url" placeholder="Same-origin /coordination" autocomplete="off">
+            <label for="crossDocumentToken">Pairing token (if configured)</label>
+            <input id="crossDocumentToken" type="password" autocomplete="off">
+            <button id="crossDocumentConnectBtn" type="button" class="btn btn-compact">Connect this document</button>
+            <span id="crossDocumentConnectionStatus" role="status">Disconnected — no cross-document access.</span>
+        </details>
+        <section id="crossDocumentBar" class="cross-document-bar" hidden aria-label="Open Claric documents">
+            <label for="crossDocumentTarget">Send task to:</label>
+            <select id="crossDocumentTarget" aria-label="Target open document">
+                <option value="">Current document</option>
+            </select>
+            <button id="crossDocumentContextBtn" type="button" class="btn btn-compact" disabled>Read context</button>
+            <button id="crossDocumentSendBtn" type="button" class="btn btn-compact" disabled>Send edit task</button>
+            <span id="crossDocumentStatus" class="help-text" role="status"></span>
+        </section>
 
         <!-- Chat message area -->
         <main id="chatMessages" class="chat-messages" aria-live="polite">

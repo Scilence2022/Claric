@@ -401,15 +401,51 @@ whether requests work. Production is **not zero-configuration**.
 | `npm run sideload:remove` | Remove the sideloaded registration on the current desktop platform |
 | `npm run publish:addin` | Maintainer operation: build, switch manifest, and push artifacts to `Scilence2022/claric-addin` |
 
-For a local session, configure the environment and certificates, run
-`npm run manifest:local`, start `npm start` (or `docker compose up -d`). To run
-stage-one local coordination for multiple taskpanes, use
-`COORDINATION_TOKEN=... npm run coordination-server`; it listens only on
-`127.0.0.1` and exposes HTTP health, snapshot, and event relay endpoints (no
-WebSocket yet). Then
-run `npm run sideload` and restart Word. Verify your port after switching
-manifest modes. Publishing changes the remote hosted build and requires the
-appropriate repository permissions; it is not part of installation.
+For a local session, configure the environment and trusted HTTPS certificates,
+run `npm run manifest:local`, start `npm start`, then run `npm run sideload` and
+restart Word. Verify your port after switching manifest modes. Publishing changes
+the remote hosted build and requires repository permissions; it is not part of installation.
+
+The development server and Node production server both expose `/coordination`.
+In each Word taskpane, expand **Cross-document workspace** and explicitly connect
+only the documents you want to share. The blank URL uses same-origin `/coordination`.
+Enter the pairing token if the server was configured with `COORDINATION_TOKEN`.
+No token is saved by this connection form. Connected peers may request bounded
+context and edit tasks; changes require review in the target taskpane, regardless
+of the source's auto-apply setting. **Read context** reads the selected peer's
+document. **Send edit task** sends the composer instruction to that peer's selected
+passage. Disconnecting stops access and invalidates pending target runtimes.
+
+`npm run coordination-server` starts a separate loopback-only service on port 3010.
+An HTTPS taskpane must connect to HTTPS: configure both `COORDINATION_CERT_FILE`
+and `COORDINATION_KEY_FILE` using trusted local certificates, and set
+`COORDINATION_ALLOWED_ORIGIN` to the exact taskpane origin when ports differ.
+The loopback socket restriction is intentional: Docker bridge/proxy traffic is
+not automatically trusted. Use the host-local service for cross-document work
+rather than exposing it to the network.
+
+For durable state, set `COORDINATION_STATE_FILE` to a file named
+`coordination-checkpoint.json` inside an existing, non-hidden `0700` data
+directory under the project root, for example `data/coordination-checkpoint.json`.
+The directory and file must be owned by the service user; the file is created as
+`0600`. The standalone server does not create missing parent directories. In
+Docker Compose, this is configured automatically as
+`data/coordination-checkpoint.json` and stored in the `coordination-data` named
+volume. Back up that volume while the service is stopped. Do not replace it with
+a host bind mount unless the mounted directory is owned by the container's
+`node` user and has mode `0700`.
+
+Task and proposal records are bounded and checkpointed when `COORDINATION_STATE_FILE`
+is configured. After a restart, unfinished tasks are exposed as `interrupted` and
+unfinished proposals as `unknown`; they are never automatically replayed. The
+checkpoint is written with an atomic replacement and is accepted only when its
+file and parent directory are private, regular, user-owned objects. External
+checkpoint edits block further coordination writes until restart. Unidentified or
+unsaved documents receive an ephemeral identity, so history does not survive
+reload for those documents. Remote text edit/append adapters exist; the UI
+currently exposes selection editing, not all local table/image/format workflows.
+Real multi-window Word acceptance and full cross-document planning are not yet
+verified.
 
 ### Route-specific notes
 
@@ -784,13 +820,19 @@ provider paths by default; example files may opt into routes explicitly.
 | `LLM_PROXY_TIMEOUT_MS` | `300000` | Upstream timeout in milliseconds |
 | `COORDINATION_HOST` | `127.0.0.1` | Local coordination server bind address; loopback only |
 | `COORDINATION_PORT` | `3010` | Local coordination HTTP port |
-| `COORDINATION_TOKEN` | empty | Optional bearer token required by coordination endpoints |
-| `COORDINATION_ALLOWED_ORIGIN` | `*` | CORS response origin for the local browser transport; keep the server loopback-only |
+| `COORDINATION_TOKEN` | empty | Optional pairing token for instance registration and legacy endpoints; v2 operations require server-issued instance credentials |
+| `COORDINATION_ALLOWED_ORIGIN` | empty (same origin only) | One exact additional HTTP(S) origin; no wildcard |
+| `COORDINATION_CERT_FILE` | empty | Trusted TLS certificate for the standalone coordination server |
+| `COORDINATION_KEY_FILE` | empty | Matching TLS private key for the standalone coordination server |
+| `COORDINATION_STATE_FILE` | empty | Optional checkpoint path; use `data/coordination-checkpoint.json` under Docker Compose |
 
-The taskpane uses the coordination server through HTTP snapshot polling and event
-POSTs. It registers presence only; snapshots cannot trigger Word writes. A future
-WebSocket transport can replace polling without changing the client identity or
-scope contract, but is not enabled yet.
+Transport uses authenticated HTTP event POSTs, bounded snapshots, event cursors
+and heartbeat polling. There is no WebSocket or SSE transport yet. A request is
+routed to the registered target instance; only that instance prepares the local
+proposal. Review uses a document-wide write lease and rechecks the target content.
+A lease cannot cancel an already-submitted Word API call: uncertain write outcomes
+are surfaced and blocked from automatic retry. Do not treat this as atomic Word
+transactions or exactly-once document editing.
 
 ### Dev server only (webpack)
 
@@ -820,6 +862,7 @@ for authenticated driver setup and migration.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HOST_PORT` | `3000` | Host-side published port and external manifest port |
+| `COORDINATION_STATE_FILE` | `data/coordination-checkpoint.json` | Checkpoint file inside the `coordination-data` named volume; preserve the volume across recreation |
 
 ## Docker Image
 

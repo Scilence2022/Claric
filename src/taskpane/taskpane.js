@@ -29,16 +29,15 @@ import { initInputBar } from './ui/input-bar.js';
 import { createSettingsLoader } from './settings-loader.js';
 import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer } from './ui/status-bar.js';
 import { initHistoryView, openHistory } from './ui/history-view.js';
-import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession } from './sessions.js';
+import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession, setSessionScope } from './sessions.js';
 import { getProviderPreset } from '../lib/providers.js';
 import { getHostPlatform } from '../lib/platform.js';
-
-let coordinationClient = null;
+import { resolveDocumentIdentity } from './document-identity.js';
 
 if (typeof Office !== 'undefined') {
     Office.onReady((info) => {
         if (info.host === Office.HostType.Word) {
-            initialize();
+            void initialize().catch((error) => console.error('Claric initialization failed', error));
         }
     });
 }
@@ -46,7 +45,9 @@ if (typeof Office !== 'undefined') {
 /**
  * Wires the modules together and starts the app. Called from Office.onReady.
  */
-function initialize() {
+async function initialize() {
+    const localIdentity = await resolveDocumentIdentity();
+    setSessionScope(localIdentity);
     // Load saved settings (localStorage key unchanged: wordAI.config)
     loadSettings(appState, addLog);
     appState.promptManager.loadState();
@@ -54,8 +55,6 @@ function initialize() {
 
     // Status bar (log drawer, comment pending bar)
     initStatusBar();
-
-    void startCoordination().catch((error) => addLog(`Coordination client unavailable: ${error.message}`, 'warning'));
 
     // Chat view
     chatView.initChatView();
@@ -177,14 +176,14 @@ function initialize() {
     });
 
     updateModelPill();
-
-    // Restore the most recent session if one exists; otherwise stay on the
-    // welcome page (the current chat-view already shows the welcome by default).
     const recent = listSessions();
-    if (recent.length > 0) {
-        const full = loadStoredSession(recent[0].id);
-        if (full) chatView.setCurrentSession(full);
+    if (recent.length) {
+        const restored = loadStoredSession(recent[0].id);
+        if (restored) chatView.setCurrentSession(restored);
     }
+    void import(/* webpackChunkName: "cross-document-controller" */ './cross-document-controller.js')
+        .then(({ initCrossDocumentConnection }) => initCrossDocumentConnection(localIdentity))
+        .catch((error) => addLog(`Cross-document controls unavailable: ${error.message}`, 'warning'));
 
     // Live selection preview above the input bar (text snippet + image
     // thumbnails; image-bearing selections enter the turn's context via the
@@ -254,31 +253,6 @@ function initialize() {
 
     addLog('Claric initialized.', 'info');
     input.focus();
-}
-
-async function startCoordination() {
-    const { createCoordinationClient } = await import(/* webpackChunkName: "coordination-client" */ './coordination-client.js');
-    coordinationClient = createCoordinationClient({
-        onSnapshot: (snapshot) => {
-            const others = Object.values(snapshot.presence || {}).filter((entry) => entry.clientId !== coordinationClient?.identity.instanceId);
-            const documents = new Set(others.map((entry) => entry.documentId).filter(Boolean));
-            addLog(`Coordination snapshot: ${others.length} other taskpane(s), ${documents.size} document(s), sequence ${snapshot.sequence}.`, 'info');
-            const metadataKeys = Object.keys(snapshot.metadata || {});
-            if (metadataKeys.length > 0) addLog(`Coordination metadata (${metadataKeys.join(', ')}): ${metadataKeys.map((key) => `${key}=${String(snapshot.metadata[key])}`).join(', ')}`, 'info');
-        },
-        onError: (error) => addLog(`Coordination unavailable: ${error.message}`, 'warning'),
-    });
-    const identity = coordinationClient.identity;
-    addLog(`Coordination identity: instance ${identity.instanceId}, workspace ${identity.workspaceId}, document ${identity.documentId}${identity.documentEphemeral ? ' (ephemeral fallback)' : ''}.`, 'info');
-    void coordinationClient.start();
-    const stop = () => {
-        if (coordinationClient) void coordinationClient.stop();
-        coordinationClient = null;
-    };
-    if (typeof window !== 'undefined') {
-        window.addEventListener('pagehide', stop, { once: true });
-        window.addEventListener('beforeunload', stop, { once: true });
-    }
 }
 
 /**

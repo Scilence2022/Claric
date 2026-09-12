@@ -1,10 +1,9 @@
 /**
  * Sessions storage layer.
  *
- * Persists chat sessions to localStorage under two key families:
- *   - wordAI.sessions.index : metadata list (id, title, createdAt,
- *                             updatedAt, messageCount, preview)
- *   - wordAI.session.<id>   : full session payload incl. messages array
+ * Persists chat sessions under the selected workspace/document namespace.
+ * With no scope selected, the legacy wordAI.sessions.index and wordAI.session.*
+ * keys remain accessible; scoped history never migrates or deletes them.
  *
  * Goals:
  *   - Append-only-friendly writes (update bumps updatedAt + keeps createdAt).
@@ -24,6 +23,7 @@ import { newId, normalizeMessage } from './message-shape.js';
 
 const INDEX_KEY = 'wordAI.sessions.index';
 const SESSION_KEY_PREFIX = 'wordAI.session.';
+let activeScope = null;
 const MAX_SESSIONS = 50;
 const MAX_SESSION_BYTES = 1_500_000; // ~1.5 MB per session
 const MAX_TOTAL_BYTES = 4_000_000;  // ~4 MB total across sessions + index
@@ -40,8 +40,38 @@ function nowIso() {
     return new Date().toISOString();
 }
 
+function scopePrefix() {
+    if (!activeScope) return null;
+    return `claric.history.${encodeURIComponent(JSON.stringify([activeScope.workspaceId, activeScope.documentId]))}.`;
+}
+
+function indexKey() {
+    return activeScope ? `${scopePrefix()}index` : INDEX_KEY;
+}
+
+function sessionPrefix() {
+    return activeScope ? `${scopePrefix()}session.` : SESSION_KEY_PREFIX;
+}
+
 function sessionKey(id) {
-    return `${SESSION_KEY_PREFIX}${id}`;
+    return `${sessionPrefix()}${encodeURIComponent(id)}`;
+}
+
+export function setSessionScope(scope) {
+    if (scope === null || scope === undefined) {
+        activeScope = null;
+        return null;
+    }
+    if (!scope || typeof scope.workspaceId !== 'string' || typeof scope.documentId !== 'string'
+        || !scope.workspaceId || !scope.documentId) {
+        throw new TypeError('setSessionScope: workspaceId and documentId are required');
+    }
+    activeScope = { workspaceId: scope.workspaceId, documentId: scope.documentId };
+    return { ...activeScope };
+}
+
+export function getSessionScope() {
+    return activeScope ? { ...activeScope } : null;
 }
 
 /**
@@ -50,7 +80,7 @@ function sessionKey(id) {
  */
 function readIndex() {
     try {
-        const raw = localStorage.getItem(INDEX_KEY);
+        const raw = localStorage.getItem(indexKey());
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed.filter((entry) => entry
@@ -66,7 +96,7 @@ function readIndex() {
 
 function writeIndex(idx) {
     try {
-        localStorage.setItem(INDEX_KEY, JSON.stringify(idx));
+        localStorage.setItem(indexKey(), JSON.stringify(idx));
         return true;
     } catch (_err) {
         // Quota exceeded — the caller decides whether this is fatal.
@@ -87,6 +117,7 @@ function readSession(id) {
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object') return null;
         if (!Array.isArray(parsed.messages)) return null;
+        if (activeScope && (parsed.scope?.workspaceId !== activeScope.workspaceId || parsed.scope?.documentId !== activeScope.documentId)) return null;
         return parsed;
     } catch (_err) {
         return null;
@@ -270,6 +301,7 @@ export function saveSession(messages, opts = {}) {
         title,
         createdAt,
         updatedAt: now,
+        ...(activeScope ? { scope: { ...activeScope } } : {}),
         messages: messages.map(stripMessage),
     };
     trimOversizedSession(session);
@@ -374,14 +406,15 @@ export function clearAllSessions() {
     try {
         for (let i = localStorage.length - 1; i >= 0; i--) {
             const key = localStorage.key(i);
-            if (key && key.startsWith(SESSION_KEY_PREFIX)) {
+            const prefix = sessionPrefix();
+            if (key && key.startsWith(prefix)) {
                 try { localStorage.removeItem(key); } catch (_err) { /* ignore */ }
             }
         }
     } catch (_err) {
         // Storage access can be disabled by the host.
     }
-    try { localStorage.removeItem(INDEX_KEY); } catch (_err) { /* ignore */ }
+    try { localStorage.removeItem(indexKey()); } catch (_err) { /* ignore */ }
 }
 
 /**

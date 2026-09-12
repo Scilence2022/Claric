@@ -100,7 +100,11 @@ function parseProxyTarget(value) {
 
 // LLM proxy routes, built once in startServer from environment variables.
 let PROXY_ROUTES = [];
-let COORDINATION_HANDLER = createCoordinationHandler();
+let COORDINATION_HANDLER = createCoordinationHandler({
+  persistencePath: process.env.COORDINATION_STATE_FILE || undefined,
+  token: process.env.COORDINATION_TOKEN || '',
+  allowedOrigin: process.env.COORDINATION_ALLOWED_ORIGIN || '',
+});
 
 function getEnv() {
   return {

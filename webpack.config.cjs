@@ -489,12 +489,20 @@ module.exports = (env, argv) => {
       hot: true,
       allowedHosts: ENV.DEV_SERVER_ALLOWED_HOSTS,
       headers: (req) => corsHeaders(req, ENV.DEV_SERVER_CORS_ORIGINS),
-      setupMiddlewares: process.env.ENABLE_DEV_ENDPOINTS === 'true'
-        // Dev-only E2E/coding-agent endpoints (see scripts/dev-e2e-middlewares.cjs).
-        // Off by default; the local driver protocol requires its own token
-        // and exact Origin checks before accessing persisted snapshots.
-        ? require('./scripts/dev-e2e-middlewares.cjs')
-        : undefined,
+      setupMiddlewares: (middlewares, devServer) => {
+        const { createCoordinationHandler } = require('./scripts/coordination-server.cjs');
+        const handler = createCoordinationHandler();
+        middlewares.unshift({
+          name: 'claric-coordination',
+          middleware: (req, res, next) => {
+            if (!req.url.startsWith('/coordination/')) return next();
+            return handler(req, res).catch(next);
+          }
+        });
+        return process.env.ENABLE_DEV_ENDPOINTS === 'true'
+          ? require('./scripts/dev-e2e-middlewares.cjs')(middlewares, devServer)
+          : middlewares;
+      },
       proxy: buildLlmProxies(ENV)
     },
     resolve: {

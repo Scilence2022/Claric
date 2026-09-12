@@ -12,6 +12,10 @@ function request(port, method, path, body, token = 'secret') {
   });
 }
 
+function requestWithAuthorization(port, method, path, token) {
+  return request(port, method, path, undefined, token);
+}
+
 describe('coordination store', () => {
   test('isolates rooms and assigns monotonic event sequences', () => {
     const store = new CoordinationStore({ maxEvents: 2 });
@@ -48,6 +52,45 @@ describe('coordination HTTP server', () => {
     expect((await request(port, 'GET', '/coordination/snapshot?workspaceId=bad%20id')).status).toBe(400);
     expect((await request(port, 'GET', '/coordination/snapshot')).status).toBe(400);
     expect((await request(port, 'GET', '/coordination/snapshot?workspaceId=a&workspaceId=b')).status).toBe(400);
+  });
+
+  test('registers two instances and routes a v2 request through issued credentials', async () => {
+    const register = async (documentId) => request(port, 'POST', '/coordination/v2/instances/register', {
+      workspaceId: 'workspace-v2', documentId,
+    });
+    const a = await register('document-a');
+    const b = await register('document-b');
+    expect(a.status).toBe(201);
+    expect(a.body.identity).toMatchObject({ workspaceId: 'workspace-v2', documentId: 'document-a' });
+    expect(a.body.credential).not.toBe(b.body.credential);
+
+    const envelope = (source, target, type, payload, key) => ({
+      version: 2,
+      workspaceId: 'workspace-v2',
+      source,
+      target,
+      type,
+      correlationId: `correlation-${key}`,
+      idempotencyKey: `idempotency-${key}`,
+      ttlMs: 30000,
+      createdAt: Date.now(),
+      payload,
+    });
+    const requestEvent = envelope(a.body.identity, b.body.identity, 'context.request', {
+      requestId: 'request-http-1', scope: 'selection',
+    }, 'request-http-1');
+    const sent = await request(port, 'POST', '/coordination/v2/envelopes', requestEvent, a.body.credential);
+    expect(sent.status).toBe(201);
+    const snapshot = await requestWithAuthorization(port, 'GET', '/coordination/v2/snapshot', b.body.credential);
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.body.documents).toHaveLength(0);
+    const announced = await request(port, 'POST', '/coordination/v2/envelopes', envelope(
+      b.body.identity, b.body.identity, 'document.announce', { title: 'B' }, 'announce-http-1',
+    ), b.body.credential);
+    expect(announced.status).toBe(201);
+    const events = await requestWithAuthorization(port, 'GET', `/coordination/v2/events?after=0&epoch=${encodeURIComponent(snapshot.body.epoch)}`, b.body.credential);
+    expect(events.status).toBe(200);
+    expect(events.body.events.some((event) => event.type === 'context.request' && event.target.instanceId === b.body.identity.instanceId)).toBe(true);
   });
 
   test('rejects malformed JSON and wrong content type without mutating the room', async () => {

@@ -38,13 +38,17 @@ RUN apk upgrade --no-cache
 # Only the scripts the runtime server needs — the scripts/ directory also
 # carries dev-only tooling (e2e middlewares, icon generation) that does not
 # belong in the production image.
-COPY --from=builder /app/scripts/docker-server.cjs /app/scripts/generate-manifest.cjs /app/scripts/llm-constants.cjs ./scripts/
+COPY --from=builder /app/scripts/docker-server.cjs /app/scripts/coordination-server.cjs /app/scripts/generate-manifest.cjs /app/scripts/llm-constants.cjs ./scripts/
+COPY --from=builder /app/src/lib/coordination ./src/lib/coordination
 COPY --from=builder /app/manifest.template.xml ./manifest.template.xml
 COPY --from=builder /app/package.json ./package.json
 
-# manifest.xml and .manifest-guid are generated at startup, so /app must be
-# writable; the node user owns it after the chown below.
-RUN chown -R node:node /app
+# manifest.xml and .manifest-guid are generated at startup, and coordination
+# checkpoints live in /app/data. Keep both paths writable only by node; the
+# data directory is also the initialization source for the named Docker volume.
+RUN mkdir -p /app/data \
+    && chown -R node:node /app \
+    && chmod 700 /app/data
 USER node
 
 EXPOSE 3000
