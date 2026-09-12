@@ -67,10 +67,12 @@ jobs:
             echo "APP_DOMAINS=${APP_DOMAINS}"
           } > .env
 
-      - name: Switch manifest to Pages host
-        run: npm run manifest:store
-
       - name: Regenerate manifest with fresh icon hash
+        # Skip `npm run manifest:store` because scripts/manifest-mode.cjs
+        # hard-codes BASE_PATH=/claric-addin (production). This workflow
+        # needs BASE_PATH=/claric-coordination, which the .env write above
+        # already set. `npm run manifest` reads .env directly without
+        # touching it.
         run: npm run manifest
 
       - name: Sync bundle into coordination Pages repo and push
