@@ -1,0 +1,126 @@
+name: Deploy coordination preview to GitHub Pages
+
+# Temporary workflow for the local-coordination-server preview. Pushed bundles
+# land in Scilence2022/claric-coordination (NOT Scilence2022/claric-addin) so
+# production Word installs are unaffected. Drop this workflow + delete that
+# repo when the feature lands on main.
+
+on:
+  push:
+    branches: [feature/local-coordination-server]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-pages-coordination
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and push coordination bundle to Pages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CLARIC_ADDIN_REPO: Scilence2022/claric-coordination
+      CLARIC_ADDIN_LOCAL: /tmp/claric-coordination-bootstrap
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Verify source and production build
+        run: npm run verify
+
+      - name: Write minimal .env for manifest generation
+        # GUID intentionally identical to production (814b0af4-...) so the
+        # coordination build is recognized as the same add-in by Word when
+        # sideloaded under the new manifest URL — no new trust prompt, no
+        # fresh per-add-in state. Settings + localStorage remain isolated by
+        # the taskpane's separate manifest URL.
+        env:
+          HOST: scilence2022.github.io
+          HOST_PORT: '443'
+          PROTOCOL: https
+          BASE_PATH: /claric-coordination
+          ADDIN_GUID: 814b0af4-661b-4244-9a98-1b9a444502e6
+          SUPPORT_URL: https://github.com/Scilence2022/Claric/issues
+          APP_DOMAINS: api.deepseek.com,open.bigmodel.cn,api.moonshot.cn,api.minimax.io,api.minimaxi.com
+        run: |
+          {
+            echo "HOST=${HOST}"
+            echo "HOST_PORT=${HOST_PORT}"
+            echo "PROTOCOL=${PROTOCOL}"
+            echo "BASE_PATH=${BASE_PATH}"
+            echo "ADDIN_GUID=${ADDIN_GUID}"
+            echo "SUPPORT_URL=${SUPPORT_URL}"
+            echo "APP_DOMAINS=${APP_DOMAINS}"
+          } > .env
+
+      - name: Switch manifest to Pages host
+        run: npm run manifest:store
+
+      - name: Regenerate manifest with fresh icon hash
+        run: npm run manifest
+
+      - name: Sync bundle into coordination Pages repo and push
+        env:
+          PAGES_REPO_TOKEN: ${{ secrets.PAGES_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO_URL="https://x-access-token:${PAGES_REPO_TOKEN}@github.com/${CLARIC_ADDIN_REPO}.git"
+          rm -rf "${CLARIC_ADDIN_LOCAL}"
+          git clone --depth 1 "${REPO_URL}" "${CLARIC_ADDIN_LOCAL}"
+          cd "${CLARIC_ADDIN_LOCAL}"
+          # First-ever clone is empty — bootstrap main + README so the
+          # subsequent git push origin main has a destination. Mirrors what
+          # scripts/publish-addin.cjs does for claric-addin.
+          if ! git rev-parse --verify main >/dev/null 2>&1; then
+            git checkout -b main
+            echo "# claric-coordination" > README.md
+            echo "" >> README.md
+            echo "Static hosting for the Claric Word add-in **coordination preview**." >> README.md
+            echo "Temporary branch: \`feature/local-coordination-server\`." >> README.md
+            echo "" >> README.md
+            echo "Production add-in is unaffected — see \`Scilence2022/claric-addin\`." >> README.md
+            git add README.md
+            git -c user.email="ci@scilence2022.com" \
+                -c user.name="claric-publish" \
+                commit -m "chore: bootstrap coordination preview repo"
+            git push -u origin main
+          else
+            git checkout main
+          fi
+
+          # Mirror scripts/publish-addin.cjs: keep .git + README, wipe the
+          # rest, copy dist + manifest.xml.
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            ! -name 'README.md' \
+            -exec rm -rf {} +
+
+          cp -R "${GITHUB_WORKSPACE}/dist/." .
+          cp "${GITHUB_WORKSPACE}/manifest.xml" ./manifest.xml
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "[deploy] no changes - coordination Pages already current"
+            exit 0
+          fi
+
+          git -c user.email="ci@scilence2022.com" \
+              -c user.name="claric-publish" \
+              commit -m "chore: deploy coordination bundle"
+          git push origin main
+          echo "[deploy] pushed coordination bundle to main"
