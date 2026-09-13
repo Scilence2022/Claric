@@ -445,9 +445,17 @@ is configured. After a restart, unfinished tasks are exposed as `interrupted` an
 unfinished proposals as `unknown`; they are never automatically replayed. The
 checkpoint is written with an atomic replacement and is accepted only when its
 file and parent directory are private, regular, user-owned objects. External
-checkpoint edits block further coordination writes until restart. Unidentified or
-unsaved documents receive an ephemeral identity, so history does not survive
-reload for those documents. Remote text edit/append adapters exist; the UI
+checkpoint edits block further coordination writes until restart.
+
+Document identity is layered so files are never dirtied just by opening the
+taskpane. A document that has never joined a workspace is identified by the
+hash of its URL; when it first links, a custom XML part (Word 2013+,
+`urn:claric:identity`) stores that identity plus the URL hash — never the
+path. Later opens reuse the stored identity. Save As / Copy / a moved file is
+detected through the URL-hash mismatch and gets a deterministic fork identity,
+so the original keeps its history and the copy starts fresh. Unsaved or
+unidentified documents stay ephemeral: their history does not survive reload.
+Remote text edit/append adapters exist; the UI
 currently exposes selection editing, not all local table/image/format workflows.
 Real multi-window Word acceptance and full cross-document planning are not yet
 verified.
