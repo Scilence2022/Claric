@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "start": "webpack serve --mode development",
+    "coordination-server": "node scripts/coordination-server.cjs",
     "build": "node scripts/generate-icons.cjs && webpack --mode production",
     "lint": "eslint .",
     "test": "jest",

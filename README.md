@@ -226,10 +226,25 @@ review warnings if the document changed after staging. See
 
 ### AI Redlining
 
-Text editing supports word-level tracked changes and a CJK character-level
-diff strategy. The diff layer attempts to preserve run formatting and can
-fall back to sentence or block replacement. Check the resulting formatting
-and revision marks in Word, particularly in complex documents.
+Text editing supports word-level tracked changes and a CJK Word adapter.
+The `diff-wordmode.js`, `token-map.js`, `sentence-diff.js`, `block-replace.js`,
+and `computeDiff` in `index.js` derive from
+[`yuch85/office-word-diff`](https://github.com/yuch85/office-word-diff) commit
+`81315f2fae23ba8cf9f40c13bdfd17d0e444d137` under Apache-2.0. That source already
+provides token differencing, range mapping, batched searches, tracked
+application, token/sentence/block fallbacks, and an AI-text application
+example with preview statistics. Claric adapts token positions and occurrence
+mapping, coalesces deletion spans, preserves repeated sentences, and adds
+tracking options and cleanup. The local `char-diff.js` has no counterpart at
+that pin: it adapts existing diff-match-patch computation to CJK Word ranges,
+with occurrence-indexed anchors, surrogate-safe searches, cursor fallback,
+reverse application, and an operation cap; it is not a new diff algorithm.
+Claric integrates these paths with proposal management, model clients, and
+document orchestration. Details are in
+[`src/lib/word-diff/NOTICE`](src/lib/word-diff/NOTICE). The diff layer attempts
+to preserve run formatting and can fall back to sentence or block replacement.
+Check the resulting formatting and revision marks in Word, particularly in
+complex documents.
 
 ### Whole-Document Processing
 
@@ -386,11 +401,56 @@ whether requests work. Production is **not zero-configuration**.
 | `npm run sideload:remove` | Remove the sideloaded registration on the current desktop platform |
 | `npm run publish:addin` | Maintainer operation: build, switch manifest, and push artifacts to `Scilence2022/claric-addin` |
 
-For a local session, configure the environment and certificates, run
-`npm run manifest:local`, start `npm start` (or `docker compose up -d`), then
-run `npm run sideload` and restart Word. Verify your port after switching
-manifest modes. Publishing changes the remote hosted build and requires the
-appropriate repository permissions; it is not part of installation.
+For a local session, configure the environment and trusted HTTPS certificates,
+run `npm run manifest:local`, start `npm start`, then run `npm run sideload` and
+restart Word. Verify your port after switching manifest modes. Publishing changes
+the remote hosted build and requires repository permissions; it is not part of installation.
+
+The development server and Node production server both expose `/coordination`.
+After initialization, each Word taskpane automatically registers and discovers
+same-workspace documents through the same-origin `/coordination` endpoint. Expand
+**Cross-document workspace** to inspect the endpoint or enter a pairing token if the
+server was configured with `COORDINATION_TOKEN`. No token is saved by this form.
+A temporary service outage does not affect single-document chat: the taskpane uses
+bounded background retries, while 401/403 authorization failures stop retries and
+ask for a pairing token. Connected peers may request bounded context and edit tasks;
+changes require review in the target taskpane, regardless of the source's auto-apply
+setting. **Read context** reads the selected peer's document. **Send edit task** sends
+the composer instruction to that peer's selected passage. **Disconnect this document**
+is the advanced manual override: it stops access and pauses automatic reconnection
+until the button is clicked again. The URL remains subject to loopback, origin,
+HTTPS, server credential, target identity, and token validation.
+
+`npm run coordination-server` starts a separate loopback-only service on port 3010.
+An HTTPS taskpane must connect to HTTPS: configure both `COORDINATION_CERT_FILE`
+and `COORDINATION_KEY_FILE` using trusted local certificates, and set
+`COORDINATION_ALLOWED_ORIGIN` to the exact taskpane origin when ports differ.
+The loopback socket restriction is intentional: Docker bridge/proxy traffic is
+not automatically trusted. Use the host-local service for cross-document work
+rather than exposing it to the network.
+
+For durable state, set `COORDINATION_STATE_FILE` to a file named
+`coordination-checkpoint.json` inside an existing, non-hidden `0700` data
+directory under the project root, for example `data/coordination-checkpoint.json`.
+The directory and file must be owned by the service user; the file is created as
+`0600`. The standalone server does not create missing parent directories. In
+Docker Compose, this is configured automatically as
+`data/coordination-checkpoint.json` and stored in the `coordination-data` named
+volume. Back up that volume while the service is stopped. Do not replace it with
+a host bind mount unless the mounted directory is owned by the container's
+`node` user and has mode `0700`.
+
+Task and proposal records are bounded and checkpointed when `COORDINATION_STATE_FILE`
+is configured. After a restart, unfinished tasks are exposed as `interrupted` and
+unfinished proposals as `unknown`; they are never automatically replayed. The
+checkpoint is written with an atomic replacement and is accepted only when its
+file and parent directory are private, regular, user-owned objects. External
+checkpoint edits block further coordination writes until restart. Unidentified or
+unsaved documents receive an ephemeral identity, so history does not survive
+reload for those documents. Remote text edit/append adapters exist; the UI
+currently exposes selection editing, not all local table/image/format workflows.
+Real multi-window Word acceptance and full cross-document planning are not yet
+verified.
 
 ### Route-specific notes
 
@@ -763,6 +823,21 @@ provider paths by default; example files may opt into routes explicitly.
 | `CUSTOM_PROXY_PATH` | empty | Optional custom chat, image, or MCP proxy path |
 | `CUSTOM_PROXY_TARGET` | empty | Required together with the custom path |
 | `LLM_PROXY_TIMEOUT_MS` | `300000` | Upstream timeout in milliseconds |
+| `COORDINATION_HOST` | `127.0.0.1` | Local coordination server bind address; loopback only |
+| `COORDINATION_PORT` | `3010` | Local coordination HTTP port |
+| `COORDINATION_TOKEN` | empty | Optional pairing token for instance registration and legacy endpoints; v2 operations require server-issued instance credentials |
+| `COORDINATION_ALLOWED_ORIGIN` | empty (same origin only) | One exact additional HTTP(S) origin; no wildcard |
+| `COORDINATION_CERT_FILE` | empty | Trusted TLS certificate for the standalone coordination server |
+| `COORDINATION_KEY_FILE` | empty | Matching TLS private key for the standalone coordination server |
+| `COORDINATION_STATE_FILE` | empty | Optional checkpoint path; use `data/coordination-checkpoint.json` under Docker Compose |
+
+Transport uses authenticated HTTP event POSTs, bounded snapshots, event cursors
+and heartbeat polling. There is no WebSocket or SSE transport yet. A request is
+routed to the registered target instance; only that instance prepares the local
+proposal. Review uses a document-wide write lease and rechecks the target content.
+A lease cannot cancel an already-submitted Word API call: uncertain write outcomes
+are surfaced and blocked from automatic retry. Do not treat this as atomic Word
+transactions or exactly-once document editing.
 
 ### Dev server only (webpack)
 
@@ -792,6 +867,7 @@ for authenticated driver setup and migration.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HOST_PORT` | `3000` | Host-side published port and external manifest port |
+| `COORDINATION_STATE_FILE` | `data/coordination-checkpoint.json` | Checkpoint file inside the `coordination-data` named volume; preserve the volume across recreation |
 
 ## Docker Image
 
@@ -880,9 +956,14 @@ Other projects informed the document-editing approach:
 
 Claric is licensed under the **[MIT License](LICENSE)**.
 
-Specific code vendored from `office-word-diff` is licensed under
-**Apache 2.0**, as detailed in its
-[LICENSE](src/lib/word-diff/LICENSE) and [NOTICE](src/lib/word-diff/NOTICE).
+Files vendored and adapted from `office-word-diff` commit
+`81315f2fae23ba8cf9f40c13bdfd17d0e444d137` retain their **Apache 2.0** attribution.
+The exact upstream-derived files and substantive local modifications are listed in
+[`src/lib/word-diff/NOTICE`](src/lib/word-diff/NOTICE), and the local license is
+[`src/lib/word-diff/LICENSE`](src/lib/word-diff/LICENSE). The pinned upstream
+revision has no `char-diff.js` counterpart or Claric workflow integration;
+the CJK Word adapter uses the separately vendored Apache-2.0 diff-match-patch
+library rather than introducing a new character-diff algorithm.
 These third-party notices do not make the whole project dual-licensed.
 The installer template has separate
 [third-party notices](installer/windows/templates/THIRD-PARTY-NOTICES.md).

@@ -21,9 +21,14 @@ services:
       # to render absolute URLs in the generated manifest.
       PORT: "3000"
       PROTOCOL: "https"
+      COORDINATION_STATE_FILE: "data/coordination-checkpoint.json"
     env_file:
       - .env
     volumes:
+      - coordination-data:/app/data
       - ./server.pem:/app/server.pem:ro
       - ./server-key.pem:/app/server-key.pem:ro
     restart: unless-stopped
+
+volumes:
+  coordination-data:
