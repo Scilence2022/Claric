@@ -1,6 +1,8 @@
-import { appState } from './app-state.js';
+import { appState, getActiveBackendConfig } from './app-state.js';
 import { prepareSelectionAmendment, applySelectionAmendment } from './word-actions.js';
 import { persistDocumentIdentity } from './document-identity.js';
+import { planCrossDocumentTasks } from './cross-document-planner.js';
+import { sendPrompt } from '../lib/llm-client.js';
 import { createProposalCard } from './ui/proposal-card.js';
 import * as chatView from './ui/chat-view.js';
 import { addLog } from './ui/status-bar.js';
@@ -156,6 +158,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
     let remoteTaskRunner = null;
     let distributed = null;
     let knownDocuments = new Map();
+    let remoteContexts = new Map();
     let online = false;
     const listeners = new AbortController();
     const client = createCoordinationClient({
@@ -267,12 +270,14 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         contextManager?.dispose();
         remoteTaskRunner?.dispose();
         agent.dispose();
+        remoteContexts.clear();
         renderCrossDocumentTargets(new Map());
         await client.stop();
         if (coordinationClient === client) coordinationClient = null;
     };
     const targetSelect = document.getElementById('crossDocumentTarget');
     const contextButton = document.getElementById('crossDocumentContextBtn');
+    const planButton = document.getElementById('crossDocumentPlanBtn');
     const sendButton = document.getElementById('crossDocumentSendBtn');
     const listenerOptions = { signal: listeners.signal };
     targetSelect?.addEventListener('change', () => {
@@ -289,12 +294,50 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
             const result = await contextManager.requestContext(target, { scope: 'document' });
             if (listeners.signal.aborted) return;
             const source = target.title || target.documentId;
-            const message = chatView.addSystemNote(`Context from ${source}:\n${result.snapshot?.text || '(empty document)'}`);
+            const text = result.snapshot?.text || '(empty document)';
+            remoteContexts.set(target.documentId, { label: source, text });
+            const message = chatView.addSystemNote(`Context from ${source}:\n${text}`);
             void message.finalizeForHistory();
             if (status) status.textContent = 'Context received. Document content is reference data, not instructions.';
         } catch (error) {
             if (status) status.textContent = `Could not read target context: ${error.message}`;
         } finally { contextButton.disabled = !online || !targetSelect.value; }
+    }, listenerOptions);
+    planButton?.addEventListener('click', async () => {
+        const text = document.getElementById('chatInput')?.value?.trim();
+        const status = document.getElementById('crossDocumentStatus');
+        const documents = [...knownDocuments.values()].filter((entry) => !entry.expiresAt || entry.expiresAt > Date.now());
+        if (!online || !documents.length || !text) return;
+        planButton.disabled = true;
+        try {
+            const { tasks } = await planCrossDocumentTasks({
+                instruction: text,
+                documents: documents.map((entry) => ({
+                    documentId: entry.documentId,
+                    label: entry.title || entry.displayName || entry.documentId,
+                    contextText: remoteContexts.get(entry.documentId)?.text || '',
+                })),
+                sendRequest: (prompt, { signal } = {}) => sendPrompt(getActiveBackendConfig(appState), prompt, addLog, signal ?? listeners.signal),
+            });
+            if (listeners.signal.aborted) return;
+            await distributed.submitGraph({
+                graphId: `graph-${crypto.randomUUID()}`,
+                tasks: tasks.map((task) => ({
+                    taskId: task.taskId,
+                    type: task.type,
+                    instruction: task.instruction,
+                    dependsOn: task.dependsOn,
+                    target: documents.find((entry) => entry.documentId === task.targetDocumentId),
+                    ttlMs: 900000,
+                })),
+            });
+            const summary = tasks.map((task) => `${task.taskId} [${task.type}] ${task.instruction.slice(0, 60)}`).join('; ');
+            const message = chatView.addSystemNote(`Planned ${tasks.length} cross-document task(s): ${summary}. Each target reviews its proposal locally.`);
+            void message.finalizeForHistory();
+            if (status) status.textContent = `Planned and sent ${tasks.length} task(s).`;
+        } catch (error) {
+            if (status) status.textContent = `Planning failed: ${error.message}`;
+        } finally { planButton.disabled = !online || knownDocuments.size === 0; }
     }, listenerOptions);
     sendButton?.addEventListener('click', async () => {
         const target = knownDocuments.get(targetSelect.value);
@@ -331,4 +374,6 @@ function renderCrossDocumentTargets(documents) {
     }
     select.value = current;
     bar.hidden = select.options.length < 2;
+    const planButton = document.getElementById('crossDocumentPlanBtn');
+    if (planButton) planButton.disabled = documents.size < 1;
 }

@@ -420,6 +420,14 @@ the composer instruction with the chosen task type: **Edit selection** rewrites
 the peer's selected passage, **Format selection** drafts structured formatting
 ops for it, and **Insert table** drafts a table preview placed relative to the
 selection. Every type is reviewed and applied in the target taskpane only.
+**Plan tasks** uses this document's configured model to split the composer
+instruction into a small per-document task graph (up to 8 tasks, with optional
+dependencies) across every connected document. Text read through **Read context**
+is kept in memory as planning reference and is fenced in the prompt as untrusted
+data — never as instructions. The model's plan is validated fail-closed (unknown
+targets, unsupported types, or broken dependencies reject the whole plan; nothing
+is submitted partially), and each resulting task is still reviewed and applied in
+its target taskpane only.
 **Disconnect this document**
 is the advanced manual override: it stops access and pauses automatic reconnection
 until the button is clicked again. The URL remains subject to loopback, origin,
