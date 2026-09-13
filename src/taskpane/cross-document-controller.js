@@ -299,14 +299,17 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
     sendButton?.addEventListener('click', async () => {
         const target = knownDocuments.get(targetSelect.value);
         const text = document.getElementById('chatInput')?.value?.trim();
+        const taskType = ['edit', 'format', 'table'].includes(document.getElementById('crossDocumentTaskType')?.value)
+            ? document.getElementById('crossDocumentTaskType').value : 'edit';
         if (!online || !target || target.expiresAt <= Date.now() || !text) return;
         sendButton.disabled = true;
         try {
             await distributed.submitGraph({
                 graphId: `graph-${crypto.randomUUID()}`,
-                tasks: [{ taskId: `task-${crypto.randomUUID()}`, type: 'edit', instruction: text, target, ttlMs: 900000 }],
+                tasks: [{ taskId: `task-${crypto.randomUUID()}`, type: taskType, instruction: text, target, ttlMs: 900000 }],
             });
-            document.getElementById('crossDocumentStatus').textContent = 'Task sent: review the selected passage in the target document.';
+            const statusText = { edit: 'review the selected passage', format: 'review the formatting ops', table: 'review the table preview' }[taskType];
+            document.getElementById('crossDocumentStatus').textContent = `Task sent: ${statusText} in the target document.`;
         } catch (error) {
             document.getElementById('crossDocumentStatus').textContent = `Could not send task: ${error.message}`;
         } finally { sendButton.disabled = !online || !targetSelect.value; }

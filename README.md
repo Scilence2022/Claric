@@ -415,8 +415,12 @@ A temporary service outage does not affect single-document chat: the taskpane us
 bounded background retries, while 401/403 authorization failures stop retries and
 ask for a pairing token. Connected peers may request bounded context and edit tasks;
 changes require review in the target taskpane, regardless of the source's auto-apply
-setting. **Read context** reads the selected peer's document. **Send edit task** sends
-the composer instruction to that peer's selected passage. **Disconnect this document**
+setting. **Read context** reads the selected peer's document. **Send task** sends
+the composer instruction with the chosen task type: **Edit selection** rewrites
+the peer's selected passage, **Format selection** drafts structured formatting
+ops for it, and **Insert table** drafts a table preview placed relative to the
+selection. Every type is reviewed and applied in the target taskpane only.
+**Disconnect this document**
 is the advanced manual override: it stops access and pauses automatic reconnection
 until the button is clicked again. The URL remains subject to loopback, origin,
 HTTPS, server credential, target identity, and token validation.
@@ -455,9 +459,9 @@ path. Later opens reuse the stored identity. Save As / Copy / a moved file is
 detected through the URL-hash mismatch and gets a deterministic fork identity,
 so the original keeps its history and the copy starts fresh. Unsaved or
 unidentified documents stay ephemeral: their history does not survive reload.
-Remote text edit/append adapters exist; the UI
-currently exposes selection editing, not all local table/image/format workflows.
-Real multi-window Word acceptance and full cross-document planning are not yet
+Remote edit/append/format/table adapters exist; comments and illustrations
+still require the local in-document workflow. Real multi-window Word acceptance
+and full cross-document planning are not yet
 verified.
 
 ### Route-specific notes

@@ -1,8 +1,11 @@
 import {
     readCursorContext, prepareSelectionAmendment, applySelectionAmendment,
     prepareDocumentAppend, applyDocumentAppend,
+    prepareFormatProposal, applyFormatProposal, discardFormatProposal,
+    prepareTableProposal, applyTableProposal,
 } from './word-actions.js';
 import { extractDocumentStructured, estimateTokenCount } from '../lib/comment-extractor.js';
+import { describeFormatOp } from '../lib/format-ops.js';
 
 const DEFAULT_MAX_CHARS = 12000;
 const DEFAULT_MAX_TOKENS = 3000;
@@ -18,6 +21,10 @@ function prefix(text, length) {
 }
 function limit(value, fallback) {
     return Number.isSafeInteger(value) && value > 0 ? Math.min(value, fallback) : fallback;
+}
+function tablePreview(rows, maxChars) {
+    const lines = rows.map((row) => `| ${row.map((cell) => String(cell ?? '').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim()).join(' | ')} |`);
+    return prefix(lines.join('\n'), maxChars);
 }
 function boundedText(text, maxChars, maxTokens) {
     let result = prefix(text, maxChars);
@@ -61,10 +68,22 @@ export function createDocumentAgent({ identity, actions = {}, appState = {}, log
     const applySelection = actions.applySelectionAmendment || applySelectionAmendment;
     const prepareAppend = actions.prepareDocumentAppend || prepareDocumentAppend;
     const applyAppend = actions.applyDocumentAppend || applyDocumentAppend;
+    const prepareFormat = actions.prepareFormatProposal || prepareFormatProposal;
+    const applyFormat = actions.applyFormatProposal || applyFormatProposal;
+    const discardFormat = actions.discardFormatProposal || discardFormatProposal;
+    const prepareTable = actions.prepareTableProposal || prepareTableProposal;
+    const applyTable = actions.applyTableProposal || applyTableProposal;
     const preparedTasks = new Map();
     const deps = { appState, log };
     let disposed = false;
     let busy = false;
+
+    const KINDS = {
+        edit: { scope: 'selection', itemId: 'text-1', label: 'Selected passage', title: 'Proposed passage edit' },
+        append: { scope: 'document', itemId: 'text-1', label: 'New content', title: 'Proposed appended content' },
+        format: { scope: 'selection', itemId: 'format-1', label: 'Formatting changes', title: 'Proposed formatting' },
+        table: { scope: 'selection', itemId: 'table-1', label: 'New table', title: 'Proposed table insertion' },
+    };
 
     function check(signal) {
         aborted(signal);
@@ -88,7 +107,7 @@ export function createDocumentAgent({ identity, actions = {}, appState = {}, log
     }
     function getCapabilities() {
         return { readContext: true, readSelection: true, readCursor: true, readDocument: true, readOutline: true,
-            prepareProposal: true, applyProposal: true, taskTypes: ['edit', 'append'] };
+            prepareProposal: true, applyProposal: true, taskTypes: Object.keys(KINDS) };
     }
     async function readContext(request = {}, { signal } = {}) {
         const scope = request.scope || 'selection';
@@ -123,27 +142,46 @@ export function createDocumentAgent({ identity, actions = {}, appState = {}, log
             if (preparedTasks.has(task.taskId)) throw fail('DUPLICATE_TASK', 'Task was already prepared');
             if (preparedTasks.size >= MAX_PREPARED_TASKS) throw fail('CAPACITY', 'Review or discard pending proposals first');
             const kind = task.taskType || task.type;
-            if (!['edit', 'append'].includes(kind)) throw fail('UNSUPPORTED_TASK', `Unsupported remote task type: ${kind}`);
-            const scope = kind === 'append' ? 'document' : 'selection';
+            const config = KINDS[kind];
+            if (!config) throw fail('UNSUPPORTED_TASK', `Unsupported remote task type: ${kind}`);
+            const scope = config.scope;
             if (task.scope && task.scope !== scope) throw fail('UNSUPPORTED_SCOPE', `Task requires ${scope} scope`);
             const original = await read(scope, signal);
-            if (kind === 'edit' && !original.trim()) throw fail('EMPTY_SELECTION', 'Select the target passage before requesting an edit');
+            if (['edit', 'format'].includes(kind) && !original.trim()) throw fail('EMPTY_SELECTION', 'Select the target passage before requesting an edit');
             const baseRevision = await revisionFor({ documentId: owner.documentId, scope, text: original }, cryptoImpl);
-            const proposal = kind === 'edit'
-                ? await prepareSelection(deps, { promptTemplate: instruction, signal })
-                : await prepareAppend(deps, { instruction, signal });
-            check(signal);
-            if (!proposal || proposal.tablePatch || proposal.mixedTable) throw fail('UNSUPPORTED_PROPOSAL', 'This remote task requires the local structured-edit workflow');
-            if (await getDocumentRevision(scope, { signal }) !== baseRevision) throw fail('STALE', 'Document changed while preparing the proposal');
-            const before = kind === 'edit' ? proposal.selectionText : '';
-            const after = kind === 'edit' ? proposal.amendedText : proposal.generatedText;
-            if (typeof before !== 'string' || typeof after !== 'string' || !after.trim() || before === after) throw fail('NO_CHANGES', 'The model proposed no text changes');
+            let proposal;
+            let before = '';
+            let after = '';
+            if (kind === 'edit') {
+                proposal = await prepareSelection(deps, { promptTemplate: instruction, signal });
+                check(signal);
+                if (!proposal || proposal.tablePatch || proposal.mixedTable) throw fail('UNSUPPORTED_PROPOSAL', 'This remote task requires the local structured-edit workflow');
+                before = proposal.selectionText;
+                after = proposal.amendedText;
+            } else if (kind === 'append') {
+                proposal = await prepareAppend(deps, { instruction, signal });
+                check(signal);
+                after = proposal?.generatedText;
+            } else if (kind === 'format') {
+                proposal = await prepareFormat(deps, { instruction, scope: 'selection', selectionText: original, signal });
+                check(signal);
+                if (!proposal || !Array.isArray(proposal.ops) || !proposal.ops.length) throw fail('NO_CHANGES', 'The model proposed no formatting changes');
+                before = original;
+                after = proposal.ops.map((op) => describeFormatOp(op)).join('\n');
+            } else {
+                proposal = await prepareTable(deps, { instruction, signal });
+                check(signal);
+                if (!proposal || !Array.isArray(proposal.spec?.rows) || !proposal.spec.rows.length || !Array.isArray(proposal.spec.rows[0])) throw fail('NO_CHANGES', 'The model proposed no table content');
+                after = tablePreview(proposal.spec.rows, MAX_PROPOSAL_TEXT);
+            }
+            if (typeof before !== 'string' || typeof after !== 'string' || !after.trim() || before === after) throw fail('NO_CHANGES', 'The model proposed no changes');
             if (before.length > MAX_PROPOSAL_TEXT || after.length > MAX_PROPOSAL_TEXT) throw fail('PROPOSAL_TOO_LARGE', 'This proposal exceeds the remote review limit; use a smaller passage');
+            if (await getDocumentRevision(scope, { signal }) !== baseRevision) throw fail('STALE', 'Document changed while preparing the proposal');
             const expiresAt = clock() + 15 * 60 * 1000;
-            preparedTasks.set(task.taskId, { proposal, baseRevision, kind, scope, expiresAt, attempted: false });
-            return { taskId: task.taskId, kind, scope, title: kind === 'edit' ? 'Proposed passage edit' : 'Proposed appended content',
+            preparedTasks.set(task.taskId, { proposal, baseRevision, kind, scope, itemId: config.itemId, expiresAt, attempted: false });
+            return { taskId: task.taskId, kind, scope, title: config.title,
                 summary: instruction.slice(0, 240), baseRevision, expiresAt,
-                items: [{ id: 'text-1', label: kind === 'edit' ? 'Selected passage' : 'New content', before, after }] };
+                items: [{ id: config.itemId, label: config.label, before, after }] };
         }, signal);
     }
     async function applyProposal(selectedItemIds, record = {}, { signal } = {}) {
@@ -153,17 +191,32 @@ export function createDocumentAgent({ identity, actions = {}, appState = {}, log
             if (!prepared) throw fail('PROPOSAL_RUNTIME_MISSING', 'Target-local prepared proposal is unavailable');
             if (prepared.attempted) throw fail('ALREADY_ATTEMPTED', 'A write was already attempted; inspect the document before generating a new proposal');
             if (prepared.expiresAt <= clock()) throw fail('EXPIRED', 'Proposal has expired');
-            if (!Array.isArray(selectedItemIds) || selectedItemIds.length !== 1 || String(selectedItemIds[0]) !== 'text-1') throw fail('INVALID_ITEMS', 'Select the prepared text change');
+            if (!Array.isArray(selectedItemIds) || selectedItemIds.length !== 1 || String(selectedItemIds[0]) !== prepared.itemId) throw fail('INVALID_ITEMS', 'Select the prepared change');
             if (record.baseRevision !== prepared.baseRevision || await getDocumentRevision(prepared.scope, { signal }) !== prepared.baseRevision) throw fail('STALE', 'Document changed since preparation');
             check(signal);
             prepared.attempted = true;
-            const result = await (prepared.kind === 'edit' ? applySelection : applyAppend)(deps, prepared.proposal);
+            const apply = { edit: applySelection, append: applyAppend, format: applyFormat, table: applyTable }[prepared.kind];
+            const result = await apply(deps, prepared.proposal);
             if (result?.skipped || result?.interrupted || result?.errors?.length) throw fail('WRITE_NOT_COMPLETED', result.reason || 'Word did not finish applying the proposal');
-            return { appliedItemIds: ['text-1'], documentRevision: await getDocumentRevision(prepared.scope), result };
+            return { appliedItemIds: [prepared.itemId], documentRevision: await getDocumentRevision(prepared.scope), result };
         }, signal);
     }
-    function discardProposal(record) { preparedTasks.delete(typeof record === 'string' ? record : record?.taskId); }
-    function dispose() { disposed = true; preparedTasks.clear(); }
+    async function discardPrepared(taskId) {
+        const prepared = preparedTasks.get(taskId);
+        if (!prepared) return;
+        preparedTasks.delete(taskId);
+        // Format preparation anchors its scope with a bookmark; remove it so a
+        // rejected or expired proposal leaves no markup behind.
+        if (prepared.kind === 'format' && !prepared.attempted) {
+            try { await discardFormat(deps, prepared.proposal); }
+            catch (error) { log(`Remote format cleanup failed: ${error.message}`, 'warning'); }
+        }
+    }
+    function discardProposal(record) { void discardPrepared(typeof record === 'string' ? record : record?.taskId); }
+    function dispose() {
+        disposed = true;
+        for (const taskId of [...preparedTasks.keys()]) void discardPrepared(taskId);
+    }
     return Object.freeze({ getCapabilities, getDocumentRevision, readContext, prepareTask, applyProposal, discardProposal, dispose });
 }
 export { DEFAULT_MAX_CHARS, DEFAULT_MAX_TOKENS };

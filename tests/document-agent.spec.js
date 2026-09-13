@@ -78,4 +78,63 @@ describe('document agent', () => {
         await expect(agent.readContext({}, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
         expect(read).not.toHaveBeenCalled();
     });
+
+    test('prepares and applies a remote format task and cleans its anchor on discard', async () => {
+        const proposal = { ops: [{ match: 'Quarterly', font: { bold: true } }], anchor: { bookmark: '_claric_fmt_x', text: 'Quarterly report' } };
+        const prepare = jest.fn(async () => proposal);
+        const apply = jest.fn(async () => ({ applied: true, appliedRanges: 1, insertedParagraphs: 0 }));
+        const discard = jest.fn(async () => {});
+        const agent = create({ actions: {
+            readSelectionContent: async () => ({ text: 'Quarterly report' }),
+            prepareFormatProposal: prepare, applyFormatProposal: apply, discardFormatProposal: discard,
+        } });
+        const record = await agent.prepareTask({ taskId: 'fmt-1', taskType: 'format', instruction: 'Make the title bold' });
+        expect(prepare).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ instruction: 'Make the title bold', scope: 'selection', selectionText: 'Quarterly report' }));
+        expect(record.items[0].id).toBe('format-1');
+        expect(record.items[0].after).toContain('bold');
+        expect(record.items[0].before).toBe('Quarterly report');
+        record.target = identity;
+        const result = await agent.applyProposal(['format-1'], record);
+        expect(result.appliedItemIds).toEqual(['format-1']);
+        expect(apply).toHaveBeenCalledTimes(1);
+        expect(discard).not.toHaveBeenCalled();
+
+        const second = await agent.prepareTask({ taskId: 'fmt-2', taskType: 'format', instruction: 'Italicize' });
+        agent.discardProposal(second);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(discard).toHaveBeenCalledTimes(1);
+        expect(agent.getCapabilities().taskTypes).toEqual(['edit', 'append', 'format', 'table']);
+    });
+
+    test('prepares and applies a remote table task with a bounded preview', async () => {
+        const spec = { position: 'after', headerRowCount: 1, autoFit: true, rows: [['Name', 'Amount'], ['Alice', '10'], ['Bob', '20']] };
+        const prepare = jest.fn(async () => ({ instruction: 'budget table', spec, model: 'm', warnings: [] }));
+        const apply = jest.fn(async () => ({ inserted: true, rowCount: 3, columnCount: 2, tracked: false, warnings: [] }));
+        const agent = create({ actions: {
+            readSelectionContent: async () => ({ text: '' }),
+            prepareTableProposal: prepare, applyTableProposal: apply,
+        } });
+        const record = await agent.prepareTask({ taskId: 'tbl-1', taskType: 'table', instruction: 'Insert a budget table' });
+        expect(prepare).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ instruction: 'Insert a budget table' }));
+        expect(record.items[0].id).toBe('table-1');
+        expect(record.items[0].before).toBe('');
+        expect(record.items[0].after).toContain('| Name | Amount |');
+        expect(JSON.parse(JSON.stringify(record))).toEqual(record);
+        record.target = identity;
+        await expect(agent.applyProposal(['text-1'], record)).rejects.toMatchObject({ code: 'INVALID_ITEMS' });
+        const result = await agent.applyProposal(['table-1'], record);
+        expect(result.appliedItemIds).toEqual(['table-1']);
+        expect(apply).toHaveBeenCalledTimes(1);
+    });
+
+    test('rejects empty format ops and malformed table specs without preparing a write', async () => {
+        const agent = create({ actions: {
+            readSelectionContent: async () => ({ text: 'Some text' }),
+            prepareFormatProposal: async () => ({ ops: [], anchor: { bookmark: '_claric_fmt_y', text: 'Some text' } }),
+            prepareTableProposal: async () => ({ instruction: 'x', spec: { rows: [] }, model: 'm', warnings: [] }),
+        } });
+        await expect(agent.prepareTask({ taskId: 'fmt-empty', taskType: 'format', instruction: 'Nothing' })).rejects.toMatchObject({ code: 'NO_CHANGES' });
+        await expect(agent.prepareTask({ taskId: 'tbl-empty', taskType: 'table', instruction: 'Nothing' })).rejects.toMatchObject({ code: 'NO_CHANGES' });
+        await expect(agent.applyProposal(['format-1'], { taskId: 'fmt-empty', target: identity })).rejects.toMatchObject({ code: 'PROPOSAL_RUNTIME_MISSING' });
+    });
 });

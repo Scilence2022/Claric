@@ -61,7 +61,12 @@
                 <option value="">Current document</option>
             </select>
             <button id="crossDocumentContextBtn" type="button" class="btn btn-compact" disabled>Read context</button>
-            <button id="crossDocumentSendBtn" type="button" class="btn btn-compact" disabled>Send edit task</button>
+            <select id="crossDocumentTaskType" aria-label="Cross-document task type">
+                <option value="edit">Edit selection</option>
+                <option value="format">Format selection</option>
+                <option value="table">Insert table</option>
+            </select>
+            <button id="crossDocumentSendBtn" type="button" class="btn btn-compact" disabled>Send task</button>
             <span id="crossDocumentStatus" class="help-text" role="status"></span>
         </section>
 
