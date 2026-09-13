@@ -163,4 +163,159 @@ describe('coordination browser client', () => {
     expect(snapshots.at(-1).documents).toEqual(expect.arrayContaining([expect.objectContaining({ documentId: 'b' })]));
     await transport.stop();
   });
+
+  describe('v2 event stream (sse mode)', () => {
+    const encoder = new TextEncoder();
+    const issued = { workspaceId: 'w', documentId: 'a', instanceId: 'srv-a' };
+    const other = { workspaceId: 'w', documentId: 'b', instanceId: 'srv-b' };
+    const sseData = (obj, eventName = '') => encoder.encode(`${eventName ? `event: ${eventName}\n` : ''}data: ${JSON.stringify(obj)}\n\n`);
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const blockingReader = (chunks) => {
+      let index = 0;
+      return { read: jest.fn(() => (index < chunks.length ? Promise.resolve({ done: false, value: chunks[index++] }) : new Promise(() => {}))) };
+    };
+    const endingReader = (chunks) => {
+      let index = 0;
+      return { read: jest.fn(async () => (index < chunks.length ? { done: false, value: chunks[index++] } : { done: true, value: undefined })) };
+    };
+    let timers;
+    let errors;
+    const timerImpls = () => ({
+      setIntervalImpl: (fn) => { timers.interval = fn; return 1; },
+      clearIntervalImpl: () => { timers.interval = null; },
+      setTimeoutImpl: (fn, delay) => { timers.timeouts.push({ fn, delay }); return timers.timeouts.length; },
+      clearTimeoutImpl: () => {},
+    });
+    const v2Fetch = ({ snapshot, stream, calls }) => async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith('/instances/register')) return { ok: true, status: 201, json: async () => ({ credential: 'cred', identity: issued, expiresAt: 200000 }) };
+      if (url.endsWith('/snapshot')) return { ok: true, status: 200, json: async () => snapshot() };
+      if (url.includes('/events/stream')) return stream(options);
+      if (url.includes('/events?')) return { ok: true, status: 200, json: async () => ({ epoch: 'ep', cursor: 6, events: [] }) };
+      return { ok: true, status: 201, json: async () => ({ event: options.body ? JSON.parse(options.body) : {} }) };
+    };
+    const sseTransport = (fetchImpl, handlers = {}) => createV2CoordinationTransport({
+      fetchImpl, clock: () => 100000, mode: 'sse', requestTimeoutMs: 60000, ...timerImpls(),
+      onError: (error) => errors.push(error), ...handlers,
+    });
+    beforeEach(() => {
+      timers = { interval: null, timeouts: [] };
+      errors = [];
+    });
+
+    test('streams events in real time and ticks discovery only while the stream is live', async () => {
+      const events = [];
+      const calls = [];
+      const fetchImpl = v2Fetch({
+        calls,
+        snapshot: () => ({ version: 2, workspaceId: 'w', epoch: 'ep', cursor: 4, documents: [] }),
+        stream: async () => ({ ok: true, status: 200, body: { getReader: () => blockingReader([
+          sseData({ epoch: 'ep', cursor: 5, events: [] }),
+          sseData({ epoch: 'ep', cursor: 6, events: [{ sequence: 6, source: other, target: issued, type: 'task.submit', payload: { taskId: 't1' } }] }),
+          sseData({ epoch: 'ep', cursor: 6, events: [{ sequence: 6, source: other, target: issued, type: 'task.submit', payload: { taskId: 't1-duplicate' } }] }),
+        ]) } }),
+      });
+      const transport = sseTransport(fetchImpl, { onEvents: (batch) => events.push(...batch) });
+      await transport.start({ workspaceId: 'w', documentId: 'a' });
+      await flush();
+      expect(transport.streaming).toBe(true);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: 'task.submit', payload: { taskId: 't1' } });
+      expect(transport.cursor).toBe(6);
+      expect(errors).toHaveLength(0);
+
+      calls.length = 0;
+      timers.interval();
+      await flush();
+      expect(calls.some(({ url }) => url.endsWith('/snapshot'))).toBe(true);
+      expect(calls.some(({ url }) => url.endsWith('/envelopes'))).toBe(true);
+      expect(calls.some(({ url }) => url.includes('/events?'))).toBe(false);
+      await transport.stop();
+    });
+
+    test('falls back to full polling when the server has no event stream', async () => {
+      const calls = [];
+      const fetchImpl = v2Fetch({
+        calls,
+        snapshot: () => ({ version: 2, workspaceId: 'w', epoch: 'ep', cursor: 4, documents: [] }),
+        stream: async () => ({ ok: false, status: 404, json: async () => ({ error: 'Not found' }) }),
+      });
+      const transport = sseTransport(fetchImpl);
+      await transport.start({ workspaceId: 'w', documentId: 'a' });
+      await flush();
+      expect(transport.streaming).toBe(false);
+      expect(errors.some((error) => String(error.message).includes('using polling'))).toBe(true);
+
+      calls.length = 0;
+      timers.interval();
+      await flush();
+      expect(calls.some(({ url }) => url.includes('/events?after=4&epoch=ep'))).toBe(true);
+      expect(transport.cursor).toBe(6);
+      expect(timers.timeouts.some(({ delay }) => delay !== 60000)).toBe(false);
+      await transport.stop();
+    });
+
+    test('re-snapshots when the stream sends a resync frame', async () => {
+      const calls = [];
+      let snapshotCount = 0;
+      const fetchImpl = v2Fetch({
+        calls,
+        snapshot: () => ({ version: 2, workspaceId: 'w', epoch: 'ep', cursor: snapshotCount++ ? 9 : 4, documents: [] }),
+        stream: async () => ({ ok: true, status: 200, body: { getReader: () => blockingReader([sseData({ reason: 'cursor-expired' }, 'resync')]) } }),
+      });
+      const transport = sseTransport(fetchImpl);
+      await transport.start({ workspaceId: 'w', documentId: 'a' });
+      await flush();
+      expect(snapshotCount).toBe(2);
+      expect(transport.cursor).toBe(9);
+      await transport.stop();
+    });
+
+    test('aborts the stream on stop without scheduling a reconnect', async () => {
+      const calls = [];
+      let streamSignal;
+      const fetchImpl = v2Fetch({
+        calls,
+        snapshot: () => ({ version: 2, workspaceId: 'w', epoch: 'ep', cursor: 4, documents: [] }),
+        stream: async (options) => { streamSignal = options.signal; return { ok: true, status: 200, body: { getReader: () => blockingReader([]) } }; },
+      });
+      const transport = sseTransport(fetchImpl);
+      await transport.start({ workspaceId: 'w', documentId: 'a' });
+      await flush();
+      expect(transport.streaming).toBe(true);
+      await transport.stop();
+      expect(streamSignal.aborted).toBe(true);
+      expect(timers.timeouts.some(({ delay }) => delay !== 60000)).toBe(false);
+    });
+
+    test('reconnects with the current cursor when the stream closes', async () => {
+      const events = [];
+      const calls = [];
+      const streamUrls = [];
+      let streamCount = 0;
+      const fetchImpl = v2Fetch({
+        calls,
+        snapshot: () => ({ version: 2, workspaceId: 'w', epoch: 'ep', cursor: 4, documents: [] }),
+        stream: async () => {
+          streamUrls.push(calls[calls.length - 1].url);
+          streamCount += 1;
+          return streamCount === 1
+            ? { ok: true, status: 200, body: { getReader: () => endingReader([sseData({ epoch: 'ep', cursor: 5, events: [{ sequence: 5, source: other, target: issued, type: 'task.submit', payload: { taskId: 't2' } }] })]) } }
+            : { ok: true, status: 200, body: { getReader: () => blockingReader([]) } };
+        },
+      });
+      const transport = sseTransport(fetchImpl, { onEvents: (batch) => events.push(...batch) });
+      await transport.start({ workspaceId: 'w', documentId: 'a' });
+      await flush();
+      expect(events).toHaveLength(1);
+      expect(transport.streaming).toBe(false);
+      const reconnect = timers.timeouts.find(({ delay }) => delay !== 60000);
+      expect(reconnect).toBeTruthy();
+      reconnect.fn();
+      await flush();
+      expect(streamUrls[1]).toContain('/events/stream?after=5&epoch=ep');
+      expect(transport.streaming).toBe(true);
+      await transport.stop();
+    });
+  });
 });

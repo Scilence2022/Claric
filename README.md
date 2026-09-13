@@ -852,7 +852,11 @@ provider paths by default; example files may opt into routes explicitly.
 | `COORDINATION_STATE_FILE` | empty | Optional checkpoint path; use `data/coordination-checkpoint.json` under Docker Compose |
 
 Transport uses authenticated HTTP event POSTs, bounded snapshots, event cursors
-and heartbeat polling. There is no WebSocket or SSE transport yet. A request is
+and heartbeats. Task, context, and proposal events are pushed to each taskpane
+over a server-sent events stream (`GET /coordination/v2/events/stream`) with
+cursor-ordered resume; when the server or webview cannot stream, the client
+falls back to interval polling automatically, and document discovery still
+refreshes at that interval. There is no WebSocket transport. A request is
 routed to the registered target instance; only that instance prepares the local
 proposal. Review uses a document-wide write lease and rechecks the target content.
 A lease cannot cancel an already-submitted Word API call: uncertain write outcomes

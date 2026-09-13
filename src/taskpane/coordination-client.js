@@ -146,7 +146,7 @@ export function createV2CoordinationTransport({
     requestTimeoutMs = 15000, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
     onSnapshot = () => {}, onEvents = () => {}, onError = () => {}, mode = 'polling', clock = Date.now,
 } = {}) {
-    if (mode !== 'polling' && mode !== 'websocket') throw new Error(`Unsupported coordination transport: ${mode}`);
+    if (mode !== 'polling' && mode !== 'websocket' && mode !== 'sse') throw new Error(`Unsupported coordination transport: ${mode}`);
     let credential = '';
     let identity = null;
     let expiresAt = null;
@@ -158,8 +158,14 @@ export function createV2CoordinationTransport({
     let polling = null;
     let starting = null;
     let ticking = null;
+    let streamController = null;
+    let streamActive = false;
+    let streamUnsupported = false;
+    let streamRetry = 0;
+    let streamTimer = null;
     const requests = new Set();
     const root = baseUrl.replace(/\/$/, '');
+    const STREAM_RETRY_DELAYS_MS = [500, 1000, 2000, 5000, 10000];
 
     async function request(path, body, registering = false, signal) {
         if (typeof fetchImpl !== 'function') throw new Error('Coordination fetch is unavailable');
@@ -291,15 +297,119 @@ export function createV2CoordinationTransport({
         if (!polling) polling = pollOnce().finally(() => { polling = null; });
         return polling;
     }
+    async function discover() {
+        if (stopped || cursor === null) return null;
+        try {
+            const discovery = await refreshDiscovery(cursor, epoch);
+            if (discovery.epochChanged) return recover(discovery.snapshot);
+            if (!stopped) await onSnapshot(discovery.snapshot);
+            return snapshot;
+        } catch (error) {
+            if (!stopped) onError(error);
+            return null;
+        }
+    }
+    async function handleStreamFrame(frame) {
+        let eventName = 'message';
+        const dataLines = [];
+        for (const line of frame.split('\n')) {
+            if (!line || line.startsWith(':')) continue;
+            if (line.startsWith('event:')) eventName = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+        }
+        if (!dataLines.length) return;
+        if (eventName === 'resync') { await recover(await getSnapshot()); return; }
+        let result;
+        try { result = JSON.parse(dataLines.join('\n')); }
+        catch { onError(new Error('Invalid coordination event stream frame')); return; }
+        if (!result || result.epoch !== epoch) { await recover(await getSnapshot()); return; }
+        if (!Number.isSafeInteger(result.cursor) || result.cursor <= cursor || !Array.isArray(result.events)) return;
+        const events = result.events.filter((event) => sameParty(event.source, identity) || sameParty(event.target, identity));
+        if (!stopped && events.length) await onEvents(events);
+        updateCursor(result);
+        snapshot = { ...snapshot, cursor, epoch, sequence: cursor, events };
+    }
+    async function readStream(reader, controller) {
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) return;
+            buffer += decoder.decode(value, { stream: true });
+            let index = buffer.indexOf('\n\n');
+            while (index >= 0) {
+                const frame = buffer.slice(0, index);
+                buffer = buffer.slice(index + 2);
+                await handleStreamFrame(frame);
+                if (stopped || controller.signal.aborted) return;
+                index = buffer.indexOf('\n\n');
+            }
+        }
+    }
+    function scheduleStreamReconnect() {
+        if (streamTimer !== null || stopped || streamUnsupported || mode !== 'sse') return;
+        const delay = STREAM_RETRY_DELAYS_MS[Math.min(streamRetry, STREAM_RETRY_DELAYS_MS.length - 1)];
+        streamRetry += 1;
+        streamTimer = setTimeoutImpl(() => { streamTimer = null; void openStream(); }, delay);
+    }
+    async function openStream() {
+        if (stopped || streamUnsupported || mode !== 'sse' || cursor === null || streamController) return;
+        const controller = new AbortController();
+        streamController = controller;
+        try {
+            const response = await fetchImpl(`${root}/v2/events/stream?after=${cursor}&epoch=${encodeURIComponent(epoch)}`, {
+                headers: { ...(credential ? { Authorization: `Bearer ${credential}` } : {}) }, signal: controller.signal,
+            });
+            if (!response.ok) {
+                if ([404, 405, 501].includes(response.status)) {
+                    streamUnsupported = true;
+                    onError(Object.assign(new Error(`Coordination event stream unavailable (${response.status}); using polling`), { status: response.status }));
+                    return;
+                }
+                if (response.status === 410) await recover(await getSnapshot());
+                else throw Object.assign(new Error(`Coordination request failed (${response.status})`), { status: response.status });
+                return;
+            }
+            const reader = response.body && typeof response.body.getReader === 'function' ? response.body.getReader() : null;
+            if (!reader) {
+                streamUnsupported = true;
+                onError(new Error('Coordination event stream unsupported; using polling'));
+                return;
+            }
+            streamRetry = 0;
+            streamActive = true;
+            await readStream(reader, controller);
+        } catch (error) {
+            if (stopped || controller.signal.aborted) return;
+            onError(error);
+        } finally {
+            streamActive = false;
+            streamController = null;
+            if (!stopped && !controller.signal.aborted) scheduleStreamReconnect();
+        }
+    }
+    function resetStream() {
+        if (streamTimer !== null && typeof clearTimeoutImpl === 'function') clearTimeoutImpl(streamTimer);
+        streamTimer = null;
+        if (streamController) streamController.abort();
+        streamController = null;
+        streamActive = false;
+    }
     async function heartbeat() {
         if (!stopped && identity && credential) await publishEnvelope({ type: 'document.heartbeat', target: identity, payload: {} });
     }
     async function tick() {
-        if (!ticking) ticking = Promise.all([heartbeat().catch(onError), poll()]).finally(() => { ticking = null; });
+        if (!ticking) {
+            // With a live event stream the interval only heartbeats and
+            // refreshes discovery; without one it falls back to a full poll.
+            const work = mode === 'sse' && streamActive ? discover() : poll();
+            ticking = Promise.all([heartbeat().catch(onError), work]).finally(() => { ticking = null; });
+        }
         return ticking;
     }
     async function startSession(localIdentity) {
         stopPolling();
+        resetStream();
         stopped = false;
         credential = ''; identity = null; expiresAt = null; cursor = null; epoch = null; snapshot = null;
         const registration = await request('/instances/register', { workspaceId: localIdentity.workspaceId, documentId: localIdentity.documentId }, true);
@@ -314,16 +424,18 @@ export function createV2CoordinationTransport({
         if (!stopped) {
             await recover(fresh);
             if (typeof setIntervalImpl === 'function') timer = setIntervalImpl(() => { void tick(); }, Math.min(intervalMs, 20000));
+            if (mode === 'sse') void openStream();
         }
         return identity;
     }
     function start(localIdentity) {
         if (!stopped && identity && !starting) return Promise.resolve(identity);
-        if (!starting) starting = startSession(localIdentity).catch((error) => { stopped = true; stopPolling(); credential = ''; identity = null; throw error; }).finally(() => { starting = null; });
+        if (!starting) starting = startSession(localIdentity).catch((error) => { stopped = true; stopPolling(); resetStream(); credential = ''; identity = null; throw error; }).finally(() => { starting = null; });
         return starting;
     }
     async function stop() {
         stopPolling();
+        resetStream();
         const leaving = !stopped && credential && identity;
         stopped = true;
         for (const controller of requests) controller.abort();
@@ -344,12 +456,13 @@ export function createV2CoordinationTransport({
         version: PROTOCOL_V2,
         get identity() { return identity; }, get expiresAt() { return expiresAt; },
         get cursor() { return cursor; }, get epoch() { return epoch; }, get timer() { return timer; },
+        get streaming() { return streamActive; },
     };
 }
 
 export function createCoordinationClient(options = {}) {
     const localIdentity = options.identity || createCoordinationIdentity(options);
-    let transport = options.transport || createV2CoordinationTransport(options);
+    let transport = options.transport || createV2CoordinationTransport({ mode: 'sse', ...options });
     let lastLogKey = '';
     let stopped = false;
     const onSnapshot = options.onSnapshot || (() => {});

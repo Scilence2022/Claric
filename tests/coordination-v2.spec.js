@@ -76,6 +76,39 @@ describe('coordination v2 state', () => {
         const snapshot = state.snapshot(a.credential, binding);
         expect(state.events(a.credential, binding, 0, snapshot.epoch).events).toHaveLength(1);
     });
+
+    test('publishes committed appends to workspace subscribers only', () => {
+        const seen = [];
+        const other = [];
+        const unsubscribe = state.subscribe('workspace-a', (event) => seen.push(event));
+        state.subscribe('workspace-b', (event) => other.push(event));
+        const event = envelope(a.identity, b.identity, EVENT_TYPES.CONTEXT_REQUEST, { requestId: 'request-3', scope: 'document' }, 'publish');
+        const appended = state.append(event, a.credential, binding);
+        expect(seen).toEqual([appended]);
+        expect(other).toHaveLength(0);
+        expect(state.epoch).toBe(state.cursors.epoch);
+        unsubscribe();
+        state.append(envelope(a.identity, b.identity, EVENT_TYPES.CONTEXT_REQUEST, { requestId: 'request-4', scope: 'document' }, 'after-unsubscribe'), a.credential, binding);
+        expect(seen).toHaveLength(1);
+    });
+
+    test('does not publish rolled-back appends and survives listener failures', () => {
+        const seen = [];
+        state.subscribe('workspace-a', () => { throw new Error('listener bug'); });
+        state.subscribe('workspace-a', (event) => seen.push(event));
+        const committed = state.append(envelope(a.identity, b.identity, EVENT_TYPES.CONTEXT_REQUEST, { requestId: 'request-5', scope: 'document' }, 'committed'), a.credential, binding);
+        expect(seen).toEqual([committed]);
+        const duplicate = envelope(a.identity, b.identity, EVENT_TYPES.CONTEXT_REQUEST, { requestId: 'request-5', scope: 'document' }, 'duplicate');
+        expect(() => state.append(duplicate, a.credential, binding)).toThrow('Record already exists');
+        expect(seen).toHaveLength(1);
+    });
+
+    test('caps workspace subscribers', () => {
+        const limited = new CoordinationState({ clock: () => now, maxSubscribers: 1 });
+        limited.register({ workspaceId: 'workspace-c', documentId: 'document-c' }, binding);
+        limited.subscribe('workspace-c', () => {});
+        expect(() => limited.subscribe('workspace-c', () => {})).toThrow('Subscriber capacity reached');
+    });
 });
 
 describe('coordination persistence', () => {
