@@ -30,7 +30,7 @@ describe('remote tasks through real HTTP v2', () => {
             const client = createCoordinationClient({
                 identity: { workspaceId: 'w', documentId, instanceId: 'untrusted-local' },
                 baseUrl: `http://127.0.0.1:${server.address().port}/coordination`, clock: () => now,
-                setIntervalImpl: null,
+                setIntervalImpl: null, mode: 'polling',
                 fetchImpl: async (url, options = {}) => {
                     const envelope = options.body ? JSON.parse(options.body) : null;
                     if (envelope?.type) captured.push(envelope);

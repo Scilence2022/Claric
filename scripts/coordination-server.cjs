@@ -9,6 +9,23 @@ const { CoordinationState } = require('../src/lib/coordination/state.cjs');
 const { normalizeId } = require('../src/lib/coordination/identity.cjs');
 
 const MAX_BODY_BYTES = 128 * 1024;
+const SSE_KEEPALIVE_MS = 25000;
+function sameParty(a, b) {
+  return !!a && !!b && ['workspaceId', 'documentId', 'instanceId'].every((field) => a[field] === b[field]);
+}
+function sseHeaders(res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+}
+function sseFrame(res, data, eventName = '') {
+  if (res.writableEnded || res.destroyed) return;
+  res.write(`${eventName ? `event: ${eventName}\n` : ''}data: ${JSON.stringify(data)}\n\n`);
+}
 function isLoopback(address) {
   if (address === '::1') return true;
   const ipv4 = String(address || '').replace(/^::ffff:/i, '');
@@ -77,12 +94,13 @@ function createCoordinationHandler({ store = new CoordinationStore(), state, per
       '/coordination/v2/instances/register': 'POST',
       '/coordination/v2/snapshot': 'GET',
       '/coordination/v2/events': 'GET',
+      '/coordination/v2/events/stream': 'GET',
       '/coordination/v2/envelopes': 'POST',
     }[url.pathname];
     if (!method) return json(res, 404, { error: 'Not found' });
     const params = [...url.searchParams.keys()];
     const expectedParams = url.pathname === '/coordination/snapshot' ? ['workspaceId']
-      : url.pathname === '/coordination/v2/events' ? ['after', 'epoch'] : [];
+      : url.pathname === '/coordination/v2/events' || url.pathname === '/coordination/v2/events/stream' ? ['after', 'epoch'] : [];
     if (params.length !== expectedParams.length || expectedParams.some((name) => url.searchParams.getAll(name).length !== 1)) return json(res, 400, { error: 'Invalid query parameters' });
     if (req.method === 'OPTIONS') {
       const requestedHeaders = (req.headers['access-control-request-headers'] || '').toLowerCase().split(',').map((value) => value.trim()).filter(Boolean);
@@ -93,18 +111,51 @@ function createCoordinationHandler({ store = new CoordinationStore(), state, per
     const credential = typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')
       ? req.headers.authorization.slice(7) : '';
     const binding = JSON.stringify([sameOrigin, origin || null]);
+    let actor = null;
     if (registering) {
       if (token && !authorized(req, token)) return json(res, 401, { error: 'Unauthorized' });
     } else if (!v2) {
       if (!authorized(req, token)) return json(res, 401, { error: 'Unauthorized' });
     } else {
-      try { state.authenticate(credential, binding); }
+      try { actor = state.authenticate(credential, binding); }
       catch (error) { return json(res, error.status || 401, { error: error.message }); }
     }
     if (req.method !== method) { res.setHeader('Allow', method); return json(res, 405, { error: 'Method not allowed' }); }
     if (url.pathname === '/coordination/healthz') return json(res, 200, { status: 'ok', service: 'coordination', version: 2 });
     try {
       if (url.pathname === '/coordination/v2/snapshot') return json(res, 200, state.snapshot(credential, binding));
+      if (url.pathname === '/coordination/v2/events/stream') {
+        const after = url.searchParams.get('after');
+        if (!/^(0|[1-9][0-9]*)$/.test(after)) return json(res, 400, { error: 'Invalid cursor' });
+        // Subscribe before reading the backlog so appends that race the
+        // backlog read are buffered and delivered after it, in cursor order.
+        let buffering = true;
+        const pending = [];
+        const deliver = (event) => {
+          if (!sameParty(event.source, actor) && !sameParty(event.target, actor)) return;
+          sseFrame(res, { epoch: state.epoch, cursor: event.sequence, events: [event] });
+        };
+        let unsubscribe;
+        try { unsubscribe = state.subscribe(actor.workspaceId, (event) => { if (buffering) pending.push(event); else deliver(event); }); }
+        catch (error) { return json(res, error.status || 400, { error: error.message }); }
+        let backlog;
+        try { backlog = state.events(credential, binding, Number(after), url.searchParams.get('epoch')); }
+        catch (error) {
+          unsubscribe();
+          if (error.status !== 410) throw error;
+          sseHeaders(res);
+          sseFrame(res, { reason: 'cursor-expired' }, 'resync');
+          return res.end();
+        }
+        sseHeaders(res);
+        res.write(': connected\n\n');
+        sseFrame(res, backlog);
+        buffering = false;
+        for (const event of pending) deliver(event);
+        const keepalive = setInterval(() => { if (!res.writableEnded) res.write(': keepalive\n\n'); }, SSE_KEEPALIVE_MS);
+        req.on('close', () => { unsubscribe(); clearInterval(keepalive); });
+        return undefined;
+      }
       if (url.pathname === '/coordination/v2/events') {
         const after = url.searchParams.get('after');
         if (!/^(0|[1-9][0-9]*)$/.test(after)) return json(res, 400, { error: 'Invalid cursor' });

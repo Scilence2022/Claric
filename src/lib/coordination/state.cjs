@@ -222,10 +222,26 @@ class CoordinationState {
     this.sessions = new SessionStore(options); this.documents = new DocumentRegistry(options);
     this.requests = new RequestStore(options); this.tasks = new TaskStore(options); this.proposals = new ProposalStore(options); this.leases = new LeaseStore(options); this.artifacts = new ArtifactStore(options);
     this.cursors = new SnapshotCursorStore(options); this.idempotency = new Map();
+    this.maxSubscribers = options.maxSubscribers || 64; this.subscribers = new Map();
     this.persistence = options.persistence || (options.persistencePath ? new CoordinationPersistence(options.persistencePath, options) : null);
     this.recovery = this.persistence?.recovery || { tasks: [], proposals: [] };
     this.persistenceBlocked = false;
     if (this.persistence) this.leases.nextFence = this.persistence.highWater;
+  }
+  get epoch() { return this.cursors.epoch; }
+  subscribe(workspaceId, listener) {
+    normalizeId(workspaceId, 'workspaceId');
+    if (typeof listener !== 'function') throw error('Invalid subscriber', 400);
+    if (!this.subscribers.has(workspaceId)) this.subscribers.set(workspaceId, new Set());
+    const listeners = this.subscribers.get(workspaceId);
+    if (listeners.size >= this.maxSubscribers) throw error('Subscriber capacity reached', 503);
+    listeners.add(listener);
+    return () => { listeners.delete(listener); if (!listeners.size) this.subscribers.delete(workspaceId); };
+  }
+  publish(workspaceId, event) {
+    const listeners = this.subscribers.get(workspaceId);
+    if (!listeners) return;
+    for (const listener of [...listeners]) { try { listener(clone(event)); } catch { /* subscriber errors must not break the append */ } }
   }
   register(input, binding) { return this.sessions.register(input, binding); }
   authenticate(credential, binding) { return this.sessions.authenticate(credential, binding); }
@@ -241,16 +257,16 @@ class CoordinationState {
     const stores = [this.documents, this.requests, this.tasks, this.proposals, this.leases, this.artifacts];
     const backup = stores.map((store) => ({ records: new Map(store.records), ...(store.nextFence === undefined ? {} : { nextFence: store.nextFence }) }));
     const cursorBackup = new Map([...this.cursors.rooms].map(([workspaceId, room]) => [workspaceId, { sequence: room.sequence, events: [...room.events] }]));
+    let event;
     try {
       this.cursors.room(envelope.workspaceId);
       const group = envelope.type.split('.')[0];
       const store = { document: this.documents, context: this.requests, task: this.tasks, proposal: this.proposals, lease: this.leases, artifact: this.artifacts }[group];
       const result = store.apply(envelope, this.leases, this.tasks);
-      const event = this.cursors.append(envelope, result);
+      event = this.cursors.append(envelope, result);
       this.idempotency.set(id, { fingerprint, event, expiresAt: envelope.createdAt + envelope.ttlMs });
       if (envelope.type === 'document.left') { this.leases.revoke(actor); this.sessions.revoke(actor); }
       if (this.persistence) this.persistence.checkpoint(this);
-      return clone(event);
     } catch (caught) {
       for (let index = 0; index < stores.length; index += 1) { stores[index].records = backup[index].records; if (backup[index].nextFence !== undefined) stores[index].nextFence = backup[index].nextFence; }
       this.cursors.rooms = cursorBackup;
@@ -258,6 +274,8 @@ class CoordinationState {
       if (caught.code === 'CHECKPOINT_UNAVAILABLE') this.persistenceBlocked = true;
       throw caught;
     }
+    this.publish(envelope.workspaceId, event);
+    return clone(event);
   }
   snapshot(credential, binding) {
     const actor = this.authenticate(credential, binding); const room = this.cursors.room(actor.workspaceId);
