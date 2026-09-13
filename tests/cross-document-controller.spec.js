@@ -132,3 +132,15 @@ test('binds review to the target runtime with no auto-apply', async () => {
     await createProposalCard.mock.calls[0][0].onApply(['text-1']);
     expect(createProposalCard.mock.results[0].value.markWarning).toHaveBeenCalledWith('Stale');
 });
+
+test('routes the selected task type into the distributed graph', async () => {
+    initCrossDocumentConnection(local);
+    await flushMicrotasks();
+    const select = document.getElementById('crossDocumentTarget');
+    select.value = target.instanceId; select.dispatchEvent(new Event('change'));
+    document.getElementById('chatInput').value = 'Budget table';
+    document.getElementById('crossDocumentTaskType').value = 'table';
+    document.getElementById('crossDocumentSendBtn').click(); await flush();
+    expect(runtime.submitGraph).toHaveBeenCalledWith(expect.objectContaining({ tasks: [expect.objectContaining({ type: 'table', instruction: 'Budget table' })] }));
+    document.getElementById('crossDocumentConnectBtn').click(); await flush();
+});
