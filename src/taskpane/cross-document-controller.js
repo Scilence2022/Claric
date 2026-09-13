@@ -1,5 +1,6 @@
 import { appState } from './app-state.js';
 import { prepareSelectionAmendment, applySelectionAmendment } from './word-actions.js';
+import { persistDocumentIdentity } from './document-identity.js';
 import { createProposalCard } from './ui/proposal-card.js';
 import * as chatView from './ui/chat-view.js';
 import { addLog } from './ui/status-bar.js';
@@ -193,6 +194,13 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         throw error;
     }
     const identity = client.identity;
+    // Now that the document actually joined a workspace, make its identity
+    // durable in the file (lazy: the first link is what justifies dirtying
+    // the document with a custom XML part). Best effort — the ephemeral or
+    // URL-based identity keeps working when this fails.
+    void persistDocumentIdentity(connectionOptions.identity).then((persisted) => {
+        if (persisted) addLog('Document identity stored in this file for cross-document linking.', 'info');
+    }).catch(() => { /* persistence is best effort */ });
     const agent = createDocumentAgent({
         identity,
         appState,
