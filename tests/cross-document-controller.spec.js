@@ -6,6 +6,7 @@ import { createContextRequestManager } from '../src/taskpane/context-requests.js
 import { createRemoteTaskRunner } from '../src/taskpane/remote-task-runner.js';
 import { createDistributedTaskRuntime } from '../src/taskpane/distributed-task-runtime.js';
 import { createProposalCard } from '../src/taskpane/ui/proposal-card.js';
+import { planCrossDocumentTasks } from '../src/taskpane/cross-document-planner.js';
 import * as chatView from '../src/taskpane/ui/chat-view.js';
 const fs = require('fs');
 const path = require('path');
@@ -16,6 +17,7 @@ jest.mock('../src/taskpane/context-requests.js', () => ({ createContextRequestMa
 jest.mock('../src/taskpane/remote-task-runner.js', () => ({ createRemoteTaskRunner: jest.fn() }));
 jest.mock('../src/taskpane/distributed-task-runtime.js', () => ({ createDistributedTaskRuntime: jest.fn() }));
 jest.mock('../src/taskpane/ui/proposal-card.js', () => ({ createProposalCard: jest.fn() }));
+jest.mock('../src/taskpane/cross-document-planner.js', () => ({ planCrossDocumentTasks: jest.fn() }));
 jest.mock('../src/taskpane/ui/chat-view.js', () => ({ addSystemNote: jest.fn() }));
 jest.mock('../src/taskpane/ui/status-bar.js', () => ({ addLog: jest.fn() }));
 
@@ -142,5 +144,49 @@ test('routes the selected task type into the distributed graph', async () => {
     document.getElementById('crossDocumentTaskType').value = 'table';
     document.getElementById('crossDocumentSendBtn').click(); await flush();
     expect(runtime.submitGraph).toHaveBeenCalledWith(expect.objectContaining({ tasks: [expect.objectContaining({ type: 'table', instruction: 'Budget table' })] }));
+    document.getElementById('crossDocumentConnectBtn').click(); await flush();
+});
+
+test('plans a cross-document task graph using read context as reference', async () => {
+    const planButton = document.getElementById('crossDocumentPlanBtn');
+    expect(planButton.disabled).toBe(true);
+    initCrossDocumentConnection(local);
+    await flushMicrotasks();
+    expect(planButton.disabled).toBe(false);
+    const select = document.getElementById('crossDocumentTarget');
+    select.value = target.instanceId; select.dispatchEvent(new Event('change'));
+    document.getElementById('crossDocumentContextBtn').click(); await flush();
+    expect(context.requestContext).toHaveBeenCalledWith(target, { scope: 'document' });
+
+    planCrossDocumentTasks.mockResolvedValue({ tasks: [
+        { taskId: 't1', type: 'format', instruction: 'Apply heading styles', dependsOn: [], targetDocumentId: 'b' },
+        { taskId: 't2', type: 'edit', instruction: 'Tighten the abstract', dependsOn: ['t1'], targetDocumentId: 'b' },
+    ] });
+    document.getElementById('chatInput').value = 'Format then polish the target';
+    planButton.click(); await flush();
+
+    expect(planCrossDocumentTasks).toHaveBeenCalledWith(expect.objectContaining({
+        instruction: 'Format then polish the target',
+        documents: [expect.objectContaining({ documentId: 'b', contextText: 'Target data' })],
+    }));
+    expect(runtime.submitGraph).toHaveBeenCalledWith(expect.objectContaining({
+        tasks: [
+            expect.objectContaining({ taskId: 't1', type: 'format', target }),
+            expect.objectContaining({ taskId: 't2', type: 'edit', dependsOn: ['t1'], target }),
+        ],
+    }));
+    expect(chatView.addSystemNote).toHaveBeenCalledWith(expect.stringContaining('Planned 2 cross-document task(s)'));
+    document.getElementById('crossDocumentConnectBtn').click(); await flush();
+});
+
+test('surfaces a planning failure without submitting a partial graph', async () => {
+    initCrossDocumentConnection(local);
+    await flushMicrotasks();
+    planCrossDocumentTasks.mockRejectedValue(new Error('Plan response was not valid JSON'));
+    document.getElementById('chatInput').value = 'Do everything';
+    document.getElementById('crossDocumentPlanBtn').click(); await flush();
+    expect(runtime.submitGraph).not.toHaveBeenCalled();
+    expect(document.getElementById('crossDocumentStatus').textContent).toContain('Planning failed');
+    expect(document.getElementById('crossDocumentPlanBtn').disabled).toBe(false);
     document.getElementById('crossDocumentConnectBtn').click(); await flush();
 });
