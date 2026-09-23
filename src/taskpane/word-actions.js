@@ -29,7 +29,6 @@ import {
     stripChunkDelimiters,
 } from '../lib/llm-client.js';
 import { buildTableUserPrompt, parseTablePatchResponse } from '../lib/table-patch.js';
-import { normalizePlan } from '../lib/task-planner.js';
 import {
     inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
     validateTableCreationSpec,
@@ -57,7 +56,6 @@ import {
     illustrationPositionLabel, illustrationRenderer,
 } from '../lib/illustration.js';
 import { generateImage } from '../lib/image-client.js';
-import { buildPlanPrompt, parsePlan } from '../lib/task-planner.js';
 import { imageIdentityKey } from '../lib/image-model.js';
 import { attachSvgSource, svgSourceIdFromPicture } from './svg-source-store.js';
 import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
@@ -2518,6 +2516,7 @@ export async function planDocumentTasks(deps, {
     onToken, onReasoning, signal,
 } = {}) {
     const { appState, log } = deps;
+    const { buildPlanPrompt, parsePlan, normalizePlan } = await import(/* webpackChunkName: "task-planner" */ '../lib/task-planner.js');
 
     const prompt = buildPlanPrompt(instruction, {
         hasSelection,
@@ -2529,7 +2528,15 @@ export async function planDocumentTasks(deps, {
     log(`Planning tasks [${backendConfig.model}]...`, 'info');
     const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
 
-    const parsedTasks = parsePlan(rawResponse, log);
+    let parsedTasks = parsePlan(rawResponse, log);
+    if (!parsedTasks && !signal?.aborted) {
+        const repaired = await _sendActionRequest(deps, backendConfig, [
+            { role: 'user', content: prompt },
+            { role: 'assistant', content: String(rawResponse).slice(0, 24000) },
+            { role: 'user', content: 'The plan was invalid. Return a complete JSON array of at most six supported tasks, instructions up to 4000 characters, unique taskId values and valid acyclic dependsOn references. Preserve every user requirement. Combine interdependent prose work into one document_edit task.' },
+        ], { onToken, onReasoning, signal });
+        parsedTasks = parsePlan(repaired, log);
+    }
     const tasks = parsedTasks ? normalizePlan(parsedTasks) : null;
     if (tasks) log(`Planned ${tasks.length} task(s): ${tasks.map((t) => t.type).join(' → ')}`, 'success');
     return { tasks, model: backendConfig.model };

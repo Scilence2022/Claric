@@ -1,5 +1,5 @@
 /** Structured task lifecycle events. */
-export const TASK_EVENTS = Object.freeze({ GRAPH_STARTED: 'task.graph.started', TASK_READY: 'task.ready', TASK_STARTED: 'task.started', TASK_SUCCEEDED: 'task.succeeded', TASK_FAILED: 'task.failed', GRAPH_FINISHED: 'task.graph.finished' });
+export const TASK_EVENTS = Object.freeze({ GRAPH_STARTED: 'task.graph.started', TASK_READY: 'task.ready', TASK_STARTED: 'task.started', TASK_SUCCEEDED: 'task.succeeded', TASK_STAGED: 'task.staged', TASK_NO_OP: 'task.no_op', TASK_BLOCKED: 'task.blocked', TASK_FAILED: 'task.failed', GRAPH_FINISHED: 'task.graph.finished' });
 export function createTaskEvent(type, data = {}) {
     const event = /** @type {{ type: string, timestamp: string, [key: string]: any }} */ ({ type, timestamp: new Date().toISOString(), ...data });
     if (data.graphId !== undefined) event.graphId = data.graphId;

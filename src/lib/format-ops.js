@@ -156,6 +156,8 @@ function _sanitizeOp(entry, log) {
     }
 
     const insert = _sanitizeInsert(entry.insert, log);
+    // An invalid insertion must not turn its styling into a whole-scope edit.
+    if (entry.insert && !insert) return null;
     const font = _sanitizeFont(entry.font, log);
     const paragraph = _sanitizeParagraph(entry.paragraph, log);
     if (insert) op.insert = insert;
@@ -182,15 +184,19 @@ function _sanitizeInsert(insert, log) {
         log('Format ops: dropped an insert op with empty text', 'warning');
         return null;
     }
-    const out = { text: text.slice(0, MAX_INSERT_CHARS) };
+    const out = { text };
     if (text.length > MAX_INSERT_CHARS) {
-        log(`Format ops: insert text truncated to ${MAX_INSERT_CHARS} chars`, 'warning');
+        log(`Format ops: insert exceeds ${MAX_INSERT_CHARS} chars; use document_edit for long content`, 'warning');
+        return null;
     }
     const position = String(insert.position || '').trim().toLowerCase();
     if (INSERT_POSITIONS.includes(position)) {
         out.position = position;
     } else {
-        if (position) log(`Format ops: unknown insert position "${insert.position}"; using "end"`, 'warning');
+        if (position) {
+            log(`Format ops: unknown insert position "${insert.position}"; use document_edit for anchored insertion`, 'warning');
+            return null;
+        }
         out.position = 'end';
     }
     return out;

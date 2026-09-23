@@ -224,6 +224,17 @@ Ranges are checked again at application time to reduce stale-target risks;
 review warnings if the document changed after staging. See
 [First workflow](#first-workflow) for the persistent Auto-apply option.
 
+### Contextual Prose Insertion
+
+Ask, for example, “Insert a discussion of XXX at an appropriate place in the
+article.” Claric reads the article outline and relevant paragraphs, chooses a
+specific insertion gap, and drafts the new prose with nearby transitions in
+one proposal. It checks that draft against the request before offering it for
+review. The proposal changes plain-text body paragraphs; headings, tables, lists, fields,
+equations, images, and other protected structures remain read-only context.
+If a target or insertion gap changes before application, Claric asks for a
+fresh proposal. A partial Word write is reported for manual inspection.
+
 ### AI Redlining
 
 Text editing supports word-level tracked changes and a CJK Word adapter.

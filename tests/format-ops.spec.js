@@ -124,24 +124,23 @@ describe('parseFormatOps', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('empty text'), 'warning');
   });
 
-  test('unknown insert position falls back to "end" with a warning', () => {
+  test('unknown insert position is rejected instead of moving content to the end', () => {
     const log = jest.fn();
     const ops = parseFormatOps('[{"insert":{"text":"t","position":"middle"}}]', log);
-    expect(ops).toEqual([{ insert: { text: 't', position: 'end' } }]);
+    expect(ops).toEqual([]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('unknown insert position'), 'warning');
   });
 
-  test('insert text is truncated at the cap with a warning', () => {
+  test('oversized insertion is rejected without truncating user content', () => {
     const log = jest.fn();
     const ops = parseFormatOps(JSON.stringify([{ insert: { text: 'x'.repeat(2500), position: 'start' } }]), log);
-    expect(ops[0].insert.text).toHaveLength(2000);
-    expect(ops[0].insert.position).toBe('start');
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('truncated'), 'warning');
+    expect(ops).toEqual([]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('exceeds'), 'warning');
   });
 
-  test('non-object insert payloads are ignored; op survives on font/paragraph', () => {
+  test('invalid insert payload never turns its styling into a whole-document operation', () => {
     const ops = parseFormatOps('[{"insert":"nope","font":{"bold":true}}]');
-    expect(ops).toEqual([{ font: { bold: true } }]);
+    expect(ops).toEqual([]);
   });
 
   test('parses list ops: listType bullet/number/none and listLevel', () => {

@@ -25,18 +25,19 @@
 
 import { extractJsonArray } from './json-utils.js';
 import { normalizeCompound } from './task-runtime/task-model.js';
+import { validateTaskGraph } from './task-runtime/task-graph.js';
 
 /** Pipeline task types the planner may emit (allowlist for parsePlan). */
 const TASK_TYPES = [
     'insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa',
-    'image_management', 'table_management',
+    'image_management', 'table_management', 'document_edit',
 ];
 
 /** A compound instruction decomposes into at most this many tasks. */
 const MAX_TASKS = 6;
 
 /** Per-task instruction length cap — planner output should be terse. */
-const MAX_TASK_INSTRUCTION_CHARS = 500;
+const MAX_TASK_INSTRUCTION_CHARS = 4000;
 
 /**
  * Builds the LLM prompt that decomposes a compound instruction into an
@@ -63,6 +64,7 @@ export function buildPlanPrompt(instruction, hasSelection) {
         'request types, or may be ambiguous about which pipeline it belongs to. Split it into an ordered ' +
         'list of atomic tasks, one per specialized pipeline.\n\n' +
         'CAPABILITIES (task "type"):\n' +
+        '- "document_edit": inspect the article, choose relevant locations, insert or integrate prose, and revise nearby transitions in ONE shared draft with verification. Use for content insertion anywhere except an explicitly requested append, semantic restructuring, source integration, or interdependent prose edits. Keep locating, drafting, transitions, and checking together in one task.\n' +
         '- "insert": add a short NEW structural element that does not exist yet (e.g. an article title, a heading).\n' +
         '- "format": change the FORMATTING of existing text (font, size, color, highlight, paragraph style ' +
         'incl. headings, bulleted/numbered lists, alignment, spacing, indentation) without rewriting it.\n' +
@@ -81,12 +83,14 @@ export function buildPlanPrompt(instruction, hasSelection) {
         'fonts, header rows, layout, column widths). Creating a NEW table stays on "table".\n\n' +
         'OUTPUT CONTRACT (strict):\n' +
         '- Output ONLY a JSON array. No markdown, no code fences, no explanations, no commentary.\n' +
-        '- Each item: { "type": "insert|format|edit|append|table|illustration|qa|image_management|table_management", "instruction": "self-contained ' +
-        'sub-instruction in the user\'s language" }.\n' +
+        '- Each item: { "taskId": "t1", "type": "insert|format|edit|append|table|illustration|qa|image_management|table_management|document_edit", "instruction": "self-contained ' +
+        'sub-instruction in the user\'s language", "dependsOn": [] }. Dependencies reference existing taskId values.\n' +
         '- One task per distinct request, in the user\'s original order; each instruction must stand alone ' +
         '(include needed context, e.g. which paragraph to edit).\n' +
         '- If the instruction is really a single request, output a single-task array.\n' +
         '- Cover everything the user asked for; add nothing they did not ask for.\n\n' +
+        '- Preservation phrases (keep formatting/headings) are constraints, not separate formatting tasks. A polite question such as "can you insert ..." can be an action request. Explicit document scope overrides an incidental selection.\n' +
+        '- Related prose operations must be one document_edit task so later edits see the draft. Other write pipelines produce unapplied proposals; do not assume they are already in Word. A dependent qa task may discuss their proposed results.\n' +
         `CONTEXT: the user currently has ${selectionLabel}. ${selectionKind}\n` +
         (facts.hasMultiCellTableRegion ? 'The selection covers a multi-cell table region.\n' : '') +
         '\nUSER INSTRUCTION:\n' + (instruction || '').trim()
@@ -111,9 +115,8 @@ export function normalizePlan(tasks, graphId) {
 
 /**
  * Parses and validates the planner's JSON task list. Tolerates code fences
- * and surrounding prose; drops malformed entries and unknown types, caps
- * the list at MAX_TASKS. Returns null when nothing usable remains — the
- * caller then falls back to single-intent routing.
+ * and surrounding prose. Rejects the whole plan on invalid entries or
+ * limits instead of silently dropping user requirements.
  *
  * @param {string} raw - Raw model output
  * @param {function} [log] - Logging callback
@@ -128,32 +131,53 @@ export function parsePlan(raw, log = () => {}) {
         return null;
     }
     if (!Array.isArray(parsed)) return null;
+    if (parsed.length > MAX_TASKS) {
+        log(`Task planner: plan exceeds ${MAX_TASKS} tasks; rejected without truncation`, 'warning');
+        return null;
+    }
 
     const tasks = [];
     for (const entry of parsed) {
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-        if (!TASK_TYPES.includes(entry.type)) {
-            log(`Task planner: dropped a task with unknown type "${entry.type}"`, 'warning');
-            continue;
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+            log('Task planner: invalid task entry', 'warning');
+            return null;
         }
-        const instruction = String(entry.instruction === undefined || entry.instruction === null ? '' : entry.instruction).trim();
+        if (!TASK_TYPES.includes(entry.type)) {
+            log(`Task planner: unknown type "${entry.type}"; plan rejected`, 'warning');
+            return null;
+        }
+        const instruction = typeof entry.instruction === 'string' ? entry.instruction.trim() : '';
         if (!instruction) {
-            log(`Task planner: dropped a "${entry.type}" task with an empty instruction`, 'warning');
-            continue;
+            log(`Task planner: "${entry.type}" task has an empty instruction`, 'warning');
+            return null;
         }
         if (instruction.length > MAX_TASK_INSTRUCTION_CHARS) {
-            log(`Task planner: task instruction truncated to ${MAX_TASK_INSTRUCTION_CHARS} chars`, 'warning');
+            log(`Task planner: instruction exceeds ${MAX_TASK_INSTRUCTION_CHARS} chars; plan rejected`, 'warning');
+            return null;
         }
-        tasks.push({ type: entry.type, instruction: instruction.slice(0, MAX_TASK_INSTRUCTION_CHARS) });
+        const task = { type: entry.type, instruction };
+        const id = entry.taskId ?? entry.id;
+        if (id !== undefined) {
+            if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(id)) return null;
+            task.taskId = id;
+        }
+        for (const field of ['dependsOn', 'resources', 'inputRefs']) {
+            if (entry[field] === undefined) continue;
+            if (!Array.isArray(entry[field]) || entry[field].length > 24
+                || entry[field].some((value) => typeof value !== 'string' || !value.trim() || value.length > 200)) return null;
+            task[field] = [...new Set(entry[field])];
+        }
+        tasks.push(task);
     }
 
     if (tasks.length === 0) {
         log('Task planner: no valid tasks in the model response', 'warning');
         return null;
     }
-    if (tasks.length > MAX_TASKS) {
-        log(`Task planner: plan capped at ${MAX_TASKS} tasks (got ${tasks.length})`, 'warning');
-        return tasks.slice(0, MAX_TASKS);
+    const checked = validateTaskGraph({ tasks });
+    if (!checked.valid) {
+        log(`Task planner: ${checked.errors.join('; ')}`, 'warning');
+        return null;
     }
     return tasks;
 }
