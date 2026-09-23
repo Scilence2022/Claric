@@ -73,6 +73,25 @@ test('staged results carry artifacts into later tasks but emit staged rather tha
   expect(events.some((e) => e.type === 'task.staged')).toBe(true);
 });
 
+test('a later graph pass reuses completed work and retries only blocked descendants', async () => {
+  const graph = { tasks: [{ taskId: 'a' }, { taskId: 'b', dependsOn: ['a'], inputRefs: ['a:0'] }, { taskId: 'c' }] };
+  const execute = jest.fn(async (task, ctx) => {
+    if (task.taskId === 'a') return { status: 'staged', artifacts: [{ text: 'new content' }] };
+    if (task.taskId === 'b') return ctx.inputs[0].value.status === 'staged'
+      ? { status: 'blocked', error: new Error('Waiting for Word application') }
+      : { status: 'staged', summary: ctx.inputs[1].value.text };
+    return { status: 'answered', summary: 'independent' };
+  });
+  const first = await executeTaskGraph(graph, execute);
+  expect(first.results.get('b').state).toBe('blocked');
+  const retained = new Map([...first.results].filter(([, result]) => result.state === 'succeeded'));
+  retained.set('a', { ...retained.get('a'), value: { ...retained.get('a').value, status: 'applied' } });
+  const second = await executeTaskGraph(graph, execute, { initialResults: retained });
+  expect(execute.mock.calls.map(([task]) => task.taskId)).toEqual(['a', 'c', 'b', 'b']);
+  expect(second.results.get('b').value.summary).toBe('new content');
+  expect(second.results.get('a').value.status).toBe('applied');
+});
+
 test.each([false, true])('only verified no-op satisfies dependencies: %s', async (satisfied) => {
   const execute = jest.fn(async () => ({ status: 'no_op', satisfied }));
   const { results } = await executeTaskGraph({ tasks: [{ taskId: 'a' }, { taskId: 'b', dependsOn: ['a'] }] }, execute);

@@ -149,15 +149,25 @@ test.each([false, true])('append, table creation, plan, format and illustration 
     const cases = [
         ['prepareDocumentAppend', { instruction: 'Continue that clause' }, 'New paragraph'],
         ['prepareTableProposal', { instruction: 'Create a table with that content' }, '{"rows":[["A","B"]],"position":"end"}'],
-        ['planDocumentTasks', { instruction: 'Apply that and add a heading' }, '[{"type":"edit","instruction":"Revise"}]'],
+        ['planDocumentTasks', { instruction: 'Apply that and add a heading' }, JSON.stringify({
+            requirements: [{ id: 'r1', kind: 'action', outcome: 'document', text: 'Apply that' },
+                { id: 'r2', kind: 'action', outcome: 'document', text: 'Add a heading' }],
+            tasks: [{ taskId: 't1', type: 'edit', instruction: 'Revise', covers: ['r1'] },
+                { taskId: 't2', type: 'insert', instruction: 'Add a heading', covers: ['r2'] }], unsupported: [],
+        })],
         ['prepareFormatProposal', { instruction: 'Use that formatting' }, '[{"font":{"bold":true}}]'],
         ['prepareIllustrationProposal', { instruction: 'Draw SVG at document end' }, svg],
     ];
     for (const [name, options, output] of cases) {
         fetch.mockResolvedValueOnce(response(output));
+        if (name === 'planDocumentTasks') fetch.mockResolvedValueOnce(response(JSON.stringify({
+            complete: true, unsupportedAccurate: true,
+            checks: ['r1', 'r2'].map((requirementId) => ({ requirementId, represented: true })),
+            missing: [], invented: [], summary: 'Covered',
+        })));
         const result = await actions[name](deps, { ...options, ...args });
         expect(result).toBeTruthy();
-        const body = bodies().at(-1);
+        const body = bodies().at(name === 'planDocumentTasks' ? -2 : -1);
         expectHistory(body.messages);
         expect(body.messages.at(-1).content).toContain(options.instruction);
         expect(body.stream).toBe(stream);

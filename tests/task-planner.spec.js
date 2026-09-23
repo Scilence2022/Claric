@@ -4,7 +4,7 @@
  * the task-type allowlist so only known pipelines get dispatched.
  */
 
-const { buildPlanPrompt, parsePlan } = require('../src/lib/task-planner.js');
+const { buildPlanPrompt, parsePlan, parseCapabilityPlan, parsePlanReview } = require('../src/lib/task-planner.js');
 
 describe('parsePlan', () => {
   test('parses a bare JSON task array', () => {
@@ -104,7 +104,9 @@ describe('buildPlanPrompt', () => {
     for (const type of ['"image_management"', '"table_management"']) {
       expect(p).toContain(type);
     }
-    expect(p).toContain('Output ONLY a JSON array');
+    expect(p).toContain('Return ONLY one JSON object');
+    expect(p).toContain('"requirements"');
+    expect(p).toContain('"unsupported"');
   });
 
   test('states the selection context both ways', () => {
@@ -119,9 +121,7 @@ describe('buildPlanPrompt', () => {
     // corresponding compound sub-tasks misrouted.
     const p = buildPlanPrompt('x', false);
     const contract = p.slice(p.indexOf('OUTPUT CONTRACT'));
-    expect(contract).toContain(
-      'insert|format|edit|append|table|illustration|qa|image_management|table_management'
-    );
+    expect(contract).toContain('document_edit|insert|format|edit|append|table|illustration|image_management|table_management|qa');
     // And no type known to the parser is missing from the enum.
     for (const type of [
       'insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa',
@@ -151,4 +151,51 @@ test.each([
   [{ type: 'edit', instruction: 'x', inputRefs: [42] }],
 ])('invalid graph metadata rejects the complete plan', (tasks) => {
   expect(parsePlan(JSON.stringify(tasks))).toBeNull();
+});
+
+describe('auditable capability plans', () => {
+  const valid = () => ({
+    requirements: [
+      { id: 'r1', kind: 'action', outcome: 'document', text: 'Insert a discussion' },
+      { id: 'r2', kind: 'action', outcome: 'document', text: 'Bold the new paragraph' },
+      { id: 'r3', kind: 'constraint', text: 'Keep existing headings' },
+    ],
+    tasks: [{ taskId: 'draft', type: 'document_edit', instruction: 'Insert and bold the new discussion while keeping headings',
+      covers: ['r1', 'r2', 'r3'], dependsOn: [] }], unsupported: [],
+  });
+
+  test('one shared draft accounts for prose, new-paragraph formatting and constraints', () => {
+    expect(parseCapabilityPlan(JSON.stringify(valid()))).toMatchObject({
+      requirements: expect.arrayContaining([{ id: 'r1', kind: 'action', outcome: 'document', text: 'Insert a discussion' }]),
+      tasks: [{ taskId: 'draft', type: 'document_edit', covers: ['r1', 'r2', 'r3'] }], unsupported: [],
+    });
+  });
+
+  test('an unsupported action is explicit and prevents a false covered task', () => {
+    const plan = valid();
+    plan.requirements.push({ id: 'r4', kind: 'action', outcome: 'document', text: 'Delete all footnotes' });
+    plan.unsupported.push({ requirementId: 'r4', reason: 'No footnote deletion operation' });
+    expect(parseCapabilityPlan(JSON.stringify(plan)).unsupported).toEqual(plan.unsupported);
+    plan.unsupported = [];
+    expect(parseCapabilityPlan(JSON.stringify(plan))).toBeNull();
+  });
+
+  test.each(['missing', 'duplicate', 'wrong-effect', 'unknown', 'unsupported-cover'])('%s coverage is rejected', (kind) => {
+    const plan = valid();
+    if (kind === 'missing') plan.tasks[0].covers = ['r1', 'r3'];
+    if (kind === 'duplicate') plan.tasks.push({ taskId: 'second', type: 'format', instruction: 'Bold', covers: ['r2'] });
+    if (kind === 'wrong-effect') { plan.tasks[0].type = 'qa'; }
+    if (kind === 'unknown') plan.tasks[0].type = 'footnotes';
+    if (kind === 'unsupported-cover') { plan.unsupported = [{ requirementId: 'r2', reason: 'No support' }]; }
+    expect(parseCapabilityPlan(JSON.stringify(plan))).toBeNull();
+  });
+
+  test('independent review must explicitly account for every requirement', () => {
+    const review = { complete: true, unsupportedAccurate: true,
+      checks: ['r1', 'r2', 'r3'].map((requirementId) => ({ requirementId, represented: true })),
+      missing: [], invented: [], summary: 'Covered' };
+    expect(parsePlanReview(JSON.stringify(review), ['r1', 'r2', 'r3'])).toMatchObject({ complete: true });
+    review.checks.pop();
+    expect(parsePlanReview(JSON.stringify(review), ['r1', 'r2', 'r3'])).toBeNull();
+  });
 });

@@ -36,6 +36,7 @@ function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.'
     }
     function paragraph(text, added = false) {
         const p = { key: ++id, text, added, style: 'Normal', styleBuiltIn: 'Normal', isListItem: false, load: jest.fn(),
+            font: { bold: false, italic: false, load: jest.fn() },
             parentTableOrNullObject: { isNullObject: true, load: jest.fn() },
             getRange: () => range(p),
             insertParagraph: jest.fn((value, location) => {
@@ -102,6 +103,25 @@ test('applies only planned paragraphs at the verified gap, reads them back and r
     await discardDocumentEdit(w.deps, proposal);
     await discardDocumentEdit(w.deps, proposal);
     expect(w.bookmarks.size).toBe(0);
+});
+
+test('inserts and verifies bold and italic on new paragraphs in one proposal', async () => {
+    const w = world();
+    const proposal = await prepared(w, [{ id: 'i', kind: 'insert', afterId: 'p-2', beforeId: 'p-3',
+        paragraphs: ['First.', 'Second.'], paragraphFormats: [{ bold: true }, { italic: true }] }]);
+    const result = await applyDocumentEdit(w.deps, proposal);
+    expect(result).toMatchObject({ applied: true, verified: true, partial: false });
+    expect(w.paragraphs[2].font.bold).toBe(true);
+    expect(w.paragraphs[3].font.italic).toBe(true);
+    expect(w.paragraphs[2].font.load).toHaveBeenCalledWith('bold');
+});
+
+test('rejects unsupported paragraph formatting before creating anchors', async () => {
+    world();
+    const snapshot = await readDocumentEditSnapshot();
+    await expect(anchorDocumentEdit(snapshot, { snapshotId: snapshot.id, changes: [{ id: 'i', kind: 'insert',
+        afterId: 'p-2', beforeId: 'p-3', paragraphs: ['New.'], paragraphFormats: [{ color: '#ff0000' }] }] }))
+        .rejects.toThrow(/format/);
 });
 
 test.each(['text', 'style', 'missing', 'gap'])('rejects %s drift before any write', async (kind) => {

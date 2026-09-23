@@ -14,6 +14,12 @@ function integer(value, fallback, max) {
     if (!Number.isInteger(value) || value < 0 || value > max) fail('Invalid paging range.');
     return value;
 }
+function insertedFormat(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || !Object.keys(value).length || Object.keys(value).some((key) => !['bold', 'italic'].includes(key))
+        || Object.values(value).some((item) => typeof item !== 'boolean')) fail('New paragraph format supports only explicit bold and italic booleans.');
+    return { ...value };
+}
 
 /**
  * @param {{id: string, blocks: Array<{id: string, text: string, [key: string]: any}>}} snapshot
@@ -111,8 +117,10 @@ export function createDocumentModel(snapshot) {
             const inserted = [b];
             while (list[i + 1] && !list[i + 1].original) inserted.push(list[++i]);
             const beforeId = list[i + 1]?.id || null;
+            const formats = inserted.map((p) => p.format || null);
             changes.push({ id: `insert-${inserted[0].id}`, kind: 'insert', afterId, beforeId,
-                paragraphs: inserted.map((p) => p.text), reason: inserted.map((p) => p.reason || '').filter(Boolean).join('; ') });
+                paragraphs: inserted.map((p) => p.text), ...(formats.some(Boolean) ? { paragraphFormats: formats } : {}),
+                reason: inserted.map((p) => p.reason || '').filter(Boolean).join('; ') });
         }
         if (changes.length > DOCUMENT_EDIT_LIMITS.changes || JSON.stringify(changes).length > DOCUMENT_EDIT_LIMITS.patchChars) fail('Patch is too large. Reduce the draft to focused changes.');
         return { snapshotId: snapshot.id, revision, changes };
@@ -153,11 +161,16 @@ export function createDocumentModel(snapshot) {
                 if (/[\r\n]/.test(content)) fail('A replacement must remain one paragraph. Insert additional paragraphs separately.');
                 target.text = content;
                 target.reason = text(op.reason, 'edit reason', 1000);
+            } else if (op.kind === 'format_new') {
+                const target = block(op.blockId, next);
+                if (target.original) fail('format_new can only target a newly inserted draft paragraph.');
+                target.format = insertedFormat(op.format);
+                target.reason = [target.reason, text(op.reason, 'format reason', 1000)].filter(Boolean).join('; ');
             } else if (op.kind === 'discard') {
                 const target = block(op.blockId, next);
                 if (target.original) Object.assign(target, originals.get(target.id), { reason: '' });
                 else next.splice(next.indexOf(target), 1);
-            } else fail(`Unsupported operation ${op.kind}. Use insert, replace or discard.`);
+            } else fail(`Unsupported operation ${op.kind}. Use insert, replace, format_new or discard.`);
         }
         compile(next); // Commit only after the entire batch validates.
         draft = next;
@@ -169,13 +182,15 @@ export function createDocumentModel(snapshot) {
         const patch = compile();
         const ids = new Set();
         for (const change of patch.changes) {
-            for (const id of [change.blockId, change.afterId, change.beforeId].filter(Boolean)) {
+            for (const id of [change.blockId, 'afterId' in change ? change.afterId : null,
+                'beforeId' in change ? change.beforeId : null].filter(Boolean)) {
                 const i = original.findIndex((b) => b.id === id);
                 for (const neighbor of original.slice(Math.max(0, i - 1), i + 2)) ids.add(neighbor.id);
             }
         }
         const before = original.filter((b) => ids.has(b.id)).map((b) => ({ id: b.id, text: b.text, section: b.section || '' }));
-        const after = draft.filter((b) => !b.original || ids.has(b.id)).map((b) => ({ id: b.id, text: b.text, section: b.section || '' }));
+        const after = draft.filter((b) => !b.original || ids.has(b.id)).map((b) => ({ id: b.id, text: b.text,
+            section: b.section || '', ...(b.format ? { format: b.format } : {}) }));
         const result = { contract, ...patch, before, after };
         if (JSON.stringify(result).length > 60000) fail('Review context is too large. Reduce the draft to fewer paragraphs.');
         return result;

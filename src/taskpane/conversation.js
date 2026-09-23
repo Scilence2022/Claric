@@ -455,11 +455,7 @@ export function routeTurn(text, {
         return { type: TURN_TYPE.SKILL, skill: resolved.skill, args: resolved.args };
     }
 
-    // Location-dependent prose work needs a shared, addressable draft. The
-    // complete instruction (including preservation constraints) reaches it.
-    if (!imageSelected && !hasMultiCellTableRegion && inspectEditRequest(trimmed).needsDocumentEdit) {
-        return { type: TURN_TYPE.DOCUMENT_EDIT, instruction: trimmed };
-    }
+    const editHint = inspectEditRequest(trimmed);
 
     // A selected image is the required visual anchor for figure legend/caption
     // review or editing. Nearby selected text is context only, never visual
@@ -483,10 +479,16 @@ export function routeTurn(text, {
     // Document-scope image/table intents ONLY compound when the selection
     // would not already route to IMAGE_TOOL/TABLE_TOOL directly.
     if (allowCompound) {
-        const families = countIntentFamilies(trimmed);
-        const docCompound = !imageSelected && looksLikeDocumentImageIntent(trimmed) ? 1 : 0;
-        const tableDocCompound = !hasMultiCellTableRegion && looksLikeDocumentTableIntent(trimmed) ? 1 : 0;
-        if (families + docCompound + tableDocCompound >= 2) {
+        const actionText = editHint.intentText || trimmed;
+        const families = countIntentFamilies(actionText);
+        const docCompound = !imageSelected && looksLikeDocumentImageIntent(actionText) ? 1 : 0;
+        const tableDocCompound = !hasMultiCellTableRegion && looksLikeDocumentTableIntent(actionText) ? 1 : 0;
+        const proseAndFormat = editHint.needsDocumentEdit && looksLikeFormatIntent(actionText);
+        const actionCount = (actionText.match(/插入|添加|增加|创建|生成|修改|调整|润色|删除|加粗|设置|补充|整合|统一|压缩|精简|缩短|扩写|续写|\b(?:insert|add|create|edit|format|remove|delete|bold|revise|rewrite|polish|shorten|summarize|expand)\b/gi) || []).length;
+        const crossActionSequence = !looksLikeQuestion(trimmed) && !imageSelected && !hasMultiCellTableRegion
+            && /(?:然后|接着|随后|并且|并|同时|再|以及|[，,;；]|\b(?:then|and|as well as)\b)/i.test(actionText)
+            && actionCount >= 2;
+        if (families + docCompound + tableDocCompound >= 2 || proseAndFormat || crossActionSequence) {
             return {
                 type: TURN_TYPE.COMPOUND,
                 instruction: trimmed,
@@ -496,6 +498,12 @@ export function routeTurn(text, {
                 hasMultiCellTableRegion,
             };
         }
+    }
+
+    // A single location-dependent prose request uses the addressable draft.
+    // Preservation clauses stay in the original instruction for its review.
+    if (!imageSelected && !hasMultiCellTableRegion && editHint.needsDocumentEdit) {
+        return { type: TURN_TYPE.DOCUMENT_EDIT, instruction: trimmed };
     }
 
     // Image-management intent wins over the single-illustration branch:
@@ -2040,19 +2048,13 @@ export function createConversation(deps) {
                 // turns can target additional tables).
                 return { type: TURN_TYPE.DOCUMENT_TABLE_TOOL, instruction };
             case 'qa':
-            default:
                 return { type: TURN_TYPE.DOC_QA, question: instruction };
+            default:
+                throw new Error(`Unsupported planned capability: ${task.type}`);
         }
     }
 
-    /**
-     * Runs a compound turn: the planner decomposes a multi-intent instruction
-     * ("增加标题，并深度润色修改") into atomic tasks, then dispatches each to
-     * its own pipeline runner — every task stages its own proposal card on
-     * this message, in the user-stated order. When planning fails, falls
-     * back to single-intent routing of the whole instruction (the
-     * pre-planner behavior).
-     */
+    /** Plan every requested outcome, stage executable tasks, and resume write dependencies after apply. */
     async function runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController) {
         // One shared controller for the whole compound turn: cancel() aborts
         // the in-flight sub-task AND stops the remaining planned tasks.
@@ -2072,10 +2074,76 @@ export function createConversation(deps) {
                 onToken: (t) => msg.appendModelToken({ id: 'plan' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'plan' }, 'reasoning', t),
             });
-            if (!plan.tasks || plan.tasks.length === 0) throw new Error('Task planning failed. No part of the request was dispatched; retry the request.');
+            if (plan.unsupported?.length) {
+                const descriptions = plan.unsupported.map((item) => {
+                    const requirement = plan.requirements?.find((entry) => entry.id === item.requirementId);
+                    return `${requirement?.text || item.requirementId}: ${item.reason}`;
+                });
+                throw new Error(`Unsupported actions: ${descriptions.join(' ')}`);
+            }
+            if (!plan.tasks || plan.tasks.length === 0) throw new Error('Task planning failed; no tasks ran.');
             log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
             const { executeTaskGraph } = await import(/* webpackChunkName: "task-planner" */ '../lib/task-runtime/task-graph.js');
-            const execution = await executeTaskGraph({ tasks: plan.tasks }, async (task, { inputs }) => {
+            let graphResults = null;
+            let resumeTimer = null;
+            const cardsByTask = new Map();
+            const graphInput = { tasks: plan.tasks };
+            const setGraphStatus = () => {
+                const results = [...(graphResults?.values() || [])];
+                const failed = results.filter((result) => result.state === 'failed').length;
+                const blocked = results.filter((result) => result.state === 'blocked').length;
+                const staged = results.filter((result) => result.value?.status === 'staged').length;
+                if (blocked && staged) msg.setStatus(`${blocked} task(s) await application.${failed ? ` ${failed} failed.` : ''}`);
+                else if (failed || blocked) msg.setStatus(`${failed + blocked} task(s) failed or were blocked; completed proposals remain available.`);
+                else msg.setStatus('');
+            };
+            const retainedResults = () => new Map([...graphResults].filter(([, result]) => result.state === 'succeeded').map(([id, result]) => {
+                const cards = cardsByTask.get(id) || [];
+                return [id, result.value?.status === 'staged' && cards.length && cards.every((item) => item.state === 'applied')
+                    ? { ...result, value: { ...result.value, status: 'applied' } } : result];
+            }));
+            const resumeAfterApply = (delay = 0) => {
+                if (resumeTimer || !graphResults || ![...graphResults.values()].some((result) => result.state === 'blocked')) return;
+                resumeTimer = setTimeout(async () => {
+                    resumeTimer = null;
+                    if (!turnDeps.isCurrentSession()) return;
+                    if (isBusy()) { resumeAfterApply(250); return; }
+                    try {
+                        if (selectionFacts.hasSelection) {
+                            const current = _normalizeSelection(await getSelection());
+                            if (current.text.trim() !== selectionText || current.images.length !== selectionImages.length) {
+                                msg.setStatus('Selection changed. Select the target again and resubmit remaining tasks.');
+                                return;
+                            }
+                        }
+                        const continuationController = _beginChatTurn();
+                        try {
+                            graphResults = (await runGraph(continuationController, retainedResults())).results;
+                            setGraphStatus();
+                        } finally { _endChatTurn(continuationController); }
+                    } catch (error) { _reportTurnError(msg, error); }
+                    finally { msg.syncForHistory?.(); _commitSession(); }
+                }, delay);
+            };
+            const observeCard = (taskId, card) => {
+                const record = { state: 'pending' };
+                if (!cardsByTask.has(taskId)) cardsByTask.set(taskId, []);
+                cardsByTask.get(taskId).push(record);
+                for (const [method, state] of Object.entries({ markApplied: 'applied', markRejected: 'rejected', markWarning: 'warning', markError: 'error' })) {
+                    if (typeof card?.[method] !== 'function') continue;
+                    const original = card[method];
+                    card[method] = (...args) => {
+                        const result = original.apply(card, args);
+                        if (record.state !== 'applied' && record.state !== 'rejected' && record.state !== 'warning') {
+                            record.state = state;
+                            if (state === 'applied') resumeAfterApply();
+                            else if (state !== 'error') msg.setStatus('Preceding proposal not applied; dependent tasks stopped.');
+                        }
+                        return result;
+                    };
+                }
+            };
+            const runGraph = (controller, initialResults) => executeTaskGraph(graphInput, async (task, { inputs }) => {
                 msg.setStatus(`Task [${task.type}]: ${task.instruction}`);
                 appState.isProcessing = true;
                 input.setProcessing(true);
@@ -2091,30 +2159,44 @@ export function createConversation(deps) {
                         if (key === 'markError') failure = new Error(String(args[0]));
                         if (key === 'attachProposal') proposals.push(args[1]);
                         if (key === 'setText' || key === 'appendText') answer += args[0] || '';
-                        return value.apply(target, args);
+                        const result = value.apply(target, args);
+                        if (key === 'attachProposal') observeCard(task.taskId, args[0]);
+                        return result;
                     };
                 } });
                 if (task.type !== 'qa' && inputs.some((item) => item.value?.status === 'staged')) {
-                    return { status: 'blocked', error: new Error('This task depends on unapplied changes. Combine related prose work into one document_edit task, or apply the preceding proposal first.') };
+                    return { status: 'blocked', error: new Error('Awaiting a preceding proposal. Apply it to continue, or combine prose edits in one draft.') };
                 }
                 const taskDeps = inputs.length ? { ...turnDeps, conversationHistory: [...turnDeps.conversationHistory,
-                    { role: 'assistant', content: `Prior task results (proposed content is not yet applied): ${JSON.stringify(inputs.map((i) => i.value))}` }] } : turnDeps;
+                    { role: 'assistant', content: `Prior task results: ${JSON.stringify(inputs.map((i) => i.value))}` }] } : turnDeps;
+                const taskTurn = turnForTask(task, selectionFacts);
+                if (turn.temporaryAttachments?.length) {
+                    if (taskTurn.type === TURN_TYPE.DOCUMENT_EDIT) taskTurn.temporaryAttachments = turn.temporaryAttachments;
+                    else {
+                        const context = buildAttachmentContext(turn.temporaryAttachments);
+                        if (typeof taskTurn.question === 'string') {
+                            taskTurn.question += context;
+                            taskTurn.questionImages = splitAttachments(turn.temporaryAttachments).imageAttachments;
+                        } else if (typeof taskTurn.instruction === 'string') taskTurn.instruction += context;
+                    }
+                }
                 const value = await dispatchTurn(
-                    turnForTask(task, selectionFacts), taskMessage, taskDeps,
-                    selectionText, selectionImages, !!hasMultiCellTableRegion, myController
+                    taskTurn, taskMessage, taskDeps,
+                    selectionText, selectionImages, !!hasMultiCellTableRegion, controller
                 );
-                if (myController.signal.aborted) throw new DOMException('Compound turn cancelled.', 'AbortError');
+                if (controller.signal.aborted) throw new DOMException('Compound turn cancelled.', 'AbortError');
                 if (failure) return { status: 'failed', error: failure };
                 return value || { status: proposals.length ? 'staged' : answer ? 'answered' : 'no_op',
                     artifacts: proposals, summary: answer, satisfied: !!answer };
             }, {
-                signal: myController.signal,
+                signal: controller.signal,
+                initialResults,
                 onEvent: (event) => {
                     msg.appendModelToken({ id: 'task-runtime-events' }, 'content', `${JSON.stringify(event)}\\n`);
                 },
             });
-            const incomplete = [...execution.results.values()].filter((r) => ['failed', 'blocked'].includes(r.state));
-            msg.setStatus(incomplete.length ? `${incomplete.length} task(s) failed or were blocked; completed proposals remain available.` : '');
+            graphResults = (await runGraph(myController)).results;
+            setGraphStatus();
         } catch (error) {
             _reportTurnError(msg, error);
         } finally {
@@ -2345,7 +2427,7 @@ export function createConversation(deps) {
         if (temporaryAttachments.length > 0) {
             const context = buildAttachmentContext(temporaryAttachments);
             if (context) {
-                if (turn.type === TURN_TYPE.DOCUMENT_EDIT) turn.temporaryAttachments = temporaryAttachments;
+                if (turn.type === TURN_TYPE.DOCUMENT_EDIT || turn.type === TURN_TYPE.COMPOUND) turn.temporaryAttachments = temporaryAttachments;
                 else if (typeof turn.question === 'string') turn.question += context;
                 else if (typeof turn.instruction === 'string') turn.instruction += context;
             }

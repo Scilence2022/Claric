@@ -23,15 +23,13 @@
  * @module task-planner
  */
 
-import { extractJsonArray } from './json-utils.js';
+import { extractJsonArray, extractJsonObject } from './json-utils.js';
 import { normalizeCompound } from './task-runtime/task-model.js';
 import { validateTaskGraph } from './task-runtime/task-graph.js';
+import { CAPABILITY_BY_TYPE, capabilityPrompt, capabilityTypeList } from './capability-catalog.js';
 
 /** Pipeline task types the planner may emit (allowlist for parsePlan). */
-const TASK_TYPES = [
-    'insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa',
-    'image_management', 'table_management', 'document_edit',
-];
+const TASK_TYPES = capabilityTypeList();
 
 /** A compound instruction decomposes into at most this many tasks. */
 const MAX_TASKS = 6;
@@ -60,41 +58,81 @@ export function buildPlanPrompt(instruction, hasSelection) {
         ? (facts.hasTextSelection ? 'The selection contains image(s) and text.' : 'The selection contains image(s) only.')
         : (facts.hasTextSelection ? 'The selection contains text only.' : 'No image or text selection is active.');
     return (
-        'You are the task planner of a Microsoft Word add-in. The user instruction below may mix several ' +
-        'request types, or may be ambiguous about which pipeline it belongs to. Split it into an ordered ' +
-        'list of atomic tasks, one per specialized pipeline.\n\n' +
-        'CAPABILITIES (task "type"):\n' +
-        '- "document_edit": inspect the article, choose relevant locations, insert or integrate prose, and revise nearby transitions in ONE shared draft with verification. Use for content insertion anywhere except an explicitly requested append, semantic restructuring, source integration, or interdependent prose edits. Keep locating, drafting, transitions, and checking together in one task.\n' +
-        '- "insert": add a short NEW structural element that does not exist yet (e.g. an article title, a heading).\n' +
-        '- "format": change the FORMATTING of existing text (font, size, color, highlight, paragraph style ' +
-        'incl. headings, bulleted/numbered lists, alignment, spacing, indentation) without rewriting it.\n' +
-        '- "edit": rewrite, polish, or otherwise change the CONTENT of existing text.\n' +
-        '- "append": generate NEW long-form content appended at the document end.\n' +
-        '- "table": create a NEW native Word table (with or without generated cell content). Editing the ' +
-        'content of an EXISTING table stays on "edit".\n' +
-        '- "illustration": design and insert an illustration (SVG artwork).\n' +
-        '- "qa": answer a question in chat (no document change).\n' +
-        '- "image_management": modify IMAGES anywhere in the document — size, alignment, alt text, ' +
-        'hyperlink, delete, replace, or a visible Figure legend/caption. Figure caption work must inspect ' +
-        'the selected image pixels and nearby Word context; do not treat selected text as visual evidence. ' +
-        'Editing the visual CONTENT of an image (designed replacement) stays on "illustration".\n' +
-        '- "table_management": modify an EXISTING table anywhere in the document — cell text, row ops, ' +
-        'merges, AND visual styling (table style, borders incl. three-line tables, cell shading/alignment, ' +
-        'fonts, header rows, layout, column widths). Creating a NEW table stays on "table".\n\n' +
-        'OUTPUT CONTRACT (strict):\n' +
-        '- Output ONLY a JSON array. No markdown, no code fences, no explanations, no commentary.\n' +
-        '- Each item: { "taskId": "t1", "type": "insert|format|edit|append|table|illustration|qa|image_management|table_management|document_edit", "instruction": "self-contained ' +
-        'sub-instruction in the user\'s language", "dependsOn": [] }. Dependencies reference existing taskId values.\n' +
-        '- One task per distinct request, in the user\'s original order; each instruction must stand alone ' +
-        '(include needed context, e.g. which paragraph to edit).\n' +
-        '- If the instruction is really a single request, output a single-task array.\n' +
-        '- Cover everything the user asked for; add nothing they did not ask for.\n\n' +
-        '- Preservation phrases (keep formatting/headings) are constraints, not separate formatting tasks. A polite question such as "can you insert ..." can be an action request. Explicit document scope overrides an incidental selection.\n' +
-        '- Related prose operations must be one document_edit task so later edits see the draft. Other write pipelines produce unapplied proposals; do not assume they are already in Word. A dependent qa task may discuss their proposed results.\n' +
+        'Plan the complete user outcome for a Microsoft Word add-in. Treat the request as open-ended: the capabilities below are executable, not an exhaustive list of possible requests. Do not map an unsupported action to an approximate capability.\n\n' +
+        'CAPABILITIES (task "type"):\n' + capabilityPrompt() + '\n\n' +
+        'OUTPUT CONTRACT (strict): Return ONLY one JSON object: {"requirements":[{"id":"r1","kind":"action|constraint","outcome":"document|answer" for actions,"text":"exact user need"}],"tasks":[{"taskId":"t1","type":"' + TASK_TYPES.join('|') + '","instruction":"self-contained subtask in user language","covers":["r1"],"dependsOn":[]}],"unsupported":[{"requirementId":"r2","reason":"specific missing Word action"}]}.\n' +
+        '- Identify every requested action and preservation/scope/source constraint separately. Each action must be covered by exactly one executable task or named in unsupported. Constraints may cover several tasks. No missing or invented requirements.\n' +
+        '- Use one document_edit task for interdependent prose insertion, transition edits, and bold/italic formatting of its NEW paragraphs. Other pipelines cannot read another unapplied proposal. Mark write-after-write dependencies with dependsOn; do not pretend they share a draft.\n' +
+        '- Ask for no unavailable ability: e.g. deleting footnotes or editing reference fields is unsupported. Existing table cell edits use table_management. A question uses qa only when the user wants an answer in chat.\n' +
+        '- At most 6 tasks and 16 requirements. Preserve scope and constraints in each task instruction. Dependencies use taskId values and must be acyclic. If everything is unsupported, tasks may be empty.\n' +
         `CONTEXT: the user currently has ${selectionLabel}. ${selectionKind}\n` +
         (facts.hasMultiCellTableRegion ? 'The selection covers a multi-cell table region.\n' : '') +
         '\nUSER INSTRUCTION:\n' + (instruction || '').trim()
     );
+}
+
+/** Parse the auditable plan used for open-ended and compound requests. */
+export function parseCapabilityPlan(raw, log = (_message, _level) => {}) {
+    let value;
+    try { value = extractJsonObject(raw); } catch (error) { log(`Task planner: ${error.message}`, 'warning'); return null; }
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || !Array.isArray(value.requirements) || !value.requirements.length || value.requirements.length > 16
+        || !Array.isArray(value.tasks) || value.tasks.length > MAX_TASKS
+        || !Array.isArray(value.unsupported) || value.unsupported.length > 16) return null;
+    const ids = new Set();
+    const requirements = [];
+    for (const item of value.requirements) {
+        if (!item || typeof item !== 'object' || typeof item.id !== 'string'
+            || !/^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(item.id) || ids.has(item.id)
+            || !['action', 'constraint'].includes(item.kind) || typeof item.text !== 'string'
+            || !item.text.trim() || item.text.length > 1000
+            || (item.kind === 'action' && !['document', 'answer'].includes(item.outcome))) return null;
+        ids.add(item.id);
+        requirements.push({ id: item.id, kind: item.kind, ...(item.kind === 'action' ? { outcome: item.outcome } : {}), text: item.text.trim() });
+    }
+    const unsupported = [];
+    const unsupportedIds = new Set();
+    for (const item of value.unsupported) {
+        if (!item || !ids.has(item.requirementId) || unsupportedIds.has(item.requirementId)
+            || typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 1000) return null;
+        unsupportedIds.add(item.requirementId);
+        unsupported.push({ requirementId: item.requirementId, reason: item.reason.trim() });
+    }
+    if (value.tasks.some((item) => !item || typeof item.taskId !== 'string')) return null;
+    /** @type {Array<any>|null} */
+    const tasks = parsePlan(JSON.stringify(value.tasks), log) || (value.tasks.length === 0 ? [] : null);
+    if (!tasks) return null;
+    const covered = new Map(requirements.map((item) => [item.id, []]));
+    for (const task of tasks) {
+        const source = value.tasks.find((item) => item.taskId === task.taskId);
+        if (!source || !Array.isArray(source.covers) || !source.covers.length
+            || source.covers.some((id) => !ids.has(id) || unsupportedIds.has(id))) return null;
+        task.covers = [...new Set(source.covers)];
+        if (task.covers.length !== source.covers.length) return null;
+        const capability = CAPABILITY_BY_TYPE.get(task.type);
+        for (const id of task.covers) {
+            const requirement = requirements.find((item) => item.id === id);
+            if (requirement.kind === 'action' && requirement.outcome !== capability.effect) return null;
+            covered.get(id).push(task.taskId);
+        }
+    }
+    if (requirements.some((item) => !unsupportedIds.has(item.id)
+        && (covered.get(item.id).length === 0 || (item.kind === 'action' && covered.get(item.id).length !== 1)))) return null;
+    if (!tasks.length && !unsupported.length) return null;
+    return { requirements, tasks, unsupported };
+}
+
+/** A separate model checks whether the plan represents the original request. */
+export function parsePlanReview(raw, requirementIds) {
+    let value;
+    try { value = extractJsonObject(raw); } catch (_error) { return null; }
+    if (value?.complete !== true || value.unsupportedAccurate !== true
+        || !Array.isArray(value.checks) || value.checks.length !== requirementIds.length
+        || !Array.isArray(value.missing) || value.missing.length
+        || !Array.isArray(value.invented) || value.invented.length) return null;
+    const checks = new Map(value.checks.map((item) => [item?.requirementId, item]));
+    if (checks.size !== requirementIds.length || requirementIds.some((id) => checks.get(id)?.represented !== true)) return null;
+    return { complete: true, summary: typeof value.summary === 'string' ? value.summary.slice(0, 1000) : '' };
 }
 
 /**

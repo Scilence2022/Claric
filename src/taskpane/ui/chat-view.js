@@ -679,6 +679,10 @@ export function createAssistantMessage() {
      */
     function _syncFinalizedProposals() {
         if (!finalizedRecord || !isCurrentSession()) return;
+        finalizedRecord.text = streamed || '';
+        finalizedRecord.status = lastStatus || '';
+        finalizedRecord.error = lastError;
+        finalizedRecord.citations = trackedCitations.slice();
         finalizedRecord.proposals = trackedProposals.map(_proposalRecordFromMeta);
         finalizedRecord.ts = new Date().toISOString();
         _currentSessionUpdatedAt = finalizedRecord.ts;
@@ -689,6 +693,18 @@ export function createAssistantMessage() {
                 // Persistence errors must never break the live card.
             }
         }
+    }
+
+    function _schedulePendingAutoApply() {
+        if (!pendingAutoApplyCards.length) return;
+        const cardsToApply = pendingAutoApplyCards.splice(0);
+        setTimeout(async () => {
+            for (const { card: cardToApply, meta } of cardsToApply) {
+                if (!isCurrentSession() || el.classList.contains('chat-message-error') || appState.config.autoApplyChanges !== true || appState.config.trackChangesEnabled === false) break;
+                if (meta.state !== 'pending') continue;
+                try { await cardToApply.applyAll(); } catch (_err) { /* The card reports its own failure. */ }
+            }
+        }, 0);
     }
 
     if (_currentSessionId === null) {
@@ -855,6 +871,7 @@ export function createAssistantMessage() {
             if (meta) {
                 _wrapProposalCard(card, meta, _syncFinalizedProposals);
                 trackedProposals.push(meta);
+                if (finalized) _syncFinalizedProposals();
             }
             extrasEl.appendChild(card.el);
             _scrollToBottom();
@@ -899,23 +916,7 @@ export function createAssistantMessage() {
                 pendingAutoApplyCards.length = 0;
                 return;
             }
-            if (pendingAutoApplyCards.length > 0) {
-                const cardsToApply = pendingAutoApplyCards.splice(0);
-                // Sequential drain: a card's apply owns the cross-card
-                // mutex and the document busy flags while in flight, so
-                // concurrent applyAll calls would refuse each other.
-                setTimeout(async () => {
-                    for (const { card: cardToApply, meta } of cardsToApply) {
-                        if (!isCurrentSession() || el.classList.contains('chat-message-error') || appState.config.autoApplyChanges !== true || appState.config.trackChangesEnabled === false) break;
-                        if (meta.state !== 'pending') continue;
-                        try {
-                            await cardToApply.applyAll();
-                        } catch (_err) {
-                            // onApply reports its own failure on the card.
-                        }
-                    }
-                }, 0);
-            }
+            _schedulePendingAutoApply();
             _currentSessionUpdatedAt = new Date().toISOString();
             const now = new Date().toISOString();
             finalizedRecord = {
@@ -933,6 +934,11 @@ export function createAssistantMessage() {
                 ts: now,
             };
             _currentSessionMessages.push(finalizedRecord);
+        },
+        /** Persist tasks added by an application-dependent continuation. */
+        syncForHistory() {
+            _syncFinalizedProposals();
+            _schedulePendingAutoApply();
         },
     };
 }

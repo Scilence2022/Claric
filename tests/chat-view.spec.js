@@ -353,6 +353,19 @@ describe('proposal state persistence', () => {
     expect(onStateChange).toHaveBeenCalledTimes(1);
   });
 
+  test('a continuation can persist a new pending card and its latest status', () => {
+    const msg = createAssistantMessage();
+    msg.setStatus('Waiting for the first proposal');
+    msg.finalizeForHistory();
+    attachCard(msg, { title: 'Follow-up table', state: 'pending', countsText: '', items: [] });
+    msg.setStatus('Follow-up table is ready');
+    msg.syncForHistory();
+    const record = getCurrentSession().messages[0];
+    expect(record.proposals).toHaveLength(1);
+    expect(record.proposals[0].title).toBe('Follow-up table');
+    expect(record.status).toBe('Follow-up table is ready');
+  });
+
   test('markError also syncs and can be superseded by a later apply', () => {
     const msg = createAssistantMessage();
     const meta = { title: 't', state: 'pending', countsText: '', items: [] };

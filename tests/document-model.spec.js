@@ -32,6 +32,20 @@ test('inserts at a chosen gap, edits the inserted draft and compiles against ori
     expect(snapshot().blocks[4].text).toBe('Limitations remain.');
 });
 
+test('new prose and its requested formatting share one validated draft', () => {
+    const model = ready();
+    model.stage({ operations: [insert] });
+    model.stage({ operations: [{ kind: 'format_new', blockId: 'draft-1', format: { bold: true, italic: true },
+        reason: 'Emphasize the new discussion.' }] });
+    expect(model.compile().changes[0]).toMatchObject({ kind: 'insert',
+        paragraphs: ['XXX adds another interpretation.'], paragraphFormats: [{ bold: true, italic: true }] });
+    expect(model.preview().after.find((item) => item.id === 'draft-1').format).toEqual({ bold: true, italic: true });
+    expect(() => model.stage({ operations: [{ kind: 'format_new', blockId: 'p4', format: { bold: true }, reason: 'x' }] }))
+        .toThrow(/newly inserted/);
+    expect(() => model.stage({ operations: [{ kind: 'format_new', blockId: 'draft-1', format: { color: 'red' }, reason: 'x' }] }))
+        .toThrow(/bold and italic/);
+});
+
 test('outline and search are paged previews and do not grant unread write targets', () => {
     const model = createDocumentModel(snapshot());
     expect(model.outline({ offset: 1, limit: 2 })).toMatchObject({ total: 5, nextOffset: 3 });

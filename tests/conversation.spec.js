@@ -158,6 +158,19 @@ describe('routeTurn', () => {
     }
   });
 
+  test('a prose insertion followed by a distinct or unsupported action reaches coverage planning', () => {
+    for (const instruction of [
+      '请在文章的合适位置插入讨论并加粗新段落',
+      '请在文章的合适位置插入讨论并删除全部脚注',
+      'Insert a discussion and delete all footnotes',
+    ]) {
+      expect(routeTurn(instruction, { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+        .toBe(TURN_TYPE.COMPOUND);
+    }
+    expect(routeTurn('如何插入讨论并加粗新段落？', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOC_QA);
+  });
+
   test('explanatory questions remain questions', () => {
     expect(routeTurn('如何在文章的合适位置插入讨论？', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
       .toBe(TURN_TYPE.DOC_QA);
@@ -757,8 +770,9 @@ describe('createConversation.submit', () => {
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
   });
 
-  test('chained instruction on a non-table selection falls back to single-shot', async () => {
-    const actions = makeActions({ prepareTableToolEdit: jest.fn(async () => null) });
+  test('chained instruction on a non-table selection is planned as one text task', async () => {
+    const actions = makeActions({ prepareTableToolEdit: jest.fn(async () => null),
+      planDocumentTasks: jest.fn(async () => ({ tasks: [{ type: 'edit', instruction: '先润色，然后压缩这段话' }] })) });
     const conv = createConversation({
       appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(),
       actions, getSelectionText: async () => 'plain text',
@@ -766,6 +780,7 @@ describe('createConversation.submit', () => {
 
     await conv.submit('先润色，然后压缩这段话');
 
+    expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
     expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
     expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
   });
@@ -1820,6 +1835,55 @@ describe('createConversation.submit', () => {
     expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('failed or were blocked'));
   });
 
+  test('dependent Word task resumes after the prior proposal is applied', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'heading', type: 'format', instruction: 'Add a heading' },
+      { taskId: 'table', type: 'table', instruction: 'Add a table below that heading', dependsOn: ['heading'] },
+    ] })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '' });
+    await conv.submit('增加标题，然后在其下方插入表格');
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableProposal).not.toHaveBeenCalled();
+    const firstCard = view._msg.attachProposal.mock.calls[0][0];
+    await firstCard.applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(actions.applyFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableProposal).toHaveBeenCalledTimes(1);
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
+  });
+
+  test('a rejected dependency never starts its dependent Word task', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'heading', type: 'format', instruction: 'Add a heading' },
+      { taskId: 'table', type: 'table', instruction: 'Add a table below that heading', dependsOn: ['heading'] },
+    ] })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '' });
+    await conv.submit('增加标题，然后在其下方插入表格');
+    view._msg.attachProposal.mock.calls[0][0].markRejected();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(actions.prepareTableProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('dependent tasks stopped'));
+  });
+
+  test('unsupported requirements prevent partial compound dispatch', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({
+      requirements: [{ id: 'r1', text: 'Add a heading' }, { id: 'r2', text: 'Delete all footnotes' }],
+      tasks: [{ taskId: 'heading', type: 'format', instruction: 'Add a heading' }],
+      unsupported: [{ requirementId: 'r2', reason: 'Footnote deletion is unavailable' }],
+    })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '' });
+    await conv.submit('增加标题，同时删除全部脚注');
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('Delete all footnotes'));
+  });
+
   test('compound turn dispatches image_management/table_management to document-scope tool sessions', async () => {
     const appState = makeAppState();
     const view = makeView();
@@ -2280,6 +2344,19 @@ describe('createConversation.submit with file attachments', () => {
     expect(actions.answerQuestion.mock.calls[0][1].question).not.toContain('Reference for editing only');
     expect(actions.answerQuestion.mock.calls[0][0].fileReferences[0].fileId).toBe(reference.fileId);
     expect(actions.prepareSelectionAmendment.mock.calls[0][1].promptTemplate).toContain('Reference for editing only');
+  });
+
+  test('temporary sources reach compound executors without becoming planner instructions', async () => {
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { type: 'qa', instruction: 'Summarize the source' },
+      { type: 'format', instruction: 'Add a heading' },
+    ] })) });
+    const conv = createConversation({ appState: makeAppState(), view: makeView(), input: makeInput(),
+      log: jest.fn(), actions, getSelectionText: async () => '' });
+    await conv.submit('增加标题，并深度润色修改', [{ name: 'notes.txt', kind: 'text', size: 13, text: 'Evidence 1234' }]);
+    expect(actions.planDocumentTasks.mock.calls[0][1].instruction).not.toContain('Evidence 1234');
+    expect(actions.answerQuestion.mock.calls[0][1].question).toContain('Evidence 1234');
+    expect(actions.prepareFormatProposal.mock.calls[0][1].instruction).toContain('Evidence 1234');
   });
 
   test.each(['deleted', 'version'])('non-QA attachment %s errors prevent using cached composer text', async (kind) => {

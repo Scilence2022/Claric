@@ -36,6 +36,16 @@ test('completes insertion, draft inspection and independent review before return
     ]);
 });
 
+test('a prose insertion can be formatted before the same draft is reviewed', async () => {
+    const send = scripted([contract, read, insert, call('read_draft'),
+        call('stage_patch', { operations: [{ kind: 'format_new', blockId: 'draft-1', format: { bold: true }, reason: 'Requested emphasis.' }] }),
+        call('read_draft'), call('validate_patch'), review(), finish]);
+    const result = await runDocumentEditSession({ snapshot, instruction: 'Insert XXX and bold the new paragraph.', send });
+    expect(result.patch.changes[0].paragraphFormats).toEqual([{ bold: true }]);
+    const reviewRequest = send.mock.calls.find(([messages]) => messages[0].content.startsWith('Review a PROPOSED'))[0];
+    expect(reviewRequest[1].content).toContain('"bold":true');
+});
+
 test('premature finish and invalid arguments get observations; failed semantic review can be repaired', async () => {
     const send = scripted([finish, contract, call('stage_patch', { operations: [] }), read, insert,
         call('validate_patch'), call('read_draft'), call('validate_patch'), review({ satisfied: false, issues: ['Transition is abrupt.'] }),
