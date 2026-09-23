@@ -57,38 +57,39 @@ describe('parsePlan', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('no valid tasks'), 'warning');
   });
 
-  test('unknown task types are dropped with a warning', () => {
+  test('unknown task types reject the entire plan rather than dropping a requirement', () => {
     const log = jest.fn();
     const tasks = parsePlan('[{"type":"delete","instruction":"删掉全文"},{"type":"format","instruction":"全文居中"}]', log);
-    expect(tasks).toEqual([{ type: 'format', instruction: '全文居中' }]);
+    expect(tasks).toBeNull();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('unknown type'), 'warning');
   });
 
-  test('tasks with empty instructions are dropped', () => {
+  test('tasks with empty instructions reject the plan', () => {
     const log = jest.fn();
     const tasks = parsePlan('[{"type":"edit","instruction":"  "},{"type":"append","instruction":"续写结尾"}]', log);
-    expect(tasks).toEqual([{ type: 'append', instruction: '续写结尾' }]);
+    expect(tasks).toBeNull();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('empty instruction'), 'warning');
   });
 
-  test('non-object entries are dropped; non-string instructions are coerced', () => {
+  test('malformed entries reject the plan without coercing instructions', () => {
     const tasks = parsePlan('[null,"x",{"type":"edit","instruction":42}]');
-    expect(tasks).toEqual([{ type: 'edit', instruction: '42' }]);
+    expect(tasks).toBeNull();
   });
 
-  test('the plan is capped at MAX_TASKS with a warning', () => {
+  test('too many tasks reject the plan without truncating it', () => {
     const log = jest.fn();
     const many = Array.from({ length: 8 }, (_, i) => ({ type: 'format', instruction: `task ${i}` }));
     const tasks = parsePlan(JSON.stringify(many), log);
-    expect(tasks).toHaveLength(6);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('capped at 6'), 'warning');
+    expect(tasks).toBeNull();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('exceeds 6'), 'warning');
   });
 
-  test('overlong instructions are truncated with a warning', () => {
+  test('long instructions retain constraints and over-limit instructions are rejected', () => {
     const log = jest.fn();
     const tasks = parsePlan(JSON.stringify([{ type: 'edit', instruction: 'x'.repeat(600) }]), log);
-    expect(tasks[0].instruction).toHaveLength(500);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('truncated'), 'warning');
+    expect(tasks[0].instruction).toHaveLength(600);
+    expect(parsePlan(JSON.stringify([{ type: 'edit', instruction: 'x'.repeat(4001) }]), log)).toBeNull();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('exceeds 4000'), 'warning');
   });
 });
 
@@ -129,4 +130,25 @@ describe('buildPlanPrompt', () => {
       expect(contract).toContain(type);
     }
   });
+});
+
+test('document editing plans preserve dependency, resource and artifact references', () => {
+  expect(parsePlan(JSON.stringify([
+    { taskId: 'draft', type: 'document_edit', instruction: 'Integrate discussion', resources: ['body'] },
+    { id: 'explain', type: 'qa', instruction: 'Explain the proposal', dependsOn: ['draft'], inputRefs: ['draft:0'] },
+  ]))).toEqual([
+    { taskId: 'draft', type: 'document_edit', instruction: 'Integrate discussion', resources: ['body'] },
+    { taskId: 'explain', type: 'qa', instruction: 'Explain the proposal', dependsOn: ['draft'], inputRefs: ['draft:0'] },
+  ]);
+});
+
+test.each([
+  [{ taskId: 'a', type: 'edit', instruction: 'x', dependsOn: ['missing'] }],
+  [{ taskId: 'a', type: 'edit', instruction: 'x', dependsOn: ['a'] }],
+  [{ taskId: 'a', type: 'edit', instruction: 'x' }, { taskId: 'a', type: 'qa', instruction: 'y' }],
+  [{ taskId: 'bad id', type: 'edit', instruction: 'x' }],
+  [{ type: 'edit', instruction: 'x', resources: 'body' }],
+  [{ type: 'edit', instruction: 'x', inputRefs: [42] }],
+])('invalid graph metadata rejects the complete plan', (tasks) => {
+  expect(parsePlan(JSON.stringify(tasks))).toBeNull();
 });

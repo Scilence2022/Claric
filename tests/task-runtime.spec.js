@@ -49,3 +49,48 @@ test('task events and proposal aggregate preserve metadata', () => {
   expect(aggregate.add({ kind: 'format' }, { taskId: 'a', attemptId: '1' })).toMatchObject({ graphId: 'g', taskId: 'a', attemptId: '1' });
   expect(aggregate.size).toBe(1);
 });
+
+test('explicit runner failure blocks dependent tasks and still runs independent work', async () => {
+  const execute = jest.fn(async (task) => task.taskId === 'a' ? { status: 'failed', error: new Error('Preparation failed') } : { status: 'answered' });
+  const events = [];
+  const { results } = await executeTaskGraph({ tasks: [
+    { taskId: 'c', dependsOn: ['b'] }, { taskId: 'a' }, { taskId: 'b', dependsOn: ['a'] }, { taskId: 'd' },
+  ] }, execute, { onEvent: (e) => events.push(e) });
+  expect(execute.mock.calls.map(([t]) => t.taskId)).toEqual(['a', 'd']);
+  expect(results.get('a').state).toBe('failed');
+  expect(results.get('b').state).toBe('blocked');
+  expect(results.get('c').state).toBe('blocked');
+  expect(events.some((e) => e.taskId === 'a' && e.type === 'task.succeeded')).toBe(false);
+});
+
+test('staged results carry artifacts into later tasks but emit staged rather than applied success', async () => {
+  const events = [];
+  const execute = jest.fn(async (task, ctx) => task.taskId === 'a'
+    ? { status: 'staged', artifacts: [{ after: 'Draft text' }] }
+    : { status: 'answered', summary: ctx.inputs[1].value.after });
+  const result = await executeTaskGraph({ tasks: [{ taskId: 'a' }, { taskId: 'b', dependsOn: ['a'], inputRefs: ['a:0'] }] }, execute, { onEvent: (e) => events.push(e) });
+  expect(result.results.get('b').value.summary).toBe('Draft text');
+  expect(events.some((e) => e.type === 'task.staged')).toBe(true);
+});
+
+test.each([false, true])('only verified no-op satisfies dependencies: %s', async (satisfied) => {
+  const execute = jest.fn(async () => ({ status: 'no_op', satisfied }));
+  const { results } = await executeTaskGraph({ tasks: [{ taskId: 'a' }, { taskId: 'b', dependsOn: ['a'] }] }, execute);
+  expect(execute).toHaveBeenCalledTimes(satisfied ? 2 : 1);
+  expect(results.get('a').state).toBe(satisfied ? 'succeeded' : 'failed');
+  if (!satisfied) expect(results.get('b').state).toBe('blocked');
+});
+
+test('missing artifacts and explicit blocked outcomes do not report success', async () => {
+  const execute = jest.fn(async () => ({ status: 'blocked', error: new Error('Awaiting application') }));
+  const { results } = await executeTaskGraph({ tasks: [{ taskId: 'a', inputRefs: ['missing'] }, { taskId: 'b' }] }, execute);
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect([...results.values()].map((r) => r.state)).toEqual(['blocked', 'blocked']);
+});
+
+test('abort after a normal runner return stops the rest of the ready batch', async () => {
+  const controller = new AbortController();
+  const execute = jest.fn(async () => { controller.abort(); return { status: 'staged' }; });
+  await expect(executeTaskGraph({ tasks: [{ taskId: 'a' }, { taskId: 'b' }] }, execute, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+  expect(execute).toHaveBeenCalledTimes(1);
+});

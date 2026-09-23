@@ -145,6 +145,24 @@ function makeActions(overrides = {}) {
 }
 
 describe('routeTurn', () => {
+  test.each([
+    '请在文章的合适位置插入XXX相关的内容和讨论',
+    '请把XXX相关的内容和讨论插入到文档的合适位置',
+    '你能在文章的合适位置插入XXX相关的内容和讨论吗？',
+    'Can you insert a discussion of XXX at an appropriate place in the article?',
+    '请在文章的合适位置插入XXX相关的内容和讨论，保留各级标题和格式',
+  ])('routes location-dependent prose to one document draft: %s', (instruction) => {
+    for (const hasSelection of [false, true]) {
+      expect(routeTurn(instruction, { hasSelection, skills: BUILTIN_SKILLS }))
+        .toMatchObject({ type: TURN_TYPE.DOCUMENT_EDIT, instruction });
+    }
+  });
+
+  test('explanatory questions remain questions', () => {
+    expect(routeTurn('如何在文章的合适位置插入讨论？', { hasSelection: false, skills: BUILTIN_SKILLS }).type)
+      .toBe(TURN_TYPE.DOC_QA);
+  });
+
   test('slash command routes to skill turn', () => {
     const turn = routeTurn('/copy-edit', { hasSelection: true, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.SKILL);
@@ -619,6 +637,74 @@ describe('routeTurn', () => {
 });
 
 describe('createConversation.submit', () => {
+  test('semantic insertion stages one reviewable patch and applies it once', async () => {
+    const view = makeView();
+    const proposal = {
+      status: 'staged', summary: 'Add mechanism discussion',
+      preview: { before: [{ text: 'Mechanism.' }, { text: 'Limitations.' }],
+        after: [{ text: 'Mechanism.' }, { text: 'New discussion.' }, { text: 'Limitations.' }] },
+      patch: { changes: [{ reason: 'This location connects the mechanism to its limitations.' }] },
+    };
+    const actions = makeActions({
+      prepareDocumentEdit: jest.fn(async () => proposal),
+      applyDocumentEdit: jest.fn(async () => ({ applied: true, verified: true })),
+      discardDocumentEdit: jest.fn(async () => {}),
+    });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'Incidental selection' });
+    const instruction = '请在文章的合适位置插入XXX相关的内容和讨论，保留各级标题和格式';
+    await conv.submit(instruction);
+    expect(actions.prepareDocumentEdit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      instruction, selectionText: 'Incidental selection',
+    }));
+    expect(actions.planDocumentTasks).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    expect(card.el.textContent).toContain('New discussion.');
+    expect(actions.applyDocumentEdit).not.toHaveBeenCalled();
+    card.el.querySelector('.btn-primary').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(actions.applyDocumentEdit).toHaveBeenCalledTimes(1);
+    expect(actions.discardDocumentEdit).toHaveBeenCalledTimes(1);
+    expect(card.el.classList.contains('proposal-applied')).toBe(true);
+  });
+
+  test('a reviewed no-op or preparation failure never presents a document patch', async () => {
+    for (const outcome of [{ status: 'no_op', review: { summary: 'Already covered.' } }, new Error('Review failed')]) {
+      const view = makeView();
+      const actions = makeActions({
+        prepareDocumentEdit: jest.fn(async () => { if (outcome instanceof Error) throw outcome; return outcome; }),
+        discardDocumentEdit: jest.fn(async () => {}),
+      });
+      const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+        actions, getSelectionText: async () => '' });
+      await conv.submit('请在文章合适位置插入新的讨论内容');
+      expect(view._msg.attachProposal).not.toHaveBeenCalled();
+      if (outcome instanceof Error) expect(view._msg.markError).toHaveBeenCalledWith('Review failed');
+      else expect(view._msg.setStatus).toHaveBeenCalledWith('Already covered.');
+    }
+  });
+
+  test('partial Word application leaves the proposal in a warning state', async () => {
+    const view = makeView();
+    const proposal = { status: 'staged', summary: 'Add discussion', preview: {
+      before: [{ text: 'Old.' }], after: [{ text: 'Old.' }, { text: 'New.' }],
+    }, patch: { changes: [{ reason: 'Relevant location' }] } };
+    const actions = makeActions({ prepareDocumentEdit: jest.fn(async () => proposal),
+      applyDocumentEdit: jest.fn(async () => ({ partial: true, verified: false, warnings: ['Host sync failed'] })),
+      discardDocumentEdit: jest.fn(async () => {}) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '' });
+    await conv.submit('在文章合适位置插入新的讨论内容');
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    card.el.querySelector('.btn-primary').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(card.el.classList.contains('proposal-warning')).toBe(true);
+    expect(card.el.classList.contains('proposal-applied')).toBe(false);
+    expect(card.el.textContent).toContain('Host sync failed');
+  });
+
+
   test('free text + selection runs the selection-edit pipeline (proposal card, no direct apply)', async () => {
     const appState = makeAppState();
     const view = makeView();
@@ -1718,6 +1804,22 @@ describe('createConversation.submit', () => {
     expect(staged.apply).not.toHaveBeenCalled();
   });
 
+  test('a failed compound task blocks a dependent task and emits truthful states', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'format', type: 'format', instruction: 'Bold the heading' },
+      { taskId: 'answer', type: 'qa', instruction: 'Summarize the result', dependsOn: ['format'] },
+    ] })), prepareFormatProposal: jest.fn(async () => { throw new Error('Preparation failed'); }) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '' });
+    await conv.submit('增加标题，并深度润色修改');
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+    const events = view._msg.appendModelToken.mock.calls.map((call) => call[2]).join('');
+    expect(events).toContain('task.failed');
+    expect(events).toContain('task.blocked');
+    expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('failed or were blocked'));
+  });
+
   test('compound turn dispatches image_management/table_management to document-scope tool sessions', async () => {
     const appState = makeAppState();
     const view = makeView();
@@ -1799,7 +1901,7 @@ describe('createConversation.submit', () => {
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
   });
 
-  test('compound turn falls back to single-intent routing when planning fails', async () => {
+  test('compound planning failure does not dispatch an incomplete subset of the request', async () => {
     const appState = makeAppState();
     const view = makeView();
     const actions = makeActions({
@@ -1812,10 +1914,10 @@ describe('createConversation.submit', () => {
 
     await conv.submit('增加标题，并深度润色修改');
 
-    // Single-intent fallback: 标题 -> format pipeline (document scope).
-    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
-    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('Task planning failed'));
   });
 
   test('ambiguous zero-hit instruction goes through the planner, then the classified pipeline runs', async () => {
@@ -1842,7 +1944,7 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).not.toHaveBeenCalled();
   });
 
-  test('ambiguous input falls back to Q&A when planning fails', async () => {
+  test('ambiguous editing input remains a failed task when planning fails', async () => {
     const appState = makeAppState();
     const view = makeView();
     const actions = makeActions({
@@ -1855,8 +1957,8 @@ describe('createConversation.submit', () => {
 
     await conv.submit('让文章更有感染力');
 
-    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
-    expect(actions.answerQuestion.mock.calls[0][1].question).toBe('让文章更有感染力');
+    expect(actions.answerQuestion).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('Task planning failed'));
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
   });
 
@@ -2448,6 +2550,8 @@ describe('createConversation.cancel', () => {
     const appState = makeAppState();
     const view = makeView();
     const input = makeInput();
+    let markStarted;
+    const taskStarted = new Promise((resolve) => { markStarted = resolve; });
     const actions = makeActions({
       planDocumentTasks: jest.fn(async () => ({
         tasks: [
@@ -2458,6 +2562,7 @@ describe('createConversation.cancel', () => {
       })),
       // Task one hangs until its signal aborts — as a real stream would.
       prepareFormatProposal: jest.fn((deps, args) => new Promise((_resolve, reject) => {
+        markStarted();
         args.signal.addEventListener('abort', () =>
           reject(new DOMException('The operation was aborted.', 'AbortError')));
       })),
@@ -2468,9 +2573,7 @@ describe('createConversation.cancel', () => {
     });
 
     const inFlight = conv.submit('增加标题，并深度润色修改');
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await taskStarted;
     expect(appState.chatController).not.toBeNull();
 
     conv.cancel();
@@ -2621,7 +2724,7 @@ describe('turn lifecycle guards', () => {
     expect(input.setProcessing).toHaveBeenLastCalledWith(false);
   });
 
-  test('planning failure re-routes with the table-region flag intact', async () => {
+  test('planning failure retains selection facts but does not dispatch partial table work', async () => {
     const appState = makeAppState();
     const view = makeView();
     const actions = makeActions({
@@ -2647,9 +2750,9 @@ describe('turn lifecycle guards', () => {
     await conv.submit('表头加粗，并润色');
 
     expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
-    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit).not.toHaveBeenCalled();
     expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
-    expect(view._msg.setText).toHaveBeenCalledWith('reviewed');
+    expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('Task planning failed'));
   });
 
   test('routeTurn carries the table-region flag on compound turns', () => {

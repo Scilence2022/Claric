@@ -286,6 +286,8 @@ function _callFingerprint(name, args) {
  *   multimodal parts array on attachment-bearing observations)
  * @param {number} [args.maxSteps=TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT]
  * @param {AbortSignal} [args.signal]
+ * @param {function(object): Promise<{ok: boolean, error?: string}>} [args.validateFinish] -
+ *   Optional task-specific completion gate. A refusal becomes an observation so the agent can repair its work.
  * @param {function({step: number, call: {tool: string, args: object}|null,
  *   ok: boolean|null, text: string}): void} [args.onStep] - Per-event hook
  *   (model reply, each observation) for UI activity
@@ -299,7 +301,7 @@ function _callFingerprint(name, args) {
  */
 export async function runToolLoop({
     systemPrompt, taskPrompt, tools, execute, send, conversationHistory = [],
-    maxSteps = TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT, signal, onStep,
+    maxSteps = TOOL_LOOP_LIMITS.MAX_STEPS_DEFAULT, signal, onStep, validateFinish,
 }) {
     const known = new Set((Array.isArray(tools) ? tools : []).map((t) => t.name));
     /** @type {Array<{role: string, content: string | Array<object>}>} */
@@ -357,6 +359,16 @@ export async function runToolLoop({
             continue;
         }
         if (name === FINISH_TOOL) {
+            if (validateFinish) {
+                const checked = await validateFinish(toolArgs);
+                checkAbort();
+                if (!checked?.ok) {
+                    const observation = { ok: false, error: checked?.error || 'Task completion checks have not passed.' };
+                    messages.push({ role: 'user', content: JSON.stringify(observation) });
+                    if (onStep) onStep({ step: steps, call: { tool: name, args: toolArgs }, ok: false, text: observation.error });
+                    continue;
+                }
+            }
             summary = typeof toolArgs.summary === 'string' ? toolArgs.summary : '';
             if (onStep) onStep({ step: steps, call: { tool: name, args: toolArgs }, ok: true, text: summary });
             checkAbort();
