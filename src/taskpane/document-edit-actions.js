@@ -13,6 +13,9 @@ import { defineTool } from '../lib/tool-registry.js';
 let sequence = 0;
 const protectedXml = /<(?:\w+:)?(?:drawing|object|pict|fldChar|fldSimple|sdt|footnoteReference|endnoteReference|oMath|ins|del|moveFrom|moveTo)\b/;
 const clean = (value) => String(value || '').replace(/\r?\n|\r/g, '\n').replace(/\n$/, '');
+const validNewFormat = (value) => value === null || (value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length > 0 && Object.keys(value).every((key) => ['bold', 'italic'].includes(key)
+        && typeof value[key] === 'boolean'));
 function check(signal) { if (signal?.aborted) throw new DOMException('Document editing cancelled.', 'AbortError'); }
 function finalText(xml) {
     const value = extractFinalTextFromOoxml(xml);
@@ -70,7 +73,10 @@ export async function anchorDocumentEdit(snapshot, patch, { signal } = {}) {
                 || (left?.index ?? -1) + 1 !== (right?.index ?? snapshot.blocks.length)
                 || (!left || left.inTable) && (!right || right.inTable)
                 || !Array.isArray(change.paragraphs) || !change.paragraphs.length
-                || change.paragraphs.some((p) => typeof p !== 'string' || !p.trim() || /[\r\n]/.test(p))) throw new Error('Invalid insertion boundary.');
+                || change.paragraphs.some((p) => typeof p !== 'string' || !p.trim() || /[\r\n]/.test(p))
+                || (change.paragraphFormats !== undefined && (!Array.isArray(change.paragraphFormats)
+                    || change.paragraphFormats.length !== change.paragraphs.length
+                    || change.paragraphFormats.some((format) => !validNewFormat(format))))) throw new Error('Invalid insertion boundary or paragraph format.');
             if (left) ids.add(left.id);
             if (right) ids.add(right.id);
         } else throw new Error('Unsupported document patch operation.');
@@ -252,14 +258,17 @@ export async function applyDocumentEdit(deps, proposal, { signal } = {}) {
                     const paragraph = targets.get(id);
                     const bodyStyle = [anchor.anchors[change.beforeId]?.block, left?.block]
                         .find((b) => b && !b.headingLevel && !b.inTable && !b.isListItem)?.style;
-                    const texts = useLeft ? [...change.paragraphs].reverse() : change.paragraphs;
-                    for (const text of texts) {
+                    const paragraphs = change.paragraphs.map((text, index) => ({ text,
+                        format: change.paragraphFormats?.[index] || null }));
+                    if (useLeft) paragraphs.reverse();
+                    for (const { text, format } of paragraphs) {
                         check(signal);
                         anchor.attempted = true;
                         const added = paragraph.insertParagraph(text, useLeft ? Word.InsertLocation.after : Word.InsertLocation.before);
                         if (bodyStyle) added.style = bodyStyle;
                         else added.styleBuiltIn = Word.BuiltInStyleName?.normal || 'Normal';
-                        written.push({ paragraph: added, expected: text });
+                        if (format) for (const [key, value] of Object.entries(format)) added.font[key] = value;
+                        written.push({ paragraph: added, expected: text, format });
                     }
                 }
                 await context.sync();
@@ -272,9 +281,13 @@ export async function applyDocumentEdit(deps, proposal, { signal } = {}) {
             const originalParagraphs = new Set(originals.map((item) => item.paragraph));
             const reads = [...originals, ...written.filter((item) => !originalParagraphs.has(item.paragraph))]
                 .map((item) => ({ ...item, xml: item.paragraph.getRange(Word.RangeLocation.content).getOoxml() }));
+            for (const item of reads) if (item.format) item.paragraph.font.load(Object.keys(item.format).join(','));
             await context.sync();
             check(signal);
             if (reads.some((r) => finalText(r.xml.value) !== r.expected)) throw new Error('Word read-back did not match the proposed text. Inspect the applied changes.');
+            if (reads.some((r) => r.format && Object.entries(r.format).some(([key, value]) => r.paragraph.font[key] !== value))) {
+                throw new Error('Word read-back did not match the proposed paragraph formatting. Inspect the applied changes.');
+            }
             result.applied = written.length > 0;
             result.verified = true;
         } catch (error) {

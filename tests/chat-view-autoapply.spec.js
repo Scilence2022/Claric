@@ -60,6 +60,18 @@ describe('auto-apply pipeline', () => {
         expect(card.applyAll).not.toHaveBeenCalled();
     });
 
+    test('a card staged after the initial turn auto-applies when continuation settles', async () => {
+        appState.config.autoApplyChanges = true;
+        const msg = createAssistantMessage();
+        msg.finalizeForHistory();
+        const card = makeCard();
+        msg.attachProposal(card, { title: 'Follow-up', state: 'pending', items: [] });
+        expect(card.applyAll).not.toHaveBeenCalled();
+        msg.syncForHistory();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(card.applyAll).toHaveBeenCalledTimes(1);
+    });
+
     test.each(Object.keys(transitions))('%s during an awaited apply stops remaining cards', async (transition) => {
         appState.config.autoApplyChanges = true;
         const msg = createAssistantMessage();

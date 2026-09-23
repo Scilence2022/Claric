@@ -22,6 +22,9 @@ export function validateTaskGraph(graph) {
  * @property {AbortSignal} [signal]
  *   Optional signal; when aborted, in-flight tasks are cancelled and the
  *   graph stops dispatching new work.
+ * @property {Map<string, any>} [initialResults]
+ *   Successful results from an earlier pass. Blocked tasks are deliberately
+ *   omitted so they can be reconsidered after a proposal is applied.
  */
 
 /**
@@ -35,7 +38,7 @@ export function validateTaskGraph(graph) {
  * @param {TaskGraphExecuteOptions} [options]
  * @returns {Promise<{ graph: object, results: Map<string, any> }>}
  */
-export async function executeTaskGraph(input, execute, { onEvent = undefined, signal = undefined } = {}) {
+export async function executeTaskGraph(input, execute, { onEvent = undefined, signal = undefined, initialResults = undefined } = {}) {
     const checked = validateTaskGraph(input);
     if (!checked.valid) throw new Error(checked.errors.join('; '));
     const graph = checked.graph;
@@ -43,6 +46,19 @@ export async function executeTaskGraph(input, execute, { onEvent = undefined, si
     const emit = createEventSink(onEvent);
     const results = new Map();
     const artifacts = new Map();
+    if (initialResults) {
+        if (!(initialResults instanceof Map)) throw new Error('initialResults must be a Map');
+        const taskIds = new Set(graph.tasks.map((task) => task.taskId));
+        for (const [id, result] of initialResults) {
+            if (!taskIds.has(id) || result?.state !== TASK_STATES.SUCCEEDED) {
+                throw new Error(`Cannot resume an invalid task result: ${id}`);
+            }
+            results.set(id, result);
+            if (Array.isArray(result.value?.artifacts)) {
+                result.value.artifacts.forEach((artifact, index) => artifacts.set(`${id}:${index}`, artifact));
+            }
+        }
+    }
     const checkAbort = () => { if (signal?.aborted) throw new DOMException('Task graph cancelled', 'AbortError'); };
     const successful = (result) => result?.state === TASK_STATES.SUCCEEDED
         && (result.value?.status !== 'no_op' || result.value.satisfied === true);

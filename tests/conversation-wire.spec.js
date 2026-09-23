@@ -42,12 +42,17 @@ describe('conversation submit to HTTP request continuity', () => {
         delayedReceived?.(response);
         return;
       }
-      const isPlanner = textOf(body.messages[body.messages.length - 1]).includes('You are the task planner');
+      const lastMessage = textOf(body.messages[body.messages.length - 1]);
+      const isPlanner = lastMessage.includes('OUTPUT CONTRACT') || lastMessage.includes('The plan was invalid or missed requirements.');
+      const isReview = lastMessage.includes('"originalRequest":"The second one, please"');
       const answer = isPlanner
-        ? JSON.stringify([{ type: 'qa', instruction: 'Explain the second ALPHA-27 recommendation.' }])
-        : `Answer ${requests.length}: proposal reference ALPHA-27.`;
+        ? JSON.stringify({ requirements: [{ id: 'r1', kind: 'action', outcome: 'answer', text: 'Explain the second recommendation' }],
+          tasks: [{ taskId: 't1', type: 'qa', instruction: 'Explain the second ALPHA-27 recommendation.', covers: ['r1'], dependsOn: [] }], unsupported: [] })
+        : isReview
+          ? JSON.stringify({ complete: true, unsupportedAccurate: true, checks: [{ requirementId: 'r1', represented: true }], missing: [], invented: [] })
+          : `Answer ${requests.length}: proposal reference ALPHA-27.`;
       const anthropic = request.url.endsWith('/messages');
-      if (!streamResponses) {
+      if (!streamResponses || body.stream === false) {
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify(anthropic
           ? { content: [{ type: 'text', text: answer }], stop_reason: 'end_turn' }
@@ -208,15 +213,16 @@ describe('conversation submit to HTTP request continuity', () => {
     });
     await conversation.submit('What are your recommendations for ALPHA-27?');
     await conversation.submit('The second one, please');
-    expect(requests).toHaveLength(3);
-    for (const request of requests.slice(1)) {
-      expect(request.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(requests).toHaveLength(4);
+    for (const request of [requests[1], requests[3]]) {
+      expect(request.messages.slice(0, 2).map((message) => message.role)).toEqual(['user', 'assistant']);
       expect(textOf(request.messages[0])).toBe('What are your recommendations for ALPHA-27?');
       expect(textOf(request.messages[1])).toContain('Answer 1: proposal reference ALPHA-27.');
     }
-    expect(textOf(requests[1].messages[2])).toContain('You are the task planner');
+    expect(textOf(requests[1].messages[2])).toContain('OUTPUT CONTRACT');
     expect(textOf(requests[1].messages[2])).toContain('The second one, please');
-    expect(textOf(requests[2].messages[2])).toContain('Explain the second ALPHA-27 recommendation.');
+    expect(textOf(requests[2].messages.at(-1))).toContain('originalRequest');
+    expect(textOf(requests[3].messages.at(-1))).toContain('Explain the second ALPHA-27 recommendation.');
     expect(chatView.getCurrentSession().messages).toHaveLength(4);
   });
 
