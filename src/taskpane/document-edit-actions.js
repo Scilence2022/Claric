@@ -11,6 +11,7 @@ import * as fileStore from '../lib/file-store.js';
 import { defineTool } from '../lib/tool-registry.js';
 
 let sequence = 0;
+const SNAPSHOT_BATCH_SIZE = 24;
 const protectedXml = /<(?:\w+:)?(?:drawing|object|pict|fldChar|fldSimple|sdt|footnoteReference|endnoteReference|oMath|ins|del|moveFrom|moveTo)\b/;
 const clean = (value) => String(value || '').replace(/\r?\n|\r/g, '\n').replace(/\n$/, '');
 const validNewFormat = (value) => value === null || (value && typeof value === 'object' && !Array.isArray(value)
@@ -23,36 +24,126 @@ function finalText(xml) {
     return clean(value);
 }
 
-export async function readDocumentEditSnapshot({ signal } = {}) {
-    check(signal);
+function snapshotError(stage, error) {
+    const detail = error?.debugInfo?.errorLocation || error?.code || '';
+    return new Error(`Word could not ${stage}: ${error?.message || String(error)}${detail ? ` (${detail})` : ''}`);
+}
+
+/** A failed OOXML read must never make a paragraph eligible for writing. */
+function documentChanged(error) { return error?.documentChanged === true; }
+
+async function readParagraphMetadata(signal) {
+    return Word.run(async (context) => {
+        const paragraphs = context.document.body.paragraphs;
+        paragraphs.load('items');
+        try { await context.sync(); } catch (error) { throw snapshotError('enumerate paragraphs', error); }
+        check(signal);
+        if (!paragraphs.items.length || paragraphs.items.length > DOCUMENT_EDIT_LIMITS.blocks) throw new Error('Document has no paragraphs or exceeds the editing snapshot limit.');
+        const records = [];
+        for (let start = 0; start < paragraphs.items.length; start += SNAPSHOT_BATCH_SIZE) {
+            check(signal);
+            const batch = paragraphs.items.slice(start, start + SNAPSHOT_BATCH_SIZE).map((paragraph) => {
+                paragraph.load('text,style,styleBuiltIn,isListItem');
+                const table = paragraph.parentTableOrNullObject;
+                table.load('isNullObject');
+                return { paragraph, table };
+            });
+            try { await context.sync(); } catch (error) {
+                throw snapshotError(`read paragraph metadata ${start + 1}–${start + batch.length}`, error);
+            }
+            records.push(...batch.map(({ paragraph, table }) => ({ rawText: paragraph.text, style: paragraph.style,
+                styleBuiltIn: paragraph.styleBuiltIn, isListItem: !!paragraph.isListItem, inTable: !table.isNullObject })));
+        }
+        return records;
+    });
+}
+
+async function readParagraphXml(records, start, end, signal, useParagraph = false) {
     return Word.run(async (context) => {
         const paragraphs = context.document.body.paragraphs;
         paragraphs.load('items');
         await context.sync();
         check(signal);
-        if (!paragraphs.items.length || paragraphs.items.length > DOCUMENT_EDIT_LIMITS.blocks) throw new Error('Document has no paragraphs or exceeds the editing snapshot limit.');
-        const records = paragraphs.items.map((paragraph) => {
-            paragraph.load('text,style,styleBuiltIn,isListItem');
-            const table = paragraph.parentTableOrNullObject;
-            table.load('isNullObject');
-            const range = paragraph.getRange(Word.RangeLocation.content);
-            if (typeof range.getOoxml !== 'function') throw new Error('This Word host cannot read paragraph structure safely.');
-            return { paragraph, table, xml: range.getOoxml() };
-        });
+        if (paragraphs.items.length !== records.length) {
+            const error = new Error('Document changed while reading paragraphs. Retry the request.');
+            error.documentChanged = true;
+            throw error;
+        }
+        const batch = [];
+        for (let index = start; index < end; index++) {
+            const paragraph = paragraphs.items[index];
+            paragraph.load('text,style');
+            const source = useParagraph ? paragraph : paragraph.getRange(Word.RangeLocation.content);
+            if (typeof source.getOoxml !== 'function') throw new Error('This Word host cannot read paragraph structure safely.');
+            batch.push({ paragraph, xml: source.getOoxml(), index });
+        }
         await context.sync();
         check(signal);
-        let section = '';
-        const blocks = records.map(({ paragraph, table, xml }, index) => {
-            const text = finalText(xml.value);
-            const headingLevel = getHeadingLevel(paragraph.styleBuiltIn) || mapStyleToHeadingLevel(paragraph.style || '') || inferHeadingLevel(text);
-            if (headingLevel) section = text;
-            return { id: `p-${index + 1}`, index, text, rawText: paragraph.text, ooxml: xml.value,
-                style: paragraph.style, styleBuiltIn: paragraph.styleBuiltIn, headingLevel, section,
-                inTable: !table.isNullObject, isListItem: !!paragraph.isListItem,
-                readOnly: !!headingLevel || !table.isNullObject || !!paragraph.isListItem || protectedXml.test(xml.value) };
-        });
-        return { id: `doc-edit-${Date.now().toString(36)}-${++sequence}`, blocks };
+        for (const { paragraph, index } of batch) {
+            if (paragraph.text !== records[index].rawText || paragraph.style !== records[index].style) {
+                const error = new Error('Document changed while reading paragraphs. Retry the request.');
+                error.documentChanged = true;
+                throw error;
+            }
+        }
+        return batch.map(({ xml }) => xml.value);
     });
+}
+
+export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
+    check(signal);
+    const records = await readParagraphMetadata(signal);
+    const xml = Array(records.length).fill(null);
+    const rangeUnavailable = new Set();
+    let unreadable = 0;
+    let firstFailure = null;
+    for (let start = 0; start < records.length; start += SNAPSHOT_BATCH_SIZE) {
+        check(signal);
+        const end = Math.min(start + SNAPSHOT_BATCH_SIZE, records.length);
+        try {
+            xml.splice(start, end - start, ...await readParagraphXml(records, start, end, signal));
+        } catch (error) {
+            if (signal?.aborted || documentChanged(error)) throw error;
+            // A large batch or one unusual Word object can fail the whole
+            // sync. Retry one paragraph at a time in fresh request contexts.
+            for (let index = start; index < end; index++) {
+                check(signal);
+                try { xml[index] = (await readParagraphXml(records, index, index + 1, signal))[0]; }
+                catch (singleError) {
+                    if (signal?.aborted || documentChanged(singleError)) throw singleError;
+                    try {
+                        xml[index] = (await readParagraphXml(records, index, index + 1, signal, true))[0];
+                        rangeUnavailable.add(index);
+                        unreadable++;
+                        firstFailure ||= singleError;
+                    }
+                    catch (paragraphError) {
+                        if (signal?.aborted || documentChanged(paragraphError)) throw paragraphError;
+                        unreadable++;
+                        firstFailure ||= paragraphError;
+                    }
+                }
+            }
+        }
+    }
+    let section = '';
+    const blocks = records.map((record, index) => {
+        let structureUnavailable = !xml[index] || rangeUnavailable.has(index);
+        let text = clean(record.rawText);
+        if (xml[index]) {
+            try { text = finalText(xml[index]); }
+            catch (error) { structureUnavailable = true; unreadable++; firstFailure ||= error; xml[index] = null; }
+        }
+        const headingLevel = getHeadingLevel(record.styleBuiltIn) || mapStyleToHeadingLevel(record.style || '') || inferHeadingLevel(text);
+        if (headingLevel) section = text;
+        return { id: `p-${index + 1}`, index, text, rawText: record.rawText, ooxml: xml[index],
+            style: record.style, styleBuiltIn: record.styleBuiltIn, headingLevel, section,
+            inTable: record.inTable, isListItem: record.isListItem, structureUnavailable,
+            readOnly: structureUnavailable || !!headingLevel || record.inTable || record.isListItem || protectedXml.test(xml[index]) };
+    });
+    if (unreadable === records.length) throw snapshotError('safely anchor any paragraph', firstFailure || new Error('No readable paragraph XML.'));
+    if (unreadable) onWarning?.(`${unreadable} paragraph(s) could not be safely anchored and will remain read-only. First error: ${firstFailure?.message || 'unknown'}`);
+    return { id: `doc-edit-${Date.now().toString(36)}-${++sequence}`, blocks };
 }
 
 /** Anchor the chosen original blocks only, after confirming the planning snapshot. */
@@ -80,6 +171,9 @@ export async function anchorDocumentEdit(snapshot, patch, { signal } = {}) {
             if (left) ids.add(left.id);
             if (right) ids.add(right.id);
         } else throw new Error('Unsupported document patch operation.');
+    }
+    if ([...ids].some((id) => byId.get(id)?.structureUnavailable)) {
+        throw new Error('A proposed edit touches a paragraph whose Word structure could not be read. Choose a different location.');
     }
     const record = { anchors: {}, attempted: false, cleaned: false, snapshotId: snapshot.id };
     try {
@@ -126,7 +220,7 @@ const TEMP_SOURCE_SPECS = Object.freeze([
 
 export async function prepareDocumentEdit(deps, { instruction, selectionText = '', temporaryAttachments = [], signal, onStep } = {}) {
     const backend = getActiveBackendConfig(deps.appState);
-    const snapshot = await readDocumentEditSnapshot({ signal });
+    const snapshot = await readDocumentEditSnapshot({ signal, onWarning: (message) => deps.log?.(message, 'warning') });
     const references = deps.fileReferences || [];
     if (temporaryAttachments.some((item) => item.kind === 'image')) throw new Error('Image attachments cannot be read as text evidence in this document edit. Provide a text or PDF reference.');
     const temporary = temporaryAttachments.filter((item) => typeof item.text === 'string').map((item, index) => ({

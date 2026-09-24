@@ -96,6 +96,14 @@ test('table interiors cannot be insertion gaps', () => {
     expect(() => model.stage({ operations: [{ ...insert, afterId: 'a' }] })).toThrow(/inside a table/);
 });
 
+test('a failed Word structure read cannot become an insertion boundary', () => {
+    const source = snapshot();
+    source.blocks[4].structureUnavailable = true;
+    const model = ready(source);
+    expect(() => model.stage({ operations: [insert] })).toThrow(/Word structure could not be read/);
+    expect(model.compile().changes).toEqual([]);
+});
+
 test('document boundaries and repeated inserts retain their order', () => {
     const model = ready();
     model.stage({ operations: [

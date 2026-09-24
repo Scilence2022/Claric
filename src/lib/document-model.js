@@ -140,6 +140,7 @@ export function createDocumentModel(snapshot) {
                 const left = next.slice(0, index).reverse().find((b) => b.original);
                 const right = next.slice(index).find((b) => b.original);
                 readRequired(left?.id); readRequired(right?.id);
+                if (left?.structureUnavailable || right?.structureUnavailable) fail('Cannot insert beside a paragraph whose Word structure could not be read. Choose another location.');
                 const owner = op.afterId != null ? (left || right) : (right || left);
                 permitted(owner?.id);
                 if ((!left || left.inTable) && (!right || right.inTable)) fail('Cannot insert prose inside a table. Choose a body paragraph.');
