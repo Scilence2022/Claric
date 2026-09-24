@@ -1,6 +1,7 @@
 /** Word adapter for addressable prose edits. Only applyDocumentEdit writes text. */
 import { getHeadingLevel, mapStyleToHeadingLevel, inferHeadingLevel } from '../lib/document-parser.js';
 import { extractFinalTextFromOoxml } from '../lib/ooxml-text.js';
+import { paragraphStructureFingerprint } from '../lib/ooxml-fingerprint.js';
 import { runDocumentEditSession } from '../lib/document-edit-session.js';
 import { DOCUMENT_EDIT_LIMITS } from '../lib/document-model.js';
 import { sendMessages } from '../lib/llm-client.js';
@@ -95,7 +96,6 @@ export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
     const records = await readParagraphMetadata(signal);
     const xml = Array(records.length).fill(null);
     const rangeUnavailable = new Set();
-    let unreadable = 0;
     let firstFailure = null;
     for (let start = 0; start < records.length; start += SNAPSHOT_BATCH_SIZE) {
         check(signal);
@@ -114,12 +114,10 @@ export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
                     try {
                         xml[index] = (await readParagraphXml(records, index, index + 1, signal, true))[0];
                         rangeUnavailable.add(index);
-                        unreadable++;
                         firstFailure ||= singleError;
                     }
                     catch (paragraphError) {
                         if (signal?.aborted || documentChanged(paragraphError)) throw paragraphError;
-                        unreadable++;
                         firstFailure ||= paragraphError;
                     }
                 }
@@ -130,17 +128,22 @@ export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
     const blocks = records.map((record, index) => {
         let structureUnavailable = !xml[index] || rangeUnavailable.has(index);
         let text = clean(record.rawText);
+        let structureFingerprint = null;
         if (xml[index]) {
-            try { text = finalText(xml[index]); }
-            catch (error) { structureUnavailable = true; unreadable++; firstFailure ||= error; xml[index] = null; }
+            try {
+                text = finalText(xml[index]);
+                structureFingerprint = paragraphStructureFingerprint(xml[index]);
+                if (!structureFingerprint) throw new Error('Word did not return one verifiable paragraph.');
+            } catch (error) { structureUnavailable = true; firstFailure ||= error; xml[index] = null; }
         }
         const headingLevel = getHeadingLevel(record.styleBuiltIn) || mapStyleToHeadingLevel(record.style || '') || inferHeadingLevel(text);
         if (headingLevel) section = text;
-        return { id: `p-${index + 1}`, index, text, rawText: record.rawText, ooxml: xml[index],
+        return { id: `p-${index + 1}`, index, text, rawText: record.rawText, ooxml: xml[index], structureFingerprint,
             style: record.style, styleBuiltIn: record.styleBuiltIn, headingLevel, section,
             inTable: record.inTable, isListItem: record.isListItem, structureUnavailable,
             readOnly: structureUnavailable || !!headingLevel || record.inTable || record.isListItem || protectedXml.test(xml[index]) };
     });
+    const unreadable = blocks.filter((block) => block.structureUnavailable).length;
     if (unreadable === records.length) throw snapshotError('safely anchor any paragraph', firstFailure || new Error('No readable paragraph XML.'));
     if (unreadable) onWarning?.(`${unreadable} paragraph(s) could not be safely anchored and will remain read-only. First error: ${firstFailure?.message || 'unknown'}`);
     return { id: `doc-edit-${Date.now().toString(36)}-${++sequence}`, blocks };
@@ -183,7 +186,9 @@ export async function anchorDocumentEdit(snapshot, patch, { signal } = {}) {
             paragraphs.load('items');
             await context.sync();
             check(signal);
-            if (paragraphs.items.length !== snapshot.blocks.length) throw new Error('Document changed during drafting. Generate a fresh proposal.');
+            if (paragraphs.items.length !== snapshot.blocks.length) {
+                throw new Error(`Document changed during drafting: paragraph count ${snapshot.blocks.length} → ${paragraphs.items.length}. Generate a fresh proposal.`);
+            }
             paragraphs.items.forEach((p) => p.load('text,style'));
             const targets = [...ids].map((id) => {
                 const b = byId.get(id);
@@ -192,18 +197,28 @@ export async function anchorDocumentEdit(snapshot, patch, { signal } = {}) {
             });
             await context.sync();
             check(signal);
-            if (snapshot.blocks.some((b, i) => paragraphs.items[i].text !== b.rawText || paragraphs.items[i].style !== b.style)
-                || targets.some(({ b, xml }) => xml.value !== b.ooxml)) throw new Error('Document changed during drafting. Generate a fresh proposal.');
+            const changedMetadata = snapshot.blocks.find((b, i) =>
+                paragraphs.items[i].text !== b.rawText || paragraphs.items[i].style !== b.style);
+            if (changedMetadata) throw new Error(`Document changed during drafting: paragraph ${changedMetadata.index + 1} text or style. Generate a fresh proposal.`);
+            const changedStructure = targets.find(({ b, xml }) => {
+                const current = paragraphStructureFingerprint(xml.value);
+                return !current || current !== b.structureFingerprint;
+            });
+            if (changedStructure) throw new Error(`Document changed during drafting: paragraph ${changedStructure.b.index + 1} structure. Generate a fresh proposal.`);
             for (const { b, range } of targets) {
                 const bookmark = `_claric_edit_${Date.now().toString(36)}_${++sequence}`;
-                record.anchors[b.id] = { bookmark, block: b, ooxml: '' };
+                record.anchors[b.id] = { bookmark, block: b, structureFingerprint: null };
                 range.insertBookmark(bookmark);
             }
             await context.sync();
             check(signal);
             const baselines = targets.map(({ b, range }) => ({ id: b.id, xml: range.getOoxml() }));
             await context.sync();
-            for (const { id, xml } of baselines) record.anchors[id].ooxml = xml.value;
+            for (const { id, xml } of baselines) {
+                const fingerprint = paragraphStructureFingerprint(xml.value);
+                if (!fingerprint) throw new Error('Word could not verify a bookmarked paragraph after anchoring. Generate a fresh proposal.');
+                record.anchors[id].structureFingerprint = fingerprint;
+            }
             check(signal);
         });
         return record;
@@ -312,7 +327,10 @@ export async function applyDocumentEdit(deps, proposal, { signal } = {}) {
         });
         await context.sync();
         check(signal);
-        if (baselines.some((e) => e.xml.value !== e.a.ooxml) || boundaries.some((p) => p.items.length !== 2)
+        if (baselines.some((e) => {
+            const current = paragraphStructureFingerprint(e.xml.value);
+            return !current || current !== e.a.structureFingerprint;
+        }) || boundaries.some((p) => p.items.length !== 2)
             || edgeChecks.some((relation) => relation.value !== (Word.LocationRelation?.equal || 'Equal'))) {
             throw new Error('The target text, formatting or insertion gap changed. Generate a fresh proposal.');
         }
