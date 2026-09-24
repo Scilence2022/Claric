@@ -19,7 +19,9 @@ function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.'
     const bookmarks = new Map();
     const mutations = [];
     let id = 0;
-    const w = { paragraphs: [], bookmarks, mutations, corruptReadback: false };
+    const w = { paragraphs: [], bookmarks, mutations, corruptReadback: false,
+        maxOoxmlBatch: Infinity, failRangeOoxml: new Set(), failParagraphOoxml: new Set(), pendingOoxml: 0,
+        failedBatchCount: 0 };
     const encode = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
     const xml = (p) => `<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:pPr><w:pStyle w:val="${p.style}"/></w:pPr><w:r><w:t>${encode(w.corruptReadback && p.added ? 'Incorrect text' : p.text)}</w:t></w:r>${p.extraXml || ''}</w:p>`;
     const collection = (items) => ({ get items() { return typeof items === 'function' ? items() : items; }, load: jest.fn(),
@@ -27,7 +29,11 @@ function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.'
     function range(p) {
         return {
             paragraph: p, get text() { return p.text; }, load: jest.fn(), isNullObject: false,
-            getOoxml: jest.fn(() => ({ value: p.xmlOverride ?? xml(p) })),
+            getOoxml: jest.fn(() => {
+                if (w.failRangeOoxml.has(p.key)) throw new Error('GeneralException');
+                w.pendingOoxml++;
+                return { value: p.xmlOverride ?? xml(p) };
+            }),
             compareLocationWith: (other) => ({ value: other.paragraph === p ? 'Equal' : 'Before' }),
             insertBookmark: jest.fn((name) => bookmarks.set(name, p)),
             paragraphs: collection([p]),
@@ -39,6 +45,11 @@ function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.'
             font: { bold: false, italic: false, load: jest.fn() },
             parentTableOrNullObject: { isNullObject: true, load: jest.fn() },
             getRange: () => range(p),
+            getOoxml: jest.fn(() => {
+                if (w.failParagraphOoxml.has(p.key)) throw new Error('GeneralException');
+                w.pendingOoxml++;
+                return { value: p.xmlOverride ?? xml(p) };
+            }),
             insertParagraph: jest.fn((value, location) => {
                 const added = paragraph(value, true);
                 mutations.push({ value, location, anchor: p.key, mode: w.document.changeTrackingMode });
@@ -57,8 +68,15 @@ function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.'
         getBookmarkRangeOrNullObject: (name) => bookmarks.has(name) ? range(bookmarks.get(name)) : { isNullObject: true, load: jest.fn() },
         deleteBookmark: jest.fn((name) => bookmarks.delete(name)),
     };
-    w.context = { document: w.document, sync: jest.fn(async () => {}) };
-    global.Word = { run: async (fn) => fn(w.context), RangeLocation: { content: 'Content' },
+    w.context = { document: w.document, sync: jest.fn(async () => {
+        const count = w.pendingOoxml;
+        w.pendingOoxml = 0;
+        if (count > w.maxOoxmlBatch) {
+            w.failedBatchCount++;
+            throw Object.assign(new Error('GeneralException'), { code: 'GeneralException' });
+        }
+    }) };
+    global.Word = { run: async (fn) => { w.pendingOoxml = 0; return fn(w.context); }, RangeLocation: { content: 'Content' },
         InsertLocation: { before: 'Before', after: 'After' }, BuiltInStyleName: { normal: 'Normal' },
         ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' }, LocationRelation: { equal: 'Equal' } };
     w.deps = { appState: { config: { trackChangesEnabled: true, backend: 'ollama', providers: { ollama: { model: 'test', url: 'http://localhost' } } } }, log: jest.fn() };
@@ -87,6 +105,60 @@ test('captures addressable blocks, protects structure and does not alter documen
     expect(snapshot.blocks[0]).toMatchObject({ id: 'p-1', index: 0, headingLevel: 1, section: 'Discussion', readOnly: true });
     expect(snapshot.blocks.slice(1).every((b) => b.readOnly)).toBe(true);
     expect(w.mutations).toEqual([]);
+});
+
+test('retries a Word XML batch failure in bounded single-paragraph reads', async () => {
+    const w = world();
+    w.maxOoxmlBatch = 1;
+    const snapshot = await readDocumentEditSnapshot();
+    expect(snapshot.blocks.map((block) => block.text)).toEqual(['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.']);
+    expect(snapshot.blocks.every((block) => block.structureUnavailable === false)).toBe(true);
+    expect(w.failedBatchCount).toBe(1);
+});
+
+test('one Mac Word XML failure keeps only that paragraph read-only', async () => {
+    const w = world();
+    const warning = jest.fn();
+    w.failRangeOoxml.add(w.paragraphs[1].key);
+    w.failParagraphOoxml.add(w.paragraphs[1].key);
+    const snapshot = await readDocumentEditSnapshot({ onWarning: warning });
+    expect(snapshot.blocks[1]).toMatchObject({ text: 'Mechanism.', ooxml: null,
+        structureUnavailable: true, readOnly: true });
+    expect(snapshot.blocks[2]).toMatchObject({ structureUnavailable: false, readOnly: false });
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('1 paragraph(s)'));
+    await expect(anchorDocumentEdit(snapshot, { snapshotId: snapshot.id, changes: [{ id: 'i', kind: 'insert',
+        afterId: 'p-2', beforeId: 'p-3', paragraphs: ['New.'] }] })).rejects.toThrow(/could not be read/);
+    expect(w.bookmarks.size).toBe(0);
+});
+
+test('a paragraph-level XML fallback preserves context but never permits an unsafe range anchor', async () => {
+    const w = world();
+    w.failRangeOoxml.add(w.paragraphs[1].key);
+    const snapshot = await readDocumentEditSnapshot();
+    expect(snapshot.blocks[1]).toMatchObject({ text: 'Mechanism.', structureUnavailable: true, readOnly: true });
+    expect(snapshot.blocks[1].ooxml).toContain('Mechanism.');
+    expect(snapshot.blocks[2].structureUnavailable).toBe(false);
+});
+
+test('a host with no readable paragraph XML reports the failing stage', async () => {
+    const w = world();
+    for (const paragraph of w.paragraphs) {
+        w.failRangeOoxml.add(paragraph.key);
+        w.failParagraphOoxml.add(paragraph.key);
+    }
+    await expect(readDocumentEditSnapshot()).rejects.toThrow(/Word could not safely anchor any paragraph: GeneralException/);
+    expect(w.bookmarks.size).toBe(0);
+});
+
+test('Word host errors identify the snapshot stage and location', async () => {
+    const w = world();
+    w.context.sync.mockRejectedValueOnce(Object.assign(new Error('GeneralException'), {
+        code: 'GeneralException', debugInfo: { errorLocation: 'ParagraphCollection.load' },
+    }));
+    await expect(readDocumentEditSnapshot()).rejects.toThrow(
+        'Word could not enumerate paragraphs: GeneralException (ParagraphCollection.load)'
+    );
+    expect(w.bookmarks.size).toBe(0);
 });
 
 test('applies only planned paragraphs at the verified gap, reads them back and restores tracking', async () => {
@@ -235,7 +307,8 @@ test('aborted reads and invalid snapshots never write bookmarks or content', asy
     await expect(readDocumentEditSnapshot({ signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
     await expect(anchorDocumentEdit({ id: 's' }, { snapshotId: 'different' })).rejects.toThrow(/Invalid/);
     w.paragraphs[0].xmlOverride = 'not XML';
-    await expect(readDocumentEditSnapshot()).rejects.toThrow(/unreadable/);
+    const snapshot = await readDocumentEditSnapshot();
+    expect(snapshot.blocks[0]).toMatchObject({ structureUnavailable: true, readOnly: true, ooxml: null });
     expect(w.bookmarks.size).toBe(0);
 });
 
