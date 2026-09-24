@@ -54,7 +54,7 @@ function visibleText(node) {
  * @param {string} ooxml
  * @returns {Element|null} null when the input is missing or unparseable
  */
-function documentPartRoot(ooxml) {
+export function documentPartRoot(ooxml) {
     if (!ooxml || typeof ooxml !== 'string') return null;
     let doc;
     try {

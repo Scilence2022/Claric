@@ -228,6 +228,33 @@ test.each(['count', 'text', 'xml'])('draft-time %s drift rejects anchoring witho
     expect(w.bookmarks.size).toBe(0);
 });
 
+test('Word proofing markup appearing during drafting does not invalidate an unchanged paragraph', async () => {
+    const w = world();
+    const snapshot = await readDocumentEditSnapshot();
+    w.paragraphs[1].extraXml = '<w:proofErr w:type="spellStart"/>';
+    const anchor = await anchorDocumentEdit(snapshot, { snapshotId: snapshot.id, changes: [{
+        id: 'i', kind: 'insert', afterId: 'p-2', beforeId: 'p-3', paragraphs: ['New.'],
+    }] });
+    expect(Object.keys(anchor.anchors)).toEqual(['p-2', 'p-3']);
+    await discardDocumentEdit(w.deps, { anchor });
+});
+
+test('Word proofing markup appearing after anchoring does not block a verified insert', async () => {
+    const w = world();
+    const proposal = await prepared(w, [{ id: 'i', kind: 'insert', afterId: 'p-2', beforeId: 'p-3', paragraphs: ['New.'] }]);
+    w.paragraphs[1].extraXml = '<w:proofErr w:type="spellStart"/>';
+    const result = await applyDocumentEdit(w.deps, proposal);
+    expect(result).toMatchObject({ applied: true, verified: true, partial: false });
+});
+
+test('a real paragraph formatting change after anchoring still blocks the write', async () => {
+    const w = world();
+    const proposal = await prepared(w, [{ id: 'i', kind: 'insert', afterId: 'p-2', beforeId: 'p-3', paragraphs: ['New.'] }]);
+    w.paragraphs[1].extraXml = '<w:r><w:rPr><w:b/></w:rPr></w:r>';
+    await expect(applyDocumentEdit(w.deps, proposal)).rejects.toThrow(/target text, formatting or insertion gap changed/);
+    expect(w.mutations).toHaveLength(0);
+});
+
 test('cancellation after an insertion produces a partial result and prevents replay', async () => {
     const w = world();
     const proposal = await prepared(w);

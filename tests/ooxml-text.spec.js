@@ -7,6 +7,7 @@
 
 const { JSDOM } = require('jsdom');
 const { extractFinalTextFromOoxml, extractTopLevelParagraphTexts } = require('../src/lib/ooxml-text.js');
+const { paragraphStructureFingerprint } = require('../src/lib/ooxml-fingerprint.js');
 
 // Provide DOMParser (node test environment lacks it; the add-in WebView has it)
 if (typeof globalThis.DOMParser === 'undefined') {
@@ -116,5 +117,32 @@ describe('extractTopLevelParagraphTexts', () => {
     test('returns null for unparseable input', () => {
         expect(extractTopLevelParagraphTexts(null)).toBeNull();
         expect(extractTopLevelParagraphTexts('<w:body>')).toBeNull();
+    });
+});
+
+describe('paragraphStructureFingerprint', () => {
+    test('ignores OOXML package changes and transient Word proofing, layout and identity markers', () => {
+        const initial = wrapPackage('<w:p w:rsidR="001" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="A1">'
+            + '<w:proofErr w:type="spellStart"/><w:r><w:t>Text</w:t></w:r>'
+            + '<w:proofErr w:type="spellEnd"/></w:p>');
+        const later = `<x:p xmlns:x="${W}" x:rsidR="002" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="B2">`
+            + '<x:bookmarkStart x:id="8" x:name="other"/><x:r><x:t>Text</x:t><x:lastRenderedPageBreak/></x:r>'
+            + '<x:bookmarkEnd x:id="8"/></x:p>';
+        expect(paragraphStructureFingerprint(initial)).toBe(paragraphStructureFingerprint(later));
+    });
+
+    test('preserves text, formatting and tracked revision structure', () => {
+        const plain = wrapPackage('<w:p><w:r><w:t>Text</w:t></w:r></w:p>');
+        const formatted = wrapPackage('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Text</w:t></w:r></w:p>');
+        const revised = wrapPackage('<w:p><w:ins><w:r><w:t>Text</w:t></w:r></w:ins></w:p>');
+        const changed = wrapPackage('<w:p><w:r><w:t>Other</w:t></w:r></w:p>');
+        expect(paragraphStructureFingerprint(plain)).not.toBe(paragraphStructureFingerprint(formatted));
+        expect(paragraphStructureFingerprint(plain)).not.toBe(paragraphStructureFingerprint(revised));
+        expect(paragraphStructureFingerprint(plain)).not.toBe(paragraphStructureFingerprint(changed));
+    });
+
+    test('refuses malformed or multi-paragraph range XML', () => {
+        expect(paragraphStructureFingerprint('<w:p>')).toBeNull();
+        expect(paragraphStructureFingerprint(wrapPackage('<w:p/><w:p/>'))).toBeNull();
     });
 });
