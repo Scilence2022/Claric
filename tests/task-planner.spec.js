@@ -20,6 +20,14 @@ describe('parsePlan', () => {
     expect(tasks).toEqual([{ type: 'table', instruction: '在文档末尾插入一个三行三列的表格' }]);
   });
 
+  test('includes native comment deletion in the executable capability catalog', () => {
+    expect(parsePlan('[{"type":"comment_management","instruction":"delete all comments"}]'))
+      .toEqual([{ type: 'comment_management', instruction: 'delete all comments' }]);
+    const prompt = buildPlanPrompt('delete all comments', { hasSelection: true, hasTextSelection: true });
+    expect(prompt).toContain('Never substitute a prose rewrite for a comment action');
+    expect(prompt).toContain('A text selection is context, not permission to rewrite it');
+  });
+
   test('accepts the document-scope image/table management task types', () => {
     const tasks = parsePlan('[{"type":"image_management","instruction":"给所有图片加上标题"},{"type":"table_management","instruction":"把表格改成三线表样式"}]');
     expect(tasks).toEqual([

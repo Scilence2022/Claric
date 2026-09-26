@@ -243,6 +243,7 @@ function buildImageDiffElement(item) {
  * @param {number} [args.afterChars] - Character count of the proposed rewrite
  * @param {string} [args.countsText] - Overrides the "before → after chars" line
  *   (for non-text proposals such as formatting ops)
+ * @param {string} [args.applyLabel] - Native actions may supply their own button label
  * @param {string} [args.previewSrc] - Optional image data-URL preview shown
  *   via an <img>. Note: some hosts (notably WKWebView-based taskpanes) fail
  *   to decode SVG data URLs that other engines render fine — prefer
@@ -276,7 +277,7 @@ function buildImageDiffElement(item) {
  *   released the busy flags early, letting a second pipeline interleave.
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string), markItemApplied: function(string, object), setPaused: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, onApply, onReject, registerController, setApplyBusy, isBlocked }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, onApply, onReject, registerController, setApplyBusy, isBlocked, applyLabel = 'Apply as tracked changes' }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -330,7 +331,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     const applyBtn = document.createElement('button');
     applyBtn.type = 'button';
     applyBtn.className = 'btn btn-primary btn-compact';
-    applyBtn.textContent = 'Apply as tracked changes';
+    applyBtn.textContent = applyLabel;
 
     const rejectBtn = document.createElement('button');
     rejectBtn.type = 'button';
@@ -534,11 +535,11 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     const api = {
         el,
         /** Terminal state after a successful apply. */
-        markApplied() {
+        markApplied(message) {
             settle(
-                changeBoxes.length
+                message || (changeBoxes.length
                     ? `Applied ${appliedIdSet.size || lastAppliedCount} of ${changeBoxes.length} change(s) as tracked changes.`
-                    : 'Applied as tracked changes.',
+                    : 'Applied as tracked changes.'),
                 'proposal-applied'
             );
         },

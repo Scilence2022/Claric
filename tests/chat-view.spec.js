@@ -353,6 +353,32 @@ describe('proposal state persistence', () => {
     expect(onStateChange).toHaveBeenCalledTimes(1);
   });
 
+  test('native comment deletion keeps its verified result in history', () => {
+    const msg = createAssistantMessage();
+    const meta = { title: 'Delete comments', state: 'pending', countsText: '2 comment threads', items: [] };
+    const card = attachCard(msg, meta);
+    msg.finalizeForHistory();
+    card.markApplied('Deleted 2 comment threads and 1 reply.');
+    expect(getCurrentSession().messages[0].proposals[0]).toMatchObject({
+      state: 'applied', detail: 'Deleted 2 comment threads and 1 reply.',
+    });
+    const restored = renderStaticProposalCard(getCurrentSession().messages[0].proposals[0]);
+    expect(restored.textContent).toContain('Deleted 2 comment threads and 1 reply.');
+    expect(restored.textContent).not.toContain('tracked changes');
+  });
+
+  test('a successful retry clears the previous apply error from history', () => {
+    const msg = createAssistantMessage();
+    const meta = { title: 'Edit', state: 'pending', countsText: '', items: [] };
+    const card = attachCard(msg, meta);
+    msg.finalizeForHistory();
+    card.markError('Temporary failure');
+    card.markApplied();
+    const saved = getCurrentSession().messages[0].proposals[0];
+    expect(saved.state).toBe('applied');
+    expect(saved.detail).toBeUndefined();
+  });
+
   test('a continuation can persist a new pending card and its latest status', () => {
     const msg = createAssistantMessage();
     msg.setStatus('Waiting for the first proposal');

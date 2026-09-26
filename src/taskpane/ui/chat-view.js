@@ -407,7 +407,8 @@ function _wrapProposalCard(card, meta, onStateChange) {
             if (['applied', 'rejected', 'warning'].includes(meta.state)) return;
             const result = original.call(card, message);
             meta.state = state;
-            if (message && (state === 'warning' || state === 'error')) meta.detail = String(message);
+            if (message && ['applied', 'warning', 'error'].includes(state)) meta.detail = String(message);
+            else if (state === 'applied') delete meta.detail;
             notify();
             return result;
         };
@@ -548,7 +549,7 @@ export function renderStaticProposalCard(p) {
         const status = document.createElement('div');
         status.className = 'proposal-card-status';
         let label;
-        if (p.state === 'applied') label = 'Applied as tracked changes.';
+        if (p.state === 'applied') label = p.detail || 'Applied as tracked changes.';
         else if (p.state === 'rejected') label = 'Rejected — no changes were made.';
         else if (p.state === 'warning') label = p.detail || 'Nothing applied.';
         else if (p.state === 'error') label = `Apply failed: ${p.detail || ''}`;

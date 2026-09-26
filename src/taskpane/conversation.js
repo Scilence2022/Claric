@@ -14,7 +14,9 @@
  *   - free text + format intent -> staged formatting/insert ops (existing text never rewritten)
  *   - free text + cleanup intent -> deterministic empty-paragraph deletion (staged, no LLM —
  *     the parser never sees blank paragraphs, so the text pipelines structurally cannot)
- *   - free text + selection    -> selection edit (user text is the edit instruction)
+ *   - explicit comment deletion -> native comment action, independent of text selection
+ *   - free text + selection + rewrite intent -> selection edit
+ *   - unknown selected-text instructions -> capability planning
  *   - free text + edit intent  -> document amendment run (staged proposal)
  *   - free text + question lead -> document Q&A (answer in chat)
  *   - free text, zero intent hits -> compound turn (task planner classifies the
@@ -34,7 +36,6 @@ import { connectMcpServer } from '../lib/mcp-client.js';
 import { buildLoopTools, createMcpToolExecutor, createResourceClient, RESOURCE_TOOL_SPECS } from '../lib/mcp-tools.js';
 import { runToolLoop } from '../lib/tool-loop.js';
 import { buildToolLoopSystemPrompt, TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
-import * as agentActions from './agent-actions.js';
 import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
 import { describeFormatOp } from '../lib/format-ops.js';
@@ -57,6 +58,7 @@ export const TURN_TYPE = Object.freeze({
     DOCUMENT_IMAGE_TOOL: 'document-image-tool',
     DOCUMENT_TABLE_TOOL: 'document-table-tool',
     CLEANUP: 'cleanup',
+    COMMENT_MANAGEMENT: 'comment-management',
     COMPOUND: 'compound',
     DOC_QA: 'doc-qa',
 });
@@ -69,6 +71,13 @@ export const TURN_TYPE = Object.freeze({
  * phrasings like "是谁更新的" stay out of the edit pipelines.
  */
 const EDIT_INTENT_RE = /\b(edit|revise|revision|polish|proofread|rewrite|redline|fix|amend|correct|improve|rephrase)\b|\bupdate\b.{0,20}\b(document|doc|content|text)\b|润色|修订|修改|批改|校对|改写|审改|修正|完善|(更新|充实|增补|扩写).{0,4}(文档|文章|内容|正文|文本|文字|段落|章节|故事|论文|报告)/i;
+const SELECTION_REWRITE_RE = /\b(shorten|lengthen|translate|simplify|condense|expand)\b|\bmake\b.{0,25}\b(formal|concise|clearer|shorter|longer|readable|professional)\b|翻译|精简|缩短|简化|口语化|学术化|改进|改一下|改好/i;
+
+/** Object commands must take precedence over the selected-text fallback. */
+function looksLikeCommentAction(text) {
+    if (/\bcode comments?\b/i.test(text)) return false;
+    return /^(?:(?:please|(?:can|could|would) you)\s+)*(?:delete|remove|clear|erase|resolve|reopen|reply to|edit)\b.{0,100}\bcomments?\b|^(?:请(?:帮我)?|麻烦(?:你)?(?:帮我)?)?(?:(?:删除|移除|清除|清空|去掉|去除|解决|回复|修改).{0,50}(?:批注|评论)|(?:把|将).{0,50}(?:批注|评论).{0,20}(?:删除|移除|清除|清空|解决))/i.test(text);
+}
 
 /**
  * Leading question markers (EN + ZH). When the input STARTS with one of these
@@ -455,6 +464,10 @@ export function routeTurn(text, {
         return { type: TURN_TYPE.SKILL, skill: resolved.skill, args: resolved.args };
     }
 
+    if (looksLikeCommentAction(trimmed)) {
+        return { type: TURN_TYPE.COMMENT_MANAGEMENT, instruction: trimmed };
+    }
+
     const editHint = inspectEditRequest(trimmed);
 
     // A selected image is the required visual anchor for figure legend/caption
@@ -583,7 +596,15 @@ export function routeTurn(text, {
         if (looksLikeReviewIntent(trimmed) && !looksLikeEditIntent(trimmed)) {
             return { type: TURN_TYPE.DOC_QA, question: trimmed };
         }
-        return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
+        if (looksLikeEditIntent(trimmed) || SELECTION_REWRITE_RE.test(trimmed)) {
+            return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
+        }
+        // A selection is context, not proof that the user wants a rewrite.
+        // Classify unknown actions against the executable capability catalog.
+        return allowCompound ? { type: TURN_TYPE.COMPOUND, instruction: trimmed,
+            hasSelection: selectionPresent, hasImageSelection: imageSelected,
+            hasTextSelection: textSelected, hasMultiCellTableRegion }
+            : { type: TURN_TYPE.DOC_QA, question: trimmed };
     }
     // Document-scope image/table intent (no selection, plural-marked):
     // mutates EVERY image/table in the document through the same tool loop.
@@ -635,7 +656,12 @@ export function routeTurn(text, {
  */
 export function createConversation(deps) {
     const { appState, view, input, log, logWithRetry, updateStatusBar } = deps;
-    const actions = deps.actions || { ...defaultActions, ...agentActions };
+    const actions = deps.actions || { ...defaultActions, ...Object.fromEntries(
+        ['prepareTableToolEdit', 'prepareImageToolEdit', 'applyImageOps'].map((name) => [name, async (...args) => {
+            const module = await import(/* webpackChunkName: "agent-actions" */ './agent-actions.js');
+            return module[name](...args);
+        }])
+    ) };
     // Selection reader: full content ({ text, images }) when available;
     // string-returning overrides (legacy getSelectionText, test mocks)
     // normalize via _normalizeSelection.
@@ -1990,6 +2016,9 @@ export function createConversation(deps) {
         const imageSelected = !!hasImageSelection;
         const textSelected = !!hasTextSelection;
         const selectionPresent = !!hasSelection || imageSelected || textSelected || !!hasMultiCellTableRegion;
+        if (task.type === 'comment_management' || (task.type !== 'qa' && looksLikeCommentAction(instruction))) {
+            return { type: TURN_TYPE.COMMENT_MANAGEMENT, instruction, planned: true };
+        }
         // A planner task that is really an empty-paragraph cleanup must not
         // enter the text pipelines — the parser/LLM never see blank
         // paragraphs, so only the deterministic cleanup can serve it,
@@ -2172,7 +2201,7 @@ export function createConversation(deps) {
                 const taskTurn = turnForTask(task, selectionFacts);
                 if (turn.temporaryAttachments?.length) {
                     if (taskTurn.type === TURN_TYPE.DOCUMENT_EDIT) taskTurn.temporaryAttachments = turn.temporaryAttachments;
-                    else {
+                    else if (taskTurn.type !== TURN_TYPE.COMMENT_MANAGEMENT) {
                         const context = buildAttachmentContext(turn.temporaryAttachments);
                         if (typeof taskTurn.question === 'string') {
                             taskTurn.question += context;
@@ -2283,7 +2312,8 @@ export function createConversation(deps) {
     async function dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController) {
         const qa = turn.type === TURN_TYPE.DOC_QA
             || (turn.type === TURN_TYPE.SKILL && ['chat', 'context'].includes(turn.skill.category));
-        if (!qa && turn.type !== TURN_TYPE.COMPOUND && turn.type !== TURN_TYPE.DOCUMENT_EDIT && turnDeps.fileReferences?.length) {
+        if (!qa && turn.type !== TURN_TYPE.COMPOUND && turn.type !== TURN_TYPE.DOCUMENT_EDIT
+            && turn.type !== TURN_TYPE.COMMENT_MANAGEMENT && turnDeps.fileReferences?.length) {
             const signal = turnController?.signal || submissionOwner?.controller.signal;
             const { buildLibraryTaskContext } = await import(/* webpackChunkName: "file-question" */ '../lib/file-question.js');
             const { context, warnings } = await buildLibraryTaskContext(turnDeps.fileReferences, signal);
@@ -2298,7 +2328,17 @@ export function createConversation(deps) {
                 turn = { ...turn, instruction: (turn.instruction || '') + context };
             }
         }
-        if (turn.type === TURN_TYPE.DOCUMENT_EDIT) {
+        if (turn.type === TURN_TYPE.COMMENT_MANAGEMENT) {
+            const commentActions = await import(/* webpackChunkName: "comment-actions" */ './comment-actions.js');
+            if (!commentActions.parseCommentDeletionRequest(turn.instruction) && !turn.planned) {
+                return runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController);
+            }
+            const controller = _beginChatTurn(turnController);
+            try {
+                return await commentActions.stageCommentDeletion({ turn, msg, turnDeps, actions, makeProposalCard, signal: controller.signal });
+            } catch (error) { _reportTurnError(msg, error); }
+            finally { _endChatTurn(controller, turnController); }
+        } else if (turn.type === TURN_TYPE.DOCUMENT_EDIT) {
             return runDocumentEditTurn(turn, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.SKILL) {
             await runSkillTurn(turn.skill, turn.args, !!selectionText, msg, turnDeps, selectionText, selectionImages, turnController);
@@ -2427,7 +2467,7 @@ export function createConversation(deps) {
         if (temporaryAttachments.length > 0) {
             const context = buildAttachmentContext(temporaryAttachments);
             if (context) {
-                if (turn.type === TURN_TYPE.DOCUMENT_EDIT || turn.type === TURN_TYPE.COMPOUND) turn.temporaryAttachments = temporaryAttachments;
+                if ([TURN_TYPE.DOCUMENT_EDIT, TURN_TYPE.COMPOUND, TURN_TYPE.COMMENT_MANAGEMENT].includes(turn.type)) turn.temporaryAttachments = temporaryAttachments;
                 else if (typeof turn.question === 'string') turn.question += context;
                 else if (typeof turn.instruction === 'string') turn.instruction += context;
             }

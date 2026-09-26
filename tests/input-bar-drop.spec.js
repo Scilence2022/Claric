@@ -7,7 +7,16 @@ const { saveFile } = require('../src/lib/file-store.js');
 const { initInputBar } = require('../src/taskpane/ui/input-bar.js');
 const { ATTACHMENT_LIMITS } = require('../src/lib/file-attachments.js');
 const html = fs.readFileSync(path.join(__dirname, '../src/taskpane/taskpane.html'), 'utf8');
-const flush = () => new Promise((resolve) => setTimeout(resolve, 30));
+async function flush() {
+    const deadline = Date.now() + 2000;
+    // FileReader can span several event-loop turns under parallel suite load.
+    // Wait for parsing, but not an intentionally pending save operation.
+    do {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        if (document.getElementById('sendBtn').getAttribute('aria-busy') !== 'true') return;
+    } while (Date.now() < deadline);
+    throw new Error('Attachment parsing did not finish.');
+}
 const names = () => [...document.querySelectorAll('.attachment-chip-name')].map((el) => el.textContent);
 let app;
 let bar;
