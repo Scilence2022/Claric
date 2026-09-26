@@ -1,5 +1,6 @@
 /** Executable local Word capabilities. Planning text is generated from this list. */
 export const CAPABILITY_CATALOG = Object.freeze([
+    { type: 'comment_management', effect: 'document', draft: 'comments', description: 'Delete all Word comment threads and replies in the document, or in an explicitly requested text selection. Use an explicit instruction such as "delete all comments" or "delete all comments in the selection". Filters by author, content or status, resolving, replying, and editing comments are unsupported. Never substitute a prose rewrite for a comment action.' },
     { type: 'document_edit', effect: 'document', draft: 'prose', description: 'Read the article, insert or integrate plain body prose at a chosen location, revise nearby body text, and format newly inserted paragraphs with bold or italic in one reviewed draft. Existing headings, tables and images are read-only.' },
     { type: 'insert', effect: 'document', draft: 'format', description: 'Add a short structural title or heading using the formatting proposal.' },
     { type: 'format', effect: 'document', draft: 'format', description: 'Format existing text or paragraphs, including font, color, alignment and heading styles; it cannot see unapplied prose from another proposal.' },

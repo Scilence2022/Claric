@@ -145,6 +145,19 @@ function makeActions(overrides = {}) {
 }
 
 describe('routeTurn', () => {
+  test.each(['delete all comments', 'Can you delete all comments?', '请删除所有批注', '把全部批注删除'])(
+  'comment action %s overrides text, image and table selections', (instruction) => {
+    for (const facts of [{}, { hasSelection: true }, { hasImageSelection: true }, { hasMultiCellTableRegion: true }]) {
+      expect(routeTurn(instruction, { ...facts, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.COMMENT_MANAGEMENT);
+    }
+  });
+
+  test('unknown selected instructions require planning; explanatory comment questions stay Q&A', () => {
+    expect(routeTurn('delete all footnotes', { hasSelection: true, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.COMPOUND);
+    expect(routeTurn('export this as a PDF', { hasSelection: true, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.COMPOUND);
+    expect(routeTurn('How do I delete all comments?', { hasSelection: true, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.DOC_QA);
+  });
+
   test.each([
     '请在文章的合适位置插入XXX相关的内容和讨论',
     '请把XXX相关的内容和讨论插入到文档的合适位置',
@@ -650,6 +663,75 @@ describe('routeTurn', () => {
 });
 
 describe('createConversation.submit', () => {
+  test('delete all comments stages a native action despite a selected passage', async () => {
+    const view = makeView();
+    const proposal = { scope: 'document', comments: [{ id: 'c1' }, { id: 'c2' }], replies: 1 };
+    const actions = makeActions({
+      prepareCommentDeletion: jest.fn(async () => proposal),
+      applyCommentDeletion: jest.fn(async () => ({ verified: true, deleted: 2, repliesDeleted: 1 })),
+    });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Original selected text.' });
+    await conv.submit('delete all comments');
+    expect(actions.prepareCommentDeletion).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ instruction: 'delete all comments' }));
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    expect(actions.planDocumentTasks).not.toHaveBeenCalled();
+    expect(actions.applyCommentDeletion).not.toHaveBeenCalled();
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    expect(card.el.querySelector('.btn-primary').textContent).toBe('Delete comments');
+    expect(card.el.textContent).not.toContain('Original selected text.');
+    await card.applyAll();
+    expect(actions.applyCommentDeletion).toHaveBeenCalledTimes(1);
+    expect(card.el.querySelector('.proposal-card-status').textContent).toBe('Deleted 2 comment thread(s) and 1 reply/replies.');
+    expect(actions.applySelectionAmendment).not.toHaveBeenCalled();
+  });
+
+  test('an unsupported selected-object command reaches capability planning without a rewrite', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [],
+      requirements: [{ id: 'r1', text: 'Delete all footnotes' }], unsupported: [{ requirementId: 'r1', reason: 'Footnote deletion is not supported.' }] })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Selected text.' });
+    await conv.submit('delete all footnotes');
+    expect(actions.planDocumentTasks).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ hasSelection: true }));
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('Footnote deletion is not supported'));
+  });
+
+  test('comment deletion composes with prose editing without dropping either task', async () => {
+    const view = makeView();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({ tasks: [
+        { taskId: 'comments', type: 'comment_management', instruction: 'delete all comments' },
+        { taskId: 'prose', type: 'edit', instruction: 'polish the selected passage' },
+      ] })),
+      prepareCommentDeletion: jest.fn(async () => ({ scope: 'document', comments: [{ id: 'c1' }], replies: 0 })),
+      applyCommentDeletion: jest.fn(),
+    });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Selected text.' });
+    await conv.submit('delete all comments and polish the selected passage');
+    expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
+    expect(actions.prepareCommentDeletion).toHaveBeenCalledTimes(1);
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
+    expect(actions.applyCommentDeletion).not.toHaveBeenCalled();
+  });
+
+  test('no comments and rejected deletion proposals leave Word unchanged', async () => {
+    for (const comments of [[], [{ id: 'c1' }]]) {
+      const view = makeView();
+      const actions = makeActions({ prepareCommentDeletion: jest.fn(async () => ({ scope: 'document', comments, replies: 0 })),
+        applyCommentDeletion: jest.fn() });
+      const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions });
+      await conv.submit('删除所有批注');
+      if (comments.length) view._msg.attachProposal.mock.calls[0][0].el.querySelector('.btn-secondary').click();
+      else expect(view._msg.setText).toHaveBeenCalledWith('No comments found in the document.');
+      expect(actions.applyCommentDeletion).not.toHaveBeenCalled();
+      expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    }
+  });
+
   test('semantic insertion stages one reviewable patch and applies it once', async () => {
     const view = makeView();
     const proposal = {
