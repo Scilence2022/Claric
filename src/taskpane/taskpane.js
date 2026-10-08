@@ -26,6 +26,7 @@ import { reapOrphanChunkBookmarks } from '../lib/reassembler.js';
 import * as chatView from './ui/chat-view.js';
 import { renderWelcomeChips, selectWelcomeSkills } from './ui/welcome.js';
 import { initInputBar } from './ui/input-bar.js';
+import { initAboutView } from './ui/about-view.js';
 import { createSettingsLoader } from './settings-loader.js';
 import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer } from './ui/status-bar.js';
 import { initHistoryView, openHistory } from './ui/history-view.js';
@@ -165,7 +166,6 @@ async function initialize() {
     document.getElementById('historyBtn').addEventListener('click', openHistory);
     document.getElementById('logBtn').addEventListener('click', toggleLogDrawer);
     document.getElementById('newChatBtn').addEventListener('click', () => conversation.newChat());
-    document.getElementById('infoBtn').addEventListener('click', showAbout);
 
     // Welcome skill chips fill the input with the slash command. The
     // built-ins only (hardcoded before) hid the reserved /mcp skill and
@@ -234,22 +234,7 @@ async function initialize() {
     // Auto-test connection and load models after the settings chunk is ready.
     void settings.testConnection();
 
-    // Log build fingerprint (dist content hash + UTC timestamp). Fire-and-forget:
-    // the asset may be served from a stale cache or unreachable; a missing
-    // build-info must never slow or surface anything to the user.
-    fetch(new URL('build-info.json', location.href).href, { cache: 'no-store' })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((info) => {
-            if (!info || typeof info.hash !== 'string') return;
-            const builtAt = typeof info.builtAt === 'string' ? info.builtAt : '';
-            addLog(
-                builtAt
-                    ? `Claric build: ${info.hash} (${info.appVersion || 'unknown'}, ${builtAt})`
-                    : `Claric build: ${info.hash} (${info.appVersion || 'unknown'})`,
-                'info'
-            );
-        })
-        .catch(() => { /* silent: build info missing or blocked is not an error */ });
+    initAboutView({ platform: appState.platform, wordApiVersion: detectedVersion, log: addLog });
 
     addLog('Claric initialized.', 'info');
     input.focus();
@@ -267,14 +252,4 @@ function updateModelPill() {
         pill.textContent = `${label}: ${backendConfig.model || '(no model)'}`;
         pill.title = 'Open settings';
     }
-}
-
-/** Shows a short about message in the chat. */
-function showAbout() {
-    chatView.addSystemNote(
-        'Claric — your redlining scribe for Word.\n' +
-        'Type "/" for slash commands (/polish, /simplify, /shorten, /expand, /translate, /check-clarity, ' +
-        '/check-consistency, /action-items, /executive-summary, /key-points, ...), ' +
-        'select text and type an instruction to edit it as tracked changes, or just ask a question about the document.'
-    );
 }

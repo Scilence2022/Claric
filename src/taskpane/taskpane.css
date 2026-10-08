@@ -1917,6 +1917,27 @@ textarea.form-control {
     margin-bottom: var(--spacing-md);
 }
 
+.about-panel {
+    max-height: 90vh;
+    overflow: auto;
+}
+.about-panel h2 { font-size: var(--font-size-lg); }
+.about-panel p {
+    margin-top: var(--spacing-sm);
+    color: var(--secondary-text);
+    line-height: 1.5;
+}
+.about-details {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: var(--spacing-sm) var(--spacing-md);
+    margin-top: var(--spacing-lg);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+}
+.about-details dt { color: var(--secondary-text); }
+.about-details dd { margin: 0; overflow-wrap: anywhere; user-select: text; }
+
 .modal-actions {
     display: flex;
     justify-content: flex-end;
