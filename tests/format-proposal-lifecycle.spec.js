@@ -69,3 +69,31 @@ test('cleanup-only success is reported as applied, with one reviewable deletion 
     expect(cards[0].el.classList.contains('proposal-applied')).toBe(true);
     expect(view.getCurrentSession().messages.find((m) => m.role === 'assistant').proposals[0].state).toBe('applied');
 });
+
+test('successful formatting does not claim blank-line cleanup succeeded when all blanks were protected', async () => {
+    const actions = {
+        prepareFormatProposal: jest.fn(async () => ({ ops: [{ font: { bold: false } }], anchor: { bookmark: '_test' },
+            cleanupSummary: { candidates: 2, verified: 0, preserved: 2, unverifiable: 1 } })),
+        applyFormatProposal: jest.fn(async () => ({ applied: true, appliedRanges: 1, insertedParagraphs: 0, deletedParagraphs: 0 })),
+        discardFormatProposal: jest.fn(async () => {}),
+    };
+    const { conversation, cards } = setup(actions);
+    await conversation.submit('整理选择部分的格式，多余的空行，不合适的字体加粗等');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cards[0].el.textContent).toContain('2 empty paragraph(s) preserved');
+    expect(cards[0].el.textContent).toContain('Formatting applied; 2 empty paragraph(s) could not be safely removed');
+    expect(view.getCurrentSession().messages.find((m) => m.role === 'assistant').proposals[0].state).toBe('warning');
+});
+
+test('cleanup without safe targets explains preservation instead of claiming no blanks exist', async () => {
+    const actions = {
+        prepareFormatProposal: jest.fn(async () => ({ ops: [], anchor: { bookmark: '_test' },
+            cleanupSummary: { candidates: 2, verified: 0, preserved: 2, unverifiable: 1 } })),
+        discardFormatProposal: jest.fn(async () => {}),
+        applyFormatProposal: jest.fn(),
+    };
+    const { conversation } = setup(actions);
+    await conversation.submit('删除选区多余空行');
+    expect(document.getElementById('chatMessages').textContent).toContain('2 empty paragraph(s) could not be safely removed');
+    expect(actions.applyFormatProposal).not.toHaveBeenCalled();
+});

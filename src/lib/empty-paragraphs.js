@@ -25,12 +25,16 @@ const SAFE_ELEMENTS = new Set([
     'snapToGrid', 'suppressAutoHyphens', 'bidi', 'suppressLineNumbers',
     'rStyle', 'rFonts', 'b', 'bCs', 'i', 'iCs', 'color', 'sz', 'szCs', 'u',
     'strike', 'dstrike', 'caps', 'smallCaps', 'highlight', 'vertAlign', 'lang',
+    // Formatting history contains properties, not deleted/inserted prose.
+    // Word's native paragraph deletion handles these tracked revisions.
+    'pPrChange', 'rPrChange',
     'noProof', 'kern', 'position', 'w', 'rtl', 'cs', 'vanish', 'webHidden',
 ]);
 
 /**
  * Empty text alone is insufficient: preserve fields, drawings, references,
- * breaks, sections, content controls, bookmarks and existing revisions.
+ * breaks, sections, content controls, bookmarks and text revisions. Ordinary
+ * formatting-only revision history is safe when every nested property is safe.
  * Unknown XML stays read-only. A missing/invalid OOXML read is not evidence.
  */
 export function isDeletableEmptyParagraphXml(ooxml) {

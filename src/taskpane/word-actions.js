@@ -37,7 +37,7 @@ import { supportsTrackedRowOps } from '../lib/platform.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
-import { rangeStructureFingerprint } from '../lib/ooxml-fingerprint.js';
+import { rangeStructureFingerprint, rangeFingerprintDifference } from '../lib/ooxml-fingerprint.js';
 import { requestsEmptyParagraphCleanup, isDeletableEmptyParagraphXml } from '../lib/empty-paragraphs.js';
 import { formatTableMarkdown, formatMixedContext, formatCursorContext } from '../lib/selection-context.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
@@ -2590,9 +2590,12 @@ async function _collectFormatEmptyParagraphs(context, scopeRange, signal, log) {
     checkOperationSignal(signal);
     const lastRange = context.document.body.paragraphs.getLast().getRange('Whole');
     const indexes = [];
+    let candidates = 0;
+    let unverifiable = 0;
     for (let index = 0; index < paragraphs.items.length; index++) {
         const paragraph = paragraphs.items[index];
         if ((paragraph.text || '').trim()) continue;
+        candidates++;
         checkOperationSignal(signal);
         try {
             const range = paragraph.getRange('Whole');
@@ -2608,10 +2611,12 @@ async function _collectFormatEmptyParagraphs(context, scopeRange, signal, log) {
                 && isDeletableEmptyParagraphXml(xml.value)) indexes.push(index);
         } catch (error) {
             if (error.name === 'AbortError') throw error;
+            unverifiable++;
             log(`Empty paragraph ${index + 1} could not be verified and will be preserved: ${error.message}`, 'warning');
         }
     }
-    return { paragraphs, indexes };
+    return { paragraphs, indexes, summary: { candidates, verified: indexes.length,
+        preserved: candidates - indexes.length, unverifiable } };
 }
 
 export async function prepareFormatProposal(deps, { instruction, scope = 'selection', selectionText, cleanupOnly = false,
@@ -2636,14 +2641,28 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
             anchor.bookmark = bookmark;
             range.insertBookmark(bookmark);
             await context.sync();
-            const baseline = typeof range.getOoxml === 'function' ? range.getOoxml() : null;
+            checkOperationSignal(signal);
+            // A selection and a recovered bookmark can have different native
+            // export boundaries. Use the SAME handle kind for planning/apply.
+            const bookmarked = context.document.getBookmarkRangeOrNullObject(bookmark);
+            bookmarked.load('isNullObject,text');
+            await context.sync();
+            checkOperationSignal(signal);
+            if (bookmarked.isNullObject || bookmarked.text !== range.text) {
+                throw new Error('Word could not recover the exact formatting scope. No changes were applied.');
+            }
+            const baseline = typeof bookmarked.getOoxml === 'function' ? bookmarked.getOoxml() : null;
             if (baseline) await context.sync();
-            Object.assign(anchor, { text: range.text, ooxml: baseline?.value,
+            checkOperationSignal(signal);
+            Object.assign(anchor, { text: bookmarked.text, ooxml: baseline?.value,
                 structureFingerprint: rangeStructureFingerprint(baseline?.value) });
+            log(`Formatting scope captured from bookmark (${scope}, baseline v2).`, 'info');
             if (cleanupRequested) {
-                const { indexes } = await _collectFormatEmptyParagraphs(context, range, signal, log);
+                const { indexes, summary } = await _collectFormatEmptyParagraphs(context, bookmarked, signal, log);
                 anchor.cleanupIndexes = indexes;
+                anchor.cleanupSummary = summary;
                 log(`Found ${indexes.length} verified empty paragraph(s) in ${scope} scope.`, 'info');
+                if (summary.preserved) log(`${summary.preserved} empty paragraph(s) will be preserved: protected structure, selection boundaries or unreadable Word data (${summary.unverifiable} read failures).`, 'warning');
             }
         });
         checkOperationSignal(signal);
@@ -2677,7 +2696,7 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
             ops.push({ cleanup: { emptyParagraphs: true, emptyCount: anchor.cleanupIndexes.length } });
         }
         if (!ops.length) await discardFormatProposal(deps, { anchor });
-        return { instruction, scope, ops, anchor, rendering, model: backendConfig.model };
+        return { instruction, scope, ops, anchor, rendering, cleanupSummary: anchor.cleanupSummary, model: backendConfig.model };
     } catch (error) {
         try { await discardFormatProposal(deps, { anchor }); }
         catch (cleanupError) { log(`Formatting anchor cleanup failed: ${cleanupError.message}`, 'warning'); }
@@ -2732,10 +2751,15 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
             const current = scopeRange.getOoxml();
             await context.sync();
             checkOperationSignal(signal);
+            const currentFingerprint = rangeStructureFingerprint(current.value);
             const unchanged = anchor.structureFingerprint
-                ? rangeStructureFingerprint(current.value) === anchor.structureFingerprint
+                ? currentFingerprint === anchor.structureFingerprint
                 : current.value === anchor.ooxml;
-            if (!unchanged) throw new Error('The anchored formatting baseline changed. Draft a new proposal.');
+            if (!unchanged) {
+                const location = rangeFingerprintDifference(anchor.structureFingerprint, currentFingerprint);
+                log(`Formatting baseline v2 mismatch (${proposal.scope}): ${location}.`, 'warning');
+                throw new Error('The anchored formatting baseline changed. Draft a new proposal.');
+            }
         }
         const cleanupOps = ops.filter((op) => op.cleanup);
         let cleanupTargets;

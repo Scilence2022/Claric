@@ -5,6 +5,9 @@ const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const W14_NS = 'http://schemas.microsoft.com/office/word/2010/wordml';
 const XML_NS = 'http://www.w3.org/XML/1998/namespace';
 const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
+const ON_OFF_PROPERTIES = new Set(['b', 'bCs', 'i', 'iCs', 'caps', 'smallCaps', 'strike', 'dstrike',
+    'outline', 'shadow', 'emboss', 'imprint', 'noProof', 'snapToGrid', 'vanish', 'webHidden',
+    'rtl', 'cs', 'keepNext', 'keepLines', 'pageBreakBefore', 'widowControl', 'contextualSpacing']);
 
 /**
  * Compares a paragraph's content and formatting across independent Word.js
@@ -27,7 +30,13 @@ export function paragraphStructureFingerprint(ooxml) {
     return JSON.stringify(stableNode(paragraphs[0]));
 }
 
-/** Compare a complete formatting scope without volatile Word/package markup. */
+/**
+ * Compare formatting CONTENT, independent of Word's range-export layout.
+ * The export's trailing body sectPr is a document container, outside the
+ * range's paragraphs; actual section breaks inside pPr remain significant.
+ * Same-format text runs may split at bookmarks/proofing boundaries without
+ * changing a character's formatting. Do not relax the prose-edit comparator.
+ */
 export function rangeStructureFingerprint(ooxml) {
     const root = documentPartRoot(ooxml);
     if (!root) return null;
@@ -35,7 +44,86 @@ export function rangeStructureFingerprint(ooxml) {
         ? root : root.getElementsByTagNameNS(W_NS, 'body')[0];
     const content = body || root;
     if (content.namespaceURI !== W_NS) return null;
-    return JSON.stringify(stableNode(content));
+    const nodes = content.localName === 'body' ? Array.from(content.children)
+        .filter((node) => node.namespaceURI !== W_NS || node.localName !== 'sectPr') : [content];
+    return JSON.stringify(nodes.map((node) => formatNode(stableNode(node))).filter(Boolean));
+}
+
+function isNode(node, name) { return Array.isArray(node) && node[0] === W_NS && node[1] === name; }
+
+/** Only plain text runs merge; fields, drawings, references and revisions keep boundaries. */
+function plainRun(node) {
+    if (!isNode(node, 'r')) return null;
+    const properties = node[3].find((child) => isNode(child, 'rPr'));
+    if (properties && JSON.stringify(properties).includes('PrChange')) return null;
+    const content = node[3].filter((child) => !isNode(child, 'rPr'));
+    if (!content.every((child) => isNode(child, 't') && !child[2].length
+        && child[3].every((text) => text[0] === 'text'))) return null;
+    return { key: JSON.stringify([node[2], properties || null]), properties,
+        text: content.flatMap((child) => child[3]).map((text) => text[1]).join('') };
+}
+
+function formatNode(node) {
+    if (!node || node[0] === 'text') return node;
+    const [namespace, name, originalAttrs, children] = node;
+    let attrs = originalAttrs;
+    if (namespace === W_NS && ON_OFF_PROPERTIES.has(name)) {
+        const value = attrs.find((attr) => attr[0] === W_NS && attr[1] === 'val')?.[2] ?? 'true';
+        if (['true', '1', 'on', 'false', '0', 'off'].includes(value)) {
+            attrs = [...attrs.filter((attr) => !(attr[0] === W_NS && attr[1] === 'val')),
+                [W_NS, 'val', ['true', '1', 'on'].includes(value) ? 'true' : 'false']]
+                .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+        }
+    }
+    let normalized = children.map(formatNode).filter(Boolean);
+    if (namespace === W_NS && ['rPr', 'pPr'].includes(name)) {
+        if (!attrs.length && !normalized.length) return null;
+        // Distinct properties are unordered. Stable sort preserves duplicates,
+        // so conflicting repeated properties cannot silently change precedence.
+        normalized.sort((a, b) => JSON.stringify(a.slice(0, 2)).localeCompare(JSON.stringify(b.slice(0, 2))));
+    }
+    const combined = [];
+    for (const child of normalized) {
+        const run = plainRun(child);
+        if (run && !run.text) continue; // empty export runs carry no characters
+        const previous = combined[combined.length - 1];
+        const priorRun = plainRun(previous);
+        if (run && priorRun?.key === run.key) {
+            previous[3] = [...(run.properties ? [run.properties] : []),
+                [W_NS, 't', [], [['text', priorRun.text + run.text]]]];
+        } else if (isNode(child, 't') && isNode(previous, 't') && !child[2].length && !previous[2].length
+            && child[3].every((text) => text[0] === 'text') && previous[3].every((text) => text[0] === 'text')) {
+            previous[3] = [['text', [...previous[3], ...child[3]].map((text) => text[1]).join('')]];
+        } else combined.push(child);
+    }
+    if (namespace === W_NS && name === 't' && combined.every((text) => text[0] === 'text')) {
+        return [namespace, name, attrs, [['text', combined.map((text) => text[1]).join('')]]];
+    }
+    return [namespace, name, attrs, combined];
+}
+
+/** Describe mismatch locations without recording document text or XML. */
+export function rangeFingerprintDifference(before, after) {
+    if (before === after) return '';
+    if (!before || !after) return 'unreadable range structure';
+    function difference(a, b, path) {
+        if (JSON.stringify(a) === JSON.stringify(b)) return '';
+        if (!Array.isArray(a) || !Array.isArray(b)) return path;
+        if (a.length === 4 && b.length === 4 && typeof a[1] === 'string' && typeof b[1] === 'string') {
+            const location = `${path}/${a[1]}`;
+            if (a[0] !== b[0] || a[1] !== b[1]) return `${location}: element`;
+            if (JSON.stringify(a[2]) !== JSON.stringify(b[2])) return `${location}: attributes`;
+            return difference(a[3], b[3], location);
+        }
+        if (a.length !== b.length) return `${path}: item count ${a.length} → ${b.length}`;
+        for (let i = 0; i < a.length; i++) {
+            const changed = difference(a[i], b[i], `${path}[${i + 1}]`);
+            if (changed) return changed;
+        }
+        return path;
+    }
+    try { return difference(JSON.parse(before), JSON.parse(after), 'scope').slice(0, 200); }
+    catch { return 'unreadable range structure'; }
 }
 
 function stableNode(node) {
