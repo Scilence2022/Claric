@@ -35,6 +35,9 @@ COPY --from=builder /app/dist ./dist
 # Pull current alpine security patches (e.g. libcrypto3/openssl) into the
 # runtime image; the node:22-alpine digest lags the alpine repos.
 RUN apk upgrade --no-cache
+# The server starts directly with node. Keep npm in the builder/deps stages
+# only; its bundled dependency tree adds vulnerabilities to the runtime image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 # Only the scripts the runtime server needs — the scripts/ directory also
 # carries dev-only tooling (e2e middlewares, icon generation) that does not
 # belong in the production image.

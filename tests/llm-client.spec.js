@@ -346,7 +346,7 @@ describe('sendPrompt', () => {
     });
 
     await expect(
-      sendPrompt({ url: '/vllm', apiKey: '', model: 'test' }, 'Hello')
+      sendPrompt({ url: '/vllm', apiKey: '', model: 'test', maxRetries: 0 }, 'Hello')
     ).rejects.toThrow('HTTP 500');
   });
 
@@ -359,7 +359,7 @@ describe('sendPrompt', () => {
     });
 
     await expect(
-      sendPrompt({ url: '/vllm', apiKey: '', model: 'test' }, 'Hello')
+      sendPrompt({ url: '/vllm', apiKey: '', model: 'test', maxRetries: 0 }, 'Hello')
     ).rejects.toThrow('HTTP 429: {"error":{"message":"rate limited, retry after 30s"}}');
   });
 
@@ -371,7 +371,7 @@ describe('sendPrompt', () => {
     });
 
     await expect(
-      sendPrompt({ url: '/vllm', apiKey: '', model: 'test' }, 'Hello')
+      sendPrompt({ url: '/vllm', apiKey: '', model: 'test', maxRetries: 0 }, 'Hello')
     ).rejects.toThrow('HTTP 502 Bad Gateway');
   });
 
@@ -717,7 +717,7 @@ describe('sendMessages', () => {
 
     const messages = [{ role: 'user', content: 'Hello' }];
     await expect(
-      sendMessages({ url: '/vllm', apiKey: '', model: 'test' }, messages)
+      sendMessages({ url: '/vllm', apiKey: '', model: 'test', maxRetries: 0 }, messages)
     ).rejects.toThrow('HTTP 503');
   });
 
