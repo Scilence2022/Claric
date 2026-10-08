@@ -1066,7 +1066,15 @@ export function createConversation(deps) {
             const proposal = await editActions.prepareDocumentEdit(turnDeps, {
                 instruction: turn.instruction, selectionText, signal: controller.signal,
                 temporaryAttachments: turn.temporaryAttachments || [],
-                onStep: (step) => msg.appendModelToken({ id: 'document-edit' }, 'content', step.text ? `${step.text}\n` : ''),
+                onStep: (step) => {
+                    const progress = step.progress;
+                    if (progress) {
+                        const label = { reading: 'Reading document context', drafting: 'Drafting focused changes',
+                            reviewing: 'Reviewing proposed changes', finishing: 'Preparing the proposal' }[progress.phase];
+                        if (label) msg.setStatus(`${label} · step ${progress.step}/${progress.maxSteps}`);
+                    }
+                    msg.appendModelToken({ id: 'document-edit' }, 'content', step.text ? `${step.text}\n` : '');
+                },
             });
             const resource = stagedResource(() => editActions.discardDocumentEdit(turnDeps, proposal));
             if (controller.signal.aborted || !turnDeps.isCurrentSession()) {

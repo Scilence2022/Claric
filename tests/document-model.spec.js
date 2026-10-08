@@ -171,3 +171,35 @@ test('draft ID allocation avoids collisions and search pages remain bounded', ()
     model.stage({ operations: [{ ...insert, afterId: 'draft-1' }] });
     expect(model.read({ ids: ['draft-2'] }).blocks[0].text).toContain('XXX');
 });
+
+test('capabilities distinguish protected headings from unverified insertion boundaries and write scope', () => {
+    const source = snapshot();
+    source.blocks[4].structureUnavailable = true;
+    const model = createDocumentModel(source);
+    const outline = model.outline().blocks;
+    expect(outline[2]).toMatchObject({ canReplace: false, canInsertBefore: true, canInsertAfter: true,
+        readOnlyReasons: ['heading'] });
+    expect(outline[3]).toMatchObject({ canReplace: true, canInsertBefore: true, canInsertAfter: false });
+    expect(outline[4]).toMatchObject({ canReplace: false, canInsertBefore: false, canInsertAfter: false,
+        readOnlyReasons: ['structure_unavailable'] });
+    model.setContract({ goal: 'Focus', requirements: ['Focus'], targetIds: ['p4'] });
+    expect(model.outline().blocks[1]).toMatchObject({ canReplace: false, canInsertBefore: false, canInsertAfter: false });
+});
+
+test('a headings-only outline paginates headings without granting full paragraph reads', () => {
+    const model = createDocumentModel(snapshot());
+    expect(model.outline({ headingsOnly: true, limit: 1 })).toMatchObject({ total: 2, nextOffset: 1,
+        blocks: [{ id: 'p1' }] });
+    expect(model.outline({ headingsOnly: true, offset: 1, limit: 1 }).blocks[0].id).toBe('p3');
+    expect(() => model.outline({ limit: 260 })).toThrow(/outline limit.*1 to 100/);
+    expect(() => model.outline({ limit: 0 })).toThrow(/outline limit/);
+    expect(() => model.outline({ headingsOnly: 'yes' })).toThrow(/boolean/);
+});
+
+test('replacement argument errors identify the correct field before changing the draft', () => {
+    const model = ready();
+    model.stage({ operations: [insert] });
+    expect(() => model.stage({ operations: [{ kind: 'replace', id: 'draft-1', text: 'Revised.', reason: 'Fix.' }] }))
+        .toThrow(/blockId.*not id/);
+    expect(model.read({ ids: ['draft-1'] }).blocks[0]).toMatchObject({ text: insert.paragraphs[0], originalText: false });
+});

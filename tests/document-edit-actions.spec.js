@@ -107,13 +107,40 @@ test('captures addressable blocks, protects structure and does not alter documen
     expect(w.mutations).toEqual([]);
 });
 
-test('retries a Word XML batch failure in bounded single-paragraph reads', async () => {
+test('splits a Word XML batch failure into bounded readable groups', async () => {
     const w = world();
     w.maxOoxmlBatch = 1;
     const snapshot = await readDocumentEditSnapshot();
     expect(snapshot.blocks.map((block) => block.text)).toEqual(['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.']);
     expect(snapshot.blocks.every((block) => block.structureUnavailable === false)).toBe(true);
-    expect(w.failedBatchCount).toBe(1);
+    expect(w.failedBatchCount).toBeGreaterThan(0);
+    expect(w.failedBatchCount).toBeLessThanOrEqual(w.paragraphs.length - 1);
+});
+
+test('one unusual paragraph does not force separate Word bridge calls for every healthy paragraph', async () => {
+    const w = world(Array.from({ length: 24 }, (_, index) => `Paragraph ${index}.`));
+    const run = jest.spyOn(Word, 'run');
+    w.failRangeOoxml.add(w.paragraphs[13].key);
+    w.failParagraphOoxml.add(w.paragraphs[13].key);
+    const warning = jest.fn();
+    const snapshot = await readDocumentEditSnapshot({ onWarning: warning });
+    expect(snapshot.blocks.filter((block) => block.structureUnavailable).map((block) => block.id)).toEqual(['p-14']);
+    expect(run.mock.calls.length).toBeLessThan(20);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('p-14 (paragraph_ooxml)'));
+    expect(snapshot.blocks[13].readOnlyReasons).toContain('structure_unavailable');
+    expect(w.mutations).toEqual([]);
+});
+
+test('rejected multi-paragraph XML restores Word text instead of leaking neighboring prose into context', async () => {
+    const w = world();
+    w.paragraphs[1].xmlOverride = '<w:body xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        + '<w:p><w:r><w:t>Neighboring prose.</w:t></w:r></w:p>'
+        + '<w:p><w:r><w:t>Mechanism.</w:t></w:r></w:p></w:body>';
+    const snapshot = await readDocumentEditSnapshot();
+    expect(snapshot.blocks[1]).toMatchObject({ text: 'Mechanism.', rawText: 'Mechanism.', ooxml: null,
+        structureFingerprint: null, structureUnavailable: true, readOnly: true,
+        structureError: { stage: 'xml_validation' } });
+    expect(w.bookmarks.size).toBe(0);
 });
 
 test('one Mac Word XML failure keeps only that paragraph read-only', async () => {
