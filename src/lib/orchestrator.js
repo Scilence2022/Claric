@@ -289,16 +289,17 @@ export async function processChunksParallel(chunks, options) {
       // request/response path keeps working for tests and headless callers.
       let responseText;
       let reasoningText = null;
+      const requestLog = (message, type) => log(`Chunk ${chunk.id}: ${message}`, type);
       if (typeof onChunkToken === 'function') {
         const chunkInfo = { id: chunk.id, index: chunkIndex };
         const streamed = await sendMessagesStreamFn(config, messages, {
           onContent: (t) => onChunkToken(chunkInfo, 'content', t),
           onReasoning: (t) => onChunkToken(chunkInfo, 'reasoning', t),
-        }, log, signal, timeoutMs);
+        }, requestLog, signal, timeoutMs);
         responseText = streamed.content;
         reasoningText = streamed.reasoning || null;
       } else {
-        responseText = await sendMessagesFn(config, messages, log, signal, timeoutMs);
+        responseText = await sendMessagesFn(config, messages, requestLog, signal, timeoutMs);
       }
 
       // Parse response based on mode.

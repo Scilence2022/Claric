@@ -146,6 +146,15 @@ and may incur a charge.
    proposal's scope and warnings before applying: some operations affect the
    whole document or create a new document.
 
+Model calls automatically retry temporary HTTP errors (408, 429, 500, 502,
+503, 504, 529), network interruptions, and timeouts up to **two additional
+attempts**, with increasing delays and jitter. Provider `Retry-After` headers
+are respected; waits over 60 seconds are left for manual retry. Cancel stops
+both active requests and retry waits. A stream that has already delivered
+answer or reasoning text requires manual retry to avoid duplicate output.
+Authentication errors, invalid requests, and token-limit truncation fail
+without automatic retry.
+
 Failed whole-document sections can be retried without rerunning successful
 sections. Retry results are staged as a **new proposal** for review, rather
 than silently applied by the retry action. Check partial-application warnings

@@ -123,7 +123,7 @@ describe('sendPromptStream', () => {
 
   test('throws on non-ok HTTP responses', async () => {
     global.fetch = jest.fn(async () => ({ ok: false, status: 500, statusText: 'Server Error' }));
-    await expect(sendPromptStream(CONFIG, 'prompt', () => {})).rejects.toThrow('HTTP 500');
+    await expect(sendPromptStream({ ...CONFIG, maxRetries: 0 }, 'prompt', () => {})).rejects.toThrow('HTTP 500');
   });
 
   test('rejects immediately with AbortError when the signal is already aborted', async () => {

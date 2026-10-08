@@ -17,6 +17,7 @@ import {
   isTemperatureSupported,
 } from './model-capabilities.js';
 import { getProviderPreset } from './providers.js';
+import { withModelRetry } from './model-retry.js';
 
 /**
  * Strips <think>...</think> tags and reasoning artifacts from LLM responses.
@@ -415,6 +416,41 @@ async function _describeHttpError(response) {
   return detail ? `${statusLine}: ${detail}` : statusLine;
 }
 
+/** Keep HTTP status and Retry-After separate from provider-controlled error text. */
+async function _modelHttpError(response) {
+  const header = response.headers?.get?.('retry-after');
+  let retryAfterMs = 0;
+  if (typeof header === 'string' && header.trim()) {
+    const seconds = Number(header);
+    retryAfterMs = Number.isFinite(seconds)
+      ? Math.max(0, seconds * 1000)
+      : Math.max(0, Date.parse(header) - Date.now()) || 0;
+  }
+  return Object.assign(new Error(await _describeHttpError(response)), {
+    status: response.status, retryAfterMs,
+  });
+}
+
+/** Mark network errors at the transport boundary, never arbitrary application TypeErrors. */
+async function _modelTransport(operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof TypeError || error.name === 'NetworkError') {
+      Object.assign(error, { retryable: true });
+    }
+    throw error;
+  }
+}
+
+/** Gateways may report a generation failure inside a successful SSE response. */
+function _modelStreamError(error, prefix) {
+  const transientCodes = ['upstream_timeout', 'rate_limit_error', 'overloaded_error', 'api_error', 'server_error'];
+  return Object.assign(new Error(`${prefix}: ${error?.message || 'unknown'}`), {
+    retryable: transientCodes.includes(error?.type) || transientCodes.includes(error?.code),
+  });
+}
+
 /**
  * Sends a single-string prompt to the LLM backend as a one-message
  * user-role chat completion. Kept for callers that need the legacy
@@ -425,7 +461,7 @@ async function _describeHttpError(response) {
  * controller, which aborts the fetch. Aborts from timeout and from the
  * external signal are reported with distinct error names.
  *
- * @param {Object} config - { url, apiKey, model, thinkingLevel, temperature }
+ * @param {Object} config - { url, apiKey, model, thinkingLevel, temperature, maxRetries }
  * @param {string} promptText - User-role prompt body
  * @param {function} [log] - Optional logging callback (message, type)
  * @param {AbortSignal} [signal] - Optional abort signal for cancellation
@@ -435,65 +471,7 @@ async function _describeHttpError(response) {
  * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
  */
 export async function sendPrompt(config, promptText, log, signal, timeoutMs = 120000) {
-  if (isAnthropicConfig(config)) {
-    return _anthropicSend(config, [{ role: 'user', content: promptText }], log, signal, timeoutMs);
-  }
-  const { url, headers } = buildRequestConfig(config);
-
-  const body = JSON.stringify({
-    model: config.model,
-    messages: [{ role: 'user', content: promptText }],
-    stream: false,
-    ...buildGenerationParams(config),
-  });
-
-  const localController = new AbortController();
-  let timedOut = false;
-  const timeoutId = setTimeout(() => {
-    timedOut = true;
-    localController.abort();
-  }, timeoutMs);
-
-  let onExternalAbort;
-  if (signal) {
-    if (signal.aborted) {
-      clearTimeout(timeoutId);
-      throw new DOMException('The operation was aborted.', 'AbortError');
-    }
-    onExternalAbort = () => localController.abort();
-    signal.addEventListener('abort', onExternalAbort);
-  }
-
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body,
-      signal: localController.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(await _describeHttpError(response));
-    }
-
-    const data = await response.json();
-    const choice = data.choices?.[0];
-    _assertNotLengthTruncated(choice);
-    const rawText = choice?.message?.content ?? '';
-    return stripThinkTags(rawText, log);
-  } catch (err) {
-    if (timedOut && err.name === 'AbortError') {
-      const timeoutErr = new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
-      timeoutErr.name = 'TimeoutError';
-      throw timeoutErr;
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeoutId);
-    if (signal && onExternalAbort) {
-      signal.removeEventListener('abort', onExternalAbort);
-    }
-  }
+  return sendMessages(config, [{ role: 'user', content: promptText }], log, signal, timeoutMs);
 }
 
 /**
@@ -504,7 +482,10 @@ export async function sendPrompt(config, promptText, log, signal, timeoutMs = 12
  * Uses a manual AbortController approach instead of AbortSignal.any() for
  * compatibility with Office's WebView2 runtime.
  *
- * @param {Object} config - { url, apiKey, model, thinkingLevel, temperature }
+ * Transient HTTP/network failures and timeouts are retried twice by default.
+ * config.maxRetries overrides the additional-attempt budget (0 disables it).
+ *
+ * @param {Object} config - { url, apiKey, model, thinkingLevel, temperature, maxRetries }
  * @param {Array<{role: string, content: string}>} messages - Chat messages
  * @param {function} [log] - Optional logging callback (message, type)
  * @param {AbortSignal} [signal] - Optional abort signal for cancellation
@@ -515,6 +496,12 @@ export async function sendPrompt(config, promptText, log, signal, timeoutMs = 12
  * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
  */
 export async function sendMessages(config, messages, log, signal, timeoutMs = 120000) {
+  return withModelRetry(() => _sendMessagesAttempt(config, messages, log, signal, timeoutMs), {
+    maxRetries: config.maxRetries, signal, log,
+  });
+}
+
+async function _sendMessagesAttempt(config, messages, log, signal, timeoutMs) {
   if (isAnthropicConfig(config)) {
     return _anthropicSend(config, messages, log, signal, timeoutMs);
   }
@@ -547,18 +534,18 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await _modelTransport(() => fetch(url, {
       method: 'POST',
       headers,
       body,
       signal: localController.signal,
-    });
+    }));
 
     if (!response.ok) {
-      throw new Error(await _describeHttpError(response));
+      throw await _modelHttpError(response);
     }
 
-    const data = await response.json();
+    const data = await _modelTransport(() => response.json());
     const choice = data.choices?.[0];
     _assertNotLengthTruncated(choice);
     const rawText = choice?.message?.content ?? '';
@@ -593,7 +580,10 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
  *
  * Abort/timeout wiring mirrors sendMessages (WebView2-safe, no AbortSignal.any).
  *
- * @param {Object} config - { url, apiKey, model, apiPath, thinkingLevel, temperature }
+ * Retries transient failures before any content or reasoning is delivered.
+ * Partial output is never replayed automatically; callers retain manual retry.
+ *
+ * @param {Object} config - { url, apiKey, model, apiPath, thinkingLevel, temperature, maxRetries }
  * @param {Array<{role: string, content: string}>} messages - Chat messages
  * @param {function|{onContent?: function, onReasoning?: function}} [handlers] -
  *   A plain function is treated as onContent (legacy shorthand)
@@ -609,6 +599,19 @@ export async function sendMessages(config, messages, log, signal, timeoutMs = 12
  * @throws {Error} TimeoutError (error.name === 'TimeoutError') when timeout expires
  */
 export async function sendMessagesStream(config, messages, handlers, log, signal, timeoutMs = 120000) {
+  let emitted = false;
+  const onContent = typeof handlers === 'function' ? handlers : handlers?.onContent;
+  const onReasoning = typeof handlers === 'function' ? undefined : handlers?.onReasoning;
+  const guardedHandlers = {
+    onContent: (token) => { emitted = true; if (onContent) onContent(token); },
+    onReasoning: (token) => { emitted = true; if (onReasoning) onReasoning(token); },
+  };
+  return withModelRetry(() => _sendMessagesStreamAttempt(config, messages, guardedHandlers, log, signal, timeoutMs), {
+    maxRetries: config.maxRetries, signal, log, canRetry: () => !emitted,
+  });
+}
+
+async function _sendMessagesStreamAttempt(config, messages, handlers, log, signal, timeoutMs) {
   if (isAnthropicConfig(config)) {
     return _anthropicSendMessagesStream(config, messages, handlers, log, signal, timeoutMs);
   }
@@ -655,15 +658,15 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await _modelTransport(() => fetch(url, {
       method: 'POST',
       headers,
       body,
       signal: localController.signal,
-    });
+    }));
 
     if (!response.ok) {
-      throw new Error(await _describeHttpError(response));
+      throw await _modelHttpError(response);
     }
 
     // Headers arrived: the backend is alive -- restart the idle clock.
@@ -675,7 +678,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
 
     // Non-SSE fallback: the backend ignored stream:true and sent plain JSON.
     if (!contentType.includes('text/event-stream') || !response.body || typeof response.body.getReader !== 'function') {
-      const data = await response.json();
+      const data = await _modelTransport(() => response.json());
       _assertNotLengthTruncated(data.choices?.[0]);
       const message = data.choices?.[0]?.message ?? {};
       const reasoningText = _extractReasoning(message);
@@ -705,24 +708,27 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
         return;
       }
       if (!payload) return;
+      let json;
       try {
-        const json = JSON.parse(payload);
-        const choice = json.choices?.[0];
-        const delta = choice?.delta ?? choice?.message ?? {};
-        if (choice?.finish_reason) finishReason = choice.finish_reason;
-        const reasoningToken = _extractReasoning(delta);
-        if (reasoningToken) {
-          reasoning += reasoningToken;
-          if (onReasoning) onReasoning(reasoningToken);
-        }
-        const token = delta.content ?? '';
-        if (token) demux.push(token);
-      } catch (_parseErr) {
+        json = JSON.parse(payload);
+      } catch {
         // Incomplete or non-JSON data line -- skip it, but count it: a
         // backend emitting persistent garbage otherwise presents as a
         // mysterious "stream closed early" with no root cause in sight.
         malformedDataLines++;
+        return;
       }
+      if (json.error) throw _modelStreamError(json.error, 'LLM stream error');
+      const choice = json.choices?.[0];
+      const delta = choice?.delta ?? choice?.message ?? {};
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+      const reasoningToken = _extractReasoning(delta);
+      if (reasoningToken) {
+        reasoning += reasoningToken;
+        if (onReasoning) onReasoning(reasoningToken);
+      }
+      const token = delta.content ?? '';
+      if (token) demux.push(token);
     };
 
     const drainBuffer = () => {
@@ -736,7 +742,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     };
 
     while (!doneReceived) {
-      const { done, value } = await reader.read();
+      const { done, value } = await _modelTransport(() => reader.read());
       if (done) break;
       // Data is flowing: restart the idle clock on every received chunk.
       armIdleTimeout();
@@ -763,11 +769,11 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
       // Neither terminator arrived: the stream was cut short (proxy close,
       // network drop). Returning the partial text would present a half
       // answer — or worse, apply half an amendment — as if complete.
-      throw new Error(
+      throw Object.assign(new Error(
         'LLM stream closed before completion (no [DONE] marker or finish_reason) — ' +
         'the output may be truncated. Retry the request.' +
         (malformedDataLines > 0 ? ` (${malformedDataLines} malformed data line(s) were skipped.)` : '')
-      );
+      ), { retryable: true });
     }
     // A stream that terminates cleanly but with finish_reason=length is
     // still truncated: the model hit its max token limit mid-amendment.
@@ -777,6 +783,7 @@ export async function sendMessagesStream(config, messages, handlers, log, signal
     demux.flush();
     return { content: stripThinkTags(full, log), reasoning: reasoning.trim() };
   } catch (err) {
+    localController.abort();
     if (timedOut && err.name === 'AbortError') {
       const timeoutErr = new Error(`LLM request timed out: no output from the model for ${Math.round(timeoutMs / 1000)}s`);
       timeoutErr.name = 'TimeoutError';
@@ -1007,18 +1014,18 @@ async function _anthropicSend(config, messages, log, signal, timeoutMs) {
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await _modelTransport(() => fetch(url, {
       method: 'POST',
       headers,
       body,
       signal: localController.signal,
-    });
+    }));
 
     if (!response.ok) {
-      throw new Error(await _describeHttpError(response));
+      throw await _modelHttpError(response);
     }
 
-    const data = await response.json();
+    const data = await _modelTransport(() => response.json());
     _assertAnthropicNotTruncated(data);
     return stripThinkTags(_anthropicExtract(data).text, log);
   } catch (err) {
@@ -1082,15 +1089,15 @@ async function _anthropicSendMessagesStream(config, messages, handlers, log, sig
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await _modelTransport(() => fetch(url, {
       method: 'POST',
       headers,
       body,
       signal: localController.signal,
-    });
+    }));
 
     if (!response.ok) {
-      throw new Error(await _describeHttpError(response));
+      throw await _modelHttpError(response);
     }
 
     armIdleTimeout();
@@ -1101,7 +1108,7 @@ async function _anthropicSendMessagesStream(config, messages, handlers, log, sig
 
     // Non-SSE fallback: a relay answered with a plain JSON message object.
     if (!contentType.includes('text/event-stream') || !response.body || typeof response.body.getReader !== 'function') {
-      const data = await response.json();
+      const data = await _modelTransport(() => response.json());
       _assertAnthropicNotTruncated(data);
       const extracted = _anthropicExtract(data);
       if (extracted.reasoning) {
@@ -1128,35 +1135,33 @@ async function _anthropicSendMessagesStream(config, messages, handlers, log, sig
         return;
       }
       if (!payload) return;
+      let json;
       try {
-        const json = JSON.parse(payload);
-        switch (json.type) {
-        case 'content_block_delta': {
-          const delta = json.delta || {};
-          if (delta.type === 'text_delta' && delta.text) demux.push(delta.text);
-          else if (delta.type === 'thinking_delta' && delta.thinking) {
-            reasoning += delta.thinking;
-            if (onReasoning) onReasoning(delta.thinking);
-          }
-          break;
+        json = JSON.parse(payload);
+      } catch {
+        malformedDataLines++;
+        return;
+      }
+      switch (json.type) {
+      case 'content_block_delta': {
+        const delta = json.delta || {};
+        if (delta.type === 'text_delta' && delta.text) demux.push(delta.text);
+        else if (delta.type === 'thinking_delta' && delta.thinking) {
+          reasoning += delta.thinking;
+          if (onReasoning) onReasoning(delta.thinking);
         }
-        case 'message_delta':
-          if (json.delta && json.delta.stop_reason) stopReason = json.delta.stop_reason;
-          break;
-        case 'message_stop':
-          doneReceived = true;
-          break;
-        case 'error':
-          throw new Error(`Anthropic stream error: ${(json.error && json.error.message) || 'unknown'}`);
-        default:
-          break; // message_start, content_block_start/stop, ping, signatures
-        }
-      } catch (err) {
-        if (err instanceof SyntaxError) {
-          malformedDataLines++;
-        } else {
-          throw err;
-        }
+        break;
+      }
+      case 'message_delta':
+        if (json.delta && json.delta.stop_reason) stopReason = json.delta.stop_reason;
+        break;
+      case 'message_stop':
+        doneReceived = true;
+        break;
+      case 'error':
+        throw _modelStreamError(json.error, 'Anthropic stream error');
+      default:
+        break; // message_start, content_block_start/stop, ping, signatures
       }
     };
 
@@ -1171,7 +1176,7 @@ async function _anthropicSendMessagesStream(config, messages, handlers, log, sig
     };
 
     while (!doneReceived) {
-      const { done, value } = await reader.read();
+      const { done, value } = await _modelTransport(() => reader.read());
       if (done) break;
       armIdleTimeout();
       buffer += decoder.decode(value, { stream: true });
@@ -1190,17 +1195,18 @@ async function _anthropicSendMessagesStream(config, messages, handlers, log, sig
       log(`SSE stream: skipped ${malformedDataLines} malformed data line(s) from the backend`, 'warning');
     }
     if (!doneReceived && !stopReason) {
-      throw new Error(
+      throw Object.assign(new Error(
         'LLM stream closed before completion (no message_stop or stop_reason) — ' +
         'the output may be truncated. Retry the request.' +
         (malformedDataLines > 0 ? ` (${malformedDataLines} malformed data line(s) were skipped.)` : '')
-      );
+      ), { retryable: true });
     }
     _assertAnthropicNotTruncated({ stop_reason: stopReason });
 
     demux.flush();
     return { content: stripThinkTags(full, log), reasoning: reasoning.trim() };
   } catch (err) {
+    localController.abort();
     if (timedOut && err.name === 'AbortError') {
       const timeoutErr = new Error(`LLM request timed out: no output from the model for ${Math.round(timeoutMs / 1000)}s`);
       timeoutErr.name = 'TimeoutError';
@@ -1266,4 +1272,3 @@ export async function testConnection(config) {
   const models = (data.data || []).map((m) => ({ id: m.id }));
   return { connected: true, models };
 }
-
