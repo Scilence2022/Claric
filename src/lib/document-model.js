@@ -1,6 +1,7 @@
 /** Addressable, Word-free document draft. Original block identities never move. */
 export const DOCUMENT_EDIT_LIMITS = Object.freeze({
     blocks: 20000, paragraphChars: 24000, changes: 24, patchChars: 48000, readChars: 32000,
+    outlineBlocks: 100, readBlocks: 12,
 });
 
 function fail(message) { throw new Error(message); }
@@ -9,9 +10,9 @@ function text(value, label, max = DOCUMENT_EDIT_LIMITS.paragraphChars) {
     if (typeof value !== 'string' || !value.trim() || value.length > max) fail(`Invalid ${label}: expected non-empty text up to ${max} characters.`);
     return value;
 }
-function integer(value, fallback, max) {
+function integer(value, fallback, max, label = 'paging value', min = 0) {
     if (value === undefined) return fallback;
-    if (!Number.isInteger(value) || value < 0 || value > max) fail('Invalid paging range.');
+    if (!Number.isInteger(value) || value < min || value > max) fail(`Invalid ${label}: use an integer from ${min} to ${max}.`);
     return value;
 }
 function insertedFormat(value) {
@@ -28,7 +29,8 @@ export function createDocumentModel(snapshot) {
     if (!snapshot?.id || !Array.isArray(snapshot.blocks) || !snapshot.blocks.length
         || snapshot.blocks.length > DOCUMENT_EDIT_LIMITS.blocks) fail('Document snapshot is empty or too large.');
     /** @type {Array<{id: string, text: string, original: boolean, [key: string]: any}>} */
-    const original = snapshot.blocks.map((b) => ({ ...b, readOnly: !!b.readOnly || !!b.headingLevel, original: true }));
+    const original = snapshot.blocks.map((b) => ({ ...b,
+        readOnly: !!b.readOnly || !!b.headingLevel || !!b.structureUnavailable || !!b.inTable || !!b.isListItem, original: true }));
     const originals = new Map(original.map((b) => [b.id, b]));
     if (originals.size !== original.length || original.some((b) => !b.id || typeof b.text !== 'string')) fail('Invalid document block identities.');
     let draft = original.map((b) => ({ ...b }));
@@ -50,14 +52,31 @@ export function createDocumentModel(snapshot) {
         if (contract?.targetIds.length && id && !contract.targetIds.includes(id)) fail(`Block ${id} is outside the declared write scope.`);
     }
     function describe(b) {
+        const index = draft.indexOf(b);
+        function canInsert(at, after) {
+            const left = draft.slice(0, at).reverse().find((item) => item.original);
+            const right = draft.slice(at).find((item) => item.original);
+            const owner = after ? (left || right) : (right || left);
+            return !left?.structureUnavailable && !right?.structureUnavailable
+                && !((!left || left.inTable) && (!right || right.inTable))
+                && (!contract?.targetIds.length || contract.targetIds.includes(owner?.id));
+        }
+        const reasons = b.readOnlyReasons || [b.structureUnavailable && 'structure_unavailable',
+            b.headingLevel && 'heading', b.inTable && 'table', b.isListItem && 'list',
+            b.readOnly && !b.structureUnavailable && !b.headingLevel && !b.inTable && !b.isListItem && 'protected_structure'].filter(Boolean);
         return { id: b.id, headingLevel: b.headingLevel || 0, section: b.section || '',
-            readOnly: !!b.readOnly, inTable: !!b.inTable, chars: b.text.length, preview: b.text.slice(0, 180) };
+            readOnly: !!b.readOnly, readOnlyReasons: reasons, inTable: !!b.inTable,
+            canReplace: !b.readOnly && (!b.original || !contract?.targetIds.length || contract.targetIds.includes(b.id)),
+            canInsertBefore: canInsert(index, false), canInsertAfter: canInsert(index + 1, true),
+            chars: b.text.length, preview: b.text.slice(0, 180) };
     }
     function outline(args = {}) {
-        const offset = integer(args.offset, 0, draft.length);
-        const limit = integer(args.limit, 40, 100);
-        return { snapshotId: snapshot.id, revision, total: draft.length,
-            blocks: draft.slice(offset, offset + limit).map(describe), nextOffset: offset + limit < draft.length ? offset + limit : null };
+        if (args.headingsOnly !== undefined && typeof args.headingsOnly !== 'boolean') fail('headingsOnly must be a boolean.');
+        const list = args.headingsOnly ? draft.filter((b) => b.headingLevel) : draft;
+        const offset = integer(args.offset, 0, list.length, 'outline offset');
+        const limit = integer(args.limit, 40, DOCUMENT_EDIT_LIMITS.outlineBlocks, 'outline limit', 1);
+        return { snapshotId: snapshot.id, revision, total: list.length,
+            blocks: list.slice(offset, offset + limit).map(describe), nextOffset: offset + limit < list.length ? offset + limit : null };
     }
     function search(args) {
         const query = text(args.query, 'search query', 200).toLocaleLowerCase();
@@ -69,9 +88,9 @@ export function createDocumentModel(snapshot) {
         }), nextOffset: offset + 20 < matches.length ? offset + 20 : null };
     }
     function read(args) {
-        if (!Array.isArray(args.ids) || !args.ids.length || args.ids.length > 12) fail('Read 1–12 block IDs at a time.');
-        const offset = integer(args.offset, 0, Number.MAX_SAFE_INTEGER);
-        const limit = integer(args.limit, 8000, DOCUMENT_EDIT_LIMITS.paragraphChars);
+        if (!Array.isArray(args.ids) || !args.ids.length || args.ids.length > DOCUMENT_EDIT_LIMITS.readBlocks) fail('Read 1–12 block IDs at a time. Split larger requests into pages of at most 12 IDs.');
+        const offset = integer(args.offset, 0, Number.MAX_SAFE_INTEGER, 'read offset');
+        const limit = integer(args.limit, 8000, DOCUMENT_EDIT_LIMITS.paragraphChars, 'read limit', 1);
         let remaining = DOCUMENT_EDIT_LIMITS.readChars;
         return { revision, blocks: args.ids.map((id) => {
             const b = block(id);
@@ -88,7 +107,7 @@ export function createDocumentModel(snapshot) {
                 readCoverage.set(id, coverage);
             }
             const index = draft.indexOf(b);
-            return { ...describe(b), text: excerpt, offset,
+            return { ...describe(b), originalText: b.original && b.text === originals.get(id).text, text: excerpt, offset,
                 nextOffset: offset + excerpt.length < b.text.length ? offset + excerpt.length : null,
                 previousId: draft[index - 1]?.id || null, nextId: draft[index + 1]?.id || null };
         }) };
@@ -154,6 +173,7 @@ export function createDocumentModel(snapshot) {
                         reason, headingLevel: 0, section: anchor.section || '', readOnly: false, inTable: false });
                 }
             } else if (op.kind === 'replace') {
+                if (typeof op.blockId !== 'string' || !op.blockId) fail('replace requires blockId, text and reason. Use blockId for the original or draft ID, not id.');
                 const target = block(op.blockId, next);
                 readRequired(target.id);
                 if (target.original) permitted(target.id);
@@ -163,11 +183,13 @@ export function createDocumentModel(snapshot) {
                 target.text = content;
                 target.reason = text(op.reason, 'edit reason', 1000);
             } else if (op.kind === 'format_new') {
+                if (typeof op.blockId !== 'string' || !op.blockId) fail('format_new requires blockId, format and reason.');
                 const target = block(op.blockId, next);
                 if (target.original) fail('format_new can only target a newly inserted draft paragraph.');
                 target.format = insertedFormat(op.format);
                 target.reason = [target.reason, text(op.reason, 'format reason', 1000)].filter(Boolean).join('; ');
             } else if (op.kind === 'discard') {
+                if (typeof op.blockId !== 'string' || !op.blockId) fail('discard requires blockId.');
                 const target = block(op.blockId, next);
                 if (target.original) Object.assign(target, originals.get(target.id), { reason: '' });
                 else next.splice(next.indexOf(target), 1);

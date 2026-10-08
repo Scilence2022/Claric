@@ -13,7 +13,7 @@
  */
 
 import { FINISH_TOOL, TOOL_LOOP_LIMITS } from './tool-registry.js';
-import { extractJsonObject } from './json-utils.js';
+import { extractJsonObject, balancedJsonCandidates } from './json-utils.js';
 
 /**
  * Extracts the first JSON object from a model reply, tolerating code fences
@@ -27,10 +27,24 @@ import { extractJsonObject } from './json-utils.js';
  * @private
  */
 function _extractJsonObject(raw) {
-    return extractJsonObject(raw, {
+    const parsed = extractJsonObject(raw, {
         noObjectMessage: 'reply contains no JSON object',
         parseFailedPrefix: 'JSON parse failed: ',
     });
+    const calls = [];
+    for (const candidate of balancedJsonCandidates(raw)) {
+        if (candidate.kind !== '{') continue;
+        try {
+            const value = extractJsonObject(candidate.text);
+            if (typeof value.tool === 'string') calls.push(value);
+        } catch { /* the regular parser supplies malformed JSON diagnostics */ }
+    }
+    if (calls.length > 1 && calls.some((call) => _callFingerprint(call.tool, call.args)
+        !== _callFingerprint(calls[0].tool, calls[0].args))) {
+        throw new Error('reply contains multiple different tool calls; submit exactly one call per reply');
+    }
+    // Identical duplicate objects represent one call, not repeated writes.
+    return parsed;
 }
 
 /**

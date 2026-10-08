@@ -257,6 +257,26 @@ describe('runToolLoop', () => {
         expect(onStep).toHaveBeenCalledTimes(6); // reply + observation per step
     });
 
+    test('different tool objects in one reply are rejected before either can mutate the document', async () => {
+        const { send, sent } = makeLoop({ replies: [
+            '{"tool":"set_cell","args":{"text":"first"}}{"tool":"set_cell","args":{"text":"second"}}',
+            '{"tool":"finish","args":{"summary":"no changes"}}',
+        ] });
+        const execute = jest.fn();
+        const result = await runToolLoop({ systemPrompt: 'SYS', taskPrompt: 'TASK', tools: TOOLS, send, execute });
+        expect(result.finished).toBe(true);
+        expect(execute).not.toHaveBeenCalled();
+        expect(sent[1][3].content).toContain('multiple different tool calls');
+    });
+
+    test('identical duplicate JSON tool objects execute once', async () => {
+        const json = '{"tool":"set_cell","args":{"text":"same"}}';
+        const { send } = makeLoop({ replies: [json + json, '{"tool":"finish","args":{"summary":"done"}}'] });
+        const execute = jest.fn(async () => ({ ok: true }));
+        await runToolLoop({ systemPrompt: 'SYS', taskPrompt: 'TASK', tools: TOOLS, send, execute });
+        expect(execute).toHaveBeenCalledTimes(1);
+    });
+
     test('pre-aborted signal rejects with AbortError', async () => {
         const controller = new AbortController();
         controller.abort();

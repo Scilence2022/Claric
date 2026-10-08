@@ -30,6 +30,11 @@ function snapshotError(stage, error) {
     return new Error(`Word could not ${stage}: ${error?.message || String(error)}${detail ? ` (${detail})` : ''}`);
 }
 
+function structureError(stage, error) {
+    return { stage, code: error?.code || '', message: error?.message || String(error),
+        errorLocation: error?.debugInfo?.errorLocation || '' };
+}
+
 /** A failed OOXML read must never make a paragraph eligible for writing. */
 function documentChanged(error) { return error?.documentChanged === true; }
 
@@ -96,33 +101,36 @@ export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
     const records = await readParagraphMetadata(signal);
     const xml = Array(records.length).fill(null);
     const rangeUnavailable = new Set();
+    const failures = new Map();
     let firstFailure = null;
-    for (let start = 0; start < records.length; start += SNAPSHOT_BATCH_SIZE) {
+    async function readBatch(start, end) {
         check(signal);
-        const end = Math.min(start + SNAPSHOT_BATCH_SIZE, records.length);
         try {
             xml.splice(start, end - start, ...await readParagraphXml(records, start, end, signal));
         } catch (error) {
             if (signal?.aborted || documentChanged(error)) throw error;
-            // A large batch or one unusual Word object can fail the whole
-            // sync. Retry one paragraph at a time in fresh request contexts.
-            for (let index = start; index < end; index++) {
-                check(signal);
-                try { xml[index] = (await readParagraphXml(records, index, index + 1, signal))[0]; }
-                catch (singleError) {
-                    if (signal?.aborted || documentChanged(singleError)) throw singleError;
-                    try {
-                        xml[index] = (await readParagraphXml(records, index, index + 1, signal, true))[0];
-                        rangeUnavailable.add(index);
-                        firstFailure ||= singleError;
-                    }
-                    catch (paragraphError) {
-                        if (signal?.aborted || documentChanged(paragraphError)) throw paragraphError;
-                        firstFailure ||= paragraphError;
-                    }
-                }
+            if (end - start > 1) {
+                // Isolate a bad object without re-reading every healthy
+                // paragraph separately across the Word bridge.
+                const middle = start + Math.floor((end - start) / 2);
+                await readBatch(start, middle);
+                await readBatch(middle, end);
+                return;
+            }
+            try {
+                xml[start] = (await readParagraphXml(records, start, end, signal, true))[0];
+                rangeUnavailable.add(start);
+                failures.set(start, structureError('range_ooxml', error));
+                firstFailure ||= error;
+            } catch (paragraphError) {
+                if (signal?.aborted || documentChanged(paragraphError)) throw paragraphError;
+                failures.set(start, structureError('paragraph_ooxml', paragraphError));
+                firstFailure ||= paragraphError;
             }
         }
+    }
+    for (let start = 0; start < records.length; start += SNAPSHOT_BATCH_SIZE) {
+        await readBatch(start, Math.min(start + SNAPSHOT_BATCH_SIZE, records.length));
     }
     let section = '';
     const blocks = records.map((record, index) => {
@@ -131,21 +139,32 @@ export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
         let structureFingerprint = null;
         if (xml[index]) {
             try {
-                text = finalText(xml[index]);
                 structureFingerprint = paragraphStructureFingerprint(xml[index]);
                 if (!structureFingerprint) throw new Error('Word did not return one verifiable paragraph.');
-            } catch (error) { structureUnavailable = true; firstFailure ||= error; xml[index] = null; }
+                text = finalText(xml[index]);
+            } catch (error) {
+                structureUnavailable = true; firstFailure ||= error; xml[index] = null;
+                structureFingerprint = null;
+                text = clean(record.rawText);
+                failures.set(index, structureError('xml_validation', error));
+            }
         }
         const headingLevel = getHeadingLevel(record.styleBuiltIn) || mapStyleToHeadingLevel(record.style || '') || inferHeadingLevel(text);
         if (headingLevel) section = text;
+        const readOnlyReasons = [structureUnavailable && 'structure_unavailable', headingLevel && 'heading',
+            record.inTable && 'table', record.isListItem && 'list', protectedXml.test(xml[index]) && 'protected_structure'].filter(Boolean);
         return { id: `p-${index + 1}`, index, text, rawText: record.rawText, ooxml: xml[index], structureFingerprint,
             style: record.style, styleBuiltIn: record.styleBuiltIn, headingLevel, section,
             inTable: record.inTable, isListItem: record.isListItem, structureUnavailable,
-            readOnly: structureUnavailable || !!headingLevel || record.inTable || record.isListItem || protectedXml.test(xml[index]) };
+            structureError: failures.get(index) || null, readOnlyReasons, readOnly: readOnlyReasons.length > 0 };
     });
     const unreadable = blocks.filter((block) => block.structureUnavailable).length;
     if (unreadable === records.length) throw snapshotError('safely anchor any paragraph', firstFailure || new Error('No readable paragraph XML.'));
-    if (unreadable) onWarning?.(`${unreadable} paragraph(s) could not be safely anchored and will remain read-only. First error: ${firstFailure?.message || 'unknown'}`);
+    if (unreadable) {
+        const affected = blocks.filter((block) => block.structureUnavailable);
+        const locations = affected.slice(0, 8).map((block) => `${block.id} (${block.structureError?.stage || 'xml_validation'}${block.structureError?.errorLocation ? `: ${block.structureError.errorLocation}` : ''})`).join(', ');
+        onWarning?.(`${unreadable} paragraph(s) have unverified Word structure and will remain read-only: ${locations}${unreadable > 8 ? ', …' : ''}. Other verified locations remain editable. First error: ${firstFailure?.message || 'unknown'}`);
+    }
     return { id: `doc-edit-${Date.now().toString(36)}-${++sequence}`, blocks };
 }
 

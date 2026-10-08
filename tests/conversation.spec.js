@@ -741,7 +741,11 @@ describe('createConversation.submit', () => {
       patch: { changes: [{ reason: 'This location connects the mechanism to its limitations.' }] },
     };
     const actions = makeActions({
-      prepareDocumentEdit: jest.fn(async () => proposal),
+      prepareDocumentEdit: jest.fn(async (_deps, { onStep }) => {
+        onStep({ text: 'Reading candidates', progress: { phase: 'reading', step: 1, maxSteps: 32 } });
+        onStep({ text: 'Reviewing draft', progress: { phase: 'reviewing', step: 5, maxSteps: 32 } });
+        return proposal;
+      }),
       applyDocumentEdit: jest.fn(async () => ({ applied: true, verified: true })),
       discardDocumentEdit: jest.fn(async () => {}),
     });
@@ -753,6 +757,8 @@ describe('createConversation.submit', () => {
       instruction, selectionText: 'Incidental selection',
     }));
     expect(actions.planDocumentTasks).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith('Reading document context · step 1/32');
+    expect(view._msg.setStatus).toHaveBeenCalledWith('Reviewing proposed changes · step 5/32');
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
     const card = view._msg.attachProposal.mock.calls[0][0];
     expect(card.el.textContent).toContain('New discussion.');
