@@ -614,6 +614,17 @@ describe('routeTurn', () => {
     expect(turn.type).toBe(TURN_TYPE.CLEANUP);
   });
 
+  test.each(['调整选择部分的格式，包括多余的空行，不正确的粗体格式等',
+    '清理选区多余空行，并把标题加粗', 'Remove extra blank lines and bold the headings'])('format and cleanup share one selection proposal: %s', (instruction) => {
+    expect(routeTurn(instruction, { hasSelection: true, skills: BUILTIN_SKILLS }))
+      .toMatchObject({ type: TURN_TYPE.FORMAT, scope: 'selection' });
+  });
+
+  test('standalone selection cleanup keeps its scope and does not require model formatting', () => {
+    expect(routeTurn('删除选区多余空行', { hasSelection: true, skills: BUILTIN_SKILLS }))
+      .toMatchObject({ type: TURN_TYPE.FORMAT, scope: 'selection', cleanupOnly: true });
+  });
+
   test('question lead beats cleanup intent (ZH "为什么有多余的空段落？")', () => {
     const turn = routeTurn('为什么有多余的空段落？', { hasSelection: false, skills: BUILTIN_SKILLS });
     expect(turn.type).toBe(TURN_TYPE.DOC_QA);
@@ -2853,6 +2864,7 @@ describe('turn lifecycle guards', () => {
       planDocumentTasks: jest.fn(async () => ({
         tasks: [
           { type: 'edit', instruction: '删除多余的空行' },   // → CLEANUP
+          { type: 'edit', instruction: '润色全文' },
           { type: 'format', instruction: '居中全文' },
         ],
         model: 'm',
@@ -2871,7 +2883,7 @@ describe('turn lifecycle guards', () => {
       getSelectionText: async () => '',
     });
 
-    const inFlight = conv.submit('删除多余的空行，并居中全文');
+    const inFlight = conv.submit('删除多余的空行，润色全文，并居中全文');
     await Promise.resolve();
     await Promise.resolve();
     const compoundController = appState.chatController;

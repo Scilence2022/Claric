@@ -39,6 +39,7 @@ import { buildToolLoopSystemPrompt, TOOL_LOOP_LIMITS } from '../lib/tool-registr
 import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
 import { describeFormatOp } from '../lib/format-ops.js';
+import { requestsEmptyParagraphCleanup } from '../lib/empty-paragraphs.js';
 import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib/file-attachments.js';
 import { buildConversationHistory } from '../lib/conversation-history.js';
 import { inspectEditRequest } from '../lib/edit-request.js';
@@ -330,11 +331,8 @@ export function looksLikeFormatIntent(text) {
  * (删除多余的空段落 / 清除空行 / "delete empty paragraphs"). This cannot go
  * through the text pipelines — the document parser skips blank paragraphs
  * (so the LLM never sees them) and the reassembler excludes them from
- * alignment — so it routes to a deterministic Word.js cleanup instead.
- */
-const CLEANUP_INTENT_RE = /(删除|清除|清理|去掉|移除|去除).{0,8}(空\s*段落|空白\s*段落|空行|空白行)|\b(delete|remove|clean\s*up|get rid of|strip)\b.{0,20}\b(empty|blank|whitespace)\b.{0,4}\b(paragraphs?|lines?)/i;
-
-/**
+ * alignment — so cleanup uses verified native paragraph targets.
+ *
  * True when free text asks to delete redundant empty paragraphs. Questions
  * stay Q&A even when they mention blank paragraphs ("为什么有多余的空段落？").
  *
@@ -343,7 +341,15 @@ const CLEANUP_INTENT_RE = /(删除|清除|清理|去掉|移除|去除).{0,8}(空
  */
 export function looksLikeCleanupIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return CLEANUP_INTENT_RE.test(text);
+    return requestsEmptyParagraphCleanup(text);
+}
+
+function scopedCleanupTurn(instruction, hasTextSelection) {
+    const selectionRequested = /选区|选择|所选|\bselection\b|\bselected\b/i.test(instruction);
+    const documentRequested = /全文|全篇|整篇|整个?文档|整[个篇]?文章|文档[里中]|\b(?:entire|whole)\s+(?:document|article)\b|\bdocument[- ]wide\b/i.test(instruction);
+    return hasTextSelection && (selectionRequested || !documentRequested)
+        ? { type: TURN_TYPE.FORMAT, instruction, scope: 'selection', cleanupOnly: true }
+        : { type: TURN_TYPE.CLEANUP, instruction };
 }
 
 /**
@@ -388,7 +394,7 @@ export function countIntentFamilies(text) {
     if (!table && looksLikeAppendIntent(text)) count++;
     if (looksLikeFormatIntent(text)) count++;
     if (looksLikeEditIntent(text)) count++;
-    if (looksLikeCleanupIntent(text)) count++;
+    if (looksLikeCleanupIntent(text) && !looksLikeFormatIntent(text)) count++;
     return count;
 }
 
@@ -500,7 +506,8 @@ export function routeTurn(text, {
         const actionCount = (actionText.match(/插入|添加|增加|创建|生成|修改|调整|润色|删除|加粗|设置|补充|整合|统一|压缩|精简|缩短|扩写|续写|\b(?:insert|add|create|edit|format|remove|delete|bold|revise|rewrite|polish|shorten|summarize|expand)\b/gi) || []).length;
         const crossActionSequence = !looksLikeQuestion(trimmed) && !imageSelected && !hasMultiCellTableRegion
             && /(?:然后|接着|随后|并且|并|同时|再|以及|[，,;；]|\b(?:then|and|as well as)\b)/i.test(actionText)
-            && actionCount >= 2;
+            && actionCount >= 2
+            && !(families === 1 && looksLikeFormatIntent(actionText) && looksLikeCleanupIntent(actionText));
         if (families + docCompound + tableDocCompound >= 2 || proseAndFormat || crossActionSequence) {
             return {
                 type: TURN_TYPE.COMPOUND,
@@ -561,10 +568,10 @@ export function routeTurn(text, {
             scope: selectionPresent && textSelected && !hasMultiCellTableRegion ? 'selection' : 'document',
         };
     }
-    // Cleanup intent is document-scope and deterministic: empty paragraphs
-    // are invisible to the parser/LLM, so no text pipeline could serve this.
+    // Native cleanup honors the selection when present; text rewriting
+    // cannot target paragraphs that the parser omits as empty.
     if (looksLikeCleanupIntent(trimmed)) {
-        return { type: TURN_TYPE.CLEANUP, instruction: trimmed };
+        return scopedCleanupTurn(trimmed, selectionPresent && textSelected && !hasMultiCellTableRegion);
     }
     if (selectionPresent) {
         // Image-only selection: the selection enters as a controllable image
@@ -1101,7 +1108,7 @@ export function createConversation(deps) {
                         if (result?.partial || result?.interrupted || !result?.verified || !result?.applied) {
                             card.markWarning(`The document edit was not fully verified. ${result?.warnings?.join(' ') || 'Review Word before generating a fresh proposal.'}`);
                         } else card.markApplied();
-                    } catch (error) { card.markError(error.message); }
+                    } catch (error) { card.markError(error.message, { retryable: false }); }
                 },
                 onReject: () => resource.dispose(),
             });
@@ -1316,6 +1323,8 @@ export function createConversation(deps) {
                 instruction: turn.instruction,
                 scope: turn.scope,
                 selectionText,
+                cleanupOnly: turn.cleanupOnly === true,
+                cleanupRequested: turn.cleanupRequested,
                 signal: myController.signal,
                 onToken: (t) => msg.appendModelToken({ id: 'format' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'format' }, 'reasoning', t),
@@ -1327,7 +1336,7 @@ export function createConversation(deps) {
             }
             if (!proposal.ops || proposal.ops.length === 0) {
                 await resource.dispose();
-                msg.setStatus('The model proposed no changes.');
+                msg.setStatus(turn.cleanupOnly ? 'No verified empty paragraphs found in the selection.' : 'The model proposed no changes.');
                 return;
             }
             msg.setStatus('');
@@ -1348,14 +1357,14 @@ export function createConversation(deps) {
                         const fmtResult = await resource.apply(() => actions.applyFormatProposal(turnDeps, { ...proposal, ops }, applyCtx));
                         if (fmtResult?.interrupted || fmtResult?.partial) {
                             card.markWarning('Formatting stopped; changes may already be applied. Review the document and draft a new proposal.');
-                        } else if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0) {
+                        } else if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0 && !fmtResult.deletedParagraphs) {
                             card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
                         } else {
                             card.markApplied();
                         }
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
+                        card.markError(error.message, { retryable: false });
                     }
                 },
                 onReject: async () => {
@@ -1506,7 +1515,7 @@ export function createConversation(deps) {
                         }
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
+                        card.markError(error.message, { retryable: false });
                     }
                 },
                 onReject: async () => {
@@ -2031,8 +2040,8 @@ export function createConversation(deps) {
         // enter the text pipelines — the parser/LLM never see blank
         // paragraphs, so only the deterministic cleanup can serve it,
         // regardless of the planner's own type label (usually "edit").
-        if (task.type !== 'qa' && looksLikeCleanupIntent(instruction)) {
-            return { type: TURN_TYPE.CLEANUP, instruction };
+        if (task.type !== 'qa' && task.type !== 'format' && !looksLikeFormatIntent(instruction) && looksLikeCleanupIntent(instruction)) {
+            return scopedCleanupTurn(instruction, selectionPresent && textSelected && !hasMultiCellTableRegion);
         }
         switch (task.type) {
             case 'document_edit':
@@ -2207,6 +2216,8 @@ export function createConversation(deps) {
                 const taskDeps = inputs.length ? { ...turnDeps, conversationHistory: [...turnDeps.conversationHistory,
                     { role: 'assistant', content: `Prior task results: ${JSON.stringify(inputs.map((i) => i.value))}` }] } : turnDeps;
                 const taskTurn = turnForTask(task, selectionFacts);
+                if (taskTurn.type === TURN_TYPE.FORMAT) taskTurn.cleanupRequested = requestsEmptyParagraphCleanup(taskTurn.instruction)
+                    && requestsEmptyParagraphCleanup(turn.instruction);
                 if (turn.temporaryAttachments?.length) {
                     if (taskTurn.type === TURN_TYPE.DOCUMENT_EDIT) taskTurn.temporaryAttachments = turn.temporaryAttachments;
                     else if (taskTurn.type !== TURN_TYPE.COMMENT_MANAGEMENT) {
@@ -2318,6 +2329,11 @@ export function createConversation(deps) {
      * with every sub-task, so one cancel stops the whole chain.
      */
     async function dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController) {
+        if (turn.type === TURN_TYPE.FORMAT) {
+            // Reference documents can inform styling but cannot authorize
+            // structural deletion through text appended to the instruction.
+            turn = { ...turn, cleanupRequested: turn.cleanupRequested ?? requestsEmptyParagraphCleanup(turn.instruction) };
+        }
         const qa = turn.type === TURN_TYPE.DOC_QA
             || (turn.type === TURN_TYPE.SKILL && ['chat', 'context'].includes(turn.skill.category));
         if (!qa && turn.type !== TURN_TYPE.COMPOUND && turn.type !== TURN_TYPE.DOCUMENT_EDIT
@@ -2466,6 +2482,7 @@ export function createConversation(deps) {
             skills: listSkills(appState.promptManager),
         });
         if (!turn) return;
+        if (turn.type === TURN_TYPE.FORMAT) turn.cleanupRequested = requestsEmptyParagraphCleanup(effective);
 
         const fileReferences = list.filter((attachment) => attachment.fileId).map((attachment) => ({
             fileId: attachment.fileId, versionId: attachment.versionId,

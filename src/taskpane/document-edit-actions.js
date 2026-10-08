@@ -10,6 +10,7 @@ import { applyTokenMapStrategy, applySentenceDiffStrategy, hasCjk, applyCharDiff
 import { FILE_RESOURCE_TOOL_SPECS, createFileResourceToolExecutor } from '../lib/file-resource-tools.js';
 import * as fileStore from '../lib/file-store.js';
 import { defineTool } from '../lib/tool-registry.js';
+import { canReadWordVisuals, createWordVisualTools, sendWithWordVisuals } from './word-render-tools.js';
 
 let sequence = 0;
 const SNAPSHOT_BATCH_SIZE = 24;
@@ -269,12 +270,16 @@ export async function prepareDocumentEdit(deps, { instruction, selectionText = '
         versions.set(ref.fileId, ref.versionId);
     }
     const sourceExecutor = createFileResourceToolExecutor({ allowedIds: [...versions.keys()], signal });
-    const result = await runDocumentEditSession({
+    const renderer = canReadWordVisuals() ? createWordVisualTools({ signal, log: deps.log, scopeText: selectionText }) : null;
+    let visionRejected = false;
+    let result;
+    try { result = await runDocumentEditSession({
         snapshot, instruction, selectionText, signal, onStep, conversationHistory: deps.conversationHistory,
-        sourceTools: [...(references.length ? FILE_RESOURCE_TOOL_SPECS : []), ...(temporary.length ? TEMP_SOURCE_SPECS : [])],
+        sourceTools: [...(references.length ? FILE_RESOURCE_TOOL_SPECS : []), ...(temporary.length ? TEMP_SOURCE_SPECS : []), ...(renderer?.tools || [])],
         sourceContext: JSON.stringify({ library: references.map(({ fileId, versionId, name }) => ({ fileId, versionId, name })),
             temporary: temporary.map(({ sourceId, name, text }) => ({ sourceId, name, chars: text.length })) }),
         executeSource: async (name, args) => {
+            if (renderer?.tools.some((tool) => tool.name === name)) return renderer.execute(name, args);
             if (name === 'temporary_source_list') return { ok: true, result: temporary.map(({ sourceId, name, text }) => ({ sourceId, name, chars: text.length })) };
             if (name === 'temporary_source_read') {
                 const item = temporary.find((source) => source.sourceId === args.sourceId);
@@ -294,8 +299,9 @@ export async function prepareDocumentEdit(deps, { instruction, selectionText = '
             check(signal);
             return sourceExecutor(name, { ...args, ...(versions.has(args.fileId) ? { versionId: versions.get(args.fileId) } : {}) });
         },
-        send: (messages) => sendMessages(backend, messages, deps.log, signal, 300000),
-    });
+        send: (messages) => sendWithWordVisuals((request) => sendMessages(backend, request, deps.log, signal, 300000), messages,
+            (warning) => { visionRejected = true; deps.log?.(warning, 'warning'); }, { textOnly: visionRejected }),
+    }); } finally { await renderer?.dispose(); }
     if (result.status === 'no_op') return result;
     const anchor = await anchorDocumentEdit(snapshot, result.patch, { signal });
     return { ...result, anchor, model: backend.model };

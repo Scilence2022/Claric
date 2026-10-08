@@ -2014,6 +2014,15 @@ textarea.form-control {
     outline-offset: -2px;
 }
 
+.word-view-status {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#shareWordViewBtn[aria-pressed="true"] {
+    color: var(--accent-color);
+}
+
 .composer-toolbar {
     display: flex;
     flex-wrap: wrap;

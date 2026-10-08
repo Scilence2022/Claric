@@ -400,13 +400,16 @@ function _normalizeMessage(m) {
  */
 function _wrapProposalCard(card, meta, onStateChange) {
     const notify = typeof onStateChange === 'function' ? onStateChange : () => {};
+    let terminal = ['applied', 'rejected', 'warning'].includes(meta.state);
     for (const [method, state] of Object.entries({ markApplied: 'applied', markRejected: 'rejected', markWarning: 'warning', markError: 'error' })) {
         const original = card[method];
         if (typeof original !== 'function') continue;
-        card[method] = function (message) {
-            if (['applied', 'rejected', 'warning'].includes(meta.state)) return;
-            const result = original.call(card, message);
+        card[method] = function (message, options) {
+            if (terminal) return;
+            const result = original.call(card, message, options);
             meta.state = state;
+            terminal = ['applied', 'rejected', 'warning'].includes(state)
+                || (method === 'markError' && options?.retryable === false);
             if (message && ['applied', 'warning', 'error'].includes(state)) meta.detail = String(message);
             else if (state === 'applied') delete meta.detail;
             notify();

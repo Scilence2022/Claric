@@ -24,28 +24,40 @@ export function paragraphStructureFingerprint(ooxml) {
         ? [root] : Array.from(root.getElementsByTagNameNS(W_NS, 'p'));
     if (paragraphs.length !== 1) return null;
 
-    function stableNode(node) {
-        if (node.nodeType === 3 || node.nodeType === 4) {
-            const value = node.nodeValue || '';
-            // Formatting whitespace outside text-bearing elements is XML
-            // serialization, not document content.
-            return value.trim() || ['t', 'delText', 'instrText'].includes(node.parentNode?.localName)
-                ? ['text', value] : null;
-        }
-        if (node.nodeType !== 1) return null;
-        const element = /** @type {Element} */ (node);
-        if (element.namespaceURI === W_NS && ['proofErr', 'bookmarkStart', 'bookmarkEnd',
-            'lastRenderedPageBreak'].includes(element.localName)) return null;
-        const attrs = Array.from(element.attributes).filter((attr) => {
-            if (attr.namespaceURI === XMLNS_NS) return false;
-            if (attr.namespaceURI === XML_NS && attr.localName === 'space') return false;
-            if (attr.namespaceURI === W_NS && attr.localName.startsWith('rsid')) return false;
-            if (attr.namespaceURI === W14_NS && ['paraId', 'textId'].includes(attr.localName)) return false;
-            return true;
-        }).map((attr) => [attr.namespaceURI || '', attr.localName, attr.value])
-            .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-        return [element.namespaceURI || '', element.localName, attrs,
-            Array.from(element.childNodes).map(stableNode).filter((child) => child !== null)];
-    }
     return JSON.stringify(stableNode(paragraphs[0]));
+}
+
+/** Compare a complete formatting scope without volatile Word/package markup. */
+export function rangeStructureFingerprint(ooxml) {
+    const root = documentPartRoot(ooxml);
+    if (!root) return null;
+    const body = root.namespaceURI === W_NS && root.localName === 'body'
+        ? root : root.getElementsByTagNameNS(W_NS, 'body')[0];
+    const content = body || root;
+    if (content.namespaceURI !== W_NS) return null;
+    return JSON.stringify(stableNode(content));
+}
+
+function stableNode(node) {
+    if (node.nodeType === 3 || node.nodeType === 4) {
+        const value = node.nodeValue || '';
+        // Formatting whitespace outside text-bearing elements is XML
+        // serialization, not document content.
+        return value.trim() || ['t', 'delText', 'instrText'].includes(node.parentNode?.localName)
+            ? ['text', value] : null;
+    }
+    if (node.nodeType !== 1) return null;
+    const element = /** @type {Element} */ (node);
+    if (element.namespaceURI === W_NS && ['proofErr', 'bookmarkStart', 'bookmarkEnd',
+        'lastRenderedPageBreak'].includes(element.localName)) return null;
+    const attrs = Array.from(element.attributes).filter((attr) => {
+        if (attr.namespaceURI === XMLNS_NS) return false;
+        if (attr.namespaceURI === XML_NS && attr.localName === 'space') return false;
+        if (attr.namespaceURI === W_NS && attr.localName.startsWith('rsid')) return false;
+        if (attr.namespaceURI === W14_NS && ['paraId', 'textId'].includes(attr.localName)) return false;
+        return true;
+    }).map((attr) => [attr.namespaceURI || '', attr.localName, attr.value])
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    return [element.namespaceURI || '', element.localName, attrs,
+        Array.from(element.childNodes).map(stableNode).filter((child) => child !== null)];
 }
