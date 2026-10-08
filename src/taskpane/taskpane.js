@@ -27,6 +27,7 @@ import * as chatView from './ui/chat-view.js';
 import { renderWelcomeChips, selectWelcomeSkills } from './ui/welcome.js';
 import { initInputBar } from './ui/input-bar.js';
 import { initAboutView } from './ui/about-view.js';
+import { initScreenSharingView } from './ui/screen-sharing-view.js';
 import { createSettingsLoader } from './settings-loader.js';
 import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer } from './ui/status-bar.js';
 import { initHistoryView, openHistory } from './ui/history-view.js';
@@ -95,6 +96,7 @@ async function initialize() {
 
     const settings = createSettingsLoader({ onConfigChanged: updateModelPill, log: addLog });
     document.getElementById('settingsBtn').addEventListener('click', settings.open);
+    initScreenSharingView({ log: addLog });
 
     // Input bar + conversation orchestration
     const input = initInputBar({

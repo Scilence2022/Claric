@@ -29,6 +29,19 @@ function makeCard(overrides = {}) {
 }
 
 describe('createProposalCard', () => {
+  test('a non-retryable failure retains its original error and prevents replay or revival', async () => {
+    const onApply = jest.fn();
+    const card = makeCard({ onApply, items: makeItems() });
+    card.markError('The original baseline changed', { retryable: false });
+    const original = card.el.textContent;
+    expect(card.el.querySelector('.btn-primary').disabled).toBe(true);
+    expect(card.el.querySelector('.btn-secondary').disabled).toBe(true);
+    card.markError('This proposal has been discarded.');
+    card.setPaused('Try again');
+    await card.applyAll();
+    expect(card.el.textContent).toBe(original);
+    expect(onApply).not.toHaveBeenCalled();
+  });
   test.each(['markApplied', 'markRejected', 'markWarning'])('%s prevents all subsequent writes and state revival', async (method) => {
     const onApply = jest.fn();
     const card = makeCard({ onApply, items: makeItems() });

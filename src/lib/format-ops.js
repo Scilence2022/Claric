@@ -77,6 +77,7 @@ export function buildFormatPrompt(instruction, scopeText, scope) {
         '- Lists: turn paragraphs into a bulleted or numbered list, nest items (levels 0-8), or remove list formatting.\n' +
         '- Font: name, size, color, highlight, bold, italic, underline, strikethrough, superscript/subscript, caps.\n' +
         '- Paragraph: alignment, line spacing, space before/after, indentation (left/right/first line).\n' +
+        '- Empty paragraphs: {"cleanup":{"emptyParagraphs":true}} deletes only verified blank paragraphs inside the scope. Paragraph spacing alone does not remove blank lines.\n' +
         'Optionally the ops may include short NEW structural elements to add (e.g. an article title). ' +
         'Translate the instruction into a JSON array of operations.\n\n' +
         'OUTPUT CONTRACT (strict):\n' +
@@ -105,7 +106,8 @@ export function buildFormatPrompt(instruction, scopeText, scope) {
         'or heading, not long-form content. For an article title, compose a concise title from the ' +
         `${scopeName} text, position it at "start", and style it with the built-in "title" style.\n` +
         '- Include ONLY the properties the user asked to change; spacing/indent values are points.\n' +
-        '- Do NOT rewrite or change any existing text. If the instruction asks ONLY to rewrite existing ' +
+        '- For requested extra blank-line removal, include a standalone cleanup op, without match/font/paragraph/insert. The host verifies and counts safe targets before review, and runs cleanup after formatting.\n' +
+        '- Do NOT rewrite existing prose. Blank paragraph deletion is supported only by the verified cleanup op. If the instruction asks ONLY to rewrite existing ' +
         'content, output exactly []. If it mixes rewriting with formatting/insertion, perform ONLY the ' +
         'formatting/insertion parts.\n\n' +
         'USER INSTRUCTION:\n' + (instruction || '').trim() + '\n\n' +
@@ -147,6 +149,13 @@ export function parseFormatOps(raw, log = () => {}) {
  */
 function _sanitizeOp(entry, log) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+
+    if (entry.cleanup !== undefined) {
+        if (entry.cleanup?.emptyParagraphs === true && !entry.match && !entry.paragraphStyle
+            && !entry.font && !entry.paragraph && !entry.insert) return { cleanup: { emptyParagraphs: true } };
+        log('Format ops: dropped invalid or mixed cleanup payload', 'warning');
+        return null;
+    }
 
     const op = {};
     if (typeof entry.match === 'string' && entry.match.trim()) {
@@ -284,6 +293,9 @@ function _truncate(s, max) {
  * @returns {string}
  */
 export function describeFormatOp(op) {
+    if (op.cleanup) return op.cleanup.emptyCount === undefined
+        ? 'Delete verified empty paragraphs inside the scope'
+        : `Delete ${op.cleanup.emptyCount} verified empty paragraph(s) inside the scope`;
     const target = op.insert
         ? `insert at ${op.insert.position}`
         : op.match

@@ -7,6 +7,8 @@ const crypto = require('crypto');
 const REQUIRED_ASSETS = Object.freeze([
   'taskpane.html', 'taskpane.js', 'commands.html', 'commands.js',
   'pdf.worker.min.mjs', 'assets/icon.svg',
+  'pdfjs/cmaps/Adobe-GB1-UCS2.bcmap', 'pdfjs/standard_fonts/LiberationSans-Regular.ttf',
+  'pdfjs/wasm/openjpeg.wasm', 'pdfjs/wasm/qcms_bg.wasm',
   ...[16, 32, 64, 80, 128].map((size) => `assets/icon-${size}.png`),
 ]);
 const REQUIRED_KEYS = ['appVersion', 'builtAt', 'hash', 'mode'];

@@ -562,9 +562,13 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         markItemApplied,
         /** Enables "Continue applying" after a paused (interrupted) apply. */
         setPaused,
-        /** Re-enables Apply after a failed attempt so the user can retry. */
-        markError(message) {
+        /** Only replayable proposals may retry after an apply failure. */
+        markError(message, { retryable = true } = {}) {
             if (state === 'settled') return;
+            if (!retryable) {
+                settle(`Apply failed: ${message}`, 'proposal-error');
+                return;
+            }
             setState('error');
             applyBtn.disabled = changeBoxes.length > 0 && !selectedIds().length;
             rejectBtn.disabled = appliedIdSet.size > 0;

@@ -7,6 +7,19 @@
 const { buildFormatPrompt, parseFormatOps, describeFormatOp } = require('../src/lib/format-ops.js');
 
 describe('parseFormatOps', () => {
+  test('cleanup is a standalone allowlisted operation; model counts and selectors are never trusted', () => {
+    expect(parseFormatOps('[{"cleanup":{"emptyParagraphs":true,"emptyCount":999}}]'))
+      .toEqual([{ cleanup: { emptyParagraphs: true } }]);
+    for (const entry of [
+      { cleanup: null }, { cleanup: { emptyParagraphs: false } },
+      { cleanup: { emptyParagraphs: 'true' } },
+      ...['match', 'paragraphStyle', 'font', 'paragraph', 'insert'].map((key) =>
+        ({ cleanup: { emptyParagraphs: true }, [key]: 'untrusted' })),
+    ]) expect(parseFormatOps(JSON.stringify([entry]))).toEqual([]);
+    expect(describeFormatOp({ cleanup: { emptyParagraphs: true, emptyCount: 3 } })).toContain('Delete 3 verified empty paragraph');
+    expect(describeFormatOp({ cleanup: { emptyParagraphs: true } })).toBe('Delete verified empty paragraphs inside the scope');
+    expect(buildFormatPrompt('Remove blank lines and bold headings', 'text', 'selection')).toContain('Paragraph spacing alone does not remove blank lines');
+  });
   test('parses a bare JSON array', () => {
     const ops = parseFormatOps('[{"font":{"bold":true}}]');
     expect(ops).toEqual([{ font: { bold: true } }]);

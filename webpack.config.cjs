@@ -420,7 +420,13 @@ module.exports = (env, argv) => {
             from: 'node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs',
             to: 'pdf.worker.min.mjs',
             noErrorOnMissing: true
-          }
+          },
+          // Native Word page rendering needs CJK mappings, standard fonts
+          // and image/color decoders, served locally beside the worker.
+          ...['cmaps', 'standard_fonts', 'wasm'].map((name) => ({
+            from: `node_modules/pdfjs-dist/${name}`,
+            to: `pdfjs/${name}`
+          }))
         ]
       }),
       // Inject environment defaults into the bundle
@@ -529,4 +535,3 @@ module.exports.__testing = {
   parseProxyTarget,
   buildLlmProxies,
 };
-

@@ -37,6 +37,8 @@ import { supportsTrackedRowOps } from '../lib/platform.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
+import { rangeStructureFingerprint } from '../lib/ooxml-fingerprint.js';
+import { requestsEmptyParagraphCleanup, isDeletableEmptyParagraphXml } from '../lib/empty-paragraphs.js';
 import { formatTableMarkdown, formatMixedContext, formatCursorContext } from '../lib/selection-context.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
 import {
@@ -61,6 +63,7 @@ import { attachSvgSource, svgSourceIdFromPicture } from './svg-source-store.js';
 import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
+import { canReadWordVisuals, createWordVisualTools } from './word-render-tools.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
     const messages = typeof prompt === 'string' ? [{ role: 'user', content: prompt }] : prompt;
@@ -2579,39 +2582,105 @@ function checkOperationSignal(signal) {
 
 let formatAnchorSequence = 0;
 
-export async function prepareFormatProposal(deps, { instruction, scope = 'selection', selectionText, onToken, onReasoning, signal } = {}) {
+/** Native scope containment and XML evidence are required before deletion. */
+async function _collectFormatEmptyParagraphs(context, scopeRange, signal, log) {
+    const paragraphs = scopeRange.paragraphs;
+    paragraphs.load('items/text');
+    await context.sync();
+    checkOperationSignal(signal);
+    const lastRange = context.document.body.paragraphs.getLast().getRange('Whole');
+    const indexes = [];
+    for (let index = 0; index < paragraphs.items.length; index++) {
+        const paragraph = paragraphs.items[index];
+        if ((paragraph.text || '').trim()) continue;
+        checkOperationSignal(signal);
+        try {
+            const range = paragraph.getRange('Whole');
+            const relation = range.compareLocationWith(scopeRange);
+            const finalRelation = range.compareLocationWith(lastRange);
+            const table = paragraph.parentTableOrNullObject;
+            table.load('isNullObject');
+            const xml = range.getOoxml();
+            await context.sync();
+            checkOperationSignal(signal);
+            if (['Inside', 'InsideStart', 'InsideEnd', 'Equal'].includes(relation.value)
+                && finalRelation.value !== 'Equal' && table.isNullObject
+                && isDeletableEmptyParagraphXml(xml.value)) indexes.push(index);
+        } catch (error) {
+            if (error.name === 'AbortError') throw error;
+            log(`Empty paragraph ${index + 1} could not be verified and will be preserved: ${error.message}`, 'warning');
+        }
+    }
+    return { paragraphs, indexes };
+}
+
+export async function prepareFormatProposal(deps, { instruction, scope = 'selection', selectionText, cleanupOnly = false,
+    cleanupRequested = requestsEmptyParagraphCleanup(instruction), onToken, onReasoning, signal } = {}) {
     const { appState, log } = deps;
     checkOperationSignal(signal);
-    const anchor = await Word.run(async (context) => {
-        const range = scope === 'document' ? context.document.body.getRange() : context.document.getSelection();
-        if (typeof range.insertBookmark !== 'function' || typeof context.document.getBookmarkRangeOrNullObject !== 'function') {
-            throw new Error('This Word host cannot anchor formatting safely. No changes were applied.');
-        }
-        range.load('text');
-        await context.sync();
-        checkOperationSignal(signal);
-        if (scope === 'selection' && selectionText && range.text.trim() !== selectionText.trim()) {
-            throw new Error('The selection changed before formatting was prepared. Draft a new proposal.');
-        }
-        const bookmark = `_claric_fmt_${Date.now().toString(36)}_${++formatAnchorSequence}`;
-        range.insertBookmark(bookmark);
-        await context.sync();
-        const baseline = typeof range.getOoxml === 'function' ? range.getOoxml() : null;
-        if (baseline) await context.sync();
-        return { bookmark, text: range.text, ooxml: baseline?.value };
-    });
+    const anchor = { bookmark: null };
     try {
+        await Word.run(async (context) => {
+            const range = scope === 'document' ? context.document.body.getRange() : context.document.getSelection();
+            if (typeof range.insertBookmark !== 'function' || typeof context.document.getBookmarkRangeOrNullObject !== 'function') {
+                throw new Error('This Word host cannot anchor formatting safely. No changes were applied.');
+            }
+            range.load('text');
+            await context.sync();
+            checkOperationSignal(signal);
+            if (scope === 'selection' && selectionText && range.text.trim() !== selectionText.trim()) {
+                throw new Error('The selection changed before formatting was prepared. Draft a new proposal.');
+            }
+            const bookmark = `_claric_fmt_${Date.now().toString(36)}_${++formatAnchorSequence}`;
+            // Retain ownership even if a later baseline read fails.
+            anchor.bookmark = bookmark;
+            range.insertBookmark(bookmark);
+            await context.sync();
+            const baseline = typeof range.getOoxml === 'function' ? range.getOoxml() : null;
+            if (baseline) await context.sync();
+            Object.assign(anchor, { text: range.text, ooxml: baseline?.value,
+                structureFingerprint: rangeStructureFingerprint(baseline?.value) });
+            if (cleanupRequested) {
+                const { indexes } = await _collectFormatEmptyParagraphs(context, range, signal, log);
+                anchor.cleanupIndexes = indexes;
+                log(`Found ${indexes.length} verified empty paragraph(s) in ${scope} scope.`, 'info');
+            }
+        });
         checkOperationSignal(signal);
-        const prompt = buildFormatPrompt(instruction, anchor.text, scope);
         const backendConfig = getActiveBackendConfig(appState);
-        log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
-        const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
+        let rawResponse = '[]';
+        let rendering = null;
+        if (!cleanupOnly) {
+            const prompt = buildFormatPrompt(instruction, anchor.text, scope);
+            log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
+            if (canReadWordVisuals()) {
+                const { planFormatWithRendering } = await import(/* webpackChunkName: "visual-format" */ './format-planning-session.js');
+                const renderer = createWordVisualTools({ signal, log, scopeText: anchor.text });
+                try {
+                    const result = await planFormatWithRendering({ prompt, scopeText: anchor.text, renderer, signal, log,
+                        send: async (messages) => (await sendMessagesStream(backendConfig, messages, { onReasoning }, log, signal, 300000)).content,
+                        onStep: (step) => { if (step.text) onToken?.(`${step.text}\n`); },
+                    });
+                    rawResponse = JSON.stringify(result.ops);
+                    rendering = result.rendering;
+                } finally { await renderer.dispose(); }
+            } else {
+                log('Native Word rendering is unavailable; planning formatting from text only.', 'info');
+                rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
+            }
+        }
         checkOperationSignal(signal);
-        const ops = parseFormatOps(rawResponse, log);
+        // Deletion is authorized by the original instruction, never by model
+        // output. Host evidence supplies the count, not an invented LLM count.
+        const ops = parseFormatOps(rawResponse, log).filter((op) => !op.cleanup);
+        if (cleanupRequested && anchor.cleanupIndexes.length) {
+            ops.push({ cleanup: { emptyParagraphs: true, emptyCount: anchor.cleanupIndexes.length } });
+        }
         if (!ops.length) await discardFormatProposal(deps, { anchor });
-        return { instruction, scope, ops, anchor, model: backendConfig.model };
+        return { instruction, scope, ops, anchor, rendering, model: backendConfig.model };
     } catch (error) {
-        await discardFormatProposal(deps, { anchor });
+        try { await discardFormatProposal(deps, { anchor }); }
+        catch (cleanupError) { log(`Formatting anchor cleanup failed: ${cleanupError.message}`, 'warning'); }
         throw error;
     }
 }
@@ -2647,6 +2716,7 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
     checkOperationSignal(signal);
     let appliedRanges = 0;
     let insertedParagraphs = 0;
+    let deletedParagraphs = 0;
     let interrupted = false;
     let partial = false;
     await Word.run(async (context) => {
@@ -2662,7 +2732,21 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
             const current = scopeRange.getOoxml();
             await context.sync();
             checkOperationSignal(signal);
-            if (current.value !== anchor.ooxml) throw new Error('The anchored formatting baseline changed. Draft a new proposal.');
+            const unchanged = anchor.structureFingerprint
+                ? rangeStructureFingerprint(current.value) === anchor.structureFingerprint
+                : current.value === anchor.ooxml;
+            if (!unchanged) throw new Error('The anchored formatting baseline changed. Draft a new proposal.');
+        }
+        const cleanupOps = ops.filter((op) => op.cleanup);
+        let cleanupTargets;
+        if (cleanupOps.length) {
+            if (cleanupOps.length !== 1 || cleanupOps[0].cleanup.emptyParagraphs !== true || !Array.isArray(anchor.cleanupIndexes)) {
+                throw new Error('Empty paragraph cleanup is not verified. Draft a new proposal.');
+            }
+            cleanupTargets = await _collectFormatEmptyParagraphs(context, scopeRange, signal, log);
+            if (JSON.stringify(cleanupTargets.indexes) !== JSON.stringify(anchor.cleanupIndexes)) {
+                throw new Error('Empty paragraph targets changed. Draft a new proposal.');
+            }
         }
         const previousMode = context.document.changeTrackingMode;
         if (Word.ChangeTrackingMode) {
@@ -2670,7 +2754,8 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
                 ? Word.ChangeTrackingMode.trackAll : Word.ChangeTrackingMode.off;
         }
         try {
-            for (const op of ops) {
+            // Complete formatting before structural deletion changes ranges.
+            for (const op of ops.filter((item) => !item.cleanup)) {
                 checkOperationSignal(signal);
                 if (op.insert) {
                     anchor.attempted = true;
@@ -2698,6 +2783,16 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
                     appliedRanges++;
                 }
             }
+            if (cleanupTargets) {
+                for (const index of [...cleanupTargets.indexes].reverse()) {
+                    checkOperationSignal(signal);
+                    anchor.attempted = true;
+                    cleanupTargets.paragraphs.items[index].delete();
+                    await context.sync();
+                    deletedParagraphs++;
+                }
+                log(`Deleted ${deletedParagraphs} verified empty paragraph(s) in ${proposal.scope} scope.`, 'success');
+            }
             interrupted = !!signal?.aborted;
         } catch (error) {
             interrupted = error.name === 'AbortError';
@@ -2711,8 +2806,11 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
             }
         }
     });
-    if (anchor.attempted) await discardFormatProposal(deps, proposal);
-    return { applied: appliedRanges > 0 || insertedParagraphs > 0, appliedRanges, insertedParagraphs,
+    if (anchor.attempted) {
+        try { await discardFormatProposal(deps, proposal); }
+        catch (error) { log(`Formatting anchor cleanup failed: ${error.message}`, 'warning'); }
+    }
+    return { applied: appliedRanges > 0 || insertedParagraphs > 0 || deletedParagraphs > 0, appliedRanges, insertedParagraphs, deletedParagraphs,
         interrupted, partial: partial || (interrupted && !!anchor.attempted) };
 }
 

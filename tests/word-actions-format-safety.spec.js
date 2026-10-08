@@ -88,6 +88,43 @@ test('rejects same-text formatting baseline drift when OOXML is available', asyn
     expect(w.range.font).toEqual({});
 });
 
+test('multi-paragraph formatting ignores Word pagination, proofing and package churn', async () => {
+    const w = world();
+    const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    const packageXml = (id, extra = '') => `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">`
+      + `<pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="${ns}"><w:body>`
+      + `<w:p w:rsidR="${id}">${extra}<w:r><w:t>Same text</w:t></w:r></w:p><w:p/>`
+      + '</w:body></w:document></pkg:xmlData></pkg:part>'
+      + `<pkg:part pkg:name="/word/settings.xml"><pkg:xmlData><settings id="${id}"/></pkg:xmlData></pkg:part></pkg:package>`;
+    let xml = packageXml('old');
+    w.range.getOoxml = jest.fn(() => ({ value: xml }));
+    const proposal = await prepareFormatProposal(w.deps, { instruction: 'bold' });
+    xml = packageXml('new', '<w:proofErr w:type="spellStart"/><w:bookmarkStart w:id="10" w:name="other"/><w:lastRenderedPageBreak/>');
+    const result = await applyFormatProposal(w.deps, proposal);
+    expect(result).toMatchObject({ applied: true, appliedRanges: 1 });
+    expect(w.range.font.bold).toBe(true);
+});
+
+test('baseline capture failure cleans its bookmark and preserves the original Word error', async () => {
+    const w = world();
+    w.range.getOoxml = jest.fn(() => { throw new Error('Original GeneralException'); });
+    w.document.deleteBookmark.mockImplementation(() => { throw new Error('Cleanup failed'); });
+    await expect(prepareFormatProposal(w.deps, { instruction: 'bold' })).rejects.toThrow('Original GeneralException');
+    expect(w.document.deleteBookmark).toHaveBeenCalledWith(expect.stringContaining('_claric_fmt_'));
+    expect(sendPrompt).not.toHaveBeenCalled();
+    expect(w.deps.log).toHaveBeenCalledWith('Formatting anchor cleanup failed: Cleanup failed', 'warning');
+});
+
+test('cleanup failure after successful formatting does not misreport the write as failed', async () => {
+    const w = world();
+    const proposal = await prepareFormatProposal(w.deps, { instruction: 'bold' });
+    w.document.deleteBookmark.mockImplementation(() => { throw new Error('Cleanup failed'); });
+    const result = await applyFormatProposal(w.deps, proposal);
+    expect(result).toMatchObject({ applied: true, appliedRanges: 1 });
+    expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
+    expect(w.deps.log).toHaveBeenCalledWith('Formatting anchor cleanup failed: Cleanup failed', 'warning');
+});
+
 test('single illustration cancellation after insertion restores mode and prevents replay', async () => {
     const { applyIllustrationProposal } = require('../src/taskpane/word-actions.js');
     const w = world(); const controller = new AbortController();

@@ -1,0 +1,21 @@
+# Word visual inspection
+
+Formatting proposals and focused document-edit sessions can read Word's real visual output through three read-only tools:
+
+- `read_word_screen`: a fresh frame from the Word window explicitly shared by the user. This is the preferred source when sharing is active and includes the visible selection and review interface. It covers the viewport only.
+- `list_rendered_pages`: physical page numbers and text excerpts from Word's native PDF export. Supports text search and pagination.
+- `read_rendered_pages`: images of up to three native PDF pages. Use this for offscreen pages and hosts without window sharing.
+
+The header's **Share Word window** button calls the browser's screen-sharing chooser directly from a user click. The user chooses the Word application window. Capture excludes audio and rejects monitor or browser-tab sharing. Models can read frames after sharing starts, but cannot open the chooser. Sharing stops through the button, the browser's sharing controls, or closing the task pane. Availability depends on the Office WebView and its permission policy; the presence of a method does not guarantee the host will permit it. Mac Office uses WKWebView, so unsupported capture must fall back explicitly rather than promise silent OS screenshots.
+
+PDF pages come from `Office.context.document.getFileAsync(Office.FileType.Pdf)`, not DOCX-to-HTML reconstruction. Desktop Word supports this export on Mac and Windows; Word on the web does not. PDF evidence represents print layout and omits selection highlighting and review balloons. It never previews an unapplied proposal. Office file handles, PDF readers and canvases are cleaned up; screenshots and PDFs remain in memory and are not stored in chat history.
+
+PDF.js CJK character maps, standard fonts and image/color decoders are bundled locally with their licenses, so visual inspection does not rely on a third-party resource CDN. A failed multi-page read returns no images and does not count as successful visual inspection.
+
+The visual formatting session must inspect an image or receive an explicit native/vision failure before staging format operations. The model receives image attachments through the existing multimodal tool-observation protocol. A model rejecting image input gets a clearly labeled text-only retry. Authentication failures, cancellation and upstream errors are not disguised as vision incompatibility. Visual context never widens the authorized edit scope.
+
+Blank paragraph cleanup is a selectable operation in the same formatting proposal. Host-side containment and OOXML checks verify complete paragraph targets inside the captured scope. Table cells, the final document paragraph, partial selection boundaries, drawings, fields, sections, bookmarks and existing revisions remain protected. Cleanup runs after formatting; apply-time revalidation blocks stale targets.
+
+Formatting anchors compare stable document structure rather than volatile pagination/proofing/package metadata. Real text, formatting and revision changes still invalidate the proposal. A failed single-use proposal closes its Apply button while retaining the original error, so repeated clicks cannot replace that error with “This proposal has been discarded.”
+
+References: [Office document export](https://learn.microsoft.com/en-us/javascript/api/office/office.document?view=common-js), [Office WebViews](https://learn.microsoft.com/en-us/office/dev/add-ins/concepts/browsers-used-by-office-web-add-ins), [Screen Capture API](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia).
