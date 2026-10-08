@@ -35,6 +35,49 @@ test('applies only the captured bookmark, never an equal-text current selection'
     await expect(applyFormatProposal(w.deps, proposal)).rejects.toThrow(/already been attempted/);
 });
 
+test('captures and applies recovered bookmark OOXML, never compares the selection export to it', async () => {
+    const w = world();
+    const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    w.range.getOoxml = jest.fn(() => ({ value: `<w:p xmlns:w="${ns}"><w:r><w:t>Same text</w:t></w:r></w:p>` }));
+    let xml = `<w:body xmlns:w="${ns}"><w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:t>Same text</w:t></w:r></w:p><w:sectPr/></w:body>`;
+    const bookmark = { text: 'Same text', isNullObject: false, font: {}, load: jest.fn(),
+        getOoxml: jest.fn(() => ({ value: xml })) };
+    w.document.getBookmarkRangeOrNullObject.mockReturnValue(bookmark);
+    const proposal = await prepareFormatProposal(w.deps, { instruction: 'bold' });
+    expect(w.range.getOoxml).not.toHaveBeenCalled();
+    expect(proposal.anchor.ooxml).toBe(xml);
+    w.document.getSelection.mockReturnValue(w.other);
+    xml = `<w:body xmlns:w="${ns}"><w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:t>Same </w:t></w:r><w:bookmarkStart w:id="1" w:name="_claric_fmt_example"/><w:r><w:t>text</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240"/></w:sectPr></w:body>`;
+    expect(await applyFormatProposal(w.deps, proposal)).toMatchObject({ applied: true, appliedRanges: 1 });
+    expect(bookmark.font.bold).toBe(true);
+    expect(w.range.font).toEqual({});
+    expect(w.other.font).toEqual({});
+});
+
+test.each(['missing', 'expanded'])('refuses a %s recovered bookmark before model planning', async (kind) => {
+    const w = world();
+    w.document.getBookmarkRangeOrNullObject.mockReturnValue({ text: kind === 'expanded' ? 'Same text plus another paragraph' : 'Same text',
+        isNullObject: kind === 'missing', load: jest.fn() });
+    await expect(prepareFormatProposal(w.deps, { instruction: 'bold' })).rejects.toThrow(/exact formatting scope/);
+    expect(sendPrompt).not.toHaveBeenCalled();
+    expect(w.document.deleteBookmark).toHaveBeenCalledTimes(1);
+});
+
+test('real character-level bold drift in a recovered bookmark is blocked and diagnosed without text', async () => {
+    const w = world();
+    const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    let xml = `<w:body xmlns:w="${ns}"><w:p><w:r><w:t>Same text</w:t></w:r></w:p></w:body>`;
+    w.range.getOoxml = jest.fn(() => ({ value: xml }));
+    const proposal = await prepareFormatProposal(w.deps, { instruction: 'bold' });
+    xml = `<w:body xmlns:w="${ns}"><w:p><w:r><w:t>Same </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>text</w:t></w:r></w:p></w:body>`;
+    await expect(applyFormatProposal(w.deps, proposal)).rejects.toThrow(/baseline changed/);
+    const warning = w.deps.log.mock.calls.find(([message]) => message.includes('baseline v2 mismatch'))[0];
+    expect(warning).toContain('scope');
+    expect(warning).not.toContain('Same text');
+    expect(w.range.font).toEqual({});
+    expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
+});
+
 test.each(['missing', 'changed'])('refuses a %s anchor without falling back to equal text', async (kind) => {
     const w = world();
     const proposal = await prepareFormatProposal(w.deps, { instruction: 'bold' });

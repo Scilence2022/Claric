@@ -64,6 +64,7 @@ test('combines formatting and host-counted cleanup even when the model omits bla
     });
     expect(proposal.ops).toHaveLength(3);
     expect(proposal.ops[2]).toEqual({ cleanup: { emptyParagraphs: true, emptyCount: 1 } });
+    expect(proposal.cleanupSummary).toMatchObject({ candidates: 8, verified: 1, preserved: 7, unverifiable: 0 });
     expect(w.events).toEqual([]);
     const otherSelection = { font: {} };
     w.document.getSelection.mockReturnValue(otherSelection);
@@ -76,6 +77,16 @@ test('combines formatting and host-counted cleanup even when the model omits bla
     expect(otherSelection.font).toEqual({});
     expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
     await expect(applyFormatProposal(w.deps, proposal)).rejects.toThrow(/already been attempted/);
+});
+
+test('the reported Chinese request cleans a blank paragraph carrying prior bold-format revisions', async () => {
+    const w = world();
+    w.paragraphs[1].xml = pXml('<w:pPr><w:pPrChange w:id="1"><w:pPr><w:spacing w:after="120"/></w:pPr></w:pPrChange></w:pPr>'
+        + '<w:r><w:rPr><w:rPrChange w:id="2"><w:rPr><w:b/></w:rPr></w:rPrChange></w:rPr><w:t> </w:t></w:r>');
+    const proposal = await prepareFormatProposal(w.deps, { instruction: '整理选择部分的格式，多余的空行，不合适的字体加粗等' });
+    expect(proposal.ops).toContainEqual({ cleanup: { emptyParagraphs: true, emptyCount: 1 } });
+    expect(await applyFormatProposal(w.deps, proposal)).toMatchObject({ applied: true, deletedParagraphs: 1, partial: false });
+    expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
 });
 
 test('cleanup alone has no model call, deletes in reverse order, and reports real deletions', async () => {

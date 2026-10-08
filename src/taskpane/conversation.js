@@ -1336,13 +1336,17 @@ export function createConversation(deps) {
             }
             if (!proposal.ops || proposal.ops.length === 0) {
                 await resource.dispose();
-                msg.setStatus(turn.cleanupOnly ? 'No verified empty paragraphs found in the selection.' : 'The model proposed no changes.');
+                msg.setStatus(proposal.cleanupSummary?.preserved
+                    ? `${proposal.cleanupSummary.preserved} empty paragraph(s) could not be safely removed. See the activity log.`
+                    : turn.cleanupOnly ? 'No verified empty paragraphs found in the selection.' : 'The model proposed no changes.');
                 return;
             }
             msg.setStatus('');
+            const countsText = `${proposal.ops.length} change op(s)` + (proposal.cleanupSummary?.preserved
+                ? ` · ${proposal.cleanupSummary.preserved} empty paragraph(s) preserved` : '');
             const card = makeProposalCard({
                 title: `Proposed changes (${turn.scope} scope)`,
-                countsText: `${proposal.ops.length} change op(s)`,
+                countsText,
                 comment: null,
                 // One selectable change per op; Apply runs only the checked ops.
                 items: proposal.ops.map((op, index) => ({
@@ -1359,6 +1363,8 @@ export function createConversation(deps) {
                             card.markWarning('Formatting stopped; changes may already be applied. Review the document and draft a new proposal.');
                         } else if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0 && !fmtResult.deletedParagraphs) {
                             card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
+                        } else if (proposal.cleanupSummary?.preserved && !proposal.cleanupSummary.verified) {
+                            card.markWarning(`Formatting applied; ${proposal.cleanupSummary.preserved} empty paragraph(s) could not be safely removed. See the activity log.`);
                         } else {
                             card.markApplied();
                         }
@@ -1375,7 +1381,7 @@ export function createConversation(deps) {
             msg.attachProposal(card, {
                 title: `Proposed changes (${turn.scope} scope)`,
                 state: 'pending',
-                countsText: `${proposal.ops.length} change op(s)`,
+                countsText,
                 items: proposal.ops.map((op, index) => ({
                     id: index,
                     label: describeFormatOp(op),

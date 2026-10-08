@@ -30,8 +30,14 @@ test('allows only verified whitespace and ordinary paragraph/font properties', (
 test.each(['drawing', 'pict', 'object', 'fldChar', 'instrText', 'fldSimple', 'footnoteReference',
     'endnoteReference', 'commentReference', 'bookmarkStart', 'bookmarkEnd', 'commentRangeStart',
     'sdt', 'customXml', 'sectPr', 'numPr', 'br', 'cr', 'sym', 'del', 'ins', 'moveFrom', 'moveTo',
-    'rPrChange', 'pPrChange', 'pageBreakBefore'])('preserves blank-looking protected structure: %s', (tag) => {
+    'pageBreakBefore'])('preserves blank-looking protected structure: %s', (tag) => {
     expect(isDeletableEmptyParagraphXml(xml(`<w:r><w:${tag}/></w:r>`))).toBe(false);
+});
+
+test('ordinary formatting revision history does not make a whitespace paragraph undeletable', () => {
+    expect(isDeletableEmptyParagraphXml(xml('<w:pPr><w:pPrChange w:id="1"><w:pPr><w:spacing w:after="120"/></w:pPr></w:pPrChange></w:pPr>'
+        + '<w:r><w:rPr><w:rPrChange w:id="2"><w:rPr><w:b/></w:rPr></w:rPrChange></w:rPr><w:t> </w:t></w:r>'))).toBe(true);
+    expect(isDeletableEmptyParagraphXml(xml('<w:pPr><w:pPrChange w:id="1"><w:pPr><w:sectPr/></w:pPr></w:pPrChange></w:pPr>'))).toBe(false);
 });
 
 test('rejects nonempty, multi-paragraph, malformed, unknown and nested protected XML', () => {
