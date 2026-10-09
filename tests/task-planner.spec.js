@@ -4,7 +4,7 @@
  * the task-type allowlist so only known pipelines get dispatched.
  */
 
-const { buildPlanPrompt, parsePlan, parseCapabilityPlan, parsePlanReview } = require('../src/lib/task-planner.js');
+const { buildPlanPrompt, buildPlanReviewPrompt, parsePlan, parseCapabilityPlan, parsePlanReview, inspectPlanReview } = require('../src/lib/task-planner.js');
 
 describe('parsePlan', () => {
   test('parses a bare JSON task array', () => {
@@ -188,14 +188,70 @@ describe('auditable capability plans', () => {
     expect(parseCapabilityPlan(JSON.stringify(plan))).toBeNull();
   });
 
-  test.each(['missing', 'duplicate', 'wrong-effect', 'unknown', 'unsupported-cover'])('%s coverage is rejected', (kind) => {
+  test.each(['missing', 'duplicate-reference', 'wrong-effect', 'unknown', 'unsupported-cover'])('%s coverage is rejected', (kind) => {
     const plan = valid();
     if (kind === 'missing') plan.tasks[0].covers = ['r1', 'r3'];
-    if (kind === 'duplicate') plan.tasks.push({ taskId: 'second', type: 'format', instruction: 'Bold', covers: ['r2'] });
+    if (kind === 'duplicate-reference') plan.tasks[0].covers.push('r2');
     if (kind === 'wrong-effect') { plan.tasks[0].type = 'qa'; }
     if (kind === 'unknown') plan.tasks[0].type = 'footnotes';
     if (kind === 'unsupported-cover') { plan.unsupported = [{ requirementId: 'r2', reason: 'No support' }]; }
     expect(parseCapabilityPlan(JSON.stringify(plan))).toBeNull();
+  });
+
+  test('body and table tasks can jointly cover whole-document whitespace cleanup', () => {
+    const plan = {
+      requirements: [{ id: 'spaces', kind: 'action', outcome: 'document', text: '清理多余的空格' },
+        { id: 'borders', kind: 'action', outcome: 'document', text: '表格修改为三线格' },
+        { id: 'scope', kind: 'constraint', text: '处理范围为全文' }],
+      tasks: [{ taskId: 'body', type: 'edit', scope: 'document', instruction: '清理全文正文的多余空格', covers: ['spaces', 'scope'] },
+        { taskId: 'tables', type: 'table_management', scope: 'document', instruction: '清理表格单元格多余空格并改为三线表',
+          covers: ['spaces', 'borders', 'scope'], dependsOn: ['body'] }], unsupported: [],
+    };
+    expect(parseCapabilityPlan(JSON.stringify(plan))).toMatchObject({ tasks: plan.tasks });
+    // Shared coverage still cannot disguise an answer as a document write.
+    plan.tasks[1].type = 'qa';
+    expect(parseCapabilityPlan(JSON.stringify(plan))).toBeNull();
+  });
+
+  test('scope survives parsing and invalid scope values reject the plan', () => {
+    const plan = valid();
+    plan.tasks[0].scope = 'document';
+    expect(parseCapabilityPlan(JSON.stringify(plan)).tasks[0].scope).toBe('document');
+    plan.tasks[0].scope = 'whatever';
+    expect(parseCapabilityPlan(JSON.stringify(plan))).toBeNull();
+  });
+
+  test('a rejection retains actionable review feedback for plan repair', () => {
+    const review = { complete: false, unsupportedAccurate: true,
+      checks: ['r1', 'r2', 'r3'].map((requirementId) => ({ requirementId, represented: requirementId !== 'r2' })),
+      missing: ['Include table cells in whitespace cleanup'], invented: ['Do not delete blank paragraphs'], summary: 'Repair the object coverage' };
+    const result = inspectPlanReview(JSON.stringify(review), ['r1', 'r2', 'r3']);
+    expect(result.accepted).toBe(false);
+    expect(result.feedback).toEqual(review);
+    expect(result.reason).toContain(review.missing[0]);
+    expect(parsePlanReview(JSON.stringify(review), ['r1', 'r2', 'r3'])).toBeNull();
+  });
+
+  test('an approving reviewer still must account for all IDs and unsupported accuracy', () => {
+    const review = { complete: true, unsupportedAccurate: true,
+      checks: [{ requirementId: 'r1', represented: true }], missing: [], invented: [] };
+    expect(inspectPlanReview(JSON.stringify(review), ['r1', 'r2']).accepted).toBe(false);
+    review.checks.push({ requirementId: 'r1', represented: true });
+    expect(inspectPlanReview(JSON.stringify(review), ['r1']).accepted).toBe(false);
+    review.checks = [{ requirementId: 'r1', represented: true }];
+    review.unsupportedAccurate = false;
+    expect(inspectPlanReview(JSON.stringify(review), ['r1']).accepted).toBe(false);
+    expect(inspectPlanReview('not JSON', ['r1']).accepted).toBe(false);
+  });
+
+  test('planner and independent reviewer receive the same native capability catalog', () => {
+    for (const prompt of [buildPlanPrompt('全文优化格式，多余的空格，表格修改为三线格', true), buildPlanReviewPrompt()]) {
+      expect(prompt).toContain('academic three-line tables');
+      expect(prompt).toContain('redundant spaces in body text');
+      expect(prompt).toContain('separate proposal');
+    }
+    expect(buildPlanPrompt('x', true)).toContain('Tasks may jointly cover one action');
+    expect(buildPlanReviewPrompt()).not.toContain('Any doubt means');
   });
 
   test('independent review must explicitly account for every requirement', () => {

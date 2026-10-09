@@ -43,6 +43,7 @@ import { requestsEmptyParagraphCleanup } from '../lib/empty-paragraphs.js';
 import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib/file-attachments.js';
 import { buildConversationHistory } from '../lib/conversation-history.js';
 import { inspectEditRequest } from '../lib/edit-request.js';
+import { resolveTaskScope } from '../lib/task-scope.js';
 
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
@@ -345,9 +346,7 @@ export function looksLikeCleanupIntent(text) {
 }
 
 function scopedCleanupTurn(instruction, hasTextSelection) {
-    const selectionRequested = /选区|选择|所选|\bselection\b|\bselected\b/i.test(instruction);
-    const documentRequested = /全文|全篇|整篇|整个?文档|整[个篇]?文章|文档[里中]|\b(?:entire|whole)\s+(?:document|article)\b|\bdocument[- ]wide\b/i.test(instruction);
-    return hasTextSelection && (selectionRequested || !documentRequested)
+    return resolveTaskScope({ instruction }, { hasTextSelection }) === 'selection'
         ? { type: TURN_TYPE.FORMAT, instruction, scope: 'selection', cleanupOnly: true }
         : { type: TURN_TYPE.CLEANUP, instruction };
 }
@@ -463,6 +462,7 @@ export function routeTurn(text, {
         ? (!!hasSelection && !imageSelected)
         : !!hasTextSelection;
     const selectionPresent = !!hasSelection || imageSelected || textSelected || !!hasMultiCellTableRegion;
+    const requestScope = resolveTaskScope({ instruction: trimmed }, { hasSelection: selectionPresent });
     const figureIntent = looksLikeFigureLegendIntent(trimmed);
 
     const resolved = resolveSkill(trimmed, skills);
@@ -559,13 +559,13 @@ export function routeTurn(text, {
     // Format intent wins over the selection/edit branches too: formatting ops
     // never rewrite text, so they must not enter the text-diff pipelines.
     if (looksLikeFormatIntent(trimmed)) {
-        if (hasMultiCellTableRegion && TABLE_STYLE_HINT_RE.test(trimmed)) {
+        if (requestScope === 'selection' && hasMultiCellTableRegion && TABLE_STYLE_HINT_RE.test(trimmed)) {
             return { type: TURN_TYPE.TABLE_TOOL, instruction: trimmed };
         }
         return {
             type: TURN_TYPE.FORMAT,
             instruction: trimmed,
-            scope: selectionPresent && textSelected && !hasMultiCellTableRegion ? 'selection' : 'document',
+            scope: requestScope === 'selection' && textSelected && !hasMultiCellTableRegion ? 'selection' : 'document',
         };
     }
     // Native cleanup honors the selection when present; text rewriting
@@ -578,7 +578,7 @@ export function routeTurn(text, {
         // OBJECT (snapshot index + metadata + tool list). Questions are
         // answered through read_image inside the session; edits through the
         // op tools — the text pipelines have nothing to operate on.
-        if (imageSelected && !textSelected) {
+        if (requestScope === 'selection' && imageSelected && !textSelected) {
             return {
                 type: TURN_TYPE.IMAGE_TOOL,
                 instruction: trimmed,
@@ -590,7 +590,7 @@ export function routeTurn(text, {
         // Multi-cell table region: the table enters as a controllable TABLE
         // OBJECT (grid + get_state / set_cell / insert_row / delete_row
         // tools). Intra-cell text selections stay on the flat text path.
-        if (hasMultiCellTableRegion) {
+        if (requestScope === 'selection' && hasMultiCellTableRegion) {
             return { type: TURN_TYPE.TABLE_TOOL, instruction: trimmed };
         }
         // Selection + a question is a question ABOUT the selection (answered
@@ -604,7 +604,7 @@ export function routeTurn(text, {
             return { type: TURN_TYPE.DOC_QA, question: trimmed };
         }
         if (looksLikeEditIntent(trimmed) || SELECTION_REWRITE_RE.test(trimmed)) {
-            return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
+            return { type: requestScope === 'document' ? TURN_TYPE.DOC_EDIT : TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
         }
         // A selection is context, not proof that the user wants a rewrite.
         // Classify unknown actions against the executable capability catalog.
@@ -2035,11 +2035,12 @@ export function createConversation(deps) {
      * @returns {{ type: string, instruction?: string, question?: string, scope?: string }}
      * @private
      */
-    function turnForTask(task, { hasSelection, hasImageSelection, hasTextSelection, hasMultiCellTableRegion } = {}) {
+    function turnForTask(task, { hasSelection, hasImageSelection, hasTextSelection, hasMultiCellTableRegion } = {}, originalRequest = '') {
         const instruction = task.instruction;
         const imageSelected = !!hasImageSelection;
         const textSelected = !!hasTextSelection;
         const selectionPresent = !!hasSelection || imageSelected || textSelected || !!hasMultiCellTableRegion;
+        const scope = resolveTaskScope(task, { hasSelection: selectionPresent }, originalRequest);
         if (task.type === 'comment_management' || (task.type !== 'qa' && looksLikeCommentAction(instruction))) {
             return { type: TURN_TYPE.COMMENT_MANAGEMENT, instruction, planned: true };
         }
@@ -2048,7 +2049,9 @@ export function createConversation(deps) {
         // paragraphs, so only the deterministic cleanup can serve it,
         // regardless of the planner's own type label (usually "edit").
         if (task.type !== 'qa' && task.type !== 'format' && !looksLikeFormatIntent(instruction) && looksLikeCleanupIntent(instruction)) {
-            return scopedCleanupTurn(instruction, selectionPresent && textSelected && !hasMultiCellTableRegion);
+            return scope === 'selection' && textSelected
+                ? { type: TURN_TYPE.FORMAT, instruction, scope, cleanupOnly: true }
+                : { type: TURN_TYPE.CLEANUP, instruction };
         }
         switch (task.type) {
             case 'document_edit':
@@ -2058,13 +2061,14 @@ export function createConversation(deps) {
                 // inserting a title into a selection would misplace it.
                 return { type: TURN_TYPE.FORMAT, instruction, scope: 'document' };
             case 'format':
+                if (scope === 'selection' && hasMultiCellTableRegion) return { type: TURN_TYPE.TABLE_TOOL, instruction };
                 return {
                     type: TURN_TYPE.FORMAT,
                     instruction,
-                    scope: selectionPresent && textSelected && !hasMultiCellTableRegion ? 'selection' : 'document',
+                    scope: scope === 'selection' && textSelected ? 'selection' : 'document',
                 };
             case 'edit':
-                if (imageSelected && looksLikeFigureLegendIntent(instruction) && !hasMultiCellTableRegion) {
+                if (scope === 'selection' && imageSelected && looksLikeFigureLegendIntent(instruction) && !hasMultiCellTableRegion) {
                     return {
                         type: TURN_TYPE.IMAGE_TOOL,
                         instruction,
@@ -2073,9 +2077,9 @@ export function createConversation(deps) {
                         hasTextSelection: textSelected,
                     };
                 }
-                return selectionPresent && textSelected && !hasMultiCellTableRegion
+                return scope === 'selection' && selectionPresent && textSelected && !hasMultiCellTableRegion
                     ? { type: TURN_TYPE.SELECTION_EDIT, instruction }
-                    : (imageSelected && !hasTextSelection
+                    : (scope === 'selection' && imageSelected && !hasTextSelection
                         ? { type: TURN_TYPE.IMAGE_TOOL, instruction, hasSelection: true, hasImageSelection: true }
                         : { type: TURN_TYPE.DOC_EDIT, instruction });
             case 'append':
@@ -2087,7 +2091,7 @@ export function createConversation(deps) {
             case 'image_management':
                 // A planned image task keeps a selected image as its object
                 // anchor. Without one, it is a whole-document image session.
-                return imageSelected && !hasMultiCellTableRegion
+                return scope === 'selection' && imageSelected && !hasMultiCellTableRegion
                     ? {
                         type: TURN_TYPE.IMAGE_TOOL,
                         instruction,
@@ -2097,9 +2101,9 @@ export function createConversation(deps) {
                     }
                     : { type: TURN_TYPE.DOCUMENT_IMAGE_TOOL, instruction };
             case 'table_management':
-                // First table in the document (v1 limitation; follow-up
-                // turns can target additional tables).
-                return { type: TURN_TYPE.DOCUMENT_TABLE_TOOL, instruction };
+                return scope === 'selection' && hasMultiCellTableRegion
+                    ? { type: TURN_TYPE.TABLE_TOOL, instruction }
+                    : { type: TURN_TYPE.DOCUMENT_TABLE_TOOL, instruction };
             case 'qa':
                 return { type: TURN_TYPE.DOC_QA, question: instruction };
             default:
@@ -2134,7 +2138,15 @@ export function createConversation(deps) {
                 });
                 throw new Error(`Unsupported actions: ${descriptions.join(' ')}`);
             }
-            if (!plan.tasks || plan.tasks.length === 0) throw new Error('Task planning failed; no tasks ran.');
+            if (!plan.tasks || plan.tasks.length === 0) throw new Error(`Task planning failed; no tasks ran.${plan.failure?.reason ? ` ${plan.failure.reason}` : ''}`);
+            // Only actual selection targets need the continuation selection
+            // guard. Document tasks re-read live state after Apply even if an
+            // incidental selection changes during their own preceding edit.
+            const usesSelection = plan.tasks.some((task) => {
+                const target = turnForTask(task, selectionFacts, turn.instruction);
+                return target.scope === 'selection' || target.type === TURN_TYPE.SELECTION_EDIT
+                    || target.type === TURN_TYPE.TABLE_TOOL || (target.type === TURN_TYPE.IMAGE_TOOL && target.hasSelection);
+            });
             log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
             const { executeTaskGraph } = await import(/* webpackChunkName: "task-planner" */ '../lib/task-runtime/task-graph.js');
             let graphResults = null;
@@ -2162,7 +2174,7 @@ export function createConversation(deps) {
                     if (!turnDeps.isCurrentSession()) return;
                     if (isBusy()) { resumeAfterApply(250); return; }
                     try {
-                        if (selectionFacts.hasSelection) {
+                        if (usesSelection) {
                             const current = _normalizeSelection(await getSelection());
                             if (current.text.trim() !== selectionText || current.images.length !== selectionImages.length) {
                                 msg.setStatus('Selection changed. Select the target again and resubmit remaining tasks.');
@@ -2222,7 +2234,7 @@ export function createConversation(deps) {
                 }
                 const taskDeps = inputs.length ? { ...turnDeps, conversationHistory: [...turnDeps.conversationHistory,
                     { role: 'assistant', content: `Prior task results: ${JSON.stringify(inputs.map((i) => i.value))}` }] } : turnDeps;
-                const taskTurn = turnForTask(task, selectionFacts);
+                const taskTurn = turnForTask(task, selectionFacts, turn.instruction);
                 if (taskTurn.type === TURN_TYPE.FORMAT) taskTurn.cleanupRequested = requestsEmptyParagraphCleanup(taskTurn.instruction)
                     && requestsEmptyParagraphCleanup(turn.instruction);
                 if (turn.temporaryAttachments?.length) {
