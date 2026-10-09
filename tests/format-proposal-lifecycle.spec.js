@@ -111,3 +111,129 @@ test('verified cleanup reports removed and structurally preserved paragraphs as 
     expect(cards[0].el.textContent).toContain('3 empty paragraph(s) removed; 2 protected empty paragraph(s) preserved');
     expect(view.getCurrentSession().messages.find((m) => m.role === 'assistant').proposals[0].state).toBe('applied');
 });
+
+test('a verified formatting no-op is persisted as satisfied rather than mistaken for zero matched targets', async () => {
+    const actions = {
+        prepareFormatProposal: jest.fn(async () => ({ ops: [{ paragraphRole: 'body', paragraph: { alignment: 'justified' } }],
+            anchor: { bookmark: '_test' }, targetSummary: { verifiedParagraphs: 3, excludedParagraphs: 2, uncertainParagraphs: 0 } })),
+        applyFormatProposal: jest.fn(async () => ({ applied: false, appliedRanges: 0, insertedParagraphs: 0,
+            deletedParagraphs: 0, alreadySatisfied: true, verifiedParagraphs: 3, noopParagraphs: 3 })),
+        discardFormatProposal: jest.fn(async () => {}),
+    };
+    const { conversation, cards } = setup(actions);
+    await conversation.submit('整理选择部分的格式');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cards[0].el.textContent).toContain('3 verified paragraph(s)');
+    expect(cards[0].el.textContent).toContain('requested formatting was already satisfied');
+    expect(cards[0].el.textContent).not.toContain('no formatting targets matched');
+    expect(cards[0].el.classList.contains('proposal-applied')).toBe(true);
+    const proposal = view.getCurrentSession().messages.find((message) => message.role === 'assistant').proposals[0];
+    expect(proposal).toMatchObject({ state: 'applied', detail: expect.stringContaining('already satisfied') });
+    await cards[0].applyAll();
+    expect(actions.applyFormatProposal).toHaveBeenCalledTimes(1);
+    view.setCurrentSession(view.getCurrentSession());
+    expect(document.getElementById('chatMessages').textContent).toContain('already satisfied');
+    expect(document.querySelector('.proposal-card button')).toBeNull();
+});
+
+test('zero targets never becomes an already-satisfied formatting claim without native verification', async () => {
+    const actions = {
+        prepareFormatProposal: jest.fn(async () => ({ ops: [{ paragraphStyle: 'normal', paragraph: { alignment: 'justified' } }],
+            anchor: { bookmark: '_test' } })),
+        applyFormatProposal: jest.fn(async () => ({ applied: false, appliedRanges: 0, insertedParagraphs: 0,
+            deletedParagraphs: 0, alreadySatisfied: true, verifiedParagraphs: 0, noopParagraphs: 0 })),
+        discardFormatProposal: jest.fn(async () => {}),
+    };
+    const { conversation, cards } = setup(actions);
+    await conversation.submit('整理选择部分的格式');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cards[0].el.textContent).toContain('no formatting targets matched');
+    expect(cards[0].el.textContent).not.toContain('requested formatting was already satisfied');
+    const proposal = view.getCurrentSession().messages.find((message) => message.role === 'assistant').proposals[0];
+    expect(proposal).toMatchObject({ state: 'warning', detail: expect.stringContaining('Nothing applied') });
+    await cards[0].applyAll();
+    expect(actions.applyFormatProposal).toHaveBeenCalledTimes(1);
+});
+
+test.each([false, true])('uncertain body paragraphs remain a warning even when verified targets are satisfied: no-op=%s', async (alreadySatisfied) => {
+    const actions = {
+        prepareFormatProposal: jest.fn(async () => ({ ops: [{ paragraphRole: 'body', paragraph: { alignment: 'justified' } }],
+            anchor: { bookmark: '_test' }, targetSummary: { verifiedParagraphs: 3, excludedParagraphs: 5, uncertainParagraphs: 2 } })),
+        applyFormatProposal: jest.fn(async () => ({ applied: !alreadySatisfied, appliedRanges: alreadySatisfied ? 0 : 3,
+            insertedParagraphs: 0, deletedParagraphs: 0, alreadySatisfied, verifiedParagraphs: 3, noopParagraphs: alreadySatisfied ? 3 : 0 })),
+        discardFormatProposal: jest.fn(async () => {}),
+    };
+    const { conversation, cards } = setup(actions);
+    await conversation.submit('整理选择部分的格式');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cards[0].el.textContent).toContain('3 verified paragraph(s)');
+    expect(cards[0].el.textContent).toContain('2 uncertain paragraph(s) preserved');
+    expect(cards[0].el.textContent).toContain('3 paragraph(s) verified; 2 uncertain paragraph(s) preserved for review');
+    expect(cards[0].el.textContent).not.toContain('requested formatting was already satisfied');
+    const proposal = view.getCurrentSession().messages.find((message) => message.role === 'assistant').proposals[0];
+    expect(proposal).toMatchObject({ state: 'warning', detail: expect.stringContaining('preserved for review') });
+    view.setCurrentSession(view.getCurrentSession());
+    expect(document.getElementById('chatMessages').textContent).toContain('preserved for review');
+    expect(document.querySelector('.proposal-card button')).toBeNull();
+});
+
+test('a composite planner-expanded format task preserves the original request at native preparation', async () => {
+    appState.config.autoApplyChanges = false;
+    const request = '正文修改为两端对齐，然后创建表格';
+    const instruction = '将文档中的正文段落设置为两端对齐（Justified）。仅调整正文，不修改标题、表格或图片。';
+    const actions = {
+        planDocumentTasks: jest.fn(async () => ({ tasks: [
+            { taskId: 'format', type: 'format', scope: 'document', instruction, dependsOn: [] },
+            { taskId: 'table', type: 'table', scope: 'document', instruction: 'Create a table', dependsOn: ['format'] },
+        ] })),
+        prepareFormatProposal: jest.fn(async () => ({ ops: [{ paragraphRole: 'body', paragraph: { alignment: 'justified' } }],
+            anchor: { kind: 'document-body' }, targetSummary: { verifiedParagraphs: 1, excludedParagraphs: 0, uncertainParagraphs: 0 } })),
+        applyFormatProposal: jest.fn(), discardFormatProposal: jest.fn(async () => {}),
+        prepareTableProposal: jest.fn(),
+    };
+    const { conversation, cards } = setup(actions, '');
+    await conversation.submit(request);
+    expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        instruction, originalInstruction: request, scope: 'document', selectionText: '',
+    }));
+    expect(actions.prepareTableProposal).not.toHaveBeenCalled();
+    expect(cards).toHaveLength(1);
+    expect(cards[0].el.textContent).toContain('1 verified paragraph(s)');
+});
+
+test.each(['verified-no-op', 'zero-targets', 'uncertain'])('dependent native tasks resume only after a fully verified formatting result: %s', async (mode) => {
+    appState.config.autoApplyChanges = false;
+    appState.supportsTables = true;
+    const verifiedParagraphs = mode === 'zero-targets' ? 0 : 2;
+    const uncertainParagraphs = mode === 'uncertain' ? 1 : 0;
+    const actions = {
+        planDocumentTasks: jest.fn(async () => ({ tasks: [
+            { taskId: 'format', type: 'format', scope: 'document', instruction: '将正文段落设置为两端对齐。', dependsOn: [] },
+            { taskId: 'table', type: 'table', scope: 'document', instruction: 'Create a table', dependsOn: ['format'] },
+        ] })),
+        prepareFormatProposal: jest.fn(async () => ({ ops: [{ paragraphRole: 'body', paragraph: { alignment: 'justified' } }],
+            anchor: { kind: 'document-body' }, targetSummary: { verifiedParagraphs, excludedParagraphs: uncertainParagraphs, uncertainParagraphs } })),
+        applyFormatProposal: jest.fn(async () => ({ applied: false, appliedRanges: 0, insertedParagraphs: 0,
+            deletedParagraphs: 0, alreadySatisfied: true, verifiedParagraphs, noopParagraphs: verifiedParagraphs })),
+        discardFormatProposal: jest.fn(async () => {}),
+        prepareTableProposal: jest.fn(async () => ({ spec: { rows: [['A', 'B']], position: 'end', headerRowCount: 1, style: 'tableGrid' } })),
+    };
+    const { conversation, cards } = setup(actions, '');
+    await conversation.submit('正文修改为两端对齐，然后创建表格');
+    expect(actions.prepareTableProposal).not.toHaveBeenCalled();
+    await cards[0].applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (mode === 'verified-no-op') {
+        expect(actions.prepareTableProposal).toHaveBeenCalledTimes(1);
+        expect(cards).toHaveLength(2);
+        expect(cards[0].el.classList.contains('proposal-applied')).toBe(true);
+    } else {
+        expect(actions.prepareTableProposal).not.toHaveBeenCalled();
+        expect(cards).toHaveLength(1);
+        const proposal = view.getCurrentSession().messages.find((message) => message.role === 'assistant').proposals[0];
+        expect(proposal.state).toBe('warning');
+    }
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    expect(actions.applyFormatProposal).toHaveBeenCalledTimes(1);
+});

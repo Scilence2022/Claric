@@ -1358,6 +1358,7 @@ export function createConversation(deps) {
             msg.setStatus('Planning document changes...');
             const proposal = await actions.prepareFormatProposal(turnDeps, {
                 instruction: turn.instruction,
+                ...(turn.originalInstruction ? { originalInstruction: turn.originalInstruction } : {}),
                 scope: turn.scope,
                 selectionText,
                 cleanupOnly: turn.cleanupOnly === true,
@@ -1380,7 +1381,9 @@ export function createConversation(deps) {
             }
             msg.setStatus('');
             const countsText = `${proposal.ops.length} change op(s)` + (proposal.cleanupSummary?.preserved
-                ? ` · ${proposal.cleanupSummary.preserved} empty paragraph(s) preserved` : '');
+                ? ` · ${proposal.cleanupSummary.preserved} empty paragraph(s) preserved` : '')
+                + (proposal.targetSummary ? ` · ${proposal.targetSummary.verifiedParagraphs} verified paragraph(s)` : '')
+                + (proposal.targetSummary?.uncertainParagraphs ? ` · ${proposal.targetSummary.uncertainParagraphs} uncertain paragraph(s) preserved` : '');
             const card = makeProposalCard({
                 title: `Proposed changes (${turn.scope} scope)`,
                 countsText,
@@ -1398,6 +1401,10 @@ export function createConversation(deps) {
                         const fmtResult = await resource.apply(() => actions.applyFormatProposal(turnDeps, { ...proposal, ops }, applyCtx));
                         if (fmtResult?.interrupted || fmtResult?.partial) {
                             card.markWarning('Formatting stopped; changes may already be applied. Review the document and draft a new proposal.');
+                        } else if (proposal.targetSummary?.uncertainParagraphs) {
+                            card.markWarning(`${fmtResult?.verifiedParagraphs || proposal.targetSummary.verifiedParagraphs} paragraph(s) verified; ${proposal.targetSummary.uncertainParagraphs} uncertain paragraph(s) preserved for review.`);
+                        } else if (fmtResult?.alreadySatisfied && fmtResult.verifiedParagraphs > 0) {
+                            card.markApplied(`${fmtResult.verifiedParagraphs} paragraph(s) verified; requested formatting was already satisfied.`);
                         } else if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0 && !fmtResult.deletedParagraphs) {
                             card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
                         } else if (proposal.cleanupSummary?.preserved) {
@@ -2106,6 +2113,7 @@ export function createConversation(deps) {
                 return {
                     type: TURN_TYPE.FORMAT,
                     instruction,
+                    originalInstruction: originalRequest,
                     scope: scope === 'selection' && textSelected ? 'selection' : 'document',
                 };
             case 'edit':

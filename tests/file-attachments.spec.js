@@ -243,6 +243,16 @@ describe('parseAttachment', () => {
             for (const reader of readers) expect(reader.releaseLock).toHaveBeenCalledTimes(1);
             expect(loadingTask.destroy).toHaveBeenCalledTimes(1);
         });
+
+        test('PDF text expansion is bounded before allocating an unbounded attachment result', async () => {
+            readers[0].read.mockReset().mockResolvedValueOnce({ done: false, value: { items: [{ str: 'x'.repeat(2_000_001) }] } });
+            readers[0].cancel = jest.fn(async () => {});
+            await expect(parseAttachment(new File(['x'], 'expanded.pdf'))).rejects.toThrow('2,000,000 character limit');
+            expect(readers[0].cancel).toHaveBeenCalledTimes(1);
+            expect(readers[0].releaseLock).toHaveBeenCalledTimes(1);
+            expect(doc.getPage).toHaveBeenCalledTimes(1);
+            expect(loadingTask.destroy).toHaveBeenCalledTimes(1);
+        });
     });
 
     test('wraps parser failures with the file name', async () => {

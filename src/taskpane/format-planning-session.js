@@ -6,7 +6,7 @@ import { sendWithWordVisuals } from './word-render-tools.js';
 const PROPOSE = defineTool({ name: 'propose_format_ops', description: 'Stage a JSON array of formatting ops under the formatting contract below. This changes no Word content. Inspect relevant rendered pages first when visual input is available. Empty ops mean no formatting is needed. Cleanup counts are verified by the host. Call finish after staging.', argsExample: { ops: [{ font: { bold: false } }, { match: 'Example heading', paragraph: { styleBuiltIn: 'heading1' }, font: { bold: true } }] } });
 
 /** One visual inspection and formatting draft share a bounded tool session. */
-export async function planFormatWithRendering({ prompt, scopeText, renderer, send, signal, log = () => {}, onStep }) {
+export async function planFormatWithRendering({ prompt, scopeText, renderer, send, signal, log = () => {}, onStep, validateOps }) {
     let ops = null;
     let visualUnavailable = null;
     const tools = [...renderer.tools, PROPOSE];
@@ -34,9 +34,12 @@ export async function planFormatWithRendering({ prompt, scopeText, renderer, sen
             }
             if (!Array.isArray(args.ops) || args.ops.length > 100) return { ok: false, error: 'ops must be an array of at most 100 formatting operations.' };
             const sanitized = parseFormatOps(JSON.stringify(args.ops), log);
-            if (args.ops.length && !sanitized.length) return { ok: false, error: 'No valid formatting operations were supplied.' };
+            if (sanitized.length !== args.ops.length) return { ok: false, error: 'Invalid formatting operations or selectors were supplied. Correct every operation before staging.' };
+            let targets;
+            try { targets = await validateOps?.(sanitized); }
+            catch (error) { return { ok: false, error: error.message }; }
             ops = sanitized;
-            return { ok: true, result: { staged: ops.length, applied: false, visualUnavailable: visualUnavailable || status.unavailable } };
+            return { ok: true, result: { staged: ops.length, applied: false, targets, visualUnavailable: visualUnavailable || status.unavailable } };
         },
         validateFinish: async () => ({ ok: ops !== null, error: 'Stage formatting with propose_format_ops before finishing.' }),
     });

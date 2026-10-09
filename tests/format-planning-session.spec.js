@@ -69,3 +69,23 @@ test('a finish without any draft never approves a formatting proposal', async ()
     await expect(planFormatWithRendering({ prompt: 'format', scopeText: '', renderer: renderer(),
         send: async () => call('finish', { summary: 'Done' }) })).rejects.toThrow(/did not complete/);
 });
+
+test('unmatched native targets are rejected before staging and the model receives verified counts after correction', async () => {
+    const render = renderer();
+    const wrong = [{ paragraphIds: ['p999'], paragraph: { alignment: 'justified' } }];
+    const right = [{ paragraphRole: 'body', paragraph: { alignment: 'justified' } }];
+    const replies = [call('read_rendered_pages', { pages: [2] }), call('propose_format_ops', { ops: wrong }),
+        call('propose_format_ops', { ops: right }), call('finish', { summary: 'Verified body alignment proposal' })];
+    const send = jest.fn(async () => replies.shift());
+    const validateOps = jest.fn(async (ops) => {
+        if (ops[0].paragraphIds) throw new Error('No verified formatting paragraphs matched.');
+        return { verifiedParagraphs: 12, excludedParagraphs: 3 };
+    });
+    const result = await planFormatWithRendering({ prompt: 'format', scopeText: 'Body', renderer: render, send, validateOps });
+    expect(result.ops).toEqual(right);
+    expect(JSON.stringify(send.mock.calls[2][0])).toContain('No verified formatting paragraphs matched');
+    const observations = send.mock.calls[3][0].filter((message) => message.role === 'user' && typeof message.content === 'string')
+        .map((message) => { try { return JSON.parse(message.content); } catch { return {}; } });
+    expect(observations.find((observation) => observation.result?.targets)?.result.targets)
+        .toEqual({ verifiedParagraphs: 12, excludedParagraphs: 3 });
+});

@@ -8,6 +8,8 @@ export const loadDocumentEditActions = (options) => loadLazyModule('document-edi
     () => import(/* webpackChunkName: "document-edit-actions" */ './document-edit-actions.js'), { label: 'document editing tools', ...options });
 export const loadFormatPlanning = (options) => loadLazyModule('visual-format',
     () => import(/* webpackChunkName: "visual-format" */ './format-planning-session.js'), { label: 'formatting tools', ...options });
+export const loadFormatActions = (options) => loadLazyModule('format-actions',
+    () => import(/* webpackChunkName: "format-actions" */ './word-format-actions.js'), { label: 'native formatting tools', ...options });
 export const loadTaskPlanner = (options) => loadLazyModule('task-planner',
     () => import(/* webpackChunkName: "task-planner" */ '../lib/task-planner.js'), { label: 'task planner', ...options });
 export const loadTaskGraph = (options) => loadLazyModule('task-graph',
@@ -23,7 +25,10 @@ export async function preloadTaskModules(tasks, options = {}) {
     const loads = [loadTaskGraph(options)];
     if (types.has('table_management') || types.has('image_management')) loads.push(loadAgentActions(options));
     if (types.has('document_edit')) loads.push(loadDocumentEditActions(options));
-    if ((options.visualFormatting ?? canReadWordVisuals()) && (types.has('format') || types.has('insert'))) loads.push(loadFormatPlanning(options));
+    if (types.has('format') || types.has('insert')) {
+        loads.push(loadFormatActions(options));
+        if (options.visualFormatting ?? canReadWordVisuals()) loads.push(loadFormatPlanning(options));
+    }
     if (types.has('comment_management')) loads.push(loadCommentActions(options));
     await Promise.all(loads);
 }
