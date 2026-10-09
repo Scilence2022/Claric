@@ -65,6 +65,7 @@ export function createDocumentModel(snapshot) {
             b.headingLevel && 'heading', b.inTable && 'table', b.isListItem && 'list',
             b.readOnly && !b.structureUnavailable && !b.headingLevel && !b.inTable && !b.isListItem && 'protected_structure'].filter(Boolean);
         return { id: b.id, headingLevel: b.headingLevel || 0, section: b.section || '',
+            hasRevisions: !!b.hasRevisions, textVersion: 'current',
             readOnly: !!b.readOnly, readOnlyReasons: reasons, inTable: !!b.inTable,
             canReplace: !b.readOnly && (!b.original || !contract?.targetIds.length || contract.targetIds.includes(b.id)),
             canInsertBefore: canInsert(index, false), canInsertAfter: canInsert(index + 1, true),

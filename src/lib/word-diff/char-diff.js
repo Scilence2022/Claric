@@ -23,6 +23,7 @@
  */
 
 import DiffMatchPatch from '../vendor/diff-match-patch.js';
+import { tryRevisionDiff } from './revision-diff.js';
 
 /** Matches CJK ideographs, hiragana/katakana, and hangul. */
 const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/;
@@ -337,6 +338,8 @@ async function _buildPlanByCursorWalk(context, range, ops) {
  * @throws {Error} On cursor/document divergence or excessive op count
  */
 export async function applyCharDiffStrategy(context, range, originalText, newText, log = () => {}, options = {}) {
+    const revised = await tryRevisionDiff(context, range, originalText, newText, log, options);
+    if (revised) return revised;
     const ops = computeCharEdits(originalText, newText).filter(([, text]) => text.length > 0);
     if (ops.length > MAX_OPS) {
         throw new Error(`char-diff: ${ops.length} ops exceeds safety cap (${MAX_OPS})`);

@@ -38,6 +38,7 @@ import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
 import { rangeStructureFingerprint, rangeFingerprintDifference } from '../lib/ooxml-fingerprint.js';
+import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError } from '../lib/word-revisions.js';
 import { requestsEmptyParagraphCleanup, inspectEmptyParagraphXml } from '../lib/empty-paragraphs.js';
 import { formatTableMarkdown, formatMixedContext, formatCursorContext } from '../lib/selection-context.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
@@ -135,18 +136,20 @@ export async function readSelectionText(deps) {
     const includeComments = !!appState.config.includeCommentsInSelection;
     let selectionText = '';
     let plainSelectionText = '';
+    let revisionFingerprint = null;
     let enrichmentError = null;
 
     await Word.run(async (context) => {
         const selection = context.document.getSelection();
         selection.load('text');
-        // OOXML fetch only when enrichment is requested (toggle ON) — saves a sync round-trip on the default path.
-        const ooxmlResult = includeComments ? selection.getOoxml() : null;
+        const ooxmlResult = queueRevisionRead(selection);
         await context.sync();
-        if (!selection.text || !selection.text.trim()) {
+        const current = resolveRevisionRead(selection, ooxmlResult);
+        if (!current.text.trim()) {
             throw new Error('Please select some text first.');
         }
-        plainSelectionText = selection.text;
+        plainSelectionText = current.text;
+        revisionFingerprint = current.fingerprint;
 
         if (!includeComments) {
             selectionText = plainSelectionText;
@@ -178,7 +181,7 @@ export async function readSelectionText(deps) {
         log(`Selection enriched with comment threads (+${selectionText.length - plainSelectionText.length} chars)`, 'info');
     }
 
-    return { selectionText, plainSelectionText };
+    return { selectionText, plainSelectionText, revisionFingerprint };
 }
 
 /**
@@ -533,6 +536,7 @@ export async function readMixedTableSelection(deps) {
         if (paragraphs.items.length === 0) return;
 
         for (const para of paragraphs.items) para.load('text');
+        const revisionReads = paragraphs.items.map(queueRevisionRead);
         const tableChecks = paragraphs.items.map((p) => {
             const t = p.parentTableOrNullObject;
             t.load('isNullObject');
@@ -543,10 +547,10 @@ export async function readMixedTableSelection(deps) {
         const tableParaCount = tableChecks.filter((t) => !t.isNullObject).length;
         if (tableParaCount === 0) return;
 
-        const texts = paragraphs.items
-            .map((p) => p.text)
-            .filter((t) => t && t.trim() !== '');
-        mixed = { selectionText: texts.join('\n'), paraCount: paragraphs.items.length, tableParaCount };
+        const visible = paragraphs.items.map((p, i) => resolveRevisionRead(p, revisionReads[i]))
+            .filter((state) => state.text.trim() !== '');
+        mixed = { selectionText: visible.map((state) => state.text).join('\n'),
+            revisionFingerprints: visible.map((state) => state.fingerprint), paraCount: paragraphs.items.length, tableParaCount };
     });
     if (mixed) {
         log(`Mixed selection: ${mixed.paraCount} paragraph(s), ${mixed.tableParaCount} inside table(s) — paragraph-granular mode`, 'info');
@@ -802,8 +806,9 @@ export async function readSelectionSnippet() {
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
             selection.load('text');
+            const read = queueRevisionRead(selection);
             await context.sync();
-            text = selection.text || '';
+            text = resolveRevisionRead(selection, read).text;
         });
         return text;
     } catch (_err) {
@@ -881,6 +886,7 @@ export async function readSelectionContent() {
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
             selection.load('text');
+            const revisionRead = queueRevisionRead(selection);
             const pictures = selection.inlinePictures;
             pictures.load('items');
             // Shape probes — same Word.run, no extra sync.
@@ -896,7 +902,7 @@ export async function readSelectionContent() {
             endCell.load('isNullObject,rowIndex,cellIndex');
 
             await context.sync();
-            text = selection.text || '';
+            text = resolveRevisionRead(selection, revisionRead).text;
 
             const items = pictures.items || [];
             totalImages = items.length;
@@ -1038,7 +1044,8 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
     // lines back onto paragraphs without touching table structure.
     const mixed = await readMixedTableSelection(deps);
 
-    const { selectionText } = mixed ? { selectionText: mixed.selectionText } : await readSelectionText(deps);
+    const { selectionText, plainSelectionText = selectionText, revisionFingerprint = null } = mixed
+        ? { selectionText: mixed.selectionText } : await readSelectionText(deps);
     log(`Processing selection (${selectionText.length} chars) via ${backendConfig.model}...`, 'info');
 
     const merged = !!(commentInstructions && commentInstructions.trim());
@@ -1067,11 +1074,12 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
             stripChunkDelimiters(stripMarkdown(rawResponse, log), log)
         );
         return {
-            selectionText,
+            selectionText: plainSelectionText,
+            revisionFingerprint,
             amendedText,
             commentText: null,
             model: backendConfig.model,
-            ...(mixed ? { mixedTable: true } : {}),
+            ...(mixed ? { mixedTable: true, revisionFingerprints: mixed.revisionFingerprints } : {}),
         };
     }
 
@@ -1107,11 +1115,12 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
         ? restoreProtocolMarkers(stripChunkDelimiters(parsed.comment, log))
         : null;
     return {
-        selectionText,
+        selectionText: plainSelectionText,
+        revisionFingerprint,
         amendedText,
         commentText,
         model: backendConfig.model,
-        ...(mixed ? { mixedTable: true } : {}),
+        ...(mixed ? { mixedTable: true, revisionFingerprints: mixed.revisionFingerprints } : {}),
     };
 }
 
@@ -1267,8 +1276,11 @@ export async function applySelectionAmendment(deps, proposal) {
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
             selection.load('text');
+            const revisionRead = queueRevisionRead(selection);
             await context.sync();
-            if (_normalizeSelectionText(selection.text) !== _normalizeSelectionText(selectionText)) {
+            const current = resolveRevisionRead(selection, revisionRead);
+            if (_normalizeSelectionText(current.text) !== _normalizeSelectionText(selectionText)
+                || (proposal.revisionFingerprint && current.fingerprint !== proposal.revisionFingerprint)) {
                 stale = true;
                 return;
             }
@@ -1291,6 +1303,7 @@ export async function applySelectionAmendment(deps, proposal) {
                     await applyTokenMapStrategy(context, selection, selectionText, amendedText, log, strategyOptions);
                 }
             } catch (diffErr) {
+                if (diffErr instanceof RevisionSafetyError || current.hasRevisions) throw diffErr;
                 // Last resort: replace the whole selection text. Loses edit
                 // granularity but never leaves a failed apply. A failed
                 // strategy may have left tracking in any state, so re-assert
@@ -1931,17 +1944,20 @@ async function _patchCell(context, table, cellPatch, log) {
     if (items.length === 1) {
         const range = items[0].getRange(Word.RangeLocation.content);
         range.load('text');
+        const revisionRead = queueRevisionRead(range);
         await context.sync();
-        if (range.text.trim() === cellPatch.text.trim()) return false;
+        const current = resolveRevisionRead(range, revisionRead);
+        if (current.text.trim() === cellPatch.text.trim()) return false;
         try {
             // The outer scope owns the tracking mode for the whole patch.
             const diffOptions = { trackChanges: false };
-            if (hasCjk(range.text) || hasCjk(cellPatch.text)) {
-                await applyCharDiffStrategy(context, range, range.text, cellPatch.text, log, diffOptions);
+            if (hasCjk(current.text) || hasCjk(cellPatch.text)) {
+                await applyCharDiffStrategy(context, range, current.text, cellPatch.text, log, diffOptions);
             } else {
-                await applyTokenMapStrategy(context, range, range.text, cellPatch.text, log, diffOptions);
+                await applyTokenMapStrategy(context, range, current.text, cellPatch.text, log, diffOptions);
             }
         } catch (diffErr) {
+            if (diffErr instanceof RevisionSafetyError || current.hasRevisions) throw diffErr;
             // Loses edit granularity but never leaves a failed apply.
             log(`Cell ${label}: granular diff failed (${diffErr.message}), replacing cell text`, 'warning');
             range.insertText(cellPatch.text, Word.InsertLocation.replace);
@@ -1953,8 +1969,10 @@ async function _patchCell(context, table, cellPatch, log) {
     const whole = items[0].getRange(Word.RangeLocation.content)
         .expandTo(items[items.length - 1].getRange(Word.RangeLocation.content));
     whole.load('text');
+    const reads = items.map(queueRevisionRead);
     await context.sync();
-    if (whole.text.replace(/\r/g, '\n').trim() === cellPatch.text.trim()) return false;
+    const states = items.map((p, i) => resolveRevisionRead(p, reads[i]));
+    if (states.map((s) => s.text).join('\n').trim() === cellPatch.text.trim()) return false;
 
     const newLines = cellPatch.text.split(/\r?\n/);
     if (newLines.length === items.length) {
@@ -1962,14 +1980,21 @@ async function _patchCell(context, table, cellPatch, log) {
             const paraRange = items[i].getRange(Word.RangeLocation.content);
             paraRange.load('text');
             await context.sync();
-            if (paraRange.text !== newLines[i]) {
-                paraRange.insertText(newLines[i], Word.InsertLocation.replace);
+            const before = states[i].text;
+            if (before !== newLines[i]) {
+                if (states[i].hasRevisions) {
+                    const strategy = hasCjk(before) || hasCjk(newLines[i]) ? applyCharDiffStrategy : applyTokenMapStrategy;
+                    await strategy(context, paraRange, before, newLines[i], log, { trackChanges: false });
+                } else paraRange.insertText(newLines[i], Word.InsertLocation.replace);
             }
         }
         await context.sync();
         return true;
     }
 
+    if (states.some((state) => state.hasRevisions)) {
+        throw new RevisionSafetyError('Cannot change paragraph boundaries in a cell with unresolved revisions. Revise its paragraphs in place.');
+    }
     log(`Cell ${label}: paragraph count changed (${items.length} → ${newLines.length}); replacing content as one paragraph`, 'warning');
     whole.insertText(newLines.join(' '), Word.InsertLocation.replace);
     await context.sync();
@@ -2009,6 +2034,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
         if (allParaItems.length === 0) throw new Error('No paragraphs found in the selection');
 
         for (const para of allParaItems) para.load('text');
+        const revisionReads = allParaItems.map(queueRevisionRead);
         const tableChecks = allParaItems.map((p) => {
             const t = p.parentTableOrNullObject;
             t.load('isNullObject');
@@ -2020,10 +2046,13 @@ async function _applyMixedTableAmendment(deps, proposal) {
         // reassembler (the amendment text cannot represent them).
         const paraItems = [];
         const inTable = [];
+        const states = [];
         allParaItems.forEach((p, i) => {
-            if (p.text && p.text.trim() !== '') {
+            const state = resolveRevisionRead(p, revisionReads[i]);
+            if (state.text.trim() !== '') {
                 paraItems.push(p);
                 inTable.push(!tableChecks[i].isNullObject);
+                states.push(state);
             }
         });
         if (paraItems.length === 0) {
@@ -2031,7 +2060,11 @@ async function _applyMixedTableAmendment(deps, proposal) {
             return;
         }
 
-        const origTexts = paraItems.map((p) => p.text);
+        const origTexts = states.map((s) => s.text);
+        if (_normalizeSelectionText(origTexts.join('\n')) !== _normalizeSelectionText(proposal.selectionText)
+            || proposal.revisionFingerprints?.some((fingerprint, i) => fingerprint && states[i]?.fingerprint !== fingerprint)) {
+            throw new RevisionSafetyError('Mixed selection changed since staging. Generate a fresh proposal.');
+        }
         const amendedLines = _normalizeLineEndings(amendedText).split('\n');
         while (amendedLines.length > 0 && amendedLines[amendedLines.length - 1].trim() === '') amendedLines.pop();
         while (amendedLines.length > 0 && amendedLines[0].trim() === '') amendedLines.shift();
@@ -2048,7 +2081,12 @@ async function _applyMixedTableAmendment(deps, proposal) {
             return; // no changes
         }
 
-        const alignment = _alignParagraphs(origTexts, amendedLines);
+        const alignment = origTexts.length === amendedLines.length && states.some((s) => s.hasRevisions)
+            ? origTexts.map((_text, index) => ({ type: 'keep', origIdx: index, newIdx: index }))
+            : _alignParagraphs(origTexts, amendedLines);
+        if (alignment.some((op) => op.type === 'delete' && states[op.origIdx].hasRevisions)) {
+            throw new RevisionSafetyError('Cannot delete a paragraph with unresolved revisions. Revise its text in place.');
+        }
 
         if (Word.ChangeTrackingMode) {
             context.document.changeTrackingMode = trackChangesEnabled
@@ -2069,12 +2107,13 @@ async function _applyMixedTableAmendment(deps, proposal) {
                     await context.sync();
                     try {
                         const diffOptions = { trackChanges: false };
-                        if (hasCjk(paraRange.text) || hasCjk(newText)) {
-                            await applyCharDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
+                        if (hasCjk(origText) || hasCjk(newText)) {
+                            await applyCharDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
                         } else {
-                            await applyTokenMapStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
+                            await applyTokenMapStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
                         }
                     } catch (diffErr) {
+                        if (diffErr instanceof RevisionSafetyError || states[op.origIdx].hasRevisions) throw diffErr;
                         // Content-range replacement loses run formatting but is
                         // structurally safe even inside a cell (the cell mark
                         // is outside the content range).
@@ -3491,6 +3530,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
             trackChangesEnabled: appState.config.trackChangesEnabled,
             lineDiffEnabled: appState.config.lineDiffEnabled,
             log,
+            chunkRevisionFingerprints: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.revisionFingerprint)])),
             ...(signal ? { signal } : {}),
             ...(onChunkApplied ? { onChunkApplied } : {}),
         });
@@ -3655,6 +3695,7 @@ export async function retryFailedChunks(deps, {
                             if (onChunkApplied) onChunkApplied(id, detail);
                         },
                         chunkOriginals: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.text)])),
+                        chunkRevisionFingerprints: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.revisionFingerprint)])),
                     });
                     for (const id of result.appliedChunkIds || []) state.consumed.add(id);
                     const completed = new Map([...retryBookmarks].filter(([id]) => state.consumed.has(id)));

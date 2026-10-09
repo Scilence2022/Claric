@@ -49,7 +49,7 @@ function world() {
     const absent = { isNullObject: true, load: jest.fn() };
     const selection = {
         text: 'Selected clause', load: jest.fn(), insertBookmark: jest.fn(),
-        getOoxml: () => ({ value: '<baseline/>' }),
+        getOoxml: () => ({ value: '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>Selected clause</w:t></w:r></w:p>' }),
         parentTableOrNullObject: absent, parentTableCellOrNullObject: absent,
         paragraphs: { items: [], load: jest.fn() },
     };

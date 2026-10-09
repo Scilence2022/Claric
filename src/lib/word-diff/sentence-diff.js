@@ -20,6 +20,7 @@
  */
 
 import DiffMatchPatch from './diff-wordmode.js';
+import { tryRevisionDiff } from './revision-diff.js';
 import { applyBlockReplaceStrategy } from './block-replace.js';
 
 /**
@@ -123,6 +124,8 @@ export function diff_sentenceMode(text1, text2) {
  * @throws {Error} If all strategies fail
  */
 export async function applySentenceDiffStrategy(context, range, text1, text2, log, options = {}) {
+    const revised = await tryRevisionDiff(context, range, text1, text2, log, options);
+    if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
     log('Running sentence-level diff...', 'info');
 
