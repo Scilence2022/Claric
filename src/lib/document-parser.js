@@ -18,6 +18,7 @@
  */
 
 import { estimateTokenCount } from './comment-extractor.js';
+import { queueRevisionRead, resolveRevisionRead } from './word-revisions.js';
 
 /**
  * Extracts heading level from a built-in style name.
@@ -159,6 +160,7 @@ export async function parseDocument() {
         for (const para of paragraphs.items) {
             para.load('text,style,styleBuiltIn,isListItem');
         }
+        const revisionReads = paragraphs.items.map(queueRevisionRead);
         await context.sync();
 
         // Load list item details for list paragraphs
@@ -186,7 +188,8 @@ export async function parseDocument() {
         // Build in-memory model (no more sync calls)
         for (let i = 0; i < paragraphs.items.length; i++) {
             const para = paragraphs.items[i];
-            const text = para.text || '';
+            const revisionState = resolveRevisionRead(para, revisionReads[i]);
+            const text = revisionState.text;
             if (!text.trim()) continue;
 
             let headingLevel = getHeadingLevel(para.styleBuiltIn);
@@ -207,6 +210,8 @@ export async function parseDocument() {
             const parsedPara = {
                 index: i,
                 text,
+                revisionFingerprint: revisionState.fingerprint,
+                hasRevisions: revisionState.hasRevisions,
                 headingLevel,
                 style: para.style || '',
                 styleBuiltIn: para.styleBuiltIn || '',

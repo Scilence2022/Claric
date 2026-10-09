@@ -31,6 +31,7 @@
  */
 
 import DiffMatchPatch from './diff-wordmode.js';
+import { tryRevisionDiff } from './revision-diff.js';
 import { applySentenceDiffStrategy } from './sentence-diff.js';
 import { _occurrenceIndex } from './char-diff.js';
 
@@ -57,6 +58,8 @@ const TOKEN_RE = /(\w+|[^\w\s]+|\s+)/g;
  * @throws {Error} If all strategies fail
  */
 export async function applyTokenMapStrategy(context, range, originalText, newText, log, options = {}) {
+    const revised = await tryRevisionDiff(context, range, originalText, newText, log, options);
+    if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
     log('Running word-level diff...', 'info');
 

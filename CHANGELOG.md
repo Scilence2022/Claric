@@ -8,6 +8,17 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
+- **Revision-aware repeated editing** — new rounds read the current Word
+  draft without accepting or rejecting existing tracked changes. Selection,
+  chunked document, and addressable prose edits share revision-aware text
+  baselines; ordinary insertion/deletion revisions no longer make prose
+  read-only. A dedicated diff path verifies visible ranges and positions,
+  preserves earlier hidden text, and checks the result without destructive
+  fallbacks. Proposal fingerprints detect revision acceptance/rejection even
+  when visible text stays the same. Moves and structural revision boundaries
+  remain protected. Regression coverage includes three consecutive rounds,
+  repeated old/current wording, CJK, emoji, and failure/drift handling.
+
 - **Multi-turn conversation continuity with a configurable history budget**
   (`src/lib/conversation-history.js`, `src/taskpane/conversation.js`,
   `src/taskpane/word-actions.js`, `src/lib/tool-loop.js`,

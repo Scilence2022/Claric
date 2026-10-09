@@ -1,6 +1,6 @@
 /** Word adapter for addressable prose edits. Only applyDocumentEdit writes text. */
 import { getHeadingLevel, mapStyleToHeadingLevel, inferHeadingLevel } from '../lib/document-parser.js';
-import { extractFinalTextFromOoxml } from '../lib/ooxml-text.js';
+import { revisionTextState } from '../lib/word-revisions.js';
 import { paragraphStructureFingerprint } from '../lib/ooxml-fingerprint.js';
 import { runDocumentEditSession } from '../lib/document-edit-session.js';
 import { DOCUMENT_EDIT_LIMITS } from '../lib/document-model.js';
@@ -14,16 +14,13 @@ import { canReadWordVisuals, createWordVisualTools, sendWithWordVisuals } from '
 
 let sequence = 0;
 const SNAPSHOT_BATCH_SIZE = 24;
-const protectedXml = /<(?:\w+:)?(?:drawing|object|pict|fldChar|fldSimple|sdt|footnoteReference|endnoteReference|oMath|ins|del|moveFrom|moveTo)\b/;
 const clean = (value) => String(value || '').replace(/\r?\n|\r/g, '\n').replace(/\n$/, '');
 const validNewFormat = (value) => value === null || (value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).length > 0 && Object.keys(value).every((key) => ['bold', 'italic'].includes(key)
         && typeof value[key] === 'boolean'));
 function check(signal) { if (signal?.aborted) throw new DOMException('Document editing cancelled.', 'AbortError'); }
 function finalText(xml) {
-    const value = extractFinalTextFromOoxml(xml);
-    if (value === null) throw new Error('Word returned unreadable paragraph XML. No verified edit can be prepared.');
-    return clean(value);
+    return clean(revisionTextState(xml).text);
 }
 
 function snapshotError(stage, error) {
@@ -138,11 +135,13 @@ export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
         let structureUnavailable = !xml[index] || rangeUnavailable.has(index);
         let text = clean(record.rawText);
         let structureFingerprint = null;
+        let revisions = null;
         if (xml[index]) {
             try {
                 structureFingerprint = paragraphStructureFingerprint(xml[index]);
                 if (!structureFingerprint) throw new Error('Word did not return one verifiable paragraph.');
-                text = finalText(xml[index]);
+                revisions = revisionTextState(xml[index]);
+                text = clean(revisions.text);
             } catch (error) {
                 structureUnavailable = true; firstFailure ||= error; xml[index] = null;
                 structureFingerprint = null;
@@ -153,10 +152,11 @@ export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
         const headingLevel = getHeadingLevel(record.styleBuiltIn) || mapStyleToHeadingLevel(record.style || '') || inferHeadingLevel(text);
         if (headingLevel) section = text;
         const readOnlyReasons = [structureUnavailable && 'structure_unavailable', headingLevel && 'heading',
-            record.inTable && 'table', record.isListItem && 'list', protectedXml.test(xml[index]) && 'protected_structure'].filter(Boolean);
+            record.inTable && 'table', record.isListItem && 'list', revisions?.protectedStructure && 'protected_structure'].filter(Boolean);
         return { id: `p-${index + 1}`, index, text, rawText: record.rawText, ooxml: xml[index], structureFingerprint,
             style: record.style, styleBuiltIn: record.styleBuiltIn, headingLevel, section,
             inTable: record.inTable, isListItem: record.isListItem, structureUnavailable,
+            hasRevisions: !!revisions?.hasRevisions,
             structureError: failures.get(index) || null, readOnlyReasons, readOnly: readOnlyReasons.length > 0 };
     });
     const unreadable = blocks.filter((block) => block.structureUnavailable).length;
@@ -379,14 +379,15 @@ export async function applyDocumentEdit(deps, proposal, { signal } = {}) {
                 if (change.kind === 'replace') {
                     const paragraph = targets.get(change.blockId);
                     const range = paragraph.getRange(Word.RangeLocation.content);
-                    range.load('text');
+                    const xml = range.getOoxml();
                     await context.sync();
                     check(signal);
-                    if (clean(range.text) !== change.before) throw new Error('Replacement text changed before application.');
+                    const currentText = finalText(xml.value);
+                    if (currentText !== change.before) throw new Error('Replacement text changed before application.');
                     anchor.attempted = true;
                     const strategy = deps.appState.config.lineDiffEnabled ? applySentenceDiffStrategy
                         : (hasCjk(change.before) || hasCjk(change.after) ? applyCharDiffStrategy : applyTokenMapStrategy);
-                    await strategy(context, range, range.text, change.after, deps.log || (() => {}), { trackChanges: false });
+                    await strategy(context, range, currentText, change.after, deps.log || (() => {}), { trackChanges: false });
                     written.push({ paragraph, expected: change.after });
                 } else {
                     const left = anchor.anchors[change.afterId];

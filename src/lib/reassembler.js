@@ -19,6 +19,7 @@
 
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from './word-diff/index.js';
 import { hasCjk, applyCharDiffStrategy } from './word-diff/char-diff.js';
+import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError } from './word-revisions.js';
 
 /**
  * Thrown when an LLM amendment fails the content-length sanity check (the
@@ -316,7 +317,7 @@ function _alignParagraphs(origParas, newParas) {
  *   the range-level fallback does too; the default uses token-map for
  *   spaced scripts and char-diff for CJK
  * @param {function} log - Logging callback
- * @param {{paraItems: Word.Paragraph[], inTable: boolean[]}} [preloaded] -
+ * @param {{paraItems: Word.Paragraph[], inTable: boolean[], revisionStates?: any[]}} [preloaded] -
  *   Paragraph reads already batched by the re-anchor pass (items with loaded
  *   texts + table membership). When provided, this function performs no read
  *   syncs of its own before the alignment. Omit for ranges without a
@@ -329,9 +330,11 @@ function _alignParagraphs(origParas, newParas) {
 async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log, preloaded = null) {
   let allParaItems;
   let inTable;
+  let revisionStates;
   if (preloaded) {
     allParaItems = preloaded.paraItems;
     inTable = preloaded.inTable;
+    revisionStates = preloaded.revisionStates;
   } else {
     // Get paragraphs within the range
     const rangeParagraphs = range.paragraphs;
@@ -351,6 +354,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
     for (const para of allParaItems) {
       para.load('text');
     }
+    const revisionReads = allParaItems.map(queueRevisionRead);
     const tableChecks = allParaItems.map((p) => {
       const t = p.parentTableOrNullObject;
       t.load('isNullObject');
@@ -358,6 +362,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
     });
     await context.sync();
     inTable = tableChecks.map((t) => !t.isNullObject);
+    revisionStates = allParaItems.map((p, i) => resolveRevisionRead(p, revisionReads[i]));
   }
 
   // Blank spacer paragraphs never enter the alignment: the amendment text
@@ -365,10 +370,13 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   // would mark every blank line as LLM-deleted. Leave them untouched.
   const paraItems = [];
   const paraInTable = [];
+  const states = [];
   allParaItems.forEach((p, i) => {
-    if (p.text && p.text.trim() !== '') {
+    const state = revisionStates?.[i] || resolveRevisionRead(p, null);
+    if (state.text.trim() !== '') {
       paraItems.push(p);
       paraInTable.push(inTable[i]);
+      states.push(state);
     }
   });
   if (paraItems.length === 0) {
@@ -377,7 +385,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   }
   inTable = paraInTable;
 
-  const origTexts = paraItems.map((p) => p.text);
+  const origTexts = states.map((s) => s.text);
   const amendedLines = _normalizeLineEndings(amendedText).split('\n');
 
   // Filter out trailing empty lines from amended text (LLM sometimes adds trailing newline)
@@ -409,7 +417,16 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   }
 
   // Align paragraphs
-  const alignment = _alignParagraphs(origTexts, amendedLines);
+  // With unchanged paragraph count, revise pending text in place even when
+  // a substantial rewrite falls below the fuzzy alignment threshold. A
+  // delete+insert interpretation would otherwise touch its revision marks.
+  /** @type {Array<{type: 'keep'|'delete'|'insert', origIdx?: number, newIdx?: number}>} */
+  const alignment = origTexts.length === amendedLines.length && states.some((s) => s.hasRevisions)
+    ? origTexts.map((_text, index) => ({ type: 'keep', origIdx: index, newIdx: index }))
+    : _alignParagraphs(origTexts, amendedLines);
+  if (alignment.some((op) => op.type === 'delete' && states[op.origIdx].hasRevisions)) {
+    throw new RevisionSafetyError('Deleting a paragraph with unresolved revisions requires a fresh in-place text edit.');
+  }
 
   // Pre-resolve every changed paragraph's content range in ONE batched read
   // (a single sync for the whole chunk) instead of a load+sync inside the
@@ -442,94 +459,97 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   // We iterate from the end of the document upward.
   const reversedOps = [...alignment].reverse();
 
-  for (const op of reversedOps) {
-    if (op.type === 'keep') {
-      // Text matched at paragraph level -- but there might be minor word-level edits.
-      // Compare trimmed text; if different, apply word-level diff within the paragraph
-      // to preserve run-level formatting (bold, italic, font, color).
-      const origText = origTexts[op.origIdx];
-      const newText = amendedLines[op.newIdx];
+  try {
+    for (const op of reversedOps) {
+      if (op.type === 'keep') {
+        // Text matched at paragraph level -- but there might be minor word-level edits.
+        // Compare trimmed text; if different, apply word-level diff within the paragraph
+        // to preserve run-level formatting (bold, italic, font, color).
+        const origText = origTexts[op.origIdx];
+        const newText = amendedLines[op.newIdx];
 
-      if (origText.trim() !== newText.trim()) {
-        const paraRange = changedParaRanges.get(op.origIdx);
+        if (origText.trim() !== newText.trim()) {
+          const paraRange = changedParaRanges.get(op.origIdx);
 
-        // Use word-level token map strategy scoped to single paragraph.
-        // At paragraph scope, token map is much more reliable:
-        // - no \r/\n mismatch (no paragraph breaks)
-        // - smaller token count = fewer alignment errors
-        // This preserves run-level formatting (w:rPr) while applying tracked changes.
-        // CJK text has no word boundaries for the token map (a whole sentence
-        // becomes one token), so it uses the char-level strategy instead.
-        // The Settings toggle (Force Line Diff / Sentence Mode) forces the
-        // sentence-level strategy — the same ordering as the selection-scope
-        // apply path.
-        // The outer scope already owns the tracking mode (set above, restored
-        // below), so the strategy must not clobber it mid-loop.
-        try {
-          const diffOptions = { trackChanges: false };
-          if (lineDiffEnabled) {
-            await applySentenceDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
-          } else if (hasCjk(paraRange.text) || hasCjk(newText)) {
-            await applyCharDiffStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
-          } else {
-            await applyTokenMapStrategy(context, paraRange, paraRange.text, newText.trim(), log, diffOptions);
+          // Use word-level token map strategy scoped to single paragraph.
+          // At paragraph scope, token map is much more reliable:
+          // - no \r/\n mismatch (no paragraph breaks)
+          // - smaller token count = fewer alignment errors
+          // This preserves run-level formatting (w:rPr) while applying tracked changes.
+          // CJK text has no word boundaries for the token map (a whole sentence
+          // becomes one token), so it uses the char-level strategy instead.
+          // The Settings toggle (Force Line Diff / Sentence Mode) forces the
+          // sentence-level strategy — the same ordering as the selection-scope
+          // apply path.
+          // The outer scope already owns the tracking mode (set above, restored
+          // below), so the strategy must not clobber it mid-loop.
+          try {
+            const diffOptions = { trackChanges: false };
+            if (lineDiffEnabled) {
+              await applySentenceDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
+            } else if (hasCjk(origText) || hasCjk(newText)) {
+              await applyCharDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
+            } else {
+              await applyTokenMapStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
+            }
+          } catch (_diffErr) {
+            if (_diffErr instanceof RevisionSafetyError || states[op.origIdx].hasRevisions) throw _diffErr;
+            // If word-level diff fails, fall back to full paragraph text replacement.
+            // This loses run-level formatting but preserves paragraph-level properties.
+            log(`Para ${op.origIdx}: word-level diff failed (${_diffErr.message}), using text replacement`, 'warning');
+            paraRange.insertText(newText.trim(), Word.InsertLocation.replace);
+            await context.sync();
           }
-        } catch (_diffErr) {
-          // If word-level diff fails, fall back to full paragraph text replacement.
-          // This loses run-level formatting but preserves paragraph-level properties.
-          log(`Para ${op.origIdx}: word-level diff failed (${_diffErr.message}), using text replacement`, 'warning');
-          paraRange.insertText(newText.trim(), Word.InsertLocation.replace);
-          await context.sync();
         }
-      }
-    } else if (op.type === 'delete') {
-      // Paragraph was removed by LLM -- delete it. Table paragraphs are
-      // skipped: deleting cell content never deletes a row, it corrupts one.
-      if (inTable[op.origIdx]) {
-        log(`Para ${op.origIdx}: skipping delete — paragraph is inside a table`, 'warning');
-        continue;
-      }
-      const para = paraItems[op.origIdx];
-      para.delete();
-    } else if (op.type === 'insert') {
-      // New paragraph from LLM -- insert after the preceding original paragraph.
-      // Find the last 'keep' or 'delete' op before this one that references an origIdx.
-      const insertText = amendedLines[op.newIdx].trim();
-      if (!insertText) continue; // Skip empty inserted lines
-
-      // Find the anchor: the original paragraph immediately before this insertion point.
-      // Walk backwards through alignment to find the most recent origIdx.
-      let anchorOrigIdx = -1;
-      const opIndex = alignment.indexOf(op);
-      for (let k = opIndex - 1; k >= 0; k--) {
-        if (alignment[k].origIdx !== undefined) {
-          anchorOrigIdx = alignment[k].origIdx;
-          break;
-        }
-      }
-
-      if (anchorOrigIdx >= 0 && anchorOrigIdx < paraItems.length) {
-        // Anchoring inside a table would insert an in-cell paragraph, not a
-        // new row — skip instead of corrupting the table layout.
-        if (inTable[anchorOrigIdx]) {
-          log(`Skipping insert after para ${anchorOrigIdx} — anchor is inside a table`, 'warning');
+      } else if (op.type === 'delete') {
+        // Paragraph was removed by LLM -- delete it. Table paragraphs are
+        // skipped: deleting cell content never deletes a row, it corrupts one.
+        if (inTable[op.origIdx]) {
+          log(`Para ${op.origIdx}: skipping delete — paragraph is inside a table`, 'warning');
           continue;
         }
-        const anchorPara = paraItems[anchorOrigIdx];
-        anchorPara.insertParagraph(insertText, Word.InsertLocation.after);
-      } else if (paraItems.length > 0) {
-        // Insert before the first paragraph
-        paraItems[0].insertParagraph(insertText, Word.InsertLocation.before);
+        const para = paraItems[op.origIdx];
+        para.delete();
+      } else if (op.type === 'insert') {
+        // New paragraph from LLM -- insert after the preceding original paragraph.
+        // Find the last 'keep' or 'delete' op before this one that references an origIdx.
+        const insertText = amendedLines[op.newIdx].trim();
+        if (!insertText) continue; // Skip empty inserted lines
+
+        // Find the anchor: the original paragraph immediately before this insertion point.
+        // Walk backwards through alignment to find the most recent origIdx.
+        let anchorOrigIdx = -1;
+        const opIndex = alignment.indexOf(op);
+        for (let k = opIndex - 1; k >= 0; k--) {
+          if (alignment[k].origIdx !== undefined) {
+            anchorOrigIdx = alignment[k].origIdx;
+            break;
+          }
+        }
+
+        if (anchorOrigIdx >= 0 && anchorOrigIdx < paraItems.length) {
+          // Anchoring inside a table would insert an in-cell paragraph, not a
+          // new row — skip instead of corrupting the table layout.
+          if (inTable[anchorOrigIdx]) {
+            log(`Skipping insert after para ${anchorOrigIdx} — anchor is inside a table`, 'warning');
+            continue;
+          }
+          const anchorPara = paraItems[anchorOrigIdx];
+          anchorPara.insertParagraph(insertText, Word.InsertLocation.after);
+        } else if (paraItems.length > 0) {
+          // Insert before the first paragraph
+          paraItems[0].insertParagraph(insertText, Word.InsertLocation.before);
+        }
       }
     }
-  }
 
-  await context.sync();
-
-  // Disable tracked changes
-  if (Word.ChangeTrackingMode && trackChangesEnabled) {
-    context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
     await context.sync();
+  } finally {
+    // A revision-safe failure must not leak the caller's tracking mode.
+    if (Word.ChangeTrackingMode && trackChangesEnabled) {
+      context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+      await context.sync();
+    }
   }
 
   log('Paragraph-level amendment applied successfully');
@@ -722,14 +742,14 @@ function _storedParagraphTexts(result, chunkOriginals) {
  * @param {Word.Range} range - The bookmarked chunk range
  * @param {string[]} storedTexts - Paragraph texts captured at staging time
  * @param {function} log
- * @returns {Promise<{range: Word.Range, preloaded: {paraItems: Word.Paragraph[], inTable: boolean[]} | null} | null>}
+ * @returns {Promise<{range: Word.Range, preloaded: {paraItems: Word.Paragraph[], inTable: boolean[], revisionStates?: any[]} | null} | null>}
  *   The (possibly narrowed) range with its preloaded paragraph reads, or
  *   null when the stored sequence is no longer contiguously locatable.
  *   preloaded is null when the range exposes no paragraphs collection
  *   (test mocks, exotic bookmarks) or has no paragraphs at all.
  * @private
  */
-async function _reanchorChunkRange(context, range, storedTexts, log) {
+async function _reanchorChunkRange(context, range, storedTexts, log, fingerprints = []) {
   // Ranges without a paragraphs collection (test mocks, exotic bookmarks)
   // cannot be re-anchored; use them as-is.
   if (!range.paragraphs) return { range, preloaded: null };
@@ -746,6 +766,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
   for (const para of paraItems) {
     para.load('text');
   }
+  const revisionReads = paraItems.map(queueRevisionRead);
   const tableChecks = paraItems.map((p) => {
     const t = p.parentTableOrNullObject;
     t.load('isNullObject');
@@ -753,25 +774,29 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
   });
   await context.sync();
   const inTable = tableChecks.map((t) => !t.isNullObject);
+  const revisionStates = paraItems.map((p, i) => resolveRevisionRead(p, revisionReads[i]));
 
   // Compare on the non-empty paragraphs only: blank spacer paragraphs are
   // absent from the staged sequence but present in the live range.
   const nonEmptyIdx = [];
   const currentTexts = [];
   paraItems.forEach((para, i) => {
-    if (para.text && para.text.trim() !== '') {
+    const text = revisionStates[i].text;
+    if (text.trim() !== '') {
       nonEmptyIdx.push(i);
-      currentTexts.push(para.text);
+      currentTexts.push(text);
     }
   });
 
   const window = _findAnchorWindow(currentTexts, storedTexts);
   if (!window) return null;
+  if (fingerprints.some((fingerprint, i) => fingerprint
+      && revisionStates[nonEmptyIdx[window.start + i]]?.fingerprint !== fingerprint)) return null;
 
   const startItemIdx = nonEmptyIdx[window.start];
   const endItemIdx = nonEmptyIdx[window.end - 1];
   if (startItemIdx === 0 && endItemIdx === paraItems.length - 1) {
-    return { range, preloaded: { paraItems, inTable } }; // No drift: original content still spans the whole range
+    return { range, preloaded: { paraItems, inTable, revisionStates } }; // No drift: original content still spans the whole range
   }
 
   log(
@@ -798,6 +823,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
   for (const para of narrowedItems) {
     para.load('text');
   }
+  const narrowedReads = narrowedItems.map(queueRevisionRead);
   const narrowedTableChecks = narrowedItems.map((p) => {
     const t = p.parentTableOrNullObject;
     t.load('isNullObject');
@@ -809,6 +835,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
     range: narrowed,
     preloaded: {
       paraItems: narrowedItems,
+      revisionStates: narrowedItems.map((p, i) => resolveRevisionRead(p, narrowedReads[i])),
       inTable: narrowedTableChecks.map((t) => !t.isNullObject),
     },
   };
@@ -829,6 +856,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log) {
  * @param {function} options.log
  * @param {Map<string, string[]>} [options.chunkOriginals] - chunkId -> staged
  *   paragraph texts, used to re-anchor ranges that drifted since staging
+ * @param {Map<string, string[]>} [options.chunkRevisionFingerprints] - revision/formatting baselines by chunk
  * @param {AbortSignal} [options.signal] - Cooperative pause: when aborted, the
  *   loop finishes the in-flight chunk then stops before the next, leaving the
  *   remaining chunks' bookmarks intact so the caller can resume later
@@ -844,6 +872,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     lineDiffEnabled = false,
     log = () => {},
     chunkOriginals = null,
+    chunkRevisionFingerprints = null,
     signal = null,
     onChunkApplied = /** @type {function(string, object): void} */ (() => {}),
   } = options;
@@ -908,7 +937,9 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         if (storedTexts) {
           let anchored;
           try {
-            anchored = await _reanchorChunkRange(context, range, storedTexts, log);
+            const fingerprints = chunkRevisionFingerprints?.get(result.chunkId)
+              || result.chunk?.paragraphs?.map((p) => p.revisionFingerprint) || [];
+            anchored = await _reanchorChunkRange(context, range, storedTexts, log, fingerprints);
           } catch (anchorErr) {
             // A failed drift check means we cannot tell whether the range
             // absorbed new content; falling back to the raw bookmark range
@@ -934,7 +965,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
             trackChangesEnabled, lineDiffEnabled, log, preloaded
           ) !== false;
         } catch (paraErr) {
-          if (paraErr instanceof TruncatedOutputError) {
+          if (paraErr instanceof TruncatedOutputError || paraErr instanceof RevisionSafetyError) {
             // The amendment text itself is truncated. A range-level strategy
             // would just write the same truncated text more crudely (and
             // without per-paragraph formatting protection) — escalate to the
@@ -952,7 +983,9 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           }
 
           // Normalize line endings for consistent diffing
-          const originalText = _normalizeLineEndings(workRange.text);
+          const revisionRead = queueRevisionRead(workRange);
+          if (revisionRead) await context.sync();
+          const originalText = _normalizeLineEndings(resolveRevisionRead(workRange, revisionRead).text);
           const normalizedAmendment = _normalizeLineEndings(result.amendment);
 
           const strategyOptions = { trackChanges: trackChangesEnabled };

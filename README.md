@@ -167,6 +167,18 @@ the manual approval pause; it does not make every operation reversible or
 guarantee structural tracked changes. Keep it off when you need to approve
 each proposal before any application.
 
+You can revise ordinary prose again while earlier tracked changes remain
+unresolved. Each round reads the current draft: earlier insertions are
+included and earlier deletions are excluded, without accepting or rejecting
+them. Applying a proposal checks both its text and revision state; accepting,
+rejecting, or editing changes after drafting can require a fresh proposal.
+Text edits locate verified visible ranges and avoid rewriting earlier deleted
+text. Word may combine overlapping revisions according to its native review
+behavior; rounds are not independent undo checkpoints. Moved content,
+deleted paragraph marks, and other structural revisions remain protected.
+If a target cannot be verified or a write is partial, inspect Word and draft
+again; Claric does not reset a revision-bearing range to make a fallback work.
+
 ## Models, Privacy & Safety
 
 **Chat presets:** Ollama, vLLM, OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM,

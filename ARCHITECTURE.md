@@ -719,7 +719,7 @@ Chat input file uploads, pure logic (no DOM — the input bar owns the picker an
 
 ### Diff Engine (`src/lib/word-diff/` — vendored from office-word-diff, Apache-2.0)
 
-Cascading strategy for applying LLM-suggested text changes:
+Cascading strategy for applying LLM-suggested text changes to pristine ranges:
 1. **Char Diff** — character-level edits for CJK text (project-original, `char-diff.js`)
 2. **Token Map** — maps individual words to `Word.Range` objects, preserves character-level formatting
 3. **Sentence Diff** — tokenizes by sentence boundaries, handles structural changes
@@ -735,7 +735,59 @@ Local modifications on top of upstream (kept intentionally small):
   diffed the deduped list, silently misaligning repeated sentences).
 - Token-map resolves the Nth occurrence of a token to the Nth search match
   inside a coarse range (upstream always took the first match).
-- Fallback resets run with tracking off so they don't add spurious revisions.
+- Pristine-range fallback resets run with tracking off so they don't add
+  spurious revisions. Revision-bearing ranges bypass this fallback cascade.
+
+### Repeated revision rounds
+
+`word-revisions.js` reads the current draft from the document's OOXML part,
+retaining insertion text and hiding deletion/move-source text. It also records
+visible text islands and a normalized structure fingerprint containing
+revision identity and formatting. Parsing, chunk alignment, selection prompts
+and previews, and addressable document edits use this common baseline. A new
+round always takes a fresh snapshot; prior conversation/proposal text does
+not override the live document. This is a read-only projection, never an
+accept-all operation.
+
+`revision-diff.js` runs before token, sentence, or character strategies when
+the target contains unresolved revisions. It computes a Unicode-scalar diff
+against current text, splits changed spans at earlier revision boundaries,
+and locates candidate Word ranges in batches. Candidate OOXML must match the
+visible piece; the current text of its preceding range must establish the
+expected position. This avoids relying on the Nth raw search match when old
+deletions repeat current wording. Long/self-overlapping pieces can use
+verified scalar endpoints, followed by verification of their complete union.
+No deletion target can include earlier hidden content.
+
+All targets and the original fingerprint are verified before writing. Edits
+run in reverse order and the result is read back as current text. The adapter
+preserves caller-owned tracking, or restores the host's prior tracking mode
+when it owns the mode. Search/projection/read-back failures raise
+`RevisionSafetyError`, which selection and chunk callers must propagate
+without whole-range resets or replacements. A failed write can be partial;
+users inspect Word before generating another proposal.
+
+When a chunk keeps its paragraph count and contains pending revisions,
+reassembly edits those paragraphs in place, including substantial rewrites
+that would otherwise become a fuzzy-alignment delete/insert pair. It never
+deletes the old paragraph merely to work around its tracked content.
+
+Selection proposals carry the staging fingerprint; chunk proposals and
+retries retain per-paragraph fingerprints; document proposals already check
+their anchored paragraph structure. Revision acceptance/rejection invalidates
+these baselines even if final text remains identical. Plain insertion/deletion
+revisions and inserted paragraph marks allow further in-place prose edits.
+Moves, deleted paragraph marks, protected objects, and paragraph/tab-boundary
+changes in revision-bearing text are refused. Structural table editing retains
+its separate protocol and host limitations. Unchanged revisions are preserved;
+Word can coalesce overlapping changes using its native semantics, so rounds
+do not imply independently reversible history entries.
+
+Regression tests in `revision-diff.spec.js` simulate live ranges whose raw
+searches include old deleted runs, and cover three successive rounds, repeated
+words, cross-deletion spans, CJK, emoji, proposal drift, safe failure, and the
+selection/document/chunk integration paths. Real Word host acceptance remains
+a separate check.
 
 ### Taskpane (`src/taskpane/`)
 
