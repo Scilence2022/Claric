@@ -21,6 +21,7 @@ const { saveFile, deleteFile } = require('../src/lib/file-store.js');
 const { ATTACHMENT_LIMITS } = require('../src/lib/file-attachments.js');
 const { routeTurn, createConversation, TURN_TYPE, chunkCitation, looksLikeChainedInstruction } = require('../src/taskpane/conversation.js');
 const { BUILTIN_SKILLS, listSkills } = require('../src/taskpane/skills.js');
+const { COMPOSITE_FORMAT_REQUEST, compositeFormatPlan } = require('./fixtures/composite-format-plan.js');
 
 function makeAppState(overrides = {}) {
   return {
@@ -2062,6 +2063,80 @@ describe('createConversation.submit', () => {
     expect(actions.prepareFormatProposal.mock.calls[0][1].scope).toBe('selection');
     expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+  });
+
+  test('whole-document format, space cleanup and three-line tables resume after Apply despite an incidental selection', async () => {
+    const view = makeView();
+    let currentSelection = 'Incidental selection';
+    const events = [];
+    const chunk = { id: 'body-chunk', paragraphs: [{ text: 'Example  body' }] };
+    const bodyProposal = { staged: true, results: [{ status: 'fulfilled', amendment: 'Example body', chunk }], chunks: [chunk],
+      failedCount: 0, cancelledCount: 0, discard: jest.fn(), apply: jest.fn(async () => {
+        events.push('apply-body'); currentSelection = 'Selection changed by body cleanup';
+        return { amendmentsApplied: 1, commentsInserted: 0 };
+      }) };
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => compositeFormatPlan()),
+      applyFormatProposal: jest.fn(async () => { events.push('apply-format'); currentSelection = 'Different incidental selection'; return { appliedRanges: 1 }; }),
+      runDocumentSkill: jest.fn(async () => { events.push('read-body'); return bodyProposal; }),
+      readDocumentTableRegions: jest.fn(async () => {
+        events.push('read-tables');
+        return [1, 2].map((tableIndex) => ({ tableIndex, rowCount: 2, colCount: 1, values: [['Header'], ['Example  cell']],
+          bounds: { startRow: 1, endRow: 2, startCol: 1, endCol: 1 }, merged: false, shadowKeys: new Set() }));
+      }),
+      prepareTableToolEdit: jest.fn(async (_deps, { regions }) => {
+        const { createTableModel, executeTableTool, TABLE_TOOL_SPECS } = require('../src/lib/table-model.js');
+        const model = createTableModel(regions);
+        const borderExample = TABLE_TOOL_SPECS.find((tool) => tool.name === 'set_borders').argsExample;
+        for (const { tableIndex } of regions) {
+          expect(executeTableTool(model, 'set_borders', { ...borderExample, tableIndex }).ok).toBe(true);
+          expect(executeTableTool(model, 'set_borders', { tableIndex, row: 1, borders: { bottom: { type: 'single', width: 0.75 } } }).ok).toBe(true);
+          expect(executeTableTool(model, 'set_cell', { tableIndex, row: 2, col: 1, text: 'Example cell' }).ok).toBe(true);
+        }
+        const tablePatch = model.toTablePatch();
+        return { tablePatch, tableItems: [...tablePatch.cells.map((cell) => ({ label: 'Clean cell spaces', before: 'Example  cell', after: cell.text })),
+          ...tablePatch.styleOps.map(() => ({ label: 'Three-line borders' }))] };
+      }),
+    });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => currentSelection });
+    await conv.submit(COMPOSITE_FORMAT_REQUEST);
+    expect(actions.prepareFormatProposal).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'document', cleanupRequested: false }));
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+    expect(actions.readDocumentTableRegions).not.toHaveBeenCalled();
+    await view._msg.attachProposal.mock.calls[0][0].applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    expect(actions.readDocumentTableRegions).not.toHaveBeenCalled();
+    await view._msg.attachProposal.mock.calls[1][0].applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(['apply-format', 'read-body', 'apply-body', 'read-tables']);
+    const tableProposal = view._msg.attachProposal.mock.calls[2][0];
+    expect(tableProposal).toBeDefined();
+    await tableProposal.applyAll();
+    const patch = actions.applySelectionAmendment.mock.calls[0][1].tablePatch;
+    expect(patch.cells.map(({ tableIndex, text }) => ({ tableIndex, text }))).toEqual([{ tableIndex: 1, text: 'Example cell' }, { tableIndex: 2, text: 'Example cell' }]);
+    for (const tableIndex of [1, 2]) {
+      const border = patch.styleOps.find((op) => op.tableIndex === tableIndex && !op.row);
+      expect(border.borders).toMatchObject({ left: { type: 'none' }, right: { type: 'none' }, insideH: { type: 'none' }, insideV: { type: 'none' },
+        top: { type: 'single' }, bottom: { type: 'single' } });
+      expect(patch.styleOps.find((op) => op.tableIndex === tableIndex && op.row === 1).borders.bottom.type).toBe('single');
+    }
+    expect(view._msg.markError).not.toHaveBeenCalled();
+  });
+
+  test('persistent plan rejection displays its cause without dispatching any Word task', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: null,
+      failure: { phase: 'coverage-review', reason: 'Table cells are missing from whitespace cleanup' } })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Incidental selection' });
+    await conv.submit(COMPOSITE_FORMAT_REQUEST);
+    expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('Table cells are missing'));
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+    expect(actions.prepareTableToolEdit).not.toHaveBeenCalled();
   });
 
   test('compound planning failure does not dispatch an incomplete subset of the request', async () => {

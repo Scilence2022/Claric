@@ -84,8 +84,8 @@ export const TABLE_TOOL_SPECS = Object.freeze([
     }),
     defineTool({
         name: 'set_borders',
-        description: 'Set borders for ONE table (whole table), or one row\'s borders when "row" is given. "tableIndex" (optional, default 1) selects the table. "borders" keys: top, bottom, left, right, insideH, insideV, plus shorthands all / outside / inside. Each value is a border type string ("none", "single", "double", "dotted", "dashed", "dotDashed", "triple", "wave", ...) or {type, color?, width?} with color "#RRGGBB"/"auto"/a color name and width in points. Academic three-line table: set_borders({borders:{top:{type:"single",width:1.5}, bottom:{type:"single",width:1.5}, inside:"none"}}) then set_borders({row:1, borders:{bottom:{type:"single",width:0.75}}}).',
-        argsExample: { tableIndex: 1, borders: { top: { type: 'single', width: 1.5 }, bottom: { type: 'single', width: 1.5 }, inside: 'none' } },
+        description: 'Set borders for ONE table (whole table), or one row\'s borders when "row" is given. "tableIndex" (optional, default 1) selects the table. "borders" keys: top, bottom, left, right, insideH, insideV, plus shorthands all / outside / inside. Each value is a border type string ("none", "single", "double", "dotted", "dashed", "dotDashed", "triple", "wave", ...) or {type, color?, width?} with color "#RRGGBB"/"auto"/a color name and width in points. Academic three-line table: set_borders({borders:{all:"none", top:{type:"single",width:1.5}, bottom:{type:"single",width:1.5}}}) then set_borders({row:1, borders:{bottom:{type:"single",width:0.75}}}). Clear existing row borders as well if get_state shows row overrides, then add the header-bottom rule. For every table, supply its tableIndex on each call.',
+        argsExample: { tableIndex: 1, borders: { all: 'none', top: { type: 'single', width: 1.5 }, bottom: { type: 'single', width: 1.5 } } },
     }),
     defineTool({
         name: 'set_cell_format',

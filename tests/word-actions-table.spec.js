@@ -983,6 +983,7 @@ describe('applySelectionAmendment (style ops)', () => {
     setWordRunWithEnums(mock.context);
     const result = await applySelectionAmendment(makeDeps('PC'), styleProposal([
       { type: 'borders', borders: {
+        left: { type: 'none' }, right: { type: 'none' },
         top: { type: 'single', width: 1.5 },
         bottom: { type: 'single', width: 1.5 },
         insideH: { type: 'none' }, insideV: { type: 'none' },
@@ -993,6 +994,8 @@ describe('applySelectionAmendment (style ops)', () => {
     expect(result.styleOpsApplied).toBe(2);
     expect(mock.tableBorders.Top).toEqual({ type: 'Single', color: null, width: 1.5 });
     expect(mock.tableBorders.Bottom).toEqual({ type: 'Single', color: null, width: 1.5 });
+    expect(mock.tableBorders.Left.type).toBe('None');
+    expect(mock.tableBorders.Right.type).toBe('None');
     expect(mock.tableBorders.InsideHorizontal).toEqual({ type: 'None', color: null, width: null });
     expect(mock.rowBorders['0:Bottom']).toEqual({ type: 'Single', color: null, width: 0.75 });
     expect(result.warnings).toEqual([]);
