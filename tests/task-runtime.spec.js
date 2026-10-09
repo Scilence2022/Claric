@@ -100,6 +100,29 @@ test.each([false, true])('only verified no-op satisfies dependencies: %s', async
   if (!satisfied) expect(results.get('b').state).toBe('blocked');
 });
 
+test('Apply continuation preserves failed tasks without replay and resumes independent blocked work', async () => {
+  const graph = { tasks: [{ taskId: 'failed' }, { taskId: 'write' }, { taskId: 'independent' },
+    { taskId: 'dependent', dependsOn: ['failed'] }] };
+  let applied = false;
+  const failure = new Error('Original formatting failure');
+  const execute = jest.fn(async (task) => {
+    if (task.taskId === 'failed') throw failure;
+    if (task.taskId === 'write') return { status: 'staged' };
+    if (!applied) return { status: 'blocked', error: new Error('Awaiting Apply') };
+    return { status: 'staged' };
+  });
+  const first = await executeTaskGraph(graph, execute);
+  const retained = new Map([...first.results].filter(([, result]) => ['succeeded', 'failed'].includes(result.state)));
+  retained.set('write', { state: 'succeeded', value: { status: 'applied' } });
+  applied = true;
+  const second = await executeTaskGraph(graph, execute, { initialResults: retained });
+  expect(execute.mock.calls.filter(([task]) => task.taskId === 'failed')).toHaveLength(1);
+  expect(execute.mock.calls.filter(([task]) => task.taskId === 'write')).toHaveLength(1);
+  expect(second.results.get('failed')).toEqual({ state: 'failed', error: failure });
+  expect(second.results.get('dependent').state).toBe('blocked');
+  expect(second.results.get('independent').state).toBe('succeeded');
+});
+
 test('missing artifacts and explicit blocked outcomes do not report success', async () => {
   const execute = jest.fn(async () => ({ status: 'blocked', error: new Error('Awaiting application') }));
   const { results } = await executeTaskGraph({ tasks: [{ taskId: 'a', inputRefs: ['missing'] }, { taskId: 'b' }] }, execute);

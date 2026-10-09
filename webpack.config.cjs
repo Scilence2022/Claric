@@ -370,6 +370,9 @@ module.exports = (env, argv) => {
       // 255.js/400.js and were renumbered whenever module ids shifted, so a
       // diff of dist/ could not tell a real change from a renumbering.
       chunkFilename: '[name].[contenthash:8].js',
+      // Fail a stalled script download promptly so bounded import retries
+      // do not spend several minutes before the task tools are available.
+      chunkLoadTimeout: 30000,
       path: path.resolve(__dirname, 'dist'),
       clean: true
     },

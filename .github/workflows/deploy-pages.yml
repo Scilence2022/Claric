@@ -86,16 +86,11 @@ jobs:
           cd "${CLARIC_ADDIN_LOCAL}"
           git checkout main
 
-          # Mirror what scripts/publish-addin.cjs does: keep .git + README,
-          # wipe everything else, copy dist + manifest.xml.
-          git rm -rf --cached . >/dev/null 2>&1 || true
-          find . -mindepth 1 -maxdepth 1 \
-            ! -name '.git' \
-            ! -name 'README.md' \
-            -exec rm -rf {} +
-
-          cp -R "${GITHUB_WORKSPACE}/dist/." .
-          cp "${GITHUB_WORKSPACE}/manifest.xml" ./manifest.xml
+          # Share local publishing's retention policy: Word panes may still
+          # need hashed chunks from an earlier deployment.
+          node "${GITHUB_WORKSPACE}/scripts/sync-pages-bundle.cjs" \
+            "${GITHUB_WORKSPACE}/dist" "${CLARIC_ADDIN_LOCAL}" \
+            "${GITHUB_WORKSPACE}/manifest.xml"
 
           git add -A
           if git diff --cached --quiet; then

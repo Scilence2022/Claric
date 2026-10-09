@@ -704,7 +704,10 @@ export function createAssistantMessage() {
         const cardsToApply = pendingAutoApplyCards.splice(0);
         setTimeout(async () => {
             for (const { card: cardToApply, meta } of cardsToApply) {
-                if (!isCurrentSession() || el.classList.contains('chat-message-error') || appState.config.autoApplyChanges !== true || appState.config.trackChangesEnabled === false) break;
+                // A turn can stage an earlier card before Stop aborts later
+                // model work. Finalizing that cancelled turn must not start
+                // the deferred native writes that the user just stopped.
+                if (!isCurrentSession() || /^Cancelled\b/.test(lastStatus) || el.classList.contains('chat-message-error') || appState.config.autoApplyChanges !== true || appState.config.trackChangesEnabled === false) break;
                 if (meta.state !== 'pending') continue;
                 try { await cardToApply.applyAll(); } catch (_err) { /* The card reports its own failure. */ }
             }

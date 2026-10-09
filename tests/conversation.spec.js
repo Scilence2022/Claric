@@ -725,6 +725,9 @@ describe('createConversation.submit', () => {
     await conv.submit('delete all comments and polish the selected passage');
     expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
     expect(actions.prepareCommentDeletion).toHaveBeenCalledTimes(1);
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    view._msg.attachProposal.mock.calls[0][0].markApplied();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
     expect(actions.applyCommentDeletion).not.toHaveBeenCalled();
@@ -1410,6 +1413,9 @@ describe('createConversation.submit', () => {
     await conv.submit('删除多余的空段落，然后润色全文');
 
     expect(actions.prepareEmptyParagraphCleanup).toHaveBeenCalledTimes(1);
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+    view._msg.attachProposal.mock.calls[0][0].markApplied();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
     expect(actions.answerQuestion).not.toHaveBeenCalled();
   });
@@ -1884,7 +1890,7 @@ describe('createConversation.submit', () => {
     expect(actions.applyIllustrationProposal).not.toHaveBeenCalled();
   });
 
-  test('compound turn plans tasks and stages one proposal per pipeline', async () => {
+  test('compound turn stages native write proposals after preceding application', async () => {
     const appState = makeAppState();
     const view = makeView();
     const staged = {
@@ -1911,9 +1917,13 @@ describe('createConversation.submit', () => {
     expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
     expect(actions.prepareFormatProposal.mock.calls[0][1].instruction).toBe('增加标题');
     expect(actions.prepareFormatProposal.mock.calls[0][1].scope).toBe('document');
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
+    view._msg.attachProposal.mock.calls[0][0].markApplied();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
     expect(actions.runDocumentSkill.mock.calls[0][1].promptTemplate).toBe('深度润色修改');
-    // One card per task; nothing applied before the user clicks Apply.
+    // Each native write is prepared after the preceding applied signal.
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
     expect(actions.applyFormatProposal).not.toHaveBeenCalled();
     expect(staged.apply).not.toHaveBeenCalled();
@@ -1932,7 +1942,8 @@ describe('createConversation.submit', () => {
     const events = view._msg.appendModelToken.mock.calls.map((call) => call[2]).join('');
     expect(events).toContain('task.failed');
     expect(events).toContain('task.blocked');
-    expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('failed or were blocked'));
+    expect(view._msg.setStatus).toHaveBeenCalledWith('1 task(s) failed; 1 blocked. No pending proposals.');
+    expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('format: Preparation failed'));
   });
 
   test('dependent Word task resumes after the prior proposal is applied', async () => {
@@ -1955,6 +1966,101 @@ describe('createConversation.submit', () => {
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(2);
   });
 
+  test('module preflight fails before any costly document or task-model processing', async () => {
+    const view = makeView();
+    const actions = makeActions();
+    const preloadTaskModules = jest.fn(async () => { throw new Error('Could not load table and image tools. Check your connection and try again.'); });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      preloadTaskModules, getSelectionText: async () => '' });
+    await conv.submit('增加标题，并深度润色修改');
+    expect(preloadTaskModules).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalledWith(expect.stringContaining('Could not load table and image tools'));
+  });
+
+  test('cancelling module preflight prevents all planned native tasks', async () => {
+    const view = makeView();
+    const actions = makeActions();
+    let started;
+    const ready = new Promise((resolve) => { started = resolve; });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      preloadTaskModules: (_tasks, { signal }) => new Promise((resolve) => {
+        signal.addEventListener('abort', resolve, { once: true }); started();
+      }), getSelectionText: async () => '' });
+    const pending = conv.submit('增加标题，并深度润色修改');
+    await ready;
+    conv.cancel();
+    await pending;
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+  });
+
+  test('independent failures are reported individually and verified unchanged spaces succeed', async () => {
+    const view = makeView();
+    const log = jest.fn();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'format', type: 'format', scope: 'document', instruction: 'Correct body bold' },
+      { taskId: 'spaces', type: 'edit', scope: 'document', instruction: '清理全文非表格正文中多余的空格；不做改写。' },
+      { taskId: 'tables', type: 'table_management', scope: 'document', instruction: 'Three-line tables' },
+    ] })), prepareFormatProposal: jest.fn(async () => { throw new Error('Formatting scope unreadable'); }),
+    runDocumentSkill: jest.fn(async () => ({ status: 'no_op', satisfied: true, summary: 'Verified body spaces are already clean.' })),
+    prepareTableToolEdit: jest.fn(async () => { throw new Error('Table module download failed'); }) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log, actions,
+      getSelectionText: async () => '' });
+    await conv.submit('全文优化格式，清理多余的空格，表格修改为三线格');
+    expect(actions.runDocumentSkill).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ whitespaceOnly: true }));
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(view._msg.setStatus).toHaveBeenCalledWith('2 task(s) failed; 0 blocked. No pending proposals.');
+    const error = view._msg.markError.mock.calls.at(-1)[0];
+    expect(error).toContain('format: Formatting scope unreadable');
+    expect(error).toContain('table_management: Table module download failed');
+    expect(error).not.toContain('remain available');
+    expect(error).not.toContain('no change without confirming');
+    expect(log).toHaveBeenCalledWith('Task [format]: Formatting scope unreadable', 'error');
+    expect(log).toHaveBeenCalledWith('Task [tables]: Table module download failed', 'error');
+  });
+
+  test('omitted dependencies still stage writes after Apply while independent QA runs', async () => {
+    const view = makeView();
+    let applied = false;
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'format', type: 'format', scope: 'document', instruction: 'Correct bold' },
+      { taskId: 'qa', type: 'qa', instruction: 'Explain the current structure' },
+      { taskId: 'table', type: 'table', instruction: 'Create a new table' },
+    ] })), applyFormatProposal: jest.fn(async () => { applied = true; return { applied: 1, warnings: [] }; }) });
+    const prepareTable = actions.prepareTableProposal;
+    actions.prepareTableProposal = jest.fn(async (...args) => { expect(applied).toBe(true); return prepareTable(...args); });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => '' });
+    await conv.submit('整理全文格式并解释结构，然后创建表格');
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableProposal).not.toHaveBeenCalled();
+    expect(view._msg.setStatus).toHaveBeenCalledWith('1 task(s) await application.');
+    await view._msg.attachProposal.mock.calls[0][0].applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(actions.prepareTableProposal).toHaveBeenCalledTimes(1);
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+  });
+
+  test('verified unchanged body results do not re-inject full document chunks into later tasks', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'spaces', type: 'edit', scope: 'document', instruction: 'Remove extra spaces only' },
+      { taskId: 'format', type: 'format', scope: 'document', instruction: 'Correct bold', dependsOn: ['spaces'] },
+    ] })), runDocumentSkill: jest.fn(async () => ({ status: 'no_op', satisfied: true, summary: 'Verified clean spaces.',
+      chunks: [{ text: 'Full source body should not be reinjected' }], results: [] })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => '' });
+    await conv.submit('清理多余空格，并修改全文加粗格式');
+    expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    const history = actions.prepareFormatProposal.mock.calls[0][0].conversationHistory;
+    expect(JSON.stringify(history)).toContain('Verified clean spaces.');
+    expect(JSON.stringify(history)).not.toContain('Full source body');
+    expect(JSON.stringify(view._msg.appendModelToken.mock.calls)).not.toContain('Full source body');
+  });
+
   test('a rejected dependency never starts its dependent Word task', async () => {
     const view = makeView();
     const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
@@ -1968,6 +2074,44 @@ describe('createConversation.submit', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(actions.prepareTableProposal).not.toHaveBeenCalled();
     expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('dependent tasks stopped'));
+  });
+
+  test('verified structural preservation after formatting permits the next native task', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'format', type: 'format', instruction: 'Correct bold and remove redundant empty paragraphs' },
+      { taskId: 'table', type: 'table', instruction: 'Create a table', dependsOn: ['format'] },
+    ] })), prepareFormatProposal: jest.fn(async () => ({ scope: 'document', ops: [{ font: { bold: false } }],
+      cleanupSummary: { preserved: 2, unverifiable: 0, reasons: { structure: 2 } } })),
+    applyFormatProposal: jest.fn(async () => ({ appliedRanges: 1, insertedParagraphs: 0, deletedParagraphs: 1 })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => '' });
+    await conv.submit('整理格式并清除多余空行，然后创建表格');
+    expect(actions.prepareTableProposal).not.toHaveBeenCalled();
+    await view._msg.attachProposal.mock.calls[0][0].applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(actions.prepareTableProposal).toHaveBeenCalledTimes(1);
+  });
+
+  test('Apply resumes independent blocked work without silently retrying a failed task', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'failed', type: 'format', instruction: 'Unreadable scope' },
+      { taskId: 'table', type: 'table', instruction: 'Create a table' },
+      { taskId: 'remaining', type: 'format', instruction: 'Correct the final heading' },
+    ] })), prepareFormatProposal: jest.fn(async (_deps, options) => {
+      if (options.instruction === 'Unreadable scope') throw new Error('Scope unreadable');
+      return { scope: 'document', ops: [{ font: { bold: true } }] };
+    }) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => '' });
+    await conv.submit('整理全文格式并创建表格');
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
+    await view._msg.attachProposal.mock.calls[0][0].applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(2);
+    expect(actions.prepareFormatProposal.mock.calls.filter(([, options]) => options.instruction === 'Unreadable scope')).toHaveLength(1);
+    expect(view._msg.setStatus).toHaveBeenCalledWith('1 task(s) failed; 0 blocked. 1 proposal(s) remain available.');
   });
 
   test('unsupported requirements prevent partial compound dispatch', async () => {
@@ -2032,6 +2176,9 @@ describe('createConversation.submit', () => {
     expect(actions.prepareImageToolEdit).toHaveBeenCalledTimes(1);
     expect(actions.prepareImageToolEdit.mock.calls[0][1].instruction).toBe('给所有图片加上标题');
     expect(actions.prepareImageToolEdit.mock.calls[0][1].selectionImages).toBeUndefined();
+    expect(actions.readDocumentTableRegions).not.toHaveBeenCalled();
+    view._msg.attachProposal.mock.calls[0][0].markApplied();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     // table_management runs the table tool session against the document's
     // table REGIONS (all tables by tableIndex), producing its own card.
     expect(actions.readDocumentTableRegions).toHaveBeenCalledTimes(1);
@@ -2061,6 +2208,9 @@ describe('createConversation.submit', () => {
 
     expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
     expect(actions.prepareFormatProposal.mock.calls[0][1].scope).toBe('selection');
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+    view._msg.attachProposal.mock.calls[0][0].markApplied();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
   });

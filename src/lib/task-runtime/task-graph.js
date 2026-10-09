@@ -23,8 +23,8 @@ export function validateTaskGraph(graph) {
  *   Optional signal; when aborted, in-flight tasks are cancelled and the
  *   graph stops dispatching new work.
  * @property {Map<string, any>} [initialResults]
- *   Successful results from an earlier pass. Blocked tasks are deliberately
- *   omitted so they can be reconsidered after a proposal is applied.
+ *   Terminal successful/failed results from an earlier pass. Blocked tasks
+ *   are omitted so Apply can resume them without silently retrying failures.
  */
 
 /**
@@ -50,11 +50,11 @@ export async function executeTaskGraph(input, execute, { onEvent = undefined, si
         if (!(initialResults instanceof Map)) throw new Error('initialResults must be a Map');
         const taskIds = new Set(graph.tasks.map((task) => task.taskId));
         for (const [id, result] of initialResults) {
-            if (!taskIds.has(id) || result?.state !== TASK_STATES.SUCCEEDED) {
+            if (!taskIds.has(id) || ![TASK_STATES.SUCCEEDED, TASK_STATES.FAILED].includes(result?.state)) {
                 throw new Error(`Cannot resume an invalid task result: ${id}`);
             }
             results.set(id, result);
-            if (Array.isArray(result.value?.artifacts)) {
+            if (result.state === TASK_STATES.SUCCEEDED && Array.isArray(result.value?.artifacts)) {
                 result.value.artifacts.forEach((artifact, index) => artifacts.set(`${id}:${index}`, artifact));
             }
         }
