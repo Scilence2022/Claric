@@ -1,5 +1,5 @@
 /** @jest-environment jsdom */
-const { requestsEmptyParagraphCleanup, isDeletableEmptyParagraphXml } = require('../src/lib/empty-paragraphs.js');
+const { requestsEmptyParagraphCleanup, isDeletableEmptyParagraphXml, inspectEmptyParagraphXml } = require('../src/lib/empty-paragraphs.js');
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const xml = (inner) => `<w:p xmlns:w="${W}">${inner}</w:p>`;
 
@@ -29,9 +29,45 @@ test('allows only verified whitespace and ordinary paragraph/font properties', (
 
 test.each(['drawing', 'pict', 'object', 'fldChar', 'instrText', 'fldSimple', 'footnoteReference',
     'endnoteReference', 'commentReference', 'bookmarkStart', 'bookmarkEnd', 'commentRangeStart',
-    'sdt', 'customXml', 'sectPr', 'numPr', 'br', 'cr', 'sym', 'del', 'ins', 'moveFrom', 'moveTo',
+    'sdt', 'customXml', 'sectPr', 'numPr', 'sym', 'del', 'ins', 'moveFrom', 'moveTo',
     'pageBreakBefore'])('preserves blank-looking protected structure: %s', (tag) => {
     expect(isDeletableEmptyParagraphXml(xml(`<w:r><w:${tag}/></w:r>`))).toBe(false);
+});
+
+test('allows inserted whitespace and an inserted paragraph mark without accepting revisions', () => {
+    expect(isDeletableEmptyParagraphXml(xml('<w:pPr><w:rPr><w:ins w:id="1" w:author="Example"/></w:rPr></w:pPr>'
+        + '<w:ins w:id="2"><w:r><w:rPr><w:b/></w:rPr><w:t>  </w:t><w:tab/></w:r></w:ins>'))).toBe(true);
+    expect(isDeletableEmptyParagraphXml(xml('<w:ins><w:r><w:t>Inserted prose</w:t></w:r></w:ins>'))).toBe(false);
+    expect(isDeletableEmptyParagraphXml(xml('<w:ins><w:r><w:drawing/></w:r></w:ins>'))).toBe(false);
+    expect(isDeletableEmptyParagraphXml(xml('<w:ins>Unexpected prose</w:ins>'))).toBe(false);
+    expect(isDeletableEmptyParagraphXml(xml('<w:pPr><w:rPr><w:del w:id="1"/></w:rPr></w:pPr>'))).toBe(false);
+    expect(inspectEmptyParagraphXml(xml('<w:pPr><w:rPr><w:del w:id="1"/></w:rPr></w:pPr>')).reason)
+        .toBe('paragraph mark already tracked as deleted');
+    expect(isDeletableEmptyParagraphXml(xml('<w:del><w:r><w:delText>Deleted prose</w:delText></w:r></w:del>'))).toBe(false);
+});
+
+test('distinguishes blank soft line breaks from pagination and wrapping commands', () => {
+    expect(isDeletableEmptyParagraphXml(xml('<w:r><w:br/><w:br w:type="textWrapping"/><w:cr/></w:r>'))).toBe(true);
+    for (const properties of ['w:type="page"', 'w:type="column"', 'w:clear="all"', 'w:clear="left"']) {
+        expect(isDeletableEmptyParagraphXml(xml(`<w:r><w:br ${properties}/></w:r>`))).toBe(false);
+    }
+});
+
+test('ordinary font effects and disabled pagination flags do not protect an empty paragraph', () => {
+    for (const value of ['0', 'false', 'off']) {
+        expect(isDeletableEmptyParagraphXml(xml(`<w:pPr><w:pageBreakBefore w:val="${value}"/></w:pPr>`
+            + '<w:r><w:rPr><w:outline/><w:shadow/><w:emboss/><w:imprint/><w:spacing w:val="20"/></w:rPr><w:t> </w:t></w:r>'))).toBe(true);
+    }
+    expect(isDeletableEmptyParagraphXml(xml('<w:pPr><w:pageBreakBefore/></w:pPr>'))).toBe(false);
+});
+
+test('diagnostics expose structure without paragraph text, authors or bookmark names', () => {
+    const evidence = inspectEmptyParagraphXml(xml('<w:bookmarkStart w:id="123" w:name="PrivateBookmark"/>'
+        + '<w:del w:author="PrivateAuthor"><w:r><w:delText>Private prose</w:delText></w:r></w:del>'));
+    expect(evidence).toEqual({ deletable: false, reason: 'protected or unsupported markup', element: 'w:bookmarkStart' });
+    expect(JSON.stringify(evidence)).not.toMatch(/Private|123/);
+    expect(inspectEmptyParagraphXml('<w:p>')).toEqual({ deletable: false, reason: 'invalid XML' });
+    expect(inspectEmptyParagraphXml(`<w:body xmlns:w="${W}"><w:p/><w:p/></w:body>`).reason).toMatch(/one paragraph/);
 });
 
 test('ordinary formatting revision history does not make a whitespace paragraph undeletable', () => {

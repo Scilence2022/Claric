@@ -13,6 +13,7 @@ function world() {
             text, xml: options.xml || pXml(text ? `<w:r><w:t>${text}</w:t></w:r>` : ''),
             relation: options.relation || 'Inside', finalRelation: options.finalRelation || 'Before',
             load: jest.fn(), parentTableOrNullObject: { isNullObject: !options.inTable, load: jest.fn() },
+            getOoxml: jest.fn(() => ({ value: paragraph.xml })),
             delete: jest.fn(() => { events.push(`delete:${id}`); }),
         };
         const range = {
@@ -89,6 +90,70 @@ test('the reported Chinese request cleans a blank paragraph carrying prior bold-
     expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
 });
 
+test('15 ordinary blanks use native paragraph XML even when Whole range exports extra paragraphs', async () => {
+    const w = world();
+    const blanks = Array.from({ length: 15 }, (_, i) => w.makeParagraph(`blank-${i}`, '', {
+        xml: pXml('<w:pPr><w:rPr><w:ins w:id="1"/></w:rPr><w:pageBreakBefore w:val="0"/></w:pPr>'
+            + '<w:ins w:id="2"><w:r><w:rPr><w:b/><w:spacing w:val="0"/></w:rPr><w:t> </w:t><w:br/></w:r></w:ins>'),
+    }));
+    w.paragraphs.splice(1, w.paragraphs.length - 1, ...blanks, w.makeParagraph('body', 'Example body'));
+    for (const blank of blanks) {
+        blank.getRange().getOoxml.mockReturnValue({ value: `<w:body xmlns:w="${W}">${blank.xml}<w:p/></w:body>` });
+    }
+    const proposal = await prepareFormatProposal(w.deps, { instruction: '整理选择部分的格式，多余的空行，不合适的字体加粗等' });
+    expect(proposal.cleanupSummary).toEqual({ candidates: 15, verified: 15, preserved: 0, unverifiable: 0, reasons: {} });
+    expect(proposal.ops).toContainEqual({ cleanup: { emptyParagraphs: true, emptyCount: 15 } });
+    expect(await applyFormatProposal(w.deps, proposal)).toMatchObject({ applied: true, deletedParagraphs: 15, partial: false });
+    for (const blank of blanks) {
+        expect(blank.getOoxml).toHaveBeenCalledTimes(2);
+        expect(blank.getRange().getOoxml).not.toHaveBeenCalled();
+        expect(blank.delete).toHaveBeenCalledTimes(1);
+    }
+    expect(w.events.filter((event) => event.startsWith('delete:'))).toEqual(blanks.map((_, i) => `delete:blank-${14 - i}`));
+    expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
+});
+
+test('preserved paragraphs report separate native containment and XML reasons', async () => {
+    const w = world();
+    w.paragraphs[1].xml = pXml('<w:pPr><w:rPr><w:del w:id="1" w:author="PrivateAuthor"/></w:rPr></w:pPr>');
+    const proposal = await prepareFormatProposal(w.deps, { instruction: 'remove blank lines and bold headings' });
+    expect(proposal.cleanupSummary.reasons).toEqual({
+        'paragraph mark already tracked as deleted (w:del)': 1,
+        'deleted revision content (w:del)': 1,
+        'outside captured scope or partial paragraph': 1,
+        'table cell': 1,
+        'protected or unsupported markup (w:fldChar)': 1,
+        'protected or unsupported markup (w:drawing)': 1,
+        'protected or unsupported markup (w:sectPr)': 1,
+        'final document paragraph': 1,
+    });
+    expect(w.deps.log).toHaveBeenCalledWith('Empty paragraph cleanup: 1 preserved — paragraph mark already tracked as deleted (w:del).', 'warning');
+    expect(JSON.stringify(w.deps.log.mock.calls)).not.toContain('PrivateAuthor');
+});
+
+test('invalid native paragraph XML never falls back to a less specific range export', async () => {
+    const w = world();
+    w.paragraphs[1].getOoxml.mockReturnValue({ value: '<invalid' });
+    const proposal = await prepareFormatProposal(w.deps, { instruction: 'remove blank lines and bold headings' });
+    expect(proposal.cleanupSummary.reasons['invalid XML']).toBe(1);
+    expect(proposal.cleanupSummary.verified).toBe(0);
+    expect(w.paragraphs[1].getRange().getOoxml).not.toHaveBeenCalled();
+    await applyFormatProposal(w.deps, proposal);
+    expect(w.paragraphs[1].delete).not.toHaveBeenCalled();
+});
+
+test('new nonempty revision data before Apply blocks cleanup and formatting', async () => {
+    const w = world();
+    w.paragraphs[1].xml = pXml('<w:ins><w:r><w:t> </w:t></w:r></w:ins>');
+    const proposal = await prepareFormatProposal(w.deps, { instruction: 'remove blank lines and bold headings' });
+    // Keep the scope baseline stable to exercise the independent cleanup gate.
+    const baseline = w.scope.getOoxml();
+    w.scope.getOoxml.mockReturnValue(baseline);
+    w.paragraphs[1].xml = pXml('<w:ins><w:r><w:t>New prose</w:t></w:r></w:ins>');
+    await expect(applyFormatProposal(w.deps, proposal)).rejects.toThrow(/targets changed/);
+    expect(w.events).toEqual([]);
+});
+
 test('cleanup alone has no model call, deletes in reverse order, and reports real deletions', async () => {
     const w = world();
     w.paragraphs.push(w.makeParagraph('later'));
@@ -131,7 +196,7 @@ test('new protection or lost containment after review blocks deletion and format
 
 test('an unverifiable Mac paragraph stays read-only without preventing safe formatting', async () => {
     const w = world();
-    w.paragraphs[1].getRange().getOoxml.mockImplementation(() => { throw new Error('GeneralException'); });
+    w.paragraphs[1].getOoxml.mockImplementation(() => { throw new Error('GeneralException'); });
     const proposal = await prepareFormatProposal(w.deps, { instruction: 'remove blank lines and bold headings' });
     expect(proposal.ops).toEqual([{ font: { bold: false } }]);
     expect(w.deps.log).toHaveBeenCalledWith(expect.stringContaining('will be preserved: GeneralException'), 'warning');
