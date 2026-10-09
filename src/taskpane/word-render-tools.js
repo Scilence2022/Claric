@@ -1,6 +1,7 @@
 /** Read-only visual evidence from Word's own PDF export, never HTML reconstruction. */
 import { defineTool } from '../lib/tool-registry.js';
 import { WORD_SCREEN_TOOL_SPEC, readWordScreen, screenCaptureState } from './word-screen-capture.js';
+import { loadLazyModule } from '../lib/lazy-module-loader.js';
 
 const MAX_PDF_BYTES = 20 * 1024 * 1024;
 const SLICE_BYTES = 65536;
@@ -109,7 +110,7 @@ export async function exportWordPdf({ signal, log = () => {} } = {}) {
 }
 
 async function loadNativePdf(bytes) {
-    const pdfjs = await import(/* webpackChunkName: "pdfjs" */ 'pdfjs-dist/legacy/build/pdf.min.mjs');
+    const pdfjs = await loadLazyModule('pdfjs', () => import(/* webpackChunkName: "pdfjs" */ 'pdfjs-dist/legacy/build/pdf.min.mjs'));
     if (!pdfjs.GlobalWorkerOptions.workerSrc) {
         pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.min.mjs', document.baseURI).toString();
     }

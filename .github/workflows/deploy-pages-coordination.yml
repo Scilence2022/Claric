@@ -104,16 +104,11 @@ jobs:
             git checkout main
           fi
 
-          # Mirror scripts/publish-addin.cjs: keep .git + README, wipe the
-          # rest, copy dist + manifest.xml.
-          git rm -rf --cached . >/dev/null 2>&1 || true
-          find . -mindepth 1 -maxdepth 1 \
-            ! -name '.git' \
-            ! -name 'README.md' \
-            -exec rm -rf {} +
-
-          cp -R "${GITHUB_WORKSPACE}/dist/." .
-          cp "${GITHUB_WORKSPACE}/manifest.xml" ./manifest.xml
+          # Match production/local publishing and keep earlier immutable
+          # chunks available to Word panes that remain open across deploys.
+          node "${GITHUB_WORKSPACE}/scripts/sync-pages-bundle.cjs" \
+            "${GITHUB_WORKSPACE}/dist" "${CLARIC_ADDIN_LOCAL}" \
+            "${GITHUB_WORKSPACE}/manifest.xml"
 
           git add -A
           if git diff --cached --quiet; then

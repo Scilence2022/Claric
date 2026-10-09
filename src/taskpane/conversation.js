@@ -44,6 +44,9 @@ import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib
 import { buildConversationHistory } from '../lib/conversation-history.js';
 import { inspectEditRequest } from '../lib/edit-request.js';
 import { resolveTaskScope } from '../lib/task-scope.js';
+import { requestsWhitespaceOnlyCleanup, validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
+import { loadAgentActions, loadDocumentEditActions, loadTaskGraph, loadFileQuestion,
+    loadCommentActions, preloadTaskModules } from './task-module-loader.js';
 
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
@@ -665,7 +668,7 @@ export function createConversation(deps) {
     const { appState, view, input, log, logWithRetry, updateStatusBar } = deps;
     const actions = deps.actions || { ...defaultActions, ...Object.fromEntries(
         ['prepareTableToolEdit', 'prepareImageToolEdit', 'applyImageOps'].map((name) => [name, async (...args) => {
-            const module = await import(/* webpackChunkName: "agent-actions" */ './agent-actions.js');
+            const module = await loadAgentActions({ signal: args[2]?.signal || args[1]?.signal });
             return module[name](...args);
         }])
     ) };
@@ -869,6 +872,7 @@ export function createConversation(deps) {
      */
     async function runDocumentTurn(skill, args, msg, turnDeps) {
         const gated = skill.category === 'amendment';
+        const whitespaceOnly = gated && requestsWhitespaceOnlyCleanup(withArgs(skill.defaultTemplate, args));
         const myController = new AbortController();
         appState.isProcessingDoc = true;
         appState.processDocController = myController;
@@ -884,6 +888,7 @@ export function createConversation(deps) {
                 onProgress: (p) => msg.showProgress(p),
                 onChunkToken: (info, kind, token) => msg.appendModelToken(info, kind, token),
                 gateApply: gated,
+                ...(whitespaceOnly ? { whitespaceOnly: true } : {}),
             });
             msg.hideProgress();
             if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
@@ -891,9 +896,13 @@ export function createConversation(deps) {
                 return;
             }
 
+            if (whitespaceOnly && outcome.status === 'no_op' && outcome.satisfied === true) {
+                msg.setStatus(outcome.summary);
+                return { status: 'no_op', satisfied: true, summary: outcome.summary };
+            }
+
             if (outcome.staged) {
-                await stageDocumentProposal(outcome, msg, turnDeps);
-                return;
+                return await stageDocumentProposal(outcome, msg, turnDeps, { whitespaceOnly });
             }
 
             const { applicationResult, chunks, cancelled } = outcome;
@@ -929,11 +938,24 @@ export function createConversation(deps) {
      * Apply writes the staged results as tracked changes; Reject discards
      * them (word-actions cleans up the chunk bookmarks either way).
      */
-    async function stageDocumentProposal(outcome, msg, turnDeps) {
+    async function stageDocumentProposal(outcome, msg, turnDeps, { whitespaceOnly = false } = {}) {
+        whitespaceOnly = whitespaceOnly || outcome.results.some((result) => result.whitespaceOnly);
+        if (whitespaceOnly) {
+            for (const result of outcome.results) {
+                if (result.status !== 'fulfilled' || typeof result.amendment !== 'string') continue;
+                const check = validateWhitespaceCleanup(chunkOriginalText(result), result.amendment);
+                if (!check.valid) {
+                    result.status = 'rejected';
+                    result.error = check.reason;
+                }
+                result.whitespaceOnly = true;
+            }
+            outcome.failedCount = outcome.results.filter((result) => result.status === 'rejected').length;
+        }
         // Only offer chunks whose amendment actually differs from the
         // original text — an LLM echo of the input is not a proposal.
         const amendedChunks = outcome.results.filter((r) => r.status === 'fulfilled'
-            && ((r.amendment && _normalizeText(r.amendment) !== _normalizeText(chunkOriginalText(r)))
+            && ((r.amendment && _normalizeText(r.amendment, whitespaceOnly) !== _normalizeText(chunkOriginalText(r), whitespaceOnly))
                 || (outcome.retryProposal && r.comment)));
 
         if (outcome.failedCount > 0 && outcome.retryProposal && amendedChunks.length > 0 && turnDeps.logWithRetry) {
@@ -967,9 +989,24 @@ export function createConversation(deps) {
                         }
                     );
                 }
-                return;
+                return { status: 'failed', error: new Error(firstError || 'Document sections could not be processed.') };
             }
-            await outcome.discard();
+            await outcome.discard({ unchanged: true });
+            if (whitespaceOnly && !outcome.cancelledCount) {
+                const complete = outcome.results.length === outcome.chunks.length
+                    && outcome.results.every((result) => result.status === 'fulfilled' && typeof result.amendment === 'string');
+                const candidatesRemain = outcome.results.some((result) => hasRedundantSpaceCandidates(chunkOriginalText(result)));
+                if (complete && !candidatesRemain) {
+                    const summary = 'Verified all processed body paragraphs: no redundant-space candidates were found.';
+                    msg.setStatus(summary);
+                    return { status: 'no_op', satisfied: true, summary };
+                }
+                const message = candidatesRemain
+                    ? 'Potential redundant-space candidates remain, but the model proposed no verified cleanup. No changes were applied.'
+                    : 'Space cleanup was not verified for every document section. No changes were applied.';
+                msg.setStatus(message);
+                return { status: 'failed', error: new Error(message) };
+            }
             msg.setStatus(outcome.cancelledCount > 0
                 ? 'Cancelled — no changes were applied.'
                 : 'The model proposed no changes.');
@@ -1068,7 +1105,7 @@ export function createConversation(deps) {
     async function runDocumentEditTurn(turn, msg, turnDeps, selectionText, turnController) {
         const controller = _beginChatTurn(turnController);
         try {
-            const editActions = deps.actions || await import(/* webpackChunkName: "document-edit-actions" */ './document-edit-actions.js');
+            const editActions = deps.actions || await loadDocumentEditActions({ signal: controller.signal });
             msg.setStatus('Reading the article and drafting focused changes...');
             const proposal = await editActions.prepareDocumentEdit(turnDeps, {
                 instruction: turn.instruction, selectionText, signal: controller.signal,
@@ -1365,7 +1402,11 @@ export function createConversation(deps) {
                             card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
                         } else if (proposal.cleanupSummary?.preserved) {
                             const removed = fmtResult?.deletedParagraphs ? ` ${fmtResult.deletedParagraphs} empty paragraph(s) removed;` : '';
-                            card.markWarning(`Formatting applied;${removed} ${proposal.cleanupSummary.preserved} empty paragraph(s) could not be safely removed. See the activity log.`);
+                            const verified = proposal.cleanupSummary.unverifiable === 0;
+                            const message = `Formatting applied;${removed} ${proposal.cleanupSummary.preserved} `
+                                + (verified ? 'protected empty paragraph(s) preserved.' : 'empty paragraph(s) could not be safely removed.')
+                                + ' See the activity log.';
+                            if (verified) card.markApplied(message); else card.markWarning(message);
                         } else {
                             card.markApplied();
                         }
@@ -2139,6 +2180,12 @@ export function createConversation(deps) {
                 throw new Error(`Unsupported actions: ${descriptions.join(' ')}`);
             }
             if (!plan.tasks || plan.tasks.length === 0) throw new Error(`Task planning failed; no tasks ran.${plan.failure?.reason ? ` ${plan.failure.reason}` : ''}`);
+            const preload = deps.preloadTaskModules || (deps.actions ? null : preloadTaskModules);
+            if (preload) {
+                msg.setStatus('Loading task tools...');
+                await preload(plan.tasks, { signal: myController.signal });
+            }
+            if (myController.signal.aborted) throw new DOMException('Compound turn cancelled.', 'AbortError');
             // Only actual selection targets need the continuation selection
             // guard. Document tasks re-read live state after Apply even if an
             // incidental selection changes during their own preceding edit.
@@ -2148,21 +2195,33 @@ export function createConversation(deps) {
                     || target.type === TURN_TYPE.TABLE_TOOL || (target.type === TURN_TYPE.IMAGE_TOOL && target.hasSelection);
             });
             log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
-            const { executeTaskGraph } = await import(/* webpackChunkName: "task-planner" */ '../lib/task-runtime/task-graph.js');
+            const { executeTaskGraph, validateTaskGraph } = await loadTaskGraph({ signal: myController.signal });
             let graphResults = null;
             let resumeTimer = null;
             const cardsByTask = new Map();
-            const graphInput = { tasks: plan.tasks };
+            // Keep generated compatibility task IDs stable across Apply/resume.
+            const checkedGraph = validateTaskGraph({ tasks: plan.tasks });
+            if (!checkedGraph.valid) throw new Error(checkedGraph.errors.join('; '));
+            const graphInput = checkedGraph.graph;
             const setGraphStatus = () => {
-                const results = [...(graphResults?.values() || [])];
+                const entries = [...(graphResults?.entries() || [])];
+                const results = entries.map(([, result]) => result);
                 const failed = results.filter((result) => result.state === 'failed').length;
                 const blocked = results.filter((result) => result.state === 'blocked').length;
                 const staged = results.filter((result) => result.value?.status === 'staged').length;
                 if (blocked && staged) msg.setStatus(`${blocked} task(s) await application.${failed ? ` ${failed} failed.` : ''}`);
-                else if (failed || blocked) msg.setStatus(`${failed + blocked} task(s) failed or were blocked; completed proposals remain available.`);
+                else if (failed || blocked) msg.setStatus(`${failed} task(s) failed; ${blocked} blocked. `
+                    + (staged ? `${staged} proposal(s) remain available.` : 'No pending proposals.'));
                 else msg.setStatus('');
+                const failures = entries.filter(([, result]) => result.state === 'failed').map(([id, result]) => {
+                    const task = graphInput.tasks.find((item) => item.taskId === id);
+                    return `${task?.type || id}: ${result.error?.message || 'Task failed.'}`;
+                });
+                if (failures.length) msg.markError(`${failed} task(s) failed; ${blocked} blocked. `
+                    + (staged ? `${staged} proposal(s) remain available.` : 'No pending proposals.')
+                    + `\n${failures.join('\n')}`);
             };
-            const retainedResults = () => new Map([...graphResults].filter(([, result]) => result.state === 'succeeded').map(([id, result]) => {
+            const retainedResults = () => new Map([...graphResults].filter(([, result]) => ['succeeded', 'failed'].includes(result.state)).map(([id, result]) => {
                 const cards = cardsByTask.get(id) || [];
                 return [id, result.value?.status === 'staged' && cards.length && cards.every((item) => item.state === 'applied')
                     ? { ...result, value: { ...result.value, status: 'applied' } } : result];
@@ -2208,60 +2267,78 @@ export function createConversation(deps) {
                     };
                 }
             };
-            const runGraph = (controller, initialResults) => executeTaskGraph(graphInput, async (task, { inputs }) => {
-                msg.setStatus(`Task [${task.type}]: ${task.instruction}`);
-                appState.isProcessing = true;
-                input.setProcessing(true);
-                // Old runners report errors to the UI rather than throwing.
-                // Adapt that boundary to explicit runtime results during migration.
-                let failure = null;
-                const proposals = [];
-                let answer = '';
-                const taskMessage = new Proxy(msg, { get(target, key) {
-                    const value = target[key];
-                    if (typeof value !== 'function') return value;
-                    return (...args) => {
-                        if (key === 'markError') failure = new Error(String(args[0]));
-                        if (key === 'attachProposal') proposals.push(args[1]);
-                        if (key === 'setText' || key === 'appendText') answer += args[0] || '';
-                        const result = value.apply(target, args);
-                        if (key === 'attachProposal') observeCard(task.taskId, args[0]);
-                        return result;
-                    };
-                } });
-                if (task.type !== 'qa' && inputs.some((item) => item.value?.status === 'staged')) {
-                    return { status: 'blocked', error: new Error('Awaiting a preceding proposal. Apply it to continue, or combine prose edits in one draft.') };
-                }
-                const taskDeps = inputs.length ? { ...turnDeps, conversationHistory: [...turnDeps.conversationHistory,
-                    { role: 'assistant', content: `Prior task results: ${JSON.stringify(inputs.map((i) => i.value))}` }] } : turnDeps;
-                const taskTurn = turnForTask(task, selectionFacts, turn.instruction);
-                if (taskTurn.type === TURN_TYPE.FORMAT) taskTurn.cleanupRequested = requestsEmptyParagraphCleanup(taskTurn.instruction)
-                    && requestsEmptyParagraphCleanup(turn.instruction);
-                if (turn.temporaryAttachments?.length) {
-                    if (taskTurn.type === TURN_TYPE.DOCUMENT_EDIT) taskTurn.temporaryAttachments = turn.temporaryAttachments;
-                    else if (taskTurn.type !== TURN_TYPE.COMMENT_MANAGEMENT) {
-                        const context = buildAttachmentContext(turn.temporaryAttachments);
-                        if (typeof taskTurn.question === 'string') {
-                            taskTurn.question += context;
-                            taskTurn.questionImages = splitAttachments(turn.temporaryAttachments).imageAttachments;
-                        } else if (typeof taskTurn.instruction === 'string') taskTurn.instruction += context;
+            const runGraph = (controller, initialResults) => {
+                // Plans can omit write dependencies. Stage each native write
+                // against the live document after the preceding proposal has
+                // been applied; an independent failed task is not a barrier.
+                const pendingWrites = new Set([...(initialResults || [])]
+                    .filter(([, result]) => result.value?.status === 'staged').map(([id]) => id));
+                return executeTaskGraph(graphInput, async (task, { inputs }) => {
+                    msg.setStatus(`Task [${task.type}]: ${task.instruction}`);
+                    appState.isProcessing = true;
+                    input.setProcessing(true);
+                    // Old runners report errors to the UI rather than throwing.
+                    // Adapt that boundary to explicit runtime results during migration.
+                    let failure = null;
+                    const proposals = [];
+                    let answer = '';
+                    const taskMessage = new Proxy(msg, { get(target, key) {
+                        const value = target[key];
+                        if (typeof value !== 'function') return value;
+                        return (...args) => {
+                            if (key === 'markError') {
+                                failure = new Error(String(args[0]));
+                                return;
+                            }
+                            if (key === 'attachProposal') proposals.push(args[1]);
+                            if (key === 'setText' || key === 'appendText') answer += args[0] || '';
+                            const result = value.apply(target, args);
+                            if (key === 'attachProposal') observeCard(task.taskId, args[0]);
+                            return result;
+                        };
+                    } });
+                    if (task.type !== 'qa' && (pendingWrites.size || inputs.some((item) => item.value?.status === 'staged'))) {
+                        return { status: 'blocked', error: new Error('Awaiting a preceding proposal. Apply it to continue, or combine prose edits in one draft.') };
                     }
-                }
-                const value = await dispatchTurn(
-                    taskTurn, taskMessage, taskDeps,
-                    selectionText, selectionImages, !!hasMultiCellTableRegion, controller
-                );
-                if (controller.signal.aborted) throw new DOMException('Compound turn cancelled.', 'AbortError');
-                if (failure) return { status: 'failed', error: failure };
-                return value || { status: proposals.length ? 'staged' : answer ? 'answered' : 'no_op',
-                    artifacts: proposals, summary: answer, satisfied: !!answer };
-            }, {
-                signal: controller.signal,
-                initialResults,
-                onEvent: (event) => {
-                    msg.appendModelToken({ id: 'task-runtime-events' }, 'content', `${JSON.stringify(event)}\\n`);
-                },
-            });
+                    const taskDeps = inputs.length ? { ...turnDeps, conversationHistory: [...turnDeps.conversationHistory,
+                        { role: 'assistant', content: `Prior task results: ${JSON.stringify(inputs.map((item) => ({
+                            taskId: item.taskId, status: item.value?.status, summary: item.value?.summary || '',
+                            artifactCount: item.value?.artifacts?.length || 0,
+                        })))}` }] } : turnDeps;
+                    const taskTurn = turnForTask(task, selectionFacts, turn.instruction);
+                    if (taskTurn.type === TURN_TYPE.FORMAT) taskTurn.cleanupRequested = requestsEmptyParagraphCleanup(taskTurn.instruction)
+                        && requestsEmptyParagraphCleanup(turn.instruction);
+                    if (turn.temporaryAttachments?.length) {
+                        if (taskTurn.type === TURN_TYPE.DOCUMENT_EDIT) taskTurn.temporaryAttachments = turn.temporaryAttachments;
+                        else if (taskTurn.type !== TURN_TYPE.COMMENT_MANAGEMENT) {
+                            const context = buildAttachmentContext(turn.temporaryAttachments);
+                            if (typeof taskTurn.question === 'string') {
+                                taskTurn.question += context;
+                                taskTurn.questionImages = splitAttachments(turn.temporaryAttachments).imageAttachments;
+                            } else if (typeof taskTurn.instruction === 'string') taskTurn.instruction += context;
+                        }
+                    }
+                    const value = await dispatchTurn(
+                        taskTurn, taskMessage, taskDeps,
+                        selectionText, selectionImages, !!hasMultiCellTableRegion, controller
+                    );
+                    if (controller.signal.aborted) throw new DOMException('Compound turn cancelled.', 'AbortError');
+                    if (failure) return { status: 'failed', error: failure };
+                    const applied = cardsByTask.get(task.taskId)?.every((card) => card.state === 'applied');
+                    return value || { status: proposals.length ? (applied ? 'applied' : 'staged') : answer ? 'answered' : 'no_op',
+                        artifacts: proposals, summary: answer, satisfied: !!answer };
+                }, {
+                    signal: controller.signal,
+                    initialResults,
+                    onEvent: (event) => {
+                        if (event.value?.status === 'staged') pendingWrites.add(event.taskId);
+                        if (event.error) log(`Task [${event.taskId}]: ${event.error}`, event.type === 'task.failed' ? 'error' : 'info');
+                        const { value, ...details } = event;
+                        msg.appendModelToken({ id: 'task-runtime-events' }, 'content',
+                            `${JSON.stringify({ ...details, ...(value ? { status: value.status } : {}) })}\n`);
+                    },
+                });
+            };
             graphResults = (await runGraph(myController)).results;
             setGraphStatus();
         } catch (error) {
@@ -2358,7 +2435,7 @@ export function createConversation(deps) {
         if (!qa && turn.type !== TURN_TYPE.COMPOUND && turn.type !== TURN_TYPE.DOCUMENT_EDIT
             && turn.type !== TURN_TYPE.COMMENT_MANAGEMENT && turnDeps.fileReferences?.length) {
             const signal = turnController?.signal || submissionOwner?.controller.signal;
-            const { buildLibraryTaskContext } = await import(/* webpackChunkName: "file-question" */ '../lib/file-question.js');
+            const { buildLibraryTaskContext } = await loadFileQuestion({ signal });
             const { context, warnings } = await buildLibraryTaskContext(turnDeps.fileReferences, signal);
             if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
             if (!turnDeps.isCurrentSession()) return;
@@ -2372,7 +2449,7 @@ export function createConversation(deps) {
             }
         }
         if (turn.type === TURN_TYPE.COMMENT_MANAGEMENT) {
-            const commentActions = await import(/* webpackChunkName: "comment-actions" */ './comment-actions.js');
+            const commentActions = await loadCommentActions({ signal: turnController?.signal || submissionOwner?.controller.signal });
             if (!commentActions.parseCommentDeletionRequest(turn.instruction) && !turn.planned) {
                 return runCompoundTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController);
             }
@@ -2411,7 +2488,7 @@ export function createConversation(deps) {
             // Free-text edit instruction without a selection: run the
             // whole-document amendment pipeline with the user's text as
             // the edit template.
-            await runDocumentTurn({
+            return runDocumentTurn({
                 name: 'Edit', category: 'amendment', scope: 'document',
                 defaultTemplate: turn.instruction,
             }, undefined, msg, turnDeps);
@@ -2664,8 +2741,9 @@ export function chunkOriginalText(result) {
  * @param {string} s
  * @returns {string}
  */
-function _normalizeText(s) {
-    return (s || '').replace(/\r\n/g, '\n').trim();
+function _normalizeText(s, preserveWhitespace = false) {
+    const normalized = (s || '').replace(/\r\n?/g, '\n');
+    return preserveWhitespace ? normalized : normalized.trim();
 }
 
 /**

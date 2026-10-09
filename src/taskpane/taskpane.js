@@ -35,6 +35,7 @@ import { listSessions, loadSession as loadStoredSession, saveSession, deleteSess
 import { getProviderPreset } from '../lib/providers.js';
 import { getHostPlatform } from '../lib/platform.js';
 import { resolveDocumentIdentity } from './document-identity.js';
+import { loadLazyModule } from '../lib/lazy-module-loader.js';
 
 if (typeof Office !== 'undefined') {
     Office.onReady((info) => {
@@ -124,7 +125,7 @@ async function initialize() {
         filesButton.setAttribute('aria-busy', 'true');
         try {
             if (!files) {
-                const { initFileLibraryView } = await import(/* webpackChunkName: "file-library" */ './ui/file-library-view.js');
+                const { initFileLibraryView } = await loadLazyModule('file-library', () => import(/* webpackChunkName: "file-library" */ './ui/file-library-view.js'));
                 files = initFileLibraryView({ onAttach: (attachment) => input.addAttachment(attachment) });
             }
             filesButton.disabled = false;
@@ -183,7 +184,7 @@ async function initialize() {
         const restored = loadStoredSession(recent[0].id);
         if (restored) chatView.setCurrentSession(restored);
     }
-    void import(/* webpackChunkName: "cross-document-controller" */ './cross-document-controller.js')
+    void loadLazyModule('cross-document-controller', () => import(/* webpackChunkName: "cross-document-controller" */ './cross-document-controller.js'))
         .then(({ initCrossDocumentConnection }) => initCrossDocumentConnection(localIdentity))
         .catch((error) => addLog(`Cross-document controls unavailable: ${error.message}`, 'warning'));
 

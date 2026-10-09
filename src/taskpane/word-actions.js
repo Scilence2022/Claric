@@ -66,6 +66,8 @@ import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
 import { canReadWordVisuals, createWordVisualTools } from './word-render-tools.js';
+import { loadTaskPlanner, loadFormatPlanning, loadFileQuestion } from './task-module-loader.js';
+import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
     const messages = typeof prompt === 'string' ? [{ role: 'user', content: prompt }] : prompt;
@@ -2559,7 +2561,7 @@ export async function planDocumentTasks(deps, {
     onToken, onReasoning, signal,
 } = {}) {
     const { appState, log } = deps;
-    const { buildPlanPrompt, buildPlanReviewPrompt, parseCapabilityPlan, inspectPlanReview, normalizePlan } = await import(/* webpackChunkName: "task-planner" */ '../lib/task-planner.js');
+    const { buildPlanPrompt, buildPlanReviewPrompt, parseCapabilityPlan, inspectPlanReview, normalizePlan } = await loadTaskPlanner({ signal });
 
     const prompt = buildPlanPrompt(instruction, {
         hasSelection,
@@ -2638,6 +2640,19 @@ function checkOperationSignal(signal) {
 
 let formatAnchorSequence = 0;
 
+/** The document body is already a stable native target across Word.run calls. */
+function _documentFormatRange(context) {
+    const body = context.document.body;
+    if (!body || typeof body.getRange !== 'function') {
+        throw new Error('This Word host cannot read the document formatting scope safely. No changes were applied.');
+    }
+    const range = body.getRange('Whole');
+    if (!range || typeof range.load !== 'function' || typeof range.getOoxml !== 'function') {
+        throw new Error('This Word host cannot read the document formatting baseline safely. No changes were applied.');
+    }
+    return range;
+}
+
 /** Native scope containment and XML evidence are required before deletion. */
 async function _collectFormatEmptyParagraphs(context, scopeRange, signal, log) {
     const paragraphs = scopeRange.paragraphs;
@@ -2695,8 +2710,9 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
     const anchor = { bookmark: null };
     try {
         await Word.run(async (context) => {
-            const range = scope === 'document' ? context.document.body.getRange() : context.document.getSelection();
-            if (typeof range.insertBookmark !== 'function' || typeof context.document.getBookmarkRangeOrNullObject !== 'function') {
+            const documentScope = scope === 'document';
+            const range = documentScope ? _documentFormatRange(context) : context.document.getSelection();
+            if (!documentScope && (typeof range.insertBookmark !== 'function' || typeof context.document.getBookmarkRangeOrNullObject !== 'function')) {
                 throw new Error('This Word host cannot anchor formatting safely. No changes were applied.');
             }
             range.load('text');
@@ -2705,29 +2721,41 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
             if (scope === 'selection' && selectionText && range.text.trim() !== selectionText.trim()) {
                 throw new Error('The selection changed before formatting was prepared. Draft a new proposal.');
             }
-            const bookmark = `_claric_fmt_${Date.now().toString(36)}_${++formatAnchorSequence}`;
-            // Retain ownership even if a later baseline read fails.
-            anchor.bookmark = bookmark;
-            range.insertBookmark(bookmark);
-            await context.sync();
-            checkOperationSignal(signal);
-            // A selection and a recovered bookmark can have different native
-            // export boundaries. Use the SAME handle kind for planning/apply.
-            const bookmarked = context.document.getBookmarkRangeOrNullObject(bookmark);
-            bookmarked.load('isNullObject,text');
-            await context.sync();
-            checkOperationSignal(signal);
-            if (bookmarked.isNullObject || bookmarked.text !== range.text) {
-                throw new Error('Word could not recover the exact formatting scope. No changes were applied.');
+            let anchoredRange = range;
+            if (documentScope) {
+                // A bookmark over the whole body may omit table-cell/end-of-
+                // body markers on Word for Mac. Whole-document authorization
+                // has no selection boundary to recover: use the same native
+                // body-range API at prepare/apply and verify its full baseline.
+                anchor.kind = 'document-body';
+            } else {
+                const bookmark = `_claric_fmt_${Date.now().toString(36)}_${++formatAnchorSequence}`;
+                // Retain ownership even if a later baseline read fails.
+                anchor.bookmark = bookmark;
+                range.insertBookmark(bookmark);
+                await context.sync();
+                checkOperationSignal(signal);
+                // Selection/bookmark exports may have different native XML
+                // boundaries. Use the SAME handle kind at prepare and apply.
+                anchoredRange = context.document.getBookmarkRangeOrNullObject(bookmark);
+                anchoredRange.load('isNullObject,text');
+                await context.sync();
+                checkOperationSignal(signal);
+                if (anchoredRange.isNullObject || anchoredRange.text !== range.text) {
+                    throw new Error('Word could not recover the exact formatting scope. No changes were applied.');
+                }
             }
-            const baseline = typeof bookmarked.getOoxml === 'function' ? bookmarked.getOoxml() : null;
+            const baseline = typeof anchoredRange.getOoxml === 'function' ? anchoredRange.getOoxml() : null;
             if (baseline) await context.sync();
             checkOperationSignal(signal);
-            Object.assign(anchor, { text: bookmarked.text, ooxml: baseline?.value,
-                structureFingerprint: rangeStructureFingerprint(baseline?.value) });
-            log(`Formatting scope captured from bookmark (${scope}, baseline v2).`, 'info');
+            const structureFingerprint = rangeStructureFingerprint(baseline?.value);
+            if (typeof anchoredRange.text !== 'string' || (documentScope && !structureFingerprint)) {
+                throw new Error('Word could not verify the document formatting baseline. No changes were applied.');
+            }
+            Object.assign(anchor, { text: anchoredRange.text, ooxml: baseline?.value, structureFingerprint });
+            log(`Formatting scope captured from ${documentScope ? 'document body' : 'bookmark'} (${scope}, baseline ${documentScope ? 'v3' : 'v2'}).`, 'info');
             if (cleanupRequested) {
-                const { indexes, summary } = await _collectFormatEmptyParagraphs(context, bookmarked, signal, log);
+                const { indexes, summary } = await _collectFormatEmptyParagraphs(context, anchoredRange, signal, log);
                 anchor.cleanupIndexes = indexes;
                 anchor.cleanupSummary = summary;
                 log(`Found ${indexes.length} verified empty paragraph(s) in ${scope} scope.`, 'info');
@@ -2747,7 +2775,7 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
             const prompt = buildFormatPrompt(instruction, anchor.text, scope);
             log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
             if (canReadWordVisuals()) {
-                const { planFormatWithRendering } = await import(/* webpackChunkName: "visual-format" */ './format-planning-session.js');
+                const { planFormatWithRendering } = await loadFormatPlanning({ signal });
                 const renderer = createWordVisualTools({ signal, log, scopeText: anchor.text });
                 try {
                     const result = await planFormatWithRendering({ prompt, scopeText: anchor.text, renderer, signal, log,
@@ -2779,6 +2807,10 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
 }
 
 export async function discardFormatProposal(deps, proposal) {
+    if (proposal?.anchor?.kind === 'document-body') {
+        proposal.anchor.cleaned = true;
+        return;
+    }
     if (!proposal?.anchor?.bookmark || proposal.anchor.cleaned) return;
     await Word.run(async (context) => {
         context.document.deleteBookmark(proposal.anchor.bookmark);
@@ -2804,8 +2836,12 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
     const { appState, log } = deps;
     const { ops, anchor } = proposal || {};
     if (!Array.isArray(ops) || !ops.length) throw new Error('No formatting ops to apply.');
-    if (!anchor?.bookmark || typeof anchor.text !== 'string') throw new Error('Formatting target is not anchored. Draft a new proposal.');
+    const documentScope = anchor?.kind === 'document-body';
+    if (typeof anchor?.text !== 'string' || (documentScope
+        ? proposal.scope !== 'document' || !anchor.structureFingerprint || typeof anchor.ooxml !== 'string'
+        : !anchor?.bookmark)) throw new Error('Formatting target is not anchored. Draft a new proposal.');
     if (anchor.attempted) throw new Error('This formatting proposal has already been attempted. Review the document and draft a new proposal.');
+    if (anchor.cleaned) throw new Error('This formatting proposal has been discarded. Draft a new proposal.');
     checkOperationSignal(signal);
     let appliedRanges = 0;
     let insertedParagraphs = 0;
@@ -2813,12 +2849,12 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
     let interrupted = false;
     let partial = false;
     await Word.run(async (context) => {
-        const scopeRange = context.document.getBookmarkRangeOrNullObject(anchor.bookmark);
-        scopeRange.load('isNullObject,text');
+        const scopeRange = documentScope ? _documentFormatRange(context) : context.document.getBookmarkRangeOrNullObject(anchor.bookmark);
+        scopeRange.load(documentScope ? 'text' : 'isNullObject,text');
         if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
         await context.sync();
         checkOperationSignal(signal);
-        if (scopeRange.isNullObject || scopeRange.text !== anchor.text) {
+        if ((!documentScope && scopeRange.isNullObject) || scopeRange.text !== anchor.text) {
             throw new Error('The anchored formatting target changed or disappeared. Draft a new proposal.');
         }
         if (anchor.ooxml !== undefined) {
@@ -2831,7 +2867,7 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
                 : current.value === anchor.ooxml;
             if (!unchanged) {
                 const location = rangeFingerprintDifference(anchor.structureFingerprint, currentFingerprint);
-                log(`Formatting baseline v2 mismatch (${proposal.scope}): ${location}.`, 'warning');
+                log(`Formatting baseline ${documentScope ? 'v3' : 'v2'} mismatch (${proposal.scope}): ${location}.`, 'warning');
                 throw new Error('The anchored formatting baseline changed. Draft a new proposal.');
             }
         }
@@ -3478,7 +3514,7 @@ export async function fireSelectionComment(deps, { promptTemplate, signal } = {}
  * @returns {Promise<{ results: Array, applicationResult?: object, chunks: Array, cancelled?: boolean,
  *   staged?: boolean, apply?: Function, discard?: Function, failedCount?: number, cancelledCount?: number }>}
  */
-export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, onChunkToken, gateApply = false, signal: signalArg } = {}) {
+export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, onChunkToken, gateApply = false, whitespaceOnly = false, signal: signalArg } = {}) {
     const { appState, log, logWithRetry, conversationHistory = [] } = deps;
     // Honor the caller's signal; fall back to the shared processing slot for
     // legacy callers that rely on it having been set before invocation.
@@ -3497,6 +3533,16 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     // Step 3: Extract context
     const documentContext = extractContext(docModel);
     log(`Extracted ${documentContext.definitions.length} definitions, ${documentContext.outline.length} headings`, 'info');
+
+    if (whitespaceOnly && gateApply) {
+        checkOperationSignal(signal);
+        const bodyParagraphs = docModel.paragraphs.filter((paragraph) => !paragraph.inTable);
+        if (!bodyParagraphs.some((paragraph) => hasRedundantSpaceCandidates(paragraph.text))) {
+            const summary = 'Verified the current body text: no redundant-space candidates were found.';
+            log(summary, 'success');
+            return { status: 'no_op', satisfied: true, summary, results: [], chunks };
+        }
+    }
 
     // Step 4: Bookmark chunk ranges
     const bookmarkMap = await bookmarkChunkRanges(chunks);
@@ -3518,6 +3564,20 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         commentInstructions,
         conversationHistory,
     });
+
+    if (whitespaceOnly) {
+        for (const result of results) {
+            result.whitespaceOnly = true;
+            if (result.status !== 'fulfilled' || typeof result.amendment !== 'string') continue;
+            const original = result.chunk?.paragraphs?.map((paragraph) => paragraph.text || '').join('\n') || '';
+            const check = validateWhitespaceCleanup(original, result.amendment);
+            if (!check.valid) {
+                result.status = 'rejected';
+                result.error = check.reason;
+                log(`Space cleanup refused for ${result.chunkId}: ${check.reason}`, 'warning');
+            }
+        }
+    }
 
     const failed = results.filter(r => r.status === 'rejected').length;
     const cancelled = results.filter(r => r.status === 'cancelled').length;
@@ -3614,9 +3674,9 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
      * Discards a staged run: removes the hidden chunk bookmarks without
      * touching document text.
      */
-    const discard = async () => {
+    const discard = async ({ unchanged = false } = {}) => {
         await cleanupBookmarks(bookmarkMap);
-        log('Proposed changes discarded; no edits were applied.', 'info');
+        log(unchanged ? 'No changed sections to propose; temporary bookmarks removed.' : 'Proposed changes discarded; no edits were applied.', 'info');
     };
 
     // Gated mode (amendment pipeline): stop before writing to the document
@@ -3686,6 +3746,20 @@ export async function retryFailedChunks(deps, {
             log, onProgress, onChunkToken, signal: myController.signal,
             concurrency, timeoutMs: 300000, commentInstructions, conversationHistory,
         });
+        const whitespaceChunkIds = new Set(failedResults.filter((result) => result.whitespaceOnly).map((result) => result.chunkId));
+        if (whitespaceChunkIds.size) {
+            for (const result of results) {
+                if (!whitespaceChunkIds.has(result.chunkId)) continue;
+                result.whitespaceOnly = true;
+                if (result.status !== 'fulfilled' || typeof result.amendment !== 'string') continue;
+                const original = result.chunk?.paragraphs?.map((paragraph) => paragraph.text || '').join('\n') || '';
+                const check = validateWhitespaceCleanup(original, result.amendment);
+                if (!check.valid) {
+                    result.status = 'rejected';
+                    result.error = check.reason;
+                }
+            }
+        }
         if (myController.signal.aborted || (deps.isCurrentSession && !deps.isCurrentSession())) return;
         const retryBookmarks = new Map(failedResults
             .map((r) => [r.chunkId, bookmarkMap.get(r.chunkId)]).filter(([, name]) => name));
@@ -3970,7 +4044,7 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
     const uploaded = (Array.isArray(questionImages) ? questionImages : [])
         .filter((img) => img && typeof img.dataUrl === 'string' && img.dataUrl);
     if (fileReferences.length) {
-        const { answerFileQuestion } = await import(/* webpackChunkName: "file-question" */ '../lib/file-question.js');
+        const { answerFileQuestion } = await loadFileQuestion({ signal });
         return answerFileQuestion({
             prompt, contextPrompt: contextPrompt?.template, fileReferences,
             conversationHistory: deps.conversationHistory, questionImages: uploaded,

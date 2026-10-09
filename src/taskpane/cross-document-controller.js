@@ -6,6 +6,7 @@ import { sendPrompt } from '../lib/llm-client.js';
 import { createProposalCard } from './ui/proposal-card.js';
 import * as chatView from './ui/chat-view.js';
 import { addLog } from './ui/status-bar.js';
+import { loadLazyModule } from '../lib/lazy-module-loader.js';
 
 let coordinationClient = null;
 
@@ -148,11 +149,11 @@ export function initCrossDocumentConnection(localIdentity) {
 
 async function startCoordination(connectionOptions, onUnavailable = null) {
     const [{ createCoordinationClient }, { createDocumentAgent }, { createContextRequestManager }, { createRemoteTaskRunner }, { createDistributedTaskRuntime }] = await Promise.all([
-        import(/* webpackChunkName: "coordination-client" */ './coordination-client.js'),
-        import(/* webpackChunkName: "document-agent" */ './document-agent.js'),
-        import(/* webpackChunkName: "context-requests" */ './context-requests.js'),
-        import(/* webpackChunkName: "remote-task-runner" */ './remote-task-runner.js'),
-        import(/* webpackChunkName: "distributed-task-runtime" */ './distributed-task-runtime.js'),
+        loadLazyModule('coordination-client', () => import(/* webpackChunkName: "coordination-client" */ './coordination-client.js')),
+        loadLazyModule('document-agent', () => import(/* webpackChunkName: "document-agent" */ './document-agent.js')),
+        loadLazyModule('context-requests', () => import(/* webpackChunkName: "context-requests" */ './context-requests.js')),
+        loadLazyModule('remote-task-runner', () => import(/* webpackChunkName: "remote-task-runner" */ './remote-task-runner.js')),
+        loadLazyModule('distributed-task-runtime', () => import(/* webpackChunkName: "distributed-task-runtime" */ './distributed-task-runtime.js')),
     ]);
     let contextManager = null;
     let remoteTaskRunner = null;

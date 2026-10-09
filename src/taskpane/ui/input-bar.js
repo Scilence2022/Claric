@@ -16,6 +16,7 @@ import {
     formatBytes,
 } from '../../lib/file-attachments.js';
 import { confirmAutoApply } from './dialog.js';
+import { loadLazyModule } from '../../lib/lazy-module-loader.js';
 
 /** Type icons for attachment chips (text glyphs, matching the composer style). */
 const ATTACHMENT_ICONS = Object.freeze({
@@ -360,7 +361,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         savingFiles.add(att);
         renderChips();
         try {
-            const { saveFile } = await import(/* webpackChunkName: "file-store" */ '../../lib/file-store.js');
+            const { saveFile } = await loadLazyModule('file-store', () => import(/* webpackChunkName: "file-store" */ '../../lib/file-store.js'));
             const meta = await saveFile(rawFiles.get(att));
             if (generation !== attachmentGeneration) return;
             const index = attachments.indexOf(att);

@@ -98,7 +98,7 @@ test('cleanup without safe targets explains preservation instead of claiming no 
     expect(actions.applyFormatProposal).not.toHaveBeenCalled();
 });
 
-test('partial blank cleanup reports both removed and preserved paragraphs', async () => {
+test('verified cleanup reports removed and structurally preserved paragraphs as applied', async () => {
     const actions = {
         prepareFormatProposal: jest.fn(async () => ({ ops: [{ font: { bold: false } }, { cleanup: { emptyParagraphs: true, emptyCount: 3 } }],
             anchor: { bookmark: '_test' }, cleanupSummary: { candidates: 5, verified: 3, preserved: 2, unverifiable: 0 } })),
@@ -108,6 +108,6 @@ test('partial blank cleanup reports both removed and preserved paragraphs', asyn
     const { conversation, cards } = setup(actions);
     await conversation.submit('整理选择部分的格式，多余的空行，不合适的字体加粗等');
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(cards[0].el.textContent).toContain('3 empty paragraph(s) removed; 2 empty paragraph(s) could not be safely removed');
-    expect(view.getCurrentSession().messages.find((m) => m.role === 'assistant').proposals[0].state).toBe('warning');
+    expect(cards[0].el.textContent).toContain('3 empty paragraph(s) removed; 2 protected empty paragraph(s) preserved');
+    expect(view.getCurrentSession().messages.find((m) => m.role === 'assistant').proposals[0].state).toBe('applied');
 });

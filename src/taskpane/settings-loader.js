@@ -1,7 +1,9 @@
+import { loadLazyModule } from '../lib/lazy-module-loader.js';
+
 export function createSettingsLoader({
     onConfigChanged,
     log,
-    load = () => import(/* webpackChunkName: "settings" */ './ui/settings-view.js'),
+    load = () => loadLazyModule('settings', () => import(/* webpackChunkName: "settings" */ './ui/settings-view.js')),
 }) {
     let pending = null;
     const ready = () => {

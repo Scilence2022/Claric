@@ -22,6 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { syncPagesBundle } = require('./sync-pages-bundle.cjs');
 
 const rootDir = path.resolve(__dirname, '..');
 const ADO_REPO = process.env.CLARIC_ADDIN_REPO || 'Scilence2022/claric-addin';
@@ -75,18 +76,8 @@ function sync() {
     console.error('[publish-addin] manifest.xml missing — run npm run manifest first');
     process.exit(1);
   }
-  // Clean the Pages repo's tracked files except .git and README, then copy
-  // the fresh bundle + manifest. Keeps the bootstrap README so contributors
-  // know what the repo is for.
-  runCapture('git', ['-C', ADO_LOCAL, 'rm', '-rf', '--cached', '.']);
-  // Remove everything except .git and the README from the working tree.
-  for (const entry of fs.readdirSync(ADO_LOCAL)) {
-    if (entry === '.git' || entry === 'README.md') continue;
-    fs.rmSync(path.join(ADO_LOCAL, entry), { recursive: true, force: true });
-  }
-  // Copy dist/* (HTML, JS, assets/) + manifest.xml.
-  fs.cpSync(distDir, ADO_LOCAL, { recursive: true });
-  fs.copyFileSync(manifestPath, path.join(ADO_LOCAL, 'manifest.xml'));
+  const result = syncPagesBundle({ distDir, targetDir: ADO_LOCAL, manifestPath });
+  console.log(`[publish-addin] retained ${result.retained} historical chunk asset(s) for open Word panes`);
 }
 
 function push() {

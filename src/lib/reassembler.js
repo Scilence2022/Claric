@@ -20,6 +20,7 @@
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from './word-diff/index.js';
 import { hasCjk, applyCharDiffStrategy } from './word-diff/char-diff.js';
 import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError } from './word-revisions.js';
+import { validateWhitespaceCleanup } from './whitespace-cleanup.js';
 
 /**
  * Thrown when an LLM amendment fails the content-length sanity check (the
@@ -327,7 +328,8 @@ function _alignParagraphs(origParas, newParas) {
  *   amended text matched the original (nothing to do)
  * @private
  */
-async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log, preloaded = null) {
+async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log, preloaded = null,
+  { whitespaceOnly = false, expectedTexts = null } = {}) {
   let allParaItems;
   let inTable;
   let revisionStates;
@@ -388,13 +390,32 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   const origTexts = states.map((s) => s.text);
   const amendedLines = _normalizeLineEndings(amendedText).split('\n');
 
+  if (whitespaceOnly) {
+    if (expectedTexts && (expectedTexts.length !== origTexts.length
+        || expectedTexts.some((text, index) => _normalizeLineEndings(text) !== _normalizeLineEndings(origTexts[index])))) {
+      throw new Error('The whitespace cleanup source changed since staging. Draft a new proposal.');
+    }
+    const check = validateWhitespaceCleanup(origTexts.join('\n'), amendedText);
+    if (!check.valid) throw new Error(check.reason);
+    // The text protocol represents both paragraph separators and native
+    // line breaks as newlines. Keep the original native paragraph grouping.
+    let lineOffset = 0;
+    const grouped = origTexts.map((text) => {
+      const lineCount = _normalizeLineEndings(text).split('\n').length;
+      const paragraph = amendedLines.slice(lineOffset, lineOffset + lineCount).join('\n');
+      lineOffset += lineCount;
+      return paragraph;
+    });
+    amendedLines.splice(0, amendedLines.length, ...grouped);
+  }
+
   // Filter out trailing empty lines from amended text (LLM sometimes adds trailing newline)
-  while (amendedLines.length > 0 && amendedLines[amendedLines.length - 1].trim() === '') {
+  while (!whitespaceOnly && amendedLines.length > 0 && amendedLines[amendedLines.length - 1].trim() === '') {
     amendedLines.pop();
   }
 
   // Also filter leading empty lines (LLM preamble artifacts)
-  while (amendedLines.length > 0 && amendedLines[0].trim() === '') {
+  while (!whitespaceOnly && amendedLines.length > 0 && amendedLines[0].trim() === '') {
     amendedLines.shift();
   }
 
@@ -410,8 +431,9 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   log(`Paragraph-level: ${origTexts.length} original paras, ${amendedLines.length} amended paras`);
 
   // Quick check: if all paragraphs are identical, skip
+  const comparableText = (text) => whitespaceOnly ? _normalizeLineEndings(text) : text.trim();
   if (origTexts.length === amendedLines.length &&
-      origTexts.every((t, i) => t.trim() === amendedLines[i].trim())) {
+      origTexts.every((t, i) => comparableText(t) === comparableText(amendedLines[i]))) {
     log('Paragraph-level: no changes detected, skipping');
     return false;
   }
@@ -421,7 +443,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   // a substantial rewrite falls below the fuzzy alignment threshold. A
   // delete+insert interpretation would otherwise touch its revision marks.
   /** @type {Array<{type: 'keep'|'delete'|'insert', origIdx?: number, newIdx?: number}>} */
-  const alignment = origTexts.length === amendedLines.length && states.some((s) => s.hasRevisions)
+  const alignment = origTexts.length === amendedLines.length && (whitespaceOnly || states.some((s) => s.hasRevisions))
     ? origTexts.map((_text, index) => ({ type: 'keep', origIdx: index, newIdx: index }))
     : _alignParagraphs(origTexts, amendedLines);
   if (alignment.some((op) => op.type === 'delete' && states[op.origIdx].hasRevisions)) {
@@ -437,7 +459,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   /** @type {Map<number, Word.Range>} */
   const changedParaRanges = new Map();
   for (const op of alignment) {
-    if (op.type === 'keep' && origTexts[op.origIdx].trim() !== amendedLines[op.newIdx].trim()) {
+    if (op.type === 'keep' && comparableText(origTexts[op.origIdx]) !== comparableText(amendedLines[op.newIdx])) {
       const paraRange = paraItems[op.origIdx].getRange('Content');
       paraRange.load('text');
       changedParaRanges.set(op.origIdx, paraRange);
@@ -468,7 +490,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         const origText = origTexts[op.origIdx];
         const newText = amendedLines[op.newIdx];
 
-        if (origText.trim() !== newText.trim()) {
+        if (comparableText(origText) !== comparableText(newText)) {
           const paraRange = changedParaRanges.get(op.origIdx);
 
           // Use word-level token map strategy scoped to single paragraph.
@@ -485,7 +507,9 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           // below), so the strategy must not clobber it mid-loop.
           try {
             const diffOptions = { trackChanges: false };
-            if (lineDiffEnabled) {
+            if (whitespaceOnly) {
+              await applyCharDiffStrategy(context, paraRange, origText, newText, log, diffOptions);
+            } else if (lineDiffEnabled) {
               await applySentenceDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
             } else if (hasCjk(origText) || hasCjk(newText)) {
               await applyCharDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
@@ -493,7 +517,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
               await applyTokenMapStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
             }
           } catch (_diffErr) {
-            if (_diffErr instanceof RevisionSafetyError || states[op.origIdx].hasRevisions) throw _diffErr;
+            if (whitespaceOnly || _diffErr instanceof RevisionSafetyError || states[op.origIdx].hasRevisions) throw _diffErr;
             // If word-level diff fails, fall back to full paragraph text replacement.
             // This loses run-level formatting but preserves paragraph-level properties.
             log(`Para ${op.origIdx}: word-level diff failed (${_diffErr.message}), using text replacement`, 'warning');
@@ -962,10 +986,11 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         try {
           applied = await _applyParagraphLevelAmendment(
             context, workRange, result.amendment,
-            trackChangesEnabled, lineDiffEnabled, log, preloaded
+            trackChangesEnabled, lineDiffEnabled, log, preloaded,
+            { whitespaceOnly: !!result.whitespaceOnly, expectedTexts: storedTexts }
           ) !== false;
         } catch (paraErr) {
-          if (paraErr instanceof TruncatedOutputError || paraErr instanceof RevisionSafetyError) {
+          if (result.whitespaceOnly || paraErr instanceof TruncatedOutputError || paraErr instanceof RevisionSafetyError) {
             // The amendment text itself is truncated. A range-level strategy
             // would just write the same truncated text more crudely (and
             // without per-paragraph formatting protection) — escalate to the
