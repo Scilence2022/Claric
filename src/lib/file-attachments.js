@@ -15,6 +15,7 @@
  */
 
 import { loadLazyModule } from './lazy-module-loader.js';
+import { readPdfPageText } from './pdf-text-reader.js';
 
 /** Attachment kinds emitted by detectAttachmentKind. */
 export const ATTACHMENT_KIND = Object.freeze({
@@ -304,28 +305,17 @@ async function _extractPdfText(file) {
     try {
         const doc = await loadingTask.promise;
         const parts = [];
+        let characters = 0;
+        const maxCharacters = 2_000_000;
         for (let p = 1; p <= doc.numPages; p++) {
             const page = await doc.getPage(p);
-            const reader = page.streamTextContent().getReader();
-            const chunks = [];
-            try {
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    for (const item of value.items) {
-                        if (typeof item.str === 'string') {
-                            chunks.push(item.str + (item.hasEOL ? '\n' : ''));
-                        }
-                    }
-                }
-            } finally {
-                try {
-                    reader.releaseLock();
-                } catch (_err) {
-                    // Cleanup must not replace the extraction result or error.
-                }
-            }
-            parts.push(chunks.join(''));
+            const pageSeparator = parts.length ? 2 : 0;
+            const remaining = maxCharacters - characters - pageSeparator;
+            if (remaining < 0) throw new Error('Extracted PDF text exceeds the 2,000,000 character limit.');
+            const { text } = await readPdfPageText(page, { maxChars: remaining,
+                separator: '', preserveEOL: true, onLimit: 'error' });
+            characters += pageSeparator + text.length;
+            parts.push(text);
         }
         return parts.join('\n\n').trim();
     } finally {

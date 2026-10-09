@@ -84,3 +84,16 @@ test('diagnostics describe the changed structure without exposing document text'
     expect(rangeFingerprintDifference(before, before)).toBe('');
     expect(rangeFingerprintDifference(before, null)).toBe('unreadable range structure');
 });
+
+test('drawing mismatch diagnostics name changed attributes without revealing their values', () => {
+    const fragment = (attr) => xml('<w:p><w:r><w:drawing><wp:inline '
+        + 'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+        + 'xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" '
+        + `${attr}/></w:drawing></w:r></w:p>`);
+    const detail = rangeFingerprintDifference(fingerprint(fragment('wp14:anchorId="private-old" wp:distT="private-remove"')),
+        fingerprint(fragment('wp14:anchorId="private-new" wp:distB="private-add"')));
+    expect(detail).toContain('wp14:anchorId changed');
+    expect(detail).toContain('wp:distT removed');
+    expect(detail).toContain('wp:distB added');
+    expect(detail).not.toContain('private');
+});

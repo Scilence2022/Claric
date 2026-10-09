@@ -112,7 +112,19 @@ export function rangeFingerprintDifference(before, after) {
         if (a.length === 4 && b.length === 4 && typeof a[1] === 'string' && typeof b[1] === 'string') {
             const location = `${path}/${a[1]}`;
             if (a[0] !== b[0] || a[1] !== b[1]) return `${location}: element`;
-            if (JSON.stringify(a[2]) !== JSON.stringify(b[2])) return `${location}: attributes`;
+            if (JSON.stringify(a[2]) !== JSON.stringify(b[2])) {
+                const attributes = (values) => new Map(values.map(([ns, name, value]) => [JSON.stringify([ns, name]), value]));
+                const oldAttrs = attributes(a[2]); const newAttrs = attributes(b[2]);
+                const names = [...new Set([...oldAttrs.keys(), ...newAttrs.keys()])];
+                const changed = names.filter((name) => oldAttrs.get(name) !== newAttrs.get(name)).slice(0, 3).map((name) => {
+                    const [namespace, localName] = JSON.parse(name);
+                    const prefix = namespace === W_NS ? 'w' : namespace === W14_NS ? 'w14'
+                        : namespace === 'http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing' ? 'wp14'
+                            : namespace === 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing' ? 'wp' : 'other';
+                    return `${prefix}:${localName} ${!oldAttrs.has(name) ? 'added' : !newAttrs.has(name) ? 'removed' : 'changed'}`;
+                });
+                return `${location}: attributes (${changed.join(', ')})`;
+            }
             return difference(a[3], b[3], location);
         }
         if (a.length !== b.length) return `${path}: item count ${a.length} → ${b.length}`;

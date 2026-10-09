@@ -1,7 +1,7 @@
 jest.mock('../src/lib/lazy-module-loader.js', () => ({ loadLazyModule: jest.fn(async () => ({})) }));
 const { loadLazyModule } = require('../src/lib/lazy-module-loader.js');
 const { preloadTaskModules, loadAgentActions, loadDocumentEditActions, loadFormatPlanning,
-    loadTaskPlanner, loadTaskGraph, loadFileQuestion, loadCommentActions } = require('../src/taskpane/task-module-loader.js');
+    loadFormatActions, loadTaskPlanner, loadTaskGraph, loadFileQuestion, loadCommentActions } = require('../src/taskpane/task-module-loader.js');
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -12,7 +12,7 @@ test('preflight loads all required code once before a composite request starts',
         { type: 'image_management' }, { type: 'document_edit' }, { type: 'comment_management' },
     ], { signal, visualFormatting: true });
     expect(loadLazyModule.mock.calls.map(([id]) => id).sort()).toEqual([
-        'agent-actions', 'comment-actions', 'document-edit-actions', 'task-graph', 'visual-format',
+        'agent-actions', 'comment-actions', 'document-edit-actions', 'format-actions', 'task-graph', 'visual-format',
     ]);
     for (const [, callback, options] of loadLazyModule.mock.calls) {
         expect(typeof callback).toBe('function');
@@ -27,7 +27,7 @@ test('plain body editing preflight does not download table or rendering tools', 
 
 test('formatting on a host without visual tools does not require optional rendering code', async () => {
     await preloadTaskModules([{ type: 'format' }], { visualFormatting: false });
-    expect(loadLazyModule.mock.calls.map(([id]) => id)).toEqual(['task-graph']);
+    expect(loadLazyModule.mock.calls.map(([id]) => id)).toEqual(['task-graph', 'format-actions']);
 });
 
 test('failed capability code preflight rejects without running native actions', async () => {
@@ -39,6 +39,7 @@ test('failed capability code preflight rejects without running native actions', 
 test.each([
     [loadAgentActions, 'agent-actions'], [loadDocumentEditActions, 'document-edit-actions'],
     [loadFormatPlanning, 'visual-format'], [loadTaskPlanner, 'task-planner'],
+    [loadFormatActions, 'format-actions'],
     [loadTaskGraph, 'task-graph'], [loadFileQuestion, 'file-question'], [loadCommentActions, 'comment-actions'],
 ])('module wrapper %p uses the shared loader with a cancellable import', async (load, id) => {
     const signal = new AbortController().signal;

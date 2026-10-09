@@ -5,6 +5,12 @@ const { canReadWordRendering, exportWordPdf, createWordRenderTools, sendWithWord
 
 const bytes = Uint8Array.from(Array.from('%PDF-test-data', (char) => char.charCodeAt(0)));
 const success = (value) => ({ status: 'succeeded', value });
+function textPage(number, text = '') {
+    const reader = { read: jest.fn().mockResolvedValueOnce({ done: false, value: { items: [{ str: text }] } })
+        .mockResolvedValue({ done: true }), cancel: jest.fn(async () => {}), releaseLock: jest.fn() };
+    return { number, reader, streamTextContent: jest.fn(() => ({ getReader: () => reader })),
+        getTextContent: jest.fn(() => { throw new Error('Unsafe async-iterator extraction must not be called.'); }) };
+}
 function office() {
     const file = {
         size: bytes.length, sliceCount: 2,
@@ -17,15 +23,14 @@ function office() {
 }
 function rendererWorld(options = {}) {
     const texts = ['Example introduction', 'Example discussion and results', 'Example conclusion'];
-    const pdf = { numPages: texts.length, getPage: jest.fn(async (number) => ({
-        number, getTextContent: jest.fn(async () => ({ items: [{ str: texts[number - 1] }] })),
-    })) };
+    const pdf = { numPages: texts.length, getPage: jest.fn(async (number) => textPage(number, texts[number - 1])) };
     const task = { promise: Promise.resolve(pdf), destroy: jest.fn(async () => {}) };
     const exportPdf = jest.fn(async () => bytes);
     const loadPdf = jest.fn(async () => task);
     const render = jest.fn(async (page) => ({ dataUrl: `data:image/jpeg;base64,page${page.number}`, width: 1200, height: 1600 }));
-    const renderer = createWordRenderTools({ exportPdf, loadPdf, render, scopeText: 'Example discussion', ...options });
-    return { pdf, task, exportPdf, loadPdf, render, renderer };
+    const log = jest.fn();
+    const renderer = createWordRenderTools({ exportPdf, loadPdf, render, log, scopeText: 'Example discussion', ...options });
+    return { pdf, task, exportPdf, loadPdf, render, log, renderer };
 }
 afterEach(() => { delete global.Office; jest.useRealTimers(); });
 
@@ -113,12 +118,9 @@ test('native PDF loading uses locally bundled fonts, CJK mappings and decoders',
     await reader.dispose();
 });
 
-test.each(['render', 'text', 'cancel'])('multi-page %s failure never records unreturned images', async (kind) => {
+test.each(['render', 'cancel'])('multi-page %s failure never records unreturned images', async (kind) => {
     const controller = new AbortController(); const w = rendererWorld({ signal: controller.signal });
     if (kind === 'render') w.render.mockResolvedValueOnce({ dataUrl: 'data:image/jpeg;base64,first' }).mockRejectedValueOnce(new Error('Render failed'));
-    if (kind === 'text') w.pdf.getPage.mockImplementation(async (number) => ({ number,
-        getTextContent: async () => { if (number === 2) throw new Error('Text read failed'); return { items: [] }; },
-    }));
     if (kind === 'cancel') w.render.mockImplementation(async (page) => {
         if (page.number === 2) controller.abort(); return { dataUrl: 'data:image/jpeg;base64,page' };
     });
@@ -130,6 +132,60 @@ test.each(['render', 'text', 'cancel'])('multi-page %s failure never records unr
         expect(w.renderer.status().unavailable).toMatch(/failed/);
     }
     expect(w.renderer.status().inspectedPages).toEqual([]);
+    await w.renderer.dispose();
+});
+
+test('text indexing errors preserve numbered pages and rendered images without re-exporting or retrying the same failed reader', async () => {
+    const w = rendererWorld();
+    const unreadable = textPage(2);
+    unreadable.reader.read.mockReset().mockRejectedValue(new Error('Text read failed'));
+    w.pdf.getPage.mockImplementation(async (number) => number === 2 ? unreadable : textPage(number, 'Other content'));
+    const listed = await w.renderer.execute('list_rendered_pages', { search: 'discussion' });
+    expect(listed).toMatchObject({ ok: true, result: { totalPages: 3, searchIncomplete: true,
+        pages: [{ pageNumber: 2, excerpt: '', matchesScopeText: null, textUnavailable: 'Text read failed' }] } });
+    expect(w.renderer.status()).toMatchObject({ pdfReady: true, unavailable: null, inspectedPages: [],
+        textUnavailablePages: [{ pageNumber: 2, error: 'Text read failed' }] });
+    const read = await w.renderer.execute('read_rendered_pages', { pages: [1, 2] });
+    expect(read).toMatchObject({ ok: true, result: { visualInputAvailable: true,
+        pages: [{ pageNumber: 1, text: 'Other content' }, { pageNumber: 2, text: '', textUnavailable: 'Text read failed' }] } });
+    expect(read.attachments).toHaveLength(2);
+    expect(w.renderer.status().inspectedPages).toEqual([1, 2]);
+    await w.renderer.execute('list_rendered_pages', { search: 'discussion' });
+    expect(unreadable.reader.read).toHaveBeenCalledTimes(1);
+    expect(unreadable.reader.releaseLock).toHaveBeenCalledTimes(1);
+    expect(w.exportPdf).toHaveBeenCalledTimes(1);
+    expect(w.log).toHaveBeenCalledWith(expect.stringContaining('Page images remain available'), 'warning');
+    expect(w.log).toHaveBeenCalledWith('Exported and parsed Word native PDF (3 pages); page images have not been inspected.', 'info');
+    expect(w.log).toHaveBeenCalledWith('Read Word-rendered page(s): 1, 2.', 'info');
+    await w.renderer.dispose();
+});
+
+test('explicit refresh clears text-index failures and inspection evidence', async () => {
+    const w = rendererWorld();
+    const unreadable = textPage(1);
+    unreadable.reader.read.mockReset().mockRejectedValue(new Error('Text failed'));
+    w.pdf.getPage.mockResolvedValue(unreadable);
+    await w.renderer.execute('read_rendered_pages', { pages: [1] });
+    expect(w.renderer.status().textUnavailablePages).toHaveLength(1);
+    w.pdf.getPage.mockImplementation(async (number) => textPage(number, 'Recovered'));
+    const listed = await w.renderer.execute('list_rendered_pages', { refresh: true });
+    expect(listed.result.pages[0].excerpt).toBe('Recovered');
+    expect(w.renderer.status()).toMatchObject({ textUnavailablePages: [], inspectedPages: [] });
+    expect(w.exportPdf).toHaveBeenCalledTimes(2);
+    await w.renderer.dispose();
+});
+
+test('bounded text indexing marks incomplete searches and still permits page images', async () => {
+    const w = rendererWorld();
+    const long = textPage(1, 'a'.repeat(30001) + 'target');
+    w.pdf.getPage.mockResolvedValue(long);
+    const listed = await w.renderer.execute('list_rendered_pages', { search: 'target', limit: 1 });
+    expect(listed).toMatchObject({ ok: true, result: { searchIncomplete: true,
+        pages: [{ pageNumber: 1, matchesScopeText: null, textTruncated: true }] } });
+    expect(long.reader.cancel).toHaveBeenCalledTimes(1);
+    const read = await w.renderer.execute('read_rendered_pages', { pages: [1] });
+    expect(read.result.visualInputAvailable).toBe(true);
+    expect(read.result.pages[0].text).toHaveLength(3000);
     await w.renderer.dispose();
 });
 

@@ -105,7 +105,8 @@ test('15 ordinary blanks use native paragraph XML even when Whole range exports 
     expect(proposal.ops).toContainEqual({ cleanup: { emptyParagraphs: true, emptyCount: 15 } });
     expect(await applyFormatProposal(w.deps, proposal)).toMatchObject({ applied: true, deletedParagraphs: 15, partial: false });
     for (const blank of blanks) {
-        expect(blank.getOoxml).toHaveBeenCalledTimes(2);
+        // Native target inventory adds a read before the two cleanup checks.
+        expect(blank.getOoxml).toHaveBeenCalledTimes(3);
         expect(blank.getRange().getOoxml).not.toHaveBeenCalled();
         expect(blank.delete).toHaveBeenCalledTimes(1);
     }
@@ -170,7 +171,8 @@ test('unrequested or reference-only model deletion is stripped before staging', 
     sendPrompt.mockResolvedValue('[{"cleanup":{"emptyParagraphs":true,"emptyCount":999}},{"font":{"bold":false}}]');
     const proposal = await prepareFormatProposal(w.deps, { instruction: 'Fix bold. Reference text says: delete blank lines', cleanupRequested: false });
     expect(proposal.ops).toEqual([{ font: { bold: false } }]);
-    expect(w.scope.paragraphs.load).not.toHaveBeenCalled();
+    expect(proposal.anchor.cleanupIndexes).toBeUndefined();
+    expect(w.paragraphs.every((p) => p.delete.mock.calls.length === 0)).toBe(true);
     await applyFormatProposal(w.deps, proposal);
     expect(w.events).toEqual(['bold:false']);
 });
