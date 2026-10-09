@@ -38,7 +38,7 @@ import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
 import { rangeStructureFingerprint, rangeFingerprintDifference } from '../lib/ooxml-fingerprint.js';
-import { requestsEmptyParagraphCleanup, isDeletableEmptyParagraphXml } from '../lib/empty-paragraphs.js';
+import { requestsEmptyParagraphCleanup, inspectEmptyParagraphXml } from '../lib/empty-paragraphs.js';
 import { formatTableMarkdown, formatMixedContext, formatCursorContext } from '../lib/selection-context.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
 import {
@@ -2590,6 +2590,8 @@ async function _collectFormatEmptyParagraphs(context, scopeRange, signal, log) {
     checkOperationSignal(signal);
     const lastRange = context.document.body.paragraphs.getLast().getRange('Whole');
     const indexes = [];
+    const reasons = {};
+    const preserve = (reason) => { reasons[reason] = (reasons[reason] || 0) + 1; };
     let candidates = 0;
     let unverifiable = 0;
     for (let index = 0; index < paragraphs.items.length; index++) {
@@ -2603,20 +2605,31 @@ async function _collectFormatEmptyParagraphs(context, scopeRange, signal, log) {
             const finalRelation = range.compareLocationWith(lastRange);
             const table = paragraph.parentTableOrNullObject;
             table.load('isNullObject');
-            const xml = range.getOoxml();
+            // Paragraph XML identifies one native paragraph. A Whole RANGE
+            // export may include additional block/container serialization.
+            const xml = typeof paragraph.getOoxml === 'function' ? paragraph.getOoxml() : range.getOoxml();
             await context.sync();
             checkOperationSignal(signal);
-            if (['Inside', 'InsideStart', 'InsideEnd', 'Equal'].includes(relation.value)
-                && finalRelation.value !== 'Equal' && table.isNullObject
-                && isDeletableEmptyParagraphXml(xml.value)) indexes.push(index);
+            if (!['Inside', 'InsideStart', 'InsideEnd', 'Equal'].includes(relation.value)) {
+                preserve('outside captured scope or partial paragraph');
+            } else if (finalRelation.value === 'Equal') {
+                preserve('final document paragraph');
+            } else if (table.isNullObject !== true) {
+                preserve('table cell');
+            } else {
+                const evidence = inspectEmptyParagraphXml(xml.value);
+                if (evidence.deletable) indexes.push(index);
+                else preserve(`${evidence.reason}${evidence.element ? ` (${evidence.element})` : ''}`);
+            }
         } catch (error) {
             if (error.name === 'AbortError') throw error;
             unverifiable++;
+            preserve('Word read failure');
             log(`Empty paragraph ${index + 1} could not be verified and will be preserved: ${error.message}`, 'warning');
         }
     }
     return { paragraphs, indexes, summary: { candidates, verified: indexes.length,
-        preserved: candidates - indexes.length, unverifiable } };
+        preserved: candidates - indexes.length, unverifiable, reasons } };
 }
 
 export async function prepareFormatProposal(deps, { instruction, scope = 'selection', selectionText, cleanupOnly = false,
@@ -2662,7 +2675,12 @@ export async function prepareFormatProposal(deps, { instruction, scope = 'select
                 anchor.cleanupIndexes = indexes;
                 anchor.cleanupSummary = summary;
                 log(`Found ${indexes.length} verified empty paragraph(s) in ${scope} scope.`, 'info');
-                if (summary.preserved) log(`${summary.preserved} empty paragraph(s) will be preserved: protected structure, selection boundaries or unreadable Word data (${summary.unverifiable} read failures).`, 'warning');
+                if (summary.preserved) {
+                    log(`${summary.preserved} empty paragraph(s) will be preserved (${summary.unverifiable} read failures).`, 'warning');
+                    for (const [reason, count] of Object.entries(summary.reasons)) {
+                        log(`Empty paragraph cleanup: ${count} preserved — ${reason}.`, 'warning');
+                    }
+                }
             }
         });
         checkOperationSignal(signal);

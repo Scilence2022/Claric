@@ -1363,8 +1363,9 @@ export function createConversation(deps) {
                             card.markWarning('Formatting stopped; changes may already be applied. Review the document and draft a new proposal.');
                         } else if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0 && !fmtResult.deletedParagraphs) {
                             card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
-                        } else if (proposal.cleanupSummary?.preserved && !proposal.cleanupSummary.verified) {
-                            card.markWarning(`Formatting applied; ${proposal.cleanupSummary.preserved} empty paragraph(s) could not be safely removed. See the activity log.`);
+                        } else if (proposal.cleanupSummary?.preserved) {
+                            const removed = fmtResult?.deletedParagraphs ? ` ${fmtResult.deletedParagraphs} empty paragraph(s) removed;` : '';
+                            card.markWarning(`Formatting applied;${removed} ${proposal.cleanupSummary.preserved} empty paragraph(s) could not be safely removed. See the activity log.`);
                         } else {
                             card.markApplied();
                         }
