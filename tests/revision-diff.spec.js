@@ -12,7 +12,8 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
 
 /** Word searches the physical text, including deleted runs. Writes retain
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
-function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false } = {}) {
+function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
+    stickyContent = false, revisedPadding = false } = {}) {
     let sequence = 0;
     const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence }) =>
         Array.from(text).map((text) => ({ text, type, id })));
@@ -29,7 +30,9 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
         const run = `<w:r><w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
         return atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
         }).join('') + '</w:p>').join('');
-        return padding ? `<w:document xmlns:w="${W}"><w:body>${content}<w:p/></w:body></w:document>` : content;
+        const end = revisedPadding && slice.some((atom) => atom.type !== 'plain')
+            ? '<w:p><w:pPr><w:rPr><w:ins w:id="999"/></w:rPr></w:pPr></w:p>' : '<w:p/>';
+        return padding ? `<w:document xmlns:w="${W}"><w:body>${content}${end}</w:body></w:document>` : content;
     };
     const table = { isNullObject: true, load: jest.fn() };
     const cell = { isNullObject: true, load: jest.fn() };
@@ -46,7 +49,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                 atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => atom.text).join('').replace(/\n/g, '\r') })) } : {}),
             getRange: (location) => location === 'Start' ? makeRange(span.start, span.start)
                 : location === 'End' ? makeRange(span.end, span.end) : range,
-            expandTo: (other) => makeRange(span.start, other._span.end),
+            expandTo: (other) => makeRange(Math.min(span.start, other._span.start), Math.max(span.end, other._span.end)),
             insertBookmark: (name) => bookmarks.set(name, range),
             search: jest.fn((text) => {
                 const current = atoms.slice(span.start, span.end);
@@ -60,6 +63,11 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                     pos += text.length;
                 }
                 return collection(matches);
+            }),
+            getTextRanges: jest.fn(() => {
+                const raw = atoms.slice(span.start, span.end).map((atom) => atom.text).join('');
+                return collection(Array.from(raw.matchAll(/.+?(?:\. {1,2}|$)/gs), (match) =>
+                    makeRange(span.start + match.index, span.start + match.index + match[0].length)));
             }),
             delete: jest.fn(() => {
                 writes.push({ type: 'delete', start: span.start, end: span.end, mode: document.changeTrackingMode });
@@ -78,16 +86,18 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                     if (live.start >= at && live !== span && !live.scope) live.start += added.length;
                     if (live.end > at || live === span || live.scope) live.end += added.length;
                 }
+                return makeRange(at, at + added.length);
             }),
             _span: span,
         };
         return range;
     }
-    const scope = makeRange(0, atoms.length, true);
+    const scope = makeRange(0, atoms.length, !stickyContent);
+    const paragraphScope = stickyContent ? makeRange(0, atoms.length, true) : scope;
     const paragraph = {
-        get text() { return scope.text; }, style: 'Normal', styleBuiltIn: 'Normal', isListItem: false,
-        parentTableOrNullObject: table, load: jest.fn(), untrack: jest.fn(), getOoxml: scope.getOoxml,
-        getRange: () => scope, delete: jest.fn(),
+        get text() { return paragraphScope.text; }, style: 'Normal', styleBuiltIn: 'Normal', isListItem: false,
+        parentTableOrNullObject: table, load: jest.fn(), untrack: jest.fn(), getOoxml: paragraphScope.getOoxml,
+        getRange: () => stickyContent ? makeRange(paragraphScope._span.start, paragraphScope._span.end) : scope, delete: jest.fn(),
     };
     scope.paragraphs = collection([paragraph]);
     const document = { body: { paragraphs: collection([paragraph]) }, getSelection: () => scope,
@@ -100,10 +110,68 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
         ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' } };
     const deps = { appState: { config: { trackChangesEnabled: true, lineDiffEnabled: false } }, log: jest.fn() };
     return { atoms, scope, paragraph, context, writes, deps, bookmarks,
-        state: () => revisionTextState(scope.getOoxml().value) };
+        state: () => revisionTextState(paragraphScope.getOoxml().value, { paragraph: true }) };
 }
 
 afterEach(() => { delete global.Word; });
+
+test.each([applyTokenMapStrategy, applyCharDiffStrategy])('pristine paragraph edits use native current text when tracked export padding appears: %p', async (strategy) => {
+    const w = world([{ text: 'Kind Regards, ' }], { padding: true, revisedPadding: true, nativeReviewed: true });
+    await strategy(w.context, w.scope, 'Kind Regards, ', 'Kind regards,', jest.fn(), { paragraph: true, verificationParagraph: w.paragraph });
+    expect(w.atoms.filter((atom) => atom.type !== 'del').map((atom) => atom.text).join('')).toBe('Kind regards,');
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test.each([
+    ['Clear wording.', 'More clear wording.'],
+    ['Keep this', 'Keep this!'],
+    ['Before', 'After'],
+])('paragraph verification reacquires content after boundary edits: %s → %s', async (before, after) => {
+    const w = world([{ text: before }], { stickyContent: true, nativeReviewed: true });
+    await applyTokenMapStrategy(w.context, w.scope, before, after, jest.fn(), { paragraph: true, verificationParagraph: w.paragraph });
+    expect(w.state().text).toBe(after);
+});
+
+test.each([applyTokenMapStrategy, applyCharDiffStrategy])('selection verification includes text inserted at either boundary: %p', async (strategy) => {
+    const w = world([{ text: 'Keep this' }], { stickyContent: true, nativeReviewed: true });
+    await strategy(w.context, w.scope, 'Keep this', 'Please keep this!', jest.fn());
+    expect(w.state().text).toBe('Please keep this!');
+});
+
+test.each([
+    ['Keep this. Keep that.', 'Start here. Keep this. Keep that. Finish here.'],
+    ['Short text', 'Replacement text'],
+])('sentence and block verification retain boundary insertion ranges: %s', async (before, after) => {
+    const w = world([{ text: before }], { stickyContent: true, nativeReviewed: true });
+    await applySentenceDiffStrategy(w.context, w.scope, before, after, jest.fn());
+    expect(w.state().text).toBe(after);
+});
+
+test('successive polish rounds parse revised export padding without inventing a new paragraph', async () => {
+    const w = world([{ text: 'Kind Regards, ' }], { padding: true, revisedPadding: true, nativeReviewed: true });
+    for (const after of ['Kind regards,', 'Warm regards,']) {
+        const document = await parseDocument();
+        const before = document.paragraphs[0].text;
+        await applyTokenMapStrategy(w.context, w.paragraph.getRange('Content'), before, after, jest.fn(),
+            { paragraph: true, verificationParagraph: w.paragraph });
+        const next = await parseDocument();
+        expect(next.paragraphs).toHaveLength(1);
+        expect(next.paragraphs[0].text).toBe(after);
+    }
+});
+
+test('whole-document reassembly verifies a fresh paragraph after a boundary rewrite', async () => {
+    const before = 'the wording is clear.';
+    const after = 'Overall, the wording is clear.';
+    const w = world([{ text: before }], { stickyContent: true, nativeReviewed: true, padding: true, revisedPadding: true });
+    const parsed = await parseDocument();
+    const chunk = { id: 'section', startIndex: 0, endIndex: 0, paragraphs: parsed.paragraphs };
+    w.scope.insertBookmark('_section');
+    const result = await applyChunkResults([{ chunkId: 'section', chunk, status: 'fulfilled', amendment: after }],
+        new Map([['section', '_section']]), { trackChangesEnabled: true, log: jest.fn() });
+    expect(result).toMatchObject({ amendmentsApplied: 1, appliedParagraphs: 1, errors: [], uncertainChunkIds: [] });
+    expect((await parseDocument()).paragraphs[0].text).toBe(after);
+});
 
 test.each([applyTokenMapStrategy, applySentenceDiffStrategy, applyCharDiffStrategy])('every strategy edits current text without touching identical old deletions: %p', async (strategy) => {
     const w = world([{ text: 'cat ', type: 'del', id: 'old' }, { text: 'cat cat', type: 'ins', id: 'first-round' }]);
@@ -320,7 +388,7 @@ test('structural revisions and protected objects refuse the revision path before
     const w = world([{ text: 'new', type: 'ins' }]);
     const xml = w.scope.getOoxml().value.replace('<w:r>', '<w:pPr><w:rPr><w:del/></w:rPr></w:pPr><w:r>');
     w.scope.getOoxml.mockReturnValue({ value: xml });
-    await expect(applyCharDiffStrategy(w.context, w.scope, 'new', 'newer')).rejects.toThrow(/structural revisions/);
+    await expect(applyCharDiffStrategy(w.context, w.scope, 'new', 'newer')).rejects.toThrow(/structural revisions/i);
     expect(w.writes).toEqual([]);
 });
 

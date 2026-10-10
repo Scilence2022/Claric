@@ -536,7 +536,7 @@ export async function readMixedTableSelection(deps) {
         if (paragraphs.items.length === 0) return;
 
         for (const para of paragraphs.items) para.load('text');
-        const revisionReads = paragraphs.items.map(queueRevisionRead);
+        const revisionReads = paragraphs.items.map((p) => queueRevisionRead(p, { paragraph: true }));
         const tableChecks = paragraphs.items.map((p) => {
             const t = p.parentTableOrNullObject;
             t.load('isNullObject');
@@ -1944,13 +1944,13 @@ async function _patchCell(context, table, cellPatch, log) {
     if (items.length === 1) {
         const range = items[0].getRange(Word.RangeLocation.content);
         range.load('text');
-        const revisionRead = queueRevisionRead(range);
+        const revisionRead = queueRevisionRead(range, { paragraph: true });
         await context.sync();
         const current = resolveRevisionRead(range, revisionRead, { paragraph: true });
         if (current.text.trim() === cellPatch.text.trim()) return false;
         try {
             // The outer scope owns the tracking mode for the whole patch.
-            const diffOptions = { trackChanges: false, paragraph: true };
+            const diffOptions = { trackChanges: false, paragraph: true, verificationParagraph: items[0] };
             if (hasCjk(current.text) || hasCjk(cellPatch.text)) {
                 await applyCharDiffStrategy(context, range, current.text, cellPatch.text, log, diffOptions);
             } else {
@@ -1969,7 +1969,7 @@ async function _patchCell(context, table, cellPatch, log) {
     const whole = items[0].getRange(Word.RangeLocation.content)
         .expandTo(items[items.length - 1].getRange(Word.RangeLocation.content));
     whole.load('text');
-    const reads = items.map(queueRevisionRead);
+    const reads = items.map((p) => queueRevisionRead(p, { paragraph: true }));
     await context.sync();
     const states = items.map((p, i) => resolveRevisionRead(p, reads[i], { paragraph: true }));
     if (states.map((s) => s.text).join('\n').trim() === cellPatch.text.trim()) return false;
@@ -1984,7 +1984,8 @@ async function _patchCell(context, table, cellPatch, log) {
             if (before !== newLines[i]) {
                 if (states[i].hasRevisions) {
                     const strategy = hasCjk(before) || hasCjk(newLines[i]) ? applyCharDiffStrategy : applyTokenMapStrategy;
-                    await strategy(context, paraRange, before, newLines[i], log, { trackChanges: false, paragraph: true });
+                    await strategy(context, paraRange, before, newLines[i], log,
+                        { trackChanges: false, paragraph: true, verificationParagraph: items[i] });
                 } else paraRange.insertText(newLines[i], Word.InsertLocation.replace);
             }
         }
@@ -2034,7 +2035,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
         if (allParaItems.length === 0) throw new Error('No paragraphs found in the selection');
 
         for (const para of allParaItems) para.load('text');
-        const revisionReads = allParaItems.map(queueRevisionRead);
+        const revisionReads = allParaItems.map((p) => queueRevisionRead(p, { paragraph: true }));
         const tableChecks = allParaItems.map((p) => {
             const t = p.parentTableOrNullObject;
             t.load('isNullObject');
@@ -2106,7 +2107,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
                     paraRange.load('text');
                     await context.sync();
                     try {
-                        const diffOptions = { trackChanges: false, paragraph: true };
+                        const diffOptions = { trackChanges: false, paragraph: true, verificationParagraph: paraItems[op.origIdx] };
                         if (hasCjk(origText) || hasCjk(newText)) {
                             await applyCharDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
                         } else {

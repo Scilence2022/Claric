@@ -24,7 +24,7 @@
 
 import DiffMatchPatch from '../vendor/diff-match-patch.js';
 import { tryRevisionDiff } from './revision-diff.js';
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites } from '../word-revisions.js';
 
 /** Matches CJK ideographs, hiragana/katakana, and hangul. */
 const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/;
@@ -358,18 +358,14 @@ export async function applyCharDiffStrategy(context, range, originalText, newTex
     const trackChanges = options.trackChanges !== false;
     if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     if (trackChanges && Word.ChangeTrackingMode) {
-        try {
-            context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-            await context.sync();
-        } catch (error) {
-            throw new RevisionSafetyError(`Could not enable tracked changes (${error.message}); no text was written.`);
-        }
+        await enableTrackedWrites(context);
     }
 
     let insertions = 0;
     let deletions = 0;
     let replacements = 0;
     let mutationAttempted = false;
+    const insertedRanges = [];
     try {
         try {
             for (const item of plan.slice().reverse()) {
@@ -378,15 +374,15 @@ export async function applyCharDiffStrategy(context, range, originalText, newTex
                     item.range.delete();
                     deletions++;
                 } else if (item.type === 'replace') {
-                    item.range.insertText(item.text, Word.InsertLocation.replace);
+                    insertedRanges.push(item.range.insertText(item.text, Word.InsertLocation.replace));
                     replacements++;
                 } else {
-                    item.anchor.insertText(item.text, item.location);
+                    insertedRanges.push(item.anchor.insertText(item.text, item.location));
                     insertions++;
                 }
             }
             await context.sync();
-            await verifyMutationText(context, range, newText, options);
+            await verifyMutationText(context, range, newText, options, insertedRanges);
         } finally {
             if (trackChanges && Word.ChangeTrackingMode) {
                 context.document.changeTrackingMode = Word.ChangeTrackingMode.off;

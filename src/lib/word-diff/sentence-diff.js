@@ -22,7 +22,7 @@
 import DiffMatchPatch from './diff-wordmode.js';
 import { tryRevisionDiff } from './revision-diff.js';
 import { applyBlockReplaceStrategy } from './block-replace.js';
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites } from '../word-revisions.js';
 
 /**
  * Tokenizes text into sentences in OCCURRENCE order. A sentence boundary is
@@ -145,16 +145,12 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
     // True only when THIS strategy enabled tracking (and must restore it).
     let trackingEnabled = false;
     let mutationAttempted = false;
+    const insertedRanges = [];
 
     try {
         if (trackChanges && Word.ChangeTrackingMode) {
-            try {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-                await context.sync();
-                trackingEnabled = true;
-            } catch (e) {
-                throw new RevisionSafetyError(`Could not enable tracked changes (${e.message}); no text was written.`);
-            }
+            await enableTrackedWrites(context);
+            trackingEnabled = true;
         }
 
         // Strategy: Sentence Map
@@ -225,17 +221,17 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
             } else if (op === 1) { // INSERT
                 mutationAttempted = true;
                 if (lastAnchorRange) {
-                    lastAnchorRange.insertText(chunk, Word.InsertLocation.after);
+                    insertedRanges.push(lastAnchorRange.insertText(chunk, Word.InsertLocation.after));
                 } else {
                     // If no anchor (start of text), insert at start of range
-                    range.getRange(Word.RangeLocation.start).insertText(chunk, Word.InsertLocation.before);
+                    insertedRanges.push(range.getRange(Word.RangeLocation.start).insertText(chunk, Word.InsertLocation.before));
                 }
                 insertions++;
             }
         }
 
         await context.sync();
-        await verifyMutationText(context, range, text2, options);
+        await verifyMutationText(context, range, text2, options, insertedRanges);
         log(`Sentence-level diff applied (${insertions} insertions, ${deletions} deletions)`, 'info');
 
         return { strategy: 'sentence', insertions, deletions };

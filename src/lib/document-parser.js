@@ -160,7 +160,7 @@ export async function parseDocument() {
         for (const para of paragraphs.items) {
             para.load('text,style,styleBuiltIn,isListItem');
         }
-        const revisionReads = paragraphs.items.map(queueRevisionRead);
+        const revisionReads = paragraphs.items.map((p) => queueRevisionRead(p, { paragraph: true }));
         await context.sync();
 
         // Load list item details for list paragraphs

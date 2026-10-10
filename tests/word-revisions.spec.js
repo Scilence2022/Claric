@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
-import { revisionTextState, queueRevisionRead, resolveRevisionRead, normalizeRevisionText } from '../src/lib/word-revisions.js';
+import { revisionTextState, queueRevisionRead, resolveRevisionRead, normalizeRevisionText,
+    verifyMutationText, MutationSafetyError } from '../src/lib/word-revisions.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const wrap = (xml) => `<w:document xmlns:w="${W}"><w:body>${xml}</w:body></w:document>`;
@@ -76,4 +77,46 @@ test('paragraph export padding does not multiply into model paragraph separators
     expect(actual.join('\n')).toBe(texts.join('\n'));
     expect(revisionTextState(reads[0].value, { paragraph: true }).fingerprint)
         .toBe(revisionTextState(wrap(`<w:p><w:r><w:t>${texts[0]}</w:t></w:r></w:p>`)).fingerprint);
+});
+
+const revisedPadding = '<w:p><w:pPr><w:rPr><w:ins w:id="1"/></w:rPr></w:pPr></w:p>';
+test('revised export padding requires independent current-text proof before it can be omitted', () => {
+    const first = '<w:p><w:r><w:t>Text</w:t><w:br/></w:r></w:p>';
+    const xml = wrap(first + revisedPadding);
+    const range = { getOoxml: () => ({ value: xml }), getReviewedText: () => ({ value: 'Text\r' }) };
+    const state = resolveRevisionRead(range, queueRevisionRead(range, { paragraph: true }), { paragraph: true });
+    expect(state.text).toBe('Text\n');
+    expect(state.paragraphCount).toBe(1);
+    expect(state.fingerprint).toBe(revisionTextState(wrap(first), { paragraph: true }).fingerprint);
+    expect(revisionTextState(xml, { paragraph: true }).text).toBe('Text\n\n');
+    expect(revisionTextState(xml, { paragraph: true, currentText: 'Text\r\r' }).text).toBe('Text\n\n');
+    expect(revisionTextState(xml, { paragraph: false, currentText: 'Text\r' }).text).toBe('Text\n\n');
+});
+
+test.each(['<w:del><w:r><w:delText>History</w:delText></w:r></w:del>', '<w:drawing/>', '<w:br/>', '<w:pPr><w:pPrChange/></w:pPr>'])('current-text proof never hides protected or meaningful trailing content: %s', (end) => {
+    const xml = wrap('<w:p><w:r><w:t>Text</w:t></w:r></w:p>' + `<w:p>${end}</w:p>`);
+    expect(revisionTextState(xml, { paragraph: true, currentText: 'Text' }).paragraphCount).toBe(2);
+});
+
+test('native current-text mismatches are rejected even when the XML export matches the proposal', async () => {
+    const range = { getOoxml: jest.fn(() => ({ value: wrap('<w:p><w:r><w:t>Expected</w:t></w:r></w:p>') })),
+        getReviewedText: jest.fn(() => ({ value: 'Unexpected' })) };
+    const context = { sync: jest.fn(async () => {}) };
+    await expect(verifyMutationText(context, range, 'Expected', { paragraph: true })).rejects.toBeInstanceOf(MutationSafetyError);
+    await expect(verifyMutationText(context, range, 'Expected', { paragraph: true })).rejects.toThrow(/expected 8 chars, received 10; first mismatch at 0/);
+    expect(range.getOoxml).not.toHaveBeenCalled();
+});
+
+test('an unreadable native current-text result cannot verify an empty proposal', async () => {
+    const range = { getReviewedText: () => ({ value: undefined }) };
+    await expect(verifyMutationText({ sync: async () => {} }, range, '', { paragraph: true })).rejects.toThrow(/unreadable/);
+});
+
+test('older hosts retain strict XML verification without calling unsupported current-text APIs', async () => {
+    global.Office = { context: { requirements: { isSetSupported: () => false } } };
+    try {
+        const range = { getReviewedText: jest.fn(), getOoxml: () => ({ value: wrap('<w:p><w:r><w:t>Actual</w:t></w:r></w:p>') }) };
+        await expect(verifyMutationText({ sync: async () => {} }, range, 'Expected', { paragraph: true })).rejects.toThrow(/OOXML/);
+        expect(range.getReviewedText).not.toHaveBeenCalled();
+    } finally { delete global.Office; }
 });
