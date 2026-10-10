@@ -547,7 +547,7 @@ export async function readMixedTableSelection(deps) {
         const tableParaCount = tableChecks.filter((t) => !t.isNullObject).length;
         if (tableParaCount === 0) return;
 
-        const visible = paragraphs.items.map((p, i) => resolveRevisionRead(p, revisionReads[i]))
+        const visible = paragraphs.items.map((p, i) => resolveRevisionRead(p, revisionReads[i], { paragraph: true }))
             .filter((state) => state.text.trim() !== '');
         mixed = { selectionText: visible.map((state) => state.text).join('\n'),
             revisionFingerprints: visible.map((state) => state.fingerprint), paraCount: paragraphs.items.length, tableParaCount };
@@ -1946,11 +1946,11 @@ async function _patchCell(context, table, cellPatch, log) {
         range.load('text');
         const revisionRead = queueRevisionRead(range);
         await context.sync();
-        const current = resolveRevisionRead(range, revisionRead);
+        const current = resolveRevisionRead(range, revisionRead, { paragraph: true });
         if (current.text.trim() === cellPatch.text.trim()) return false;
         try {
             // The outer scope owns the tracking mode for the whole patch.
-            const diffOptions = { trackChanges: false };
+            const diffOptions = { trackChanges: false, paragraph: true };
             if (hasCjk(current.text) || hasCjk(cellPatch.text)) {
                 await applyCharDiffStrategy(context, range, current.text, cellPatch.text, log, diffOptions);
             } else {
@@ -1971,7 +1971,7 @@ async function _patchCell(context, table, cellPatch, log) {
     whole.load('text');
     const reads = items.map(queueRevisionRead);
     await context.sync();
-    const states = items.map((p, i) => resolveRevisionRead(p, reads[i]));
+    const states = items.map((p, i) => resolveRevisionRead(p, reads[i], { paragraph: true }));
     if (states.map((s) => s.text).join('\n').trim() === cellPatch.text.trim()) return false;
 
     const newLines = cellPatch.text.split(/\r?\n/);
@@ -1984,7 +1984,7 @@ async function _patchCell(context, table, cellPatch, log) {
             if (before !== newLines[i]) {
                 if (states[i].hasRevisions) {
                     const strategy = hasCjk(before) || hasCjk(newLines[i]) ? applyCharDiffStrategy : applyTokenMapStrategy;
-                    await strategy(context, paraRange, before, newLines[i], log, { trackChanges: false });
+                    await strategy(context, paraRange, before, newLines[i], log, { trackChanges: false, paragraph: true });
                 } else paraRange.insertText(newLines[i], Word.InsertLocation.replace);
             }
         }
@@ -2048,7 +2048,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
         const inTable = [];
         const states = [];
         allParaItems.forEach((p, i) => {
-            const state = resolveRevisionRead(p, revisionReads[i]);
+            const state = resolveRevisionRead(p, revisionReads[i], { paragraph: true });
             if (state.text.trim() !== '') {
                 paraItems.push(p);
                 inTable.push(!tableChecks[i].isNullObject);
@@ -2106,7 +2106,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
                     paraRange.load('text');
                     await context.sync();
                     try {
-                        const diffOptions = { trackChanges: false };
+                        const diffOptions = { trackChanges: false, paragraph: true };
                         if (hasCjk(origText) || hasCjk(newText)) {
                             await applyCharDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
                         } else {
@@ -3122,20 +3122,25 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         if (!applicationResult.interrupted) {
             const keepNames = new Set(
                 results
-                    .filter((r) => r.status === 'rejected')
+                    .filter((r) => r.status === 'rejected' || applicationResult.failedChunkIds?.includes(r.chunkId))
                     .map((r) => bookmarkMap.get(r.chunkId))
                     .filter(Boolean)
             );
             await cleanupBookmarks(bookmarkMap, { keep: keepNames });
         }
 
+        const applicationFailures = applicationResult.failedChunkIds?.length || 0;
+        const incompleteWrites = (applicationResult.partialChunkIds?.length || 0)
+            + (applicationResult.uncertainChunkIds?.length || 0);
         log(
             `Document processed: ${chunks.length} chunks, ` +
             `${applicationResult.amendmentsApplied} amendments applied, ` +
             `${applicationResult.commentsInserted} comments inserted` +
             (failed > 0 ? `, ${failed} chunks failed` : '') +
+            (applicationFailures > 0 ? `, ${applicationFailures} section(s) failed during application` : '') +
+            (incompleteWrites > 0 ? '; some edits already reached Word; inspect the document and draft fresh edits' : '') +
             (cancelled > 0 ? `, ${cancelled} chunks cancelled` : ''),
-            failed > 0 ? 'warning' : 'success'
+            failed > 0 || applicationResult.errors?.length ? 'warning' : 'success'
         );
 
         if (failed > 0 && logWithRetry) {
@@ -3290,8 +3295,10 @@ export async function retryFailedChunks(deps, {
                         chunkOriginals: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.text)])),
                         chunkRevisionFingerprints: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.revisionFingerprint)])),
                     });
-                    for (const id of result.appliedChunkIds || []) state.consumed.add(id);
-                    const completed = new Map([...retryBookmarks].filter(([id]) => state.consumed.has(id)));
+                    for (const id of result.attemptedChunkIds || result.appliedChunkIds || []) state.consumed.add(id);
+                    for (const id of [...result.partialChunkIds || [], ...result.uncertainChunkIds || []]) state.uncertain.add(id);
+                    const completed = new Map([...retryBookmarks].filter(([id]) => state.consumed.has(id)
+                        && !result.failedChunkIds?.includes(id)));
                     if (completed.size) await cleanupBookmarks(completed);
                     if (!result.interrupted) { closed = true; state.pending = false; }
                     return result;

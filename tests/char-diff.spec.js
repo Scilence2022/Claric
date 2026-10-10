@@ -325,7 +325,7 @@ describe('applyCharDiffStrategy', () => {
     await applyCharDiffStrategy(world.context, world.range, original, amended, jest.fn());
 
     expect(world.docText).toBe(amended);
-    expect(world.syncCount).toBe(3); // batch locate + edit commit + tracking restore
+    expect(world.syncCount).toBe(4); // batch locate + verified tracking enable + edit commit + tracking restore
   });
 });
 

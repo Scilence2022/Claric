@@ -22,6 +22,7 @@
 import DiffMatchPatch from './diff-wordmode.js';
 import { tryRevisionDiff } from './revision-diff.js';
 import { applyBlockReplaceStrategy } from './block-replace.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '../word-revisions.js';
 
 /**
  * Tokenizes text into sentences in OCCURRENCE order. A sentence boundary is
@@ -127,6 +128,7 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
     const revised = await tryRevisionDiff(context, range, text1, text2, log, options);
     if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
+    if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     log('Running sentence-level diff...', 'info');
 
     let insertions = 0;
@@ -142,6 +144,7 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
 
     // True only when THIS strategy enabled tracking (and must restore it).
     let trackingEnabled = false;
+    let mutationAttempted = false;
 
     try {
         if (trackChanges && Word.ChangeTrackingMode) {
@@ -150,7 +153,7 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
                 await context.sync();
                 trackingEnabled = true;
             } catch (e) {
-                log(`Could not enable track changes: ${e.message}`, 'warning');
+                throw new RevisionSafetyError(`Could not enable tracked changes (${e.message}); no text was written.`);
             }
         }
 
@@ -192,11 +195,12 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
         if (sentenceMap.length <= 1 || deleteTargets.length === sentenceMap.length) {
             log(`Sentence diff is degenerate (${sentenceMap.length} sentence(s), ` +
                 `${deleteTargets.length} deleted) — using block replace`, 'info');
-            return applyBlockReplaceStrategy(context, range, text2, log, options);
+            return await applyBlockReplaceStrategy(context, range, text2, log, options);
         }
 
         if (deleteTargets.length > 0) {
             deleteTargets.reverse().forEach((t) => {
+                mutationAttempted = true;
                 t.range.delete();
             });
             deletions = deleteTargets.length;
@@ -219,6 +223,7 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
                     }
                 }
             } else if (op === 1) { // INSERT
+                mutationAttempted = true;
                 if (lastAnchorRange) {
                     lastAnchorRange.insertText(chunk, Word.InsertLocation.after);
                 } else {
@@ -230,15 +235,17 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
         }
 
         await context.sync();
+        await verifyMutationText(context, range, text2, options);
         log(`Sentence-level diff applied (${insertions} insertions, ${deletions} deletions)`, 'info');
 
         return { strategy: 'sentence', insertions, deletions };
     } catch (e) {
+        if (mutationAttempted || e.mutationAttempted) throw e instanceof MutationSafetyError ? e : new MutationSafetyError(e);
+        if (e instanceof RevisionSafetyError) throw e;
         log(`Sentence-level strategy failed (${e.message}); falling back to block replace`, 'warning');
 
-        // Reset the range with tracking OFF so the reset itself does not show
-        // up as a spurious whole-range revision pair, then block-replace
-        // (which manages tracking itself via the same options).
+        // No text writes have occurred. A fallback must keep that pristine
+        // baseline rather than resetting the range under caller tracking.
         if (trackingEnabled) {
             try {
                 context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
@@ -248,10 +255,7 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
                 // Best-effort; block replace re-asserts tracking itself.
             }
         }
-        range.insertText(text1, Word.InsertLocation.replace);
-        await context.sync();
-
-        return applyBlockReplaceStrategy(context, range, text2, log, options);
+        return await applyBlockReplaceStrategy(context, range, text2, log, options);
     } finally {
         if (trackingEnabled) {
             try {

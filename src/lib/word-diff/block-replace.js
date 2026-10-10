@@ -16,6 +16,7 @@
  *
  * @module lib/word-diff/block-replace
  */
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '../word-revisions.js';
 
 /**
  * Applies the "Block Replace" strategy.
@@ -33,10 +34,12 @@
  */
 export async function applyBlockReplaceStrategy(context, range, newText, log, options = {}) {
     const trackChanges = options.trackChanges !== false;
+    if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     log('Running block replace (final fallback)...', 'info');
 
     // True only when THIS strategy enabled tracking (and must restore it).
     let trackingEnabled = false;
+    let mutationAttempted = false;
 
     try {
         if (trackChanges && Word.ChangeTrackingMode) {
@@ -45,7 +48,7 @@ export async function applyBlockReplaceStrategy(context, range, newText, log, op
                 await context.sync();
                 trackingEnabled = true;
             } catch (e) {
-                log(`Could not enable track changes: ${e.message}`, 'warning');
+                throw new RevisionSafetyError(`Could not enable tracked changes (${e.message}); no text was written.`);
             }
         }
 
@@ -53,6 +56,7 @@ export async function applyBlockReplaceStrategy(context, range, newText, log, op
         const contentRange = range.getRange(Word.RangeLocation.content);
 
         // Delete the content (tracked when tracking is on)
+        mutationAttempted = true;
         contentRange.delete();
 
         // Insert new text after the deleted range
@@ -60,6 +64,7 @@ export async function applyBlockReplaceStrategy(context, range, newText, log, op
         contentRange.insertText(newText, Word.InsertLocation.after);
 
         await context.sync();
+        await verifyMutationText(context, range, newText, options);
         log('Block replacement applied.', 'info');
 
         return {
@@ -69,6 +74,8 @@ export async function applyBlockReplaceStrategy(context, range, newText, log, op
         };
     } catch (e) {
         log(`Block replace strategy failed: ${e.message}`, 'error');
+        if (mutationAttempted || e.mutationAttempted) throw e instanceof MutationSafetyError ? e : new MutationSafetyError(e);
+        if (e instanceof RevisionSafetyError) throw e;
         throw new Error(`All diff strategies failed. Final error: ${e.message}`);
     } finally {
         if (trackingEnabled) {

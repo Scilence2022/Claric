@@ -24,6 +24,7 @@
 
 import DiffMatchPatch from '../vendor/diff-match-patch.js';
 import { tryRevisionDiff } from './revision-diff.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '../word-revisions.js';
 
 /** Matches CJK ideographs, hiragana/katakana, and hangul. */
 const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/;
@@ -355,32 +356,45 @@ export async function applyCharDiffStrategy(context, range, originalText, newTex
     // tracking, force trackAll and ALWAYS restore off afterwards — even when
     // an edit throws mid-plan, so a failure never leaks tracking state.
     const trackChanges = options.trackChanges !== false;
+    if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     if (trackChanges && Word.ChangeTrackingMode) {
-        context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+        try {
+            context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+            await context.sync();
+        } catch (error) {
+            throw new RevisionSafetyError(`Could not enable tracked changes (${error.message}); no text was written.`);
+        }
     }
 
     let insertions = 0;
     let deletions = 0;
     let replacements = 0;
+    let mutationAttempted = false;
     try {
-        for (const item of plan.slice().reverse()) {
-            if (item.type === 'delete') {
-                item.range.delete();
-                deletions++;
-            } else if (item.type === 'replace') {
-                item.range.insertText(item.text, Word.InsertLocation.replace);
-                replacements++;
-            } else {
-                item.anchor.insertText(item.text, item.location);
-                insertions++;
+        try {
+            for (const item of plan.slice().reverse()) {
+                mutationAttempted = true;
+                if (item.type === 'delete') {
+                    item.range.delete();
+                    deletions++;
+                } else if (item.type === 'replace') {
+                    item.range.insertText(item.text, Word.InsertLocation.replace);
+                    replacements++;
+                } else {
+                    item.anchor.insertText(item.text, item.location);
+                    insertions++;
+                }
+            }
+            await context.sync();
+            await verifyMutationText(context, range, newText, options);
+        } finally {
+            if (trackChanges && Word.ChangeTrackingMode) {
+                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                await context.sync();
             }
         }
-        await context.sync();
-    } finally {
-        if (trackChanges && Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
-            await context.sync();
-        }
+    } catch (error) {
+        throw mutationAttempted && !(error instanceof MutationSafetyError) ? new MutationSafetyError(error) : error;
     }
 
     log(`Char-level diff applied (${insertions} insertions, ${deletions} deletions, ${replacements} replacements)`, 'info');

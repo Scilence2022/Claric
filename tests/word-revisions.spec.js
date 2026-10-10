@@ -55,3 +55,25 @@ test('namespace aliases, empty text, missing APIs and malformed XML are handled 
     expect(resolveRevisionRead({}, null).text).toBe('');
     expect(normalizeRevisionText('A\r\nB\r')).toBe('A\nB');
 });
+
+test('known paragraph scopes omit export padding without deleting real line breaks or blank paragraphs', () => {
+    const xml = wrap('<w:p><w:r><w:t>Text</w:t><w:br/></w:r></w:p><w:p/>');
+    expect(revisionTextState(xml).text).toBe('Text\n\n');
+    expect(resolveRevisionRead({}, { value: xml }, { paragraph: true }).text).toBe('Text\n');
+    expect(revisionTextState(xml, { paragraph: true }).paragraphCount).toBe(1);
+    const protectedEnd = wrap('<w:p><w:r><w:t>Text</w:t></w:r></w:p><w:p><w:pPr><w:sectPr/></w:pPr></w:p>');
+    expect(revisionTextState(protectedEnd, { paragraph: true }).text).toBe('Text\n');
+    const revisedEnd = wrap('<w:p><w:r><w:t>Text</w:t></w:r></w:p><w:p><w:ins/></w:p>');
+    expect(revisionTextState(revisedEnd, { paragraph: true }).text).toBe('Text\n');
+    expect(revisionTextState(wrap('<w:p><w:r><w:t>First</w:t></w:r></w:p><w:p/><w:p/>'), { paragraph: true }).text).toBe('First\n\n');
+});
+
+test('paragraph export padding does not multiply into model paragraph separators', () => {
+    const texts = Array.from({ length: 36 }, (_, i) => `Generic paragraph ${i}.`);
+    const reads = texts.map((text) => ({ value: wrap(`<w:p><w:r><w:t>${text}</w:t></w:r></w:p><w:p/>`) }));
+    const actual = reads.map((read) => resolveRevisionRead({}, read, { paragraph: true }).text);
+    expect(actual).toEqual(texts);
+    expect(actual.join('\n')).toBe(texts.join('\n'));
+    expect(revisionTextState(reads[0].value, { paragraph: true }).fingerprint)
+        .toBe(revisionTextState(wrap(`<w:p><w:r><w:t>${texts[0]}</w:t></w:r></w:p>`)).fingerprint);
+});

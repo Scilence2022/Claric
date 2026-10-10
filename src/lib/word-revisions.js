@@ -16,13 +16,30 @@ export class RevisionSafetyError extends Error {
     }
 }
 
+/** A Word write may have reached the host. Retrying an old baseline is unsafe. */
+export class MutationSafetyError extends RevisionSafetyError {
+    constructor(error) {
+        super(error?.message || String(error));
+        this.name = 'MutationSafetyError';
+        this.mutationAttempted = true;
+        this.cause = error;
+    }
+}
+
 export const normalizeRevisionText = (text) => String(text || '').replace(/\r\n|\r/g, '\n').replace(/\n$/, '');
 
 /** Visible islands never span an insertion boundary or an earlier deletion. */
-export function revisionTextState(ooxml) {
+export function revisionTextState(ooxml, { paragraph = false } = {}) {
     const root = documentPartRoot(ooxml);
     if (!root) throw new RevisionSafetyError('Word revision XML is unreadable. Generate a fresh proposal.');
-    const body = root.getElementsByTagNameNS(W, 'body')[0] || root;
+    let body = root.getElementsByTagNameNS(W, 'body')[0] || root;
+    // Word can append an empty export paragraph to a paragraph's OOXML.
+    // Only a known single-paragraph scope permits dropping this boundary;
+    // arbitrary ranges must retain their genuine blank paragraphs.
+    if (paragraph && body.namespaceURI === W && body.localName === 'body') {
+        const paragraphs = Array.from(body.children).filter((node) => node.namespaceURI === W && node.localName === 'p');
+        if (paragraphs.length === 2 && emptyExportParagraph(paragraphs[1])) body = paragraphs[0];
+    }
     const elements = [body, ...Array.from(body.getElementsByTagName('*'))];
     if (!elements.some((element) => element.namespaceURI === W)) {
         throw new RevisionSafetyError('Word revision XML has no document content. Generate a fresh proposal.');
@@ -75,7 +92,17 @@ export function revisionTextState(ooxml) {
     if (body.namespaceURI === W) walk(body);
     else for (const child of Array.from(body.children)) walk(child);
     return { text, segments, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
-        fingerprint: rangeStructureFingerprint(ooxml) };
+        fingerprint: rangeStructureFingerprint(body.localName === 'p' && body !== root
+            ? new XMLSerializer().serializeToString(body) : ooxml) };
+}
+
+function emptyExportParagraph(paragraph) {
+    return Array.from(paragraph.getElementsByTagName('*')).every((node) => {
+        if (node.namespaceURI !== W) return false;
+        if (PROTECTED.has(node.localName) || REVISIONS.has(node.localName)
+            || ['br', 'cr', 'tab', 'noBreakHyphen', 'sym', 'sectPr'].includes(node.localName)) return false;
+        return !['t', 'instrText'].includes(node.localName) || !(node.textContent || '');
+    });
 }
 
 /** Queue alongside existing loads, then resolve after the caller's sync. */
@@ -83,7 +110,19 @@ export function queueRevisionRead(range) {
     return typeof range.getOoxml === 'function' ? range.getOoxml() : null;
 }
 
-export function resolveRevisionRead(range, read) {
-    return read ? revisionTextState(read.value) : { text: range.text || '', hasRevisions: false,
+export function resolveRevisionRead(range, read, options = {}) {
+    return read ? revisionTextState(read.value, options) : { text: range.text || '', hasRevisions: false,
         fingerprint: null, protectedStructure: false };
+}
+
+/** Verify final-view content after a strategy's writes without resetting it. */
+export async function verifyMutationText(context, range, expected, options = {}) {
+    const read = queueRevisionRead(range);
+    if (!read) return;
+    await context.sync();
+    const comparable = (text) => options.paragraph
+        ? String(text || '').replace(/\r\n|\r/g, '\n') : normalizeRevisionText(text);
+    if (comparable(resolveRevisionRead(range, read, options).text) !== comparable(expected)) {
+        throw new MutationSafetyError(new Error('Native read-back differs from the proposal. Inspect Word before retrying.'));
+    }
 }

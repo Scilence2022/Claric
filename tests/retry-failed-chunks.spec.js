@@ -311,6 +311,40 @@ describe('retryFailedChunks', () => {
         expect(cleanupBookmarks).not.toHaveBeenCalled();
     });
 
+    it('consumes attempted failed applications without cleaning their anchors or reusing a stale baseline', async () => {
+        const chunks = ['applied', 'blocked', 'pending'].map((id) => ({ id, paragraphs: [{ text: `Original ${id} paragraph.` }] }));
+        const args = { failedResults: chunks.map(makeFailedResult),
+            bookmarkMap: new Map(chunks.map((chunk) => [chunk.id, `_${chunk.id}`])) };
+        const dependencies = makeDeps();
+        processChunksParallel.mockResolvedValue(chunks.map((chunk) => ({
+            status: 'fulfilled', chunk, chunkId: chunk.id, amendment: `Revised ${chunk.id} paragraph.`,
+        })));
+        const staged = await retryFailedChunks(dependencies, args);
+        applyChunkResults.mockResolvedValue({ appliedChunkIds: ['applied'], attemptedChunkIds: ['applied', 'blocked'],
+            failedChunkIds: ['blocked'], partialChunkIds: ['blocked'], uncertainChunkIds: [], interrupted: false });
+        await staged.apply(['applied', 'blocked']);
+
+        expect([...cleanupBookmarks.mock.calls[0][0].keys()]).toEqual(['applied']);
+        await retryFailedChunks(dependencies, args);
+        expect(processChunksParallel.mock.calls[1][0].map((chunk) => chunk.id)).toEqual(['pending']);
+        await expect(staged.apply(['blocked'])).rejects.toThrow(/no longer active/);
+    });
+
+    it('does not re-drive uncertain writes even when an older adapter omitted attempted chunk identifiers', async () => {
+        const chunk = { id: 'uncertain', paragraphs: [{ text: 'Original paragraph.' }] };
+        const args = { failedResults: [makeFailedResult(chunk)], bookmarkMap: new Map([['uncertain', '_uncertain']]) };
+        const dependencies = makeDeps();
+        processChunksParallel.mockResolvedValue([{ status: 'fulfilled', chunk, chunkId: chunk.id, amendment: 'Revised paragraph.' }]);
+        const staged = await retryFailedChunks(dependencies, args);
+        applyChunkResults.mockResolvedValue({ appliedChunkIds: [], failedChunkIds: ['uncertain'],
+            partialChunkIds: [], uncertainChunkIds: ['uncertain'], interrupted: false });
+        await staged.apply(['uncertain']);
+
+        expect(cleanupBookmarks).not.toHaveBeenCalled();
+        await retryFailedChunks(dependencies, args);
+        expect(processChunksParallel).toHaveBeenCalledTimes(1);
+    });
+
     it.each(['isProcessing', 'isProcessingSummary', 'chatController'])('refuses retry during %s ownership', async (key) => {
         const deps = makeDeps({ [key]: key === 'chatController' ? new AbortController() : true });
         await retryFailedChunks(deps, { failedResults: [], bookmarkMap: new Map() });

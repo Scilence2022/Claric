@@ -390,7 +390,7 @@ describe('applyChunkResults', () => {
     expect(args[2]).toBe('Original clause text here');
     expect(args[3]).toBe('Revised clause text');
     // trackChanges:false — the paragraph loop owns the tracking mode.
-    expect(args[5]).toEqual({ trackChanges: false });
+    expect(args[5]).toEqual({ trackChanges: false, paragraph: true });
     expect(applyTokenMapStrategy).not.toHaveBeenCalled();
 
     // Toggle OFF takes the token-map branch for the same keep edit.

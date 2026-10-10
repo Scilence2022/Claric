@@ -329,7 +329,8 @@ function _alignParagraphs(origParas, newParas) {
  * @private
  */
 async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log, preloaded = null,
-  { whitespaceOnly = false, expectedTexts = null } = {}) {
+  { whitespaceOnly = false, expectedTexts = null,
+    progress = { appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false } } = {}) {
   let allParaItems;
   let inTable;
   let revisionStates;
@@ -364,7 +365,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
     });
     await context.sync();
     inTable = tableChecks.map((t) => !t.isNullObject);
-    revisionStates = allParaItems.map((p, i) => resolveRevisionRead(p, revisionReads[i]));
+    revisionStates = allParaItems.map((p, i) => resolveRevisionRead(p, revisionReads[i], { paragraph: true }));
   }
 
   // Blank spacer paragraphs never enter the alignment: the amendment text
@@ -374,7 +375,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   const paraInTable = [];
   const states = [];
   allParaItems.forEach((p, i) => {
-    const state = revisionStates?.[i] || resolveRevisionRead(p, null);
+    const state = revisionStates?.[i] || resolveRevisionRead(p, null, { paragraph: true });
     if (state.text.trim() !== '') {
       paraItems.push(p);
       paraInTable.push(inTable[i]);
@@ -458,19 +459,38 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   // own content span, so the proxies stay valid for the whole loop.
   /** @type {Map<number, Word.Range>} */
   const changedParaRanges = new Map();
+  const contentReads = new Map();
   for (const op of alignment) {
     if (op.type === 'keep' && comparableText(origTexts[op.origIdx]) !== comparableText(amendedLines[op.newIdx])) {
       const paraRange = paraItems[op.origIdx].getRange('Content');
       paraRange.load('text');
       changedParaRanges.set(op.origIdx, paraRange);
+      contentReads.set(op.origIdx, queueRevisionRead(paraRange));
     }
   }
   if (changedParaRanges.size > 0) {
     await context.sync();
+    // Validate every native content range before the first write. Paragraph
+    // exports and content-range exports can differ at their end boundaries;
+    // a mismatch must not leave the earlier reverse-order edits half applied.
+    for (const [index, read] of contentReads) {
+      if (!read) continue;
+      const state = resolveRevisionRead(changedParaRanges.get(index), read, { paragraph: true });
+      if (state.text !== origTexts[index]) {
+        throw new RevisionSafetyError(`Paragraph ${index + 1}: native content differs from the staged baseline. Draft a new proposal.`);
+      }
+      if (state.hasRevisions && state.protectedStructure) {
+        throw new RevisionSafetyError(`Paragraph ${index + 1}: structural revisions or protected objects cannot be safely edited in place.`);
+      }
+    }
   }
 
   // Set tracked changes explicitly (on OR off) so the whole alignment loop —
   // including the per-paragraph diff strategies — runs under one mode.
+  if (trackChangesEnabled && !Word.ChangeTrackingMode) {
+    throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
+  }
+  const previousTrackingMode = context.document.changeTrackingMode ?? Word.ChangeTrackingMode?.off;
   if (Word.ChangeTrackingMode) {
     context.document.changeTrackingMode = trackChangesEnabled
       ? Word.ChangeTrackingMode.trackAll
@@ -482,6 +502,12 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   const reversedOps = [...alignment].reverse();
 
   try {
+    // Confirm the requested mode before queuing structural writes too;
+    // text strategies perform their own reads, but insert/delete may not.
+    if (Word.ChangeTrackingMode) {
+      try { await context.sync(); }
+      catch (error) { throw new RevisionSafetyError(`Could not set Word's revision mode: ${error.message}`); }
+    }
     for (const op of reversedOps) {
       if (op.type === 'keep') {
         // Text matched at paragraph level -- but there might be minor word-level edits.
@@ -506,7 +532,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           // The outer scope already owns the tracking mode (set above, restored
           // below), so the strategy must not clobber it mid-loop.
           try {
-            const diffOptions = { trackChanges: false };
+            const diffOptions = { trackChanges: false, paragraph: true };
             if (whitespaceOnly) {
               await applyCharDiffStrategy(context, paraRange, origText, newText, log, diffOptions);
             } else if (lineDiffEnabled) {
@@ -517,13 +543,30 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
               await applyTokenMapStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
             }
           } catch (_diffErr) {
-            if (whitespaceOnly || _diffErr instanceof RevisionSafetyError || states[op.origIdx].hasRevisions) throw _diffErr;
+            if (_diffErr.mutationAttempted) progress.mutationAttempted = true;
+            if (whitespaceOnly || _diffErr instanceof RevisionSafetyError || _diffErr.mutationAttempted
+                || states[op.origIdx].hasRevisions) throw _diffErr;
             // If word-level diff fails, fall back to full paragraph text replacement.
             // This loses run-level formatting but preserves paragraph-level properties.
             log(`Para ${op.origIdx}: word-level diff failed (${_diffErr.message}), using text replacement`, 'warning');
+            progress.mutationAttempted = true;
+            progress.pendingVerification = true;
             paraRange.insertText(newText.trim(), Word.InsertLocation.replace);
             await context.sync();
           }
+          progress.mutationAttempted = true;
+          progress.pendingVerification = true;
+          const readBack = queueRevisionRead(paraItems[op.origIdx]);
+          if (readBack) {
+            await context.sync();
+            const current = resolveRevisionRead(paraItems[op.origIdx], readBack, { paragraph: true });
+            const expected = whitespaceOnly ? newText : newText.trim();
+            if (current.text !== expected) {
+              throw new RevisionSafetyError(`Paragraph ${op.origIdx + 1}: applied text could not be verified. Inspect Word before drafting fresh edits.`);
+            }
+          }
+          progress.pendingVerification = false;
+          progress.appliedParagraphs++;
         }
       } else if (op.type === 'delete') {
         // Paragraph was removed by LLM -- delete it. Table paragraphs are
@@ -533,6 +576,8 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           continue;
         }
         const para = paraItems[op.origIdx];
+        progress.mutationAttempted = true;
+        progress.pendingStructuralWrites = true;
         para.delete();
       } else if (op.type === 'insert') {
         // New paragraph from LLM -- insert after the preceding original paragraph.
@@ -559,19 +604,24 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
             continue;
           }
           const anchorPara = paraItems[anchorOrigIdx];
+          progress.mutationAttempted = true;
+          progress.pendingStructuralWrites = true;
           anchorPara.insertParagraph(insertText, Word.InsertLocation.after);
         } else if (paraItems.length > 0) {
           // Insert before the first paragraph
+          progress.mutationAttempted = true;
+          progress.pendingStructuralWrites = true;
           paraItems[0].insertParagraph(insertText, Word.InsertLocation.before);
         }
       }
     }
 
     await context.sync();
+    progress.pendingStructuralWrites = false;
   } finally {
     // A revision-safe failure must not leak the caller's tracking mode.
-    if (Word.ChangeTrackingMode && trackChangesEnabled) {
-      context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+    if (Word.ChangeTrackingMode) {
+      context.document.changeTrackingMode = previousTrackingMode;
       await context.sync();
     }
   }
@@ -798,7 +848,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log, fingerprint
   });
   await context.sync();
   const inTable = tableChecks.map((t) => !t.isNullObject);
-  const revisionStates = paraItems.map((p, i) => resolveRevisionRead(p, revisionReads[i]));
+  const revisionStates = paraItems.map((p, i) => resolveRevisionRead(p, revisionReads[i], { paragraph: true }));
 
   // Compare on the non-empty paragraphs only: blank spacer paragraphs are
   // absent from the staged sequence but present in the live range.
@@ -859,7 +909,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log, fingerprint
     range: narrowed,
     preloaded: {
       paraItems: narrowedItems,
-      revisionStates: narrowedItems.map((p, i) => resolveRevisionRead(p, narrowedReads[i])),
+      revisionStates: narrowedItems.map((p, i) => resolveRevisionRead(p, narrowedReads[i], { paragraph: true })),
       inTable: narrowedTableChecks.map((t) => !t.isNullObject),
     },
   };
@@ -884,11 +934,12 @@ async function _reanchorChunkRange(context, range, storedTexts, log, fingerprint
  * @param {AbortSignal} [options.signal] - Cooperative pause: when aborted, the
  *   loop finishes the in-flight chunk then stops before the next, leaving the
  *   remaining chunks' bookmarks intact so the caller can resume later
- * @param {function(string, {applied: boolean, noChange?: boolean, error?: boolean, skipped?: boolean}): void} [options.onChunkApplied] -
+ * @param {function(string, {applied: boolean, noChange?: boolean, error?: boolean, skipped?: boolean, partial?: boolean, uncertain?: boolean}): void} [options.onChunkApplied] -
  *   Called after each chunk's apply attempt with its chunkId + outcome, so the
  *   UI can mark individual items applied as they land
  * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, noChangeCount: number,
- *   errors: string[], appliedChunkIds: string[], interrupted: boolean}>}
+ *   errors: string[], appliedChunkIds: string[], attemptedChunkIds: string[], failedChunkIds: string[],
+ *   partialChunkIds: string[], uncertainChunkIds: string[], appliedParagraphs: number, interrupted: boolean}>}
  */
 export async function applyChunkResults(results, bookmarkMap, options) {
   const {
@@ -906,6 +957,11 @@ export async function applyChunkResults(results, bookmarkMap, options) {
   let noChangeCount = 0;
   const errors = [];
   const appliedChunkIds = [];
+  const attemptedChunkIds = [];
+  const failedChunkIds = [];
+  const partialChunkIds = [];
+  const uncertainChunkIds = [];
+  let appliedParagraphs = 0;
   let interrupted = false;
 
   // Collect rejected/cancelled errors for reporting
@@ -932,23 +988,25 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     }
 
     const bookmarkName = bookmarkMap.get(result.chunkId);
+    attemptedChunkIds.push(result.chunkId);
     if (!bookmarkName) {
       errors.push(`Chunk ${result.chunkId}: no bookmark found`);
-      appliedChunkIds.push(result.chunkId);
+      failedChunkIds.push(result.chunkId);
       onChunkApplied(result.chunkId, { applied: false, skipped: true });
       continue;
     }
 
+    const progress = { appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false };
     try {
       let chunkApplied = false;
       await Word.run(async (context) => {
         const range = context.document.getBookmarkRangeOrNullObject(bookmarkName);
         range.load('isNullObject,text');
+        if (Word.ChangeTrackingMode && typeof context.document.load === 'function') context.document.load('changeTrackingMode');
         await context.sync();
 
         if (range.isNullObject) {
-          errors.push(`Chunk ${result.chunkId}: bookmark range lost`);
-          return;
+          throw new RevisionSafetyError('bookmark range lost');
         }
 
         // Re-anchor: the bookmark may have absorbed paragraphs inserted after
@@ -968,14 +1026,12 @@ export async function applyChunkResults(results, bookmarkMap, options) {
             // A failed drift check means we cannot tell whether the range
             // absorbed new content; falling back to the raw bookmark range
             // would risk deleting absorbed paragraphs. Skip instead.
-            errors.push(`Chunk ${result.chunkId}: re-anchor check failed (${anchorErr.message}); amendment skipped`);
             log(`Chunk ${result.chunkId}: re-anchor check failed (${anchorErr.message}), skipping to avoid deleting absorbed content`, 'warning');
-            return;
+            throw new RevisionSafetyError(`re-anchor check failed (${anchorErr.message}); amendment skipped`);
           }
           if (anchored === null) {
-            errors.push(`Chunk ${result.chunkId}: original content no longer matches the staged range (edited since staging?); amendment skipped`);
             log(`Chunk ${result.chunkId}: original content not found contiguously in staged range, skipping to avoid deleting absorbed content`, 'warning');
-            return;
+            throw new RevisionSafetyError('original content no longer matches the staged range (edited since staging?); amendment skipped');
           }
           workRange = anchored.range;
           preloaded = anchored.preloaded;
@@ -987,10 +1043,11 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           applied = await _applyParagraphLevelAmendment(
             context, workRange, result.amendment,
             trackChangesEnabled, lineDiffEnabled, log, preloaded,
-            { whitespaceOnly: !!result.whitespaceOnly, expectedTexts: storedTexts }
+            { whitespaceOnly: !!result.whitespaceOnly, expectedTexts: storedTexts, progress }
           ) !== false;
         } catch (paraErr) {
-          if (result.whitespaceOnly || paraErr instanceof TruncatedOutputError || paraErr instanceof RevisionSafetyError) {
+          if (progress.mutationAttempted || paraErr.mutationAttempted || result.whitespaceOnly
+              || paraErr instanceof TruncatedOutputError || paraErr instanceof RevisionSafetyError) {
             // The amendment text itself is truncated. A range-level strategy
             // would just write the same truncated text more crudely (and
             // without per-paragraph formatting protection) — escalate to the
@@ -1001,36 +1058,44 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           log(`Chunk ${result.chunkId}: paragraph-level strategy failed (${paraErr.message}), falling back to range-level`, 'warning');
 
           // Fallback to range-level diff strategies
-          if (Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = trackChangesEnabled
-              ? Word.ChangeTrackingMode.trackAll
-              : Word.ChangeTrackingMode.off;
+          if (trackChangesEnabled && !Word.ChangeTrackingMode) {
+            throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
           }
+          const previousMode = context.document.changeTrackingMode ?? Word.ChangeTrackingMode?.off;
+          try {
+            if (Word.ChangeTrackingMode) {
+              context.document.changeTrackingMode = trackChangesEnabled
+                ? Word.ChangeTrackingMode.trackAll
+                : Word.ChangeTrackingMode.off;
+              try { await context.sync(); }
+              catch (error) { throw new RevisionSafetyError(`Could not set Word's revision mode: ${error.message}`); }
+            }
 
-          // Normalize line endings for consistent diffing
-          const revisionRead = queueRevisionRead(workRange);
-          if (revisionRead) await context.sync();
-          const originalText = _normalizeLineEndings(resolveRevisionRead(workRange, revisionRead).text);
-          const normalizedAmendment = _normalizeLineEndings(result.amendment);
+            // Normalize line endings for consistent diffing
+            const revisionRead = queueRevisionRead(workRange);
+            if (revisionRead) await context.sync();
+            const originalText = _normalizeLineEndings(resolveRevisionRead(workRange, revisionRead).text);
+            const normalizedAmendment = _normalizeLineEndings(result.amendment);
 
-          const strategyOptions = { trackChanges: trackChangesEnabled };
-          if (lineDiffEnabled) {
-            await applySentenceDiffStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
-          } else if (hasCjk(originalText) || hasCjk(normalizedAmendment)) {
-            // Same CJK rule as the paragraph-level path: a whole CJK run is a
-            // single token to the word-level strategies, which would turn a
-            // one-comma edit into a whole-range replacement redline.
-            await applyCharDiffStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
-          } else {
-            await applyTokenMapStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
+            const strategyOptions = { trackChanges: false };
+            if (lineDiffEnabled) {
+              await applySentenceDiffStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
+            } else if (hasCjk(originalText) || hasCjk(normalizedAmendment)) {
+              // Same CJK rule as the paragraph-level path: a whole CJK run is a
+              // single token to the word-level strategies, which would turn a
+              // one-comma edit into a whole-range replacement redline.
+              await applyCharDiffStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
+            } else {
+              await applyTokenMapStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
+            }
+            progress.mutationAttempted = true;
+            applied = true;
+          } finally {
+            if (Word.ChangeTrackingMode) {
+              context.document.changeTrackingMode = previousMode;
+              await context.sync();
+            }
           }
-
-          // Disable tracked changes after fallback (matching paragraph-level strategy behavior)
-          if (Word.ChangeTrackingMode && trackChangesEnabled) {
-            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
-            await context.sync();
-          }
-          applied = true;
         }
 
         if (!applied) {
@@ -1042,18 +1107,26 @@ export async function applyChunkResults(results, bookmarkMap, options) {
 
       if (chunkApplied) {
         amendmentsApplied++;
+        appliedChunkIds.push(result.chunkId);
         log(`Chunk ${result.chunkId}: amendment applied`, 'info');
       } else {
         log(`Chunk ${result.chunkId}: no changes needed`, 'info');
       }
-      appliedChunkIds.push(result.chunkId);
       onChunkApplied(result.chunkId, { applied: chunkApplied, noChange: !chunkApplied });
     } catch (err) {
+      const partial = progress.appliedParagraphs > 0;
+      const uncertain = !!(err.mutationAttempted || progress.pendingVerification || progress.pendingStructuralWrites
+        || (progress.mutationAttempted && !partial));
+      failedChunkIds.push(result.chunkId);
+      if (partial) partialChunkIds.push(result.chunkId);
+      if (uncertain) uncertainChunkIds.push(result.chunkId);
       errors.push(`Chunk ${result.chunkId}: ${err.message || String(err)}`);
-      log(`Chunk ${result.chunkId}: amendment failed -- ${err.message}`, 'error');
-      appliedChunkIds.push(result.chunkId);
-      onChunkApplied(result.chunkId, { applied: false, error: true });
+      log(`Chunk ${result.chunkId}: amendment failed -- ${err.message}`
+        + (partial ? `; ${progress.appliedParagraphs} paragraph edit(s) already applied` : '')
+        + (uncertain ? '; writes could not be verified; inspect Word before drafting fresh edits' : ''), 'error');
+      onChunkApplied(result.chunkId, { applied: false, error: true, partial, uncertain });
     }
+    appliedParagraphs += progress.appliedParagraphs;
 
     // Yield to event loop between chunks to prevent UI freeze
     await _yieldToEventLoop();
@@ -1063,13 +1136,24 @@ export async function applyChunkResults(results, bookmarkMap, options) {
   // Skipped entirely when the apply was paused mid-way — the resume re-runs
   // this for the remaining chunks.
   if (!interrupted) {
+    const allCommentResults = results
+      .filter((r) => r.status === 'fulfilled' && r.comment)
+      .filter((r) => bookmarkMap.get(r.chunkId));
+    let commentTrackingMode;
+    let restoreCommentTracking = false;
     // Ensure tracked changes are off before inserting comments.
     // If any amendment fallback path left ChangeTrackingMode.trackAll enabled,
     // comment insertion on ranges containing tracked changes can fail with AccessDenied.
-    if (fulfilledWithAmendments.length > 0) {
+    if (fulfilledWithAmendments.length > 0 && allCommentResults.length > 0) {
       try {
         await Word.run(async (context) => {
           if (Word.ChangeTrackingMode) {
+            if (typeof context.document.load === 'function') {
+              context.document.load('changeTrackingMode');
+              await context.sync();
+            }
+            commentTrackingMode = context.document.changeTrackingMode ?? Word.ChangeTrackingMode.off;
+            restoreCommentTracking = true;
             context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
             await context.sync();
           }
@@ -1078,10 +1162,6 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         // Best-effort -- continue with comment insertion even if this fails
       }
     }
-
-    const allCommentResults = results
-      .filter((r) => r.status === 'fulfilled' && r.comment)
-      .filter((r) => bookmarkMap.get(r.chunkId));
 
     // One Word.run for the whole comment pass: bookmark lookups batched into
     // a single sync, then one insert+sync per comment (the per-comment sync
@@ -1139,9 +1219,20 @@ export async function applyChunkResults(results, bookmarkMap, options) {
       }
       commentQueue = commentQueue.slice(consumed);
     }
+    if (restoreCommentTracking) {
+      try {
+        await Word.run(async (context) => {
+          context.document.changeTrackingMode = commentTrackingMode;
+          await context.sync();
+        });
+      } catch (error) {
+        errors.push(`Could not restore Word's revision mode after comments: ${error.message}`);
+      }
+    }
   }
 
-  return { amendmentsApplied, commentsInserted, noChangeCount, errors, appliedChunkIds, interrupted };
+  return { amendmentsApplied, commentsInserted, noChangeCount, errors, appliedChunkIds, attemptedChunkIds,
+    failedChunkIds, partialChunkIds, uncertainChunkIds, appliedParagraphs, interrupted };
 }
 
 /**

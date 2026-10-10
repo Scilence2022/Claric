@@ -23,8 +23,8 @@
  *     ONE batched search pass.
  *   - Accepts options.trackChanges (default true); when false the strategy
  *     does not touch the document's changeTrackingMode (caller owns it).
- *   - The fallback reset runs with tracking OFF so it does not show up as a
- *     spurious whole-range revision pair.
+ *   - Read-only mapping failures try another locator without resetting the
+ *     native runs. Failures after writes stop without another fallback.
  *   - Typed activity-log messages instead of DEBUG/emoji lines.
  *
  * @module lib/word-diff/token-map
@@ -33,7 +33,8 @@
 import DiffMatchPatch from './diff-wordmode.js';
 import { tryRevisionDiff } from './revision-diff.js';
 import { applySentenceDiffStrategy } from './sentence-diff.js';
-import { _occurrenceIndex } from './char-diff.js';
+import { _occurrenceIndex, applyCharDiffStrategy } from './char-diff.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '../word-revisions.js';
 
 /** Word/punctuation/whitespace tokenization — MUST match the regex
  *  diff_wordMode tokenizes with (diff-wordmode.js), since the diff walk
@@ -61,12 +62,14 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
     const revised = await tryRevisionDiff(context, range, originalText, newText, log, options);
     if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
+    if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     log('Running word-level diff...', 'info');
 
     let insertions = 0;
     let deletions = 0;
     // True only when THIS strategy enabled tracking (and must restore it).
     let trackingEnabled = false;
+    let mutationAttempted = false;
 
     try {
         // Run diff_wordMode
@@ -189,9 +192,13 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
 
         // --- Execution Phase ---
         if (trackChanges && Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-            await context.sync();
-            trackingEnabled = true;
+            try {
+                context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+                await context.sync();
+                trackingEnabled = true;
+            } catch (error) {
+                throw new RevisionSafetyError(`Could not enable tracked changes (${error.message}); no text was written.`);
+            }
         }
 
         // Apply Deletes (reverse document order). Adjacent tokens (consecutive
@@ -213,12 +220,14 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
         for (let i = deleteRuns.length - 1; i >= 0; i--) {
             const { first, last } = deleteRuns[i];
             const firstRange = rangeByIndex.get(first);
+            mutationAttempted = true;
             (last === first ? firstRange : firstRange.expandTo(rangeByIndex.get(last))).delete();
         }
         deletions = deleteIndices.length;
 
         // Apply Inserts
         insertOps.forEach((op) => {
+            mutationAttempted = true;
             if (op.anchorIndex >= 0) {
                 rangeByIndex.get(op.anchorIndex).insertText(op.text, Word.InsertLocation.after);
             } else {
@@ -230,15 +239,18 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
 
         // Commit all edits
         await context.sync();
+        await verifyMutationText(context, range, newText, options);
         log(`Word-level diff applied (${insertions} insertions, ${deletions} deletions)`, 'info');
 
         return { strategy: 'token', insertions, deletions };
     } catch (e) {
-        log(`Word-level strategy failed (${e.message}); falling back to sentence diff`, 'warning');
+        if (mutationAttempted || e.mutationAttempted) throw e instanceof MutationSafetyError ? e : new MutationSafetyError(e);
+        if (e instanceof RevisionSafetyError) throw e;
+        log(`Word-level mapping failed before writing (${e.message}); trying character diff`, 'warning');
 
-        // Reset the range with tracking OFF so the reset itself does not show
-        // up as a spurious whole-range revision pair, then sentence-diff
-        // (which manages tracking itself via the same options).
+        // A mapping failure is read-only. Keep the native runs intact and
+        // try another locator; an old-baseline reset would lose formatting
+        // and, under caller-owned tracking, introduce fresh revisions.
         if (trackingEnabled) {
             try {
                 context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
@@ -248,10 +260,13 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
                 // Best-effort; sentence diff re-asserts tracking itself.
             }
         }
-        range.insertText(originalText, Word.InsertLocation.replace);
-        await context.sync();
-
-        return applySentenceDiffStrategy(context, range, originalText, newText, log, options);
+        try {
+            return await applyCharDiffStrategy(context, range, originalText, newText, log, options);
+        } catch (charError) {
+            if (charError instanceof RevisionSafetyError || charError.mutationAttempted) throw charError;
+            log(`Character mapping failed before writing (${charError.message}); trying sentence diff`, 'warning');
+            return await applySentenceDiffStrategy(context, range, originalText, newText, log, options);
+        }
     } finally {
         if (trackingEnabled) {
             try {

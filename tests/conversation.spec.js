@@ -2493,6 +2493,100 @@ describe('createConversation.submit', () => {
       .toContain('already match the document');
   });
 
+  test.each([
+    { amendmentsApplied: 0, partialChunkIds: ['c0'], uncertainChunkIds: [], appliedParagraphs: 2,
+      expected: 'Partially applied: 2 paragraph edit(s) were verified.' },
+    { amendmentsApplied: 0, partialChunkIds: [], uncertainChunkIds: ['c0'], appliedParagraphs: 0,
+      expected: 'Application could not be fully verified:' },
+    { amendmentsApplied: 1, partialChunkIds: ['c0'], uncertainChunkIds: ['c0'], appliedParagraphs: 3,
+      expected: 'Application could not be fully verified: 3 paragraph edit(s) were verified.' },
+  ])('document edits report partial or uncertain writes honestly ($expected)', async (result) => {
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => ({ ...result, commentsInserted: 0, errors: ['Chunk c0: baseline changed'] })),
+      discard: jest.fn(async () => {}), failedCount: 0, cancelledCount: 0,
+    };
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions: makeActions({ runDocumentSkill: jest.fn(async () => staged) }), getSelectionText: async () => '',
+    });
+    await conv.submit('please polish the whole document');
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const statusText = cardEl.querySelector('.proposal-card-status').textContent;
+    expect(statusText).toContain(result.expected);
+    expect(statusText).toContain('fresh proposal');
+    expect(statusText).toContain('baseline changed');
+    expect(statusText).not.toContain('Nothing applied');
+    expect(cardEl.classList.contains('proposal-warning')).toBe(true);
+    expect(cardEl.classList.contains('proposal-applied')).toBe(false);
+    expect(cardEl.querySelector('.btn-primary').disabled).toBe(true);
+    expect(view._msg.addCitationPills).not.toHaveBeenCalled();
+  });
+
+  test('paused document edits distinguish successful sections from finished partial attempts', async () => {
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: ['c0', 'c1', 'c2'].map((id) => ({ status: 'fulfilled', amendment: `new ${id}`,
+        chunk: { id, text: `old ${id}` } })),
+      chunks: ['c0', 'c1', 'c2'].map((id) => ({ id, paragraphs: [{ text: `old ${id}` }] })),
+      apply: jest.fn(async (_ids, progress) => {
+        progress.onChunkApplied('c2', { applied: true });
+        progress.onChunkApplied('c1', { applied: false, error: true, partial: true });
+        return { amendmentsApplied: 1, commentsInserted: 0, interrupted: true,
+          attemptedChunkIds: ['c2', 'c1'], appliedChunkIds: ['c2'], partialChunkIds: ['c1'],
+          uncertainChunkIds: [], appliedParagraphs: 2, errors: ['Chunk c1: baseline changed'] };
+      }),
+      discard: jest.fn(async () => {}), failedCount: 0, cancelledCount: 0,
+    };
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions: makeActions({ runDocumentSkill: jest.fn(async () => staged) }), getSelectionText: async () => '',
+    });
+    await conv.submit('please polish the whole document');
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const statusText = cardEl.querySelector('.proposal-card-status').textContent;
+    expect(statusText).toContain('1 of 3 selected change(s) applied; 2 attempt(s) finished');
+    expect(statusText).toContain('Partially applied');
+    expect(cardEl.querySelector('.btn-primary').textContent).toBe('Continue applying');
+    const boxes = cardEl.querySelectorAll('input[type="checkbox"]');
+    expect(boxes[0].disabled).toBe(false);
+    expect(boxes[1].disabled).toBe(true);
+    expect(boxes[2].disabled).toBe(true);
+  });
+
+  test('unexpected failures after a write attempt cannot replay a document proposal', async () => {
+    const view = makeView();
+    const error = Object.assign(new Error('Host synchronization failed'), { mutationAttempted: true });
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => { throw error; }),
+      discard: jest.fn(async () => {}), failedCount: 0, cancelledCount: 0,
+    };
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions: makeActions({ runDocumentSkill: jest.fn(async () => staged) }), getSelectionText: async () => '',
+    });
+    await conv.submit('please polish the whole document');
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    cardEl.querySelector('.btn-primary').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cardEl.querySelector('.proposal-card-status').textContent)
+      .toContain('Word may contain changes');
+    expect(cardEl.querySelector('.btn-primary').disabled).toBe(true);
+    expect(cardEl.querySelector('.btn-secondary').disabled).toBe(true);
+    expect(cardEl.classList.contains('proposal-warning')).toBe(true);
+  });
+
   test('document edit card reports skipped sections alongside successful applies', async () => {
     const appState = makeAppState();
     const view = makeView();

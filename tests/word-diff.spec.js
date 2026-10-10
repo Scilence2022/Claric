@@ -9,7 +9,7 @@
  * sentence (wrong deletions/insertions with no error raised).
  */
 
-const { computeDiff, diff_sentenceMode, sliceSearchPieces, applySentenceDiffStrategy } = require('../src/lib/word-diff/index.js');
+const { computeDiff, diff_sentenceMode, sliceSearchPieces, applySentenceDiffStrategy, applyBlockReplaceStrategy } = require('../src/lib/word-diff/index.js');
 
 describe('diff_sentenceMode', () => {
   test('repeated sentences keep their positions (one DELETE for the repeat)', () => {
@@ -98,13 +98,14 @@ describe('sliceSearchPieces', () => {
  */
 function makeSentenceWordMock(sentenceTexts) {
   const ops = [];
+  const modes = [];
   const mkRange = (text, id) => ({
     id,
     text,
     isNullObject: false,
     load: jest.fn(),
-    delete: jest.fn(() => ops.push(`delete:${id}`)),
-    insertText: jest.fn((t, loc) => ops.push(`insert:${id}:${loc}:${t}`)),
+    delete: jest.fn(() => { modes.push(context.document.changeTrackingMode); ops.push(`delete:${id}`); }),
+    insertText: jest.fn((t, loc) => { modes.push(context.document.changeTrackingMode); ops.push(`insert:${id}:${loc}:${t}`); }),
     getRange: jest.fn((loc) => mkRange(text, `${id}::${loc}`)),
   });
   const whole = mkRange(sentenceTexts.join(''), 'whole');
@@ -122,7 +123,7 @@ function makeSentenceWordMock(sentenceTexts) {
     ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' },
     run: jest.fn(async (cb) => cb(context)),
   };
-  return { whole, context, ops };
+  return { whole, context, ops, modes };
 }
 
 describe('applySentenceDiffStrategy', () => {
@@ -179,5 +180,46 @@ describe('applySentenceDiffStrategy', () => {
     expect(ops.some((o) => o.startsWith('insert:s0:After:New two. '))).toBe(true);
     // No block-replace fallback fired.
     expect(ops.some((o) => o.includes('::Content'))).toBe(false);
+  });
+
+  test('read-only sentence locator failure falls back without resetting under caller-owned tracking', async () => {
+    const { whole, context, ops } = makeSentenceWordMock(['Original one. ', 'Original two. ']);
+    context.document.changeTrackingMode = 'TrackAll';
+    whole.getTextRanges.mockImplementationOnce(() => { throw new Error('Sentence mapping unavailable'); });
+    const outcome = await applySentenceDiffStrategy(context, whole, whole.text, 'Updated text.', jest.fn(), { trackChanges: false });
+    expect(outcome.strategy).toBe('block');
+    expect(ops).toEqual(['delete:whole::Content', 'insert:whole::Content:After:Updated text.']);
+    expect(context.document.changeTrackingMode).toBe('TrackAll');
+  });
+
+  test('a failed sentence deletion sync cannot reset or enter block replacement', async () => {
+    const { whole, context, ops } = makeSentenceWordMock(['Keep one. ', 'Drop two. ', 'Keep three. ']);
+    context.sync.mockImplementation(async () => { if (ops.length) throw new Error('Host interrupted deletion'); });
+    await expect(applySentenceDiffStrategy(context, whole, whole.text,
+      'Keep one. New two. Keep three. ', jest.fn(), { trackChanges: false }))
+      .rejects.toMatchObject({ mutationAttempted: true });
+    expect(ops).toEqual(['delete:s1']);
+  });
+
+  test('a block replacement sync failure is reported as possible mutation without repeating the fallback', async () => {
+    const { whole, context, ops } = makeSentenceWordMock(['Original']);
+    context.sync.mockImplementation(async () => { if (ops.length) throw new Error('Host interrupted replacement'); });
+    await expect(applySentenceDiffStrategy(context, whole, 'Original', 'Updated', jest.fn(), { trackChanges: false }))
+      .rejects.toMatchObject({ mutationAttempted: true });
+    expect(ops).toEqual(['delete:whole::Content', 'insert:whole::Content:After:Updated']);
+  });
+
+  test('block replacement cannot write when enabling requested tracking fails', async () => {
+    const { whole, context, ops } = makeSentenceWordMock(['Original']);
+    context.sync.mockRejectedValue(new Error('TrackAll unavailable'));
+    await expect(applyBlockReplaceStrategy(context, whole, 'Updated', jest.fn())).rejects.toThrow(/enable tracked changes/);
+    expect(ops).toEqual([]);
+  });
+
+  test('a degenerate sentence fallback finishes tracked writes before its caller restores tracking', async () => {
+    const { whole, context, modes } = makeSentenceWordMock(['Original']);
+    await applySentenceDiffStrategy(context, whole, 'Original', 'Updated', jest.fn());
+    expect(modes).toEqual(['TrackAll', 'TrackAll']);
+    expect(context.document.changeTrackingMode).toBe('Off');
   });
 });

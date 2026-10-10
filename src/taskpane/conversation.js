@@ -1040,19 +1040,38 @@ export function createConversation(deps) {
                 input.setProcessing(true);
                 try {
                     const applicationResult = await outcome.apply(selectedChunkIds, applyCtx);
+                    const applyErrors = applicationResult.errors || [];
+                    for (const applyError of applyErrors) log(`Apply: ${applyError}`, 'warning');
+                    const partialCount = applicationResult.partialChunkIds?.length || 0;
+                    const uncertainCount = applicationResult.uncertainChunkIds?.length || 0;
+                    let incompleteMessage = '';
+                    if (partialCount || uncertainCount) {
+                        const verifiedEdits = applicationResult.appliedParagraphs > 0
+                            ? `${applicationResult.appliedParagraphs} paragraph edit(s) were verified. ` : '';
+                        incompleteMessage = uncertainCount
+                            ? `Application could not be fully verified: ${verifiedEdits}${uncertainCount} section(s) may contain changes. Inspect Word before drafting a fresh proposal.`
+                            : `Partially applied: ${verifiedEdits}${partialCount} section(s) remain incomplete. Review Word and draft a fresh proposal.`;
+                        if (applyErrors.length) incompleteMessage += ` ${applyErrors[0]}`;
+                    }
                     if (applicationResult.interrupted) {
                         // Stopped mid-apply (Stop button): the remaining chunks
                         // keep their bookmarks; re-enable "Continue applying".
-                        const appliedCount = applicationResult.appliedChunkIds.length;
+                        const appliedCount = applicationResult.amendmentsApplied;
+                        const attemptedCount = (applicationResult.attemptedChunkIds || applicationResult.appliedChunkIds || []).length;
                         const total = selectedChunkIds ? selectedChunkIds.length : outcome.chunks.length;
                         card.setPaused(
-                            `Paused — ${appliedCount} of ${total} selected change(s) applied. Click "Continue applying" to resume.`
+                            `Paused — ${appliedCount} of ${total} selected change(s) applied; ${attemptedCount} attempt(s) finished. `
+                            + (incompleteMessage ? `${incompleteMessage} ` : '')
+                            + 'Click "Continue applying" to resume the remaining sections.'
                         );
                         msg.setStatus('');
                         return;
                     }
-                    const applyErrors = applicationResult.errors || [];
-                    for (const applyError of applyErrors) log(`Apply: ${applyError}`, 'warning');
+                    if (incompleteMessage) {
+                        card.markWarning(incompleteMessage);
+                        msg.setStatus('');
+                        return;
+                    }
                     if (applicationResult.amendmentsApplied === 0
                         && !(outcome.retryProposal && applicationResult.commentsInserted > 0)) {
                         card.markWarning(applyErrors.length
@@ -1072,7 +1091,11 @@ export function createConversation(deps) {
                     });
                 } catch (error) {
                     log(`Apply failed: ${error.message}`, 'error');
-                    card.markError(error.message);
+                    if (error.mutationAttempted) {
+                        card.markWarning(`Application could not be verified; Word may contain changes. Inspect Word before drafting a fresh proposal. ${error.message}`);
+                    } else {
+                        card.markError(error.message);
+                    }
                 }
             },
             onReject: async () => {
