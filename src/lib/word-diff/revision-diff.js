@@ -1,7 +1,7 @@
 /** Map final-view differences to verified Word ranges, preserving earlier revisions. */
 import DiffMatchPatch from '../vendor/diff-match-patch.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState, normalizeRevisionText,
-    RevisionSafetyError } from '../word-revisions.js';
+    RevisionSafetyError, MutationSafetyError } from '../word-revisions.js';
 
 const MAX_TARGETS = 256;
 const MAX_CANDIDATES = 1024;
@@ -74,7 +74,7 @@ function planEdits(state, after) {
     return { hunks, targets };
 }
 
-async function locate(context, scope, targets, allowSplit = true) {
+async function locate(context, scope, targets, options, allowSplit = true) {
     const searches = new Map();
     for (const { text } of targets) {
         if (searches.has(text)) continue;
@@ -94,13 +94,27 @@ async function locate(context, scope, targets, allowSplit = true) {
     for (let start = 0; start < candidates.length; start += 64) {
         const batch = candidates.slice(start, start + 64).map((candidate) => {
             const prefix = scope.getRange(Word.RangeLocation.start).expandTo(candidate.range.getRange(Word.RangeLocation.start));
-            return { ...candidate, xml: candidate.range.getOoxml(), prefix: prefix.getOoxml() };
+            // OOXML exports can include a terminal empty paragraph that is
+            // indistinguishable from a genuine paragraph-start fragment in
+            // a multi-paragraph prefix. Current-view native text retains
+            // the exact range boundary without that export padding.
+            let currentPrefix = null;
+            if (typeof prefix.getReviewedText === 'function') {
+                try { currentPrefix = prefix.getReviewedText(Word.ChangeTrackingVersion?.current || 'Current'); }
+                catch { /* Older hosts retain the conservative XML locator. */ }
+            }
+            return { ...candidate, xml: candidate.range.getOoxml(), prefix: prefix.getOoxml(), currentPrefix };
         });
         await context.sync();
         for (const candidate of batch) {
-            const content = revisionTextState(candidate.xml.value);
+            const content = revisionTextState(candidate.xml.value, { paragraph: true });
             if (content.hasHiddenContent || content.protectedStructure || content.text !== candidate.text) continue;
-            const offset = revisionTextState(candidate.prefix.value).text.length;
+            if (candidate.currentPrefix && typeof candidate.currentPrefix.value !== 'string') {
+                throw new RevisionSafetyError('The current-view revision prefix is unreadable. Generate a fresh proposal.');
+            }
+            const offset = candidate.currentPrefix
+                ? candidate.currentPrefix.value.replace(/\r\n|\r/g, '\n').length
+                : revisionTextState(candidate.prefix.value, options).text.length;
             const key = JSON.stringify([offset, candidate.text]);
             if (verified.has(key)) throw new RevisionSafetyError('Ambiguous visible revision target. Generate a fresh proposal.');
             verified.set(key, candidate.range);
@@ -121,14 +135,14 @@ async function locate(context, scope, targets, allowSplit = true) {
         const last = { start: target.start + target.text.length - lastText.length, text: lastText, range: null };
         return { target, first, last };
     });
-    await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), false);
+    await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false);
     const unions = endpoints.map(({ target, first, last }) => {
         target.range = first.range.expandTo(last.range);
         return { target, xml: target.range.getOoxml() };
     });
     await context.sync();
     for (const { target, xml } of unions) {
-        const content = revisionTextState(xml.value);
+        const content = revisionTextState(xml.value, { paragraph: true });
         if (content.hasHiddenContent || content.protectedStructure || content.text !== target.text) {
             throw new RevisionSafetyError('The located revision span crosses hidden or changed text. Generate a fresh proposal.');
         }
@@ -140,37 +154,51 @@ async function locate(context, scope, targets, allowSplit = true) {
  * @param {string} before @param {string} after @param {function} [log] @param {object} [options]
  */
 export async function tryRevisionDiff(context, range, before, after, log = () => {}, options = {}) {
+    let mutationAttempted = false;
     try {
         const read = queueRevisionRead(range);
         if (!read) return null;
         await context.sync();
-        const state = resolveRevisionRead(range, read);
+        const state = resolveRevisionRead(range, read, options);
+        // Paragraph reads preserve actual manual line breaks. Whole-range
+        // protocols normalize the native terminal paragraph boundary.
+        const comparable = (text) => options.paragraph
+            ? String(text || '').replace(/\r\n|\r/g, '\n') : normalizeRevisionText(text);
+        if (comparable(before) !== comparable(state.text)) {
+            throw new RevisionSafetyError('The current revision text differs from the proposal baseline. Generate a fresh proposal.');
+        }
         if (!state.hasRevisions) return null;
         if (!state.fingerprint || state.protectedStructure) {
             throw new RevisionSafetyError('This range contains structural revisions or protected objects. Choose a plain-text paragraph.');
         }
-        if (normalizeRevisionText(before) !== state.text) {
-            throw new RevisionSafetyError('The current revision text differs from the proposal baseline. Generate a fresh proposal.');
-        }
-        const expected = normalizeRevisionText(after);
+        state.text = comparable(state.text);
+        const expected = comparable(after);
         const { hunks, targets } = planEdits(state, expected);
         if (!hunks.length) return { strategy: 'revision', insertions: 0, deletions: 0, replacements: 0 };
         const ownsTracking = options.trackChanges !== false;
         if (ownsTracking && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
-        await locate(context, range, targets);
+        await locate(context, range, targets, options);
         if (ownsTracking) context.document.load('changeTrackingMode');
         const baseline = range.getOoxml();
         await context.sync();
-        if (revisionTextState(baseline.value).fingerprint !== state.fingerprint) {
+        if (revisionTextState(baseline.value, options).fingerprint !== state.fingerprint) {
             throw new RevisionSafetyError('Revision state changed while locating the edit. Generate a fresh proposal.');
         }
-        const previousMode = context.document.changeTrackingMode;
+        const previousMode = ownsTracking ? context.document.changeTrackingMode : null;
         let insertions = 0;
         let deletions = 0;
         let replacements = 0;
         try {
-            if (ownsTracking) context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+            if (ownsTracking) {
+                try {
+                    context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+                    await context.sync();
+                } catch (error) {
+                    throw new RevisionSafetyError(`Could not enable tracked changes (${error.message}); no text was written.`);
+                }
+            }
             for (const hunk of [...hunks].reverse()) {
+                mutationAttempted = true;
                 if (hunk.start === hunk.end) {
                     const anchor = hunk.anchor?.range || range.getRange(Word.RangeLocation.end);
                     anchor.insertText(hunk.text, hunk.location);
@@ -186,7 +214,7 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
             await context.sync();
             const result = range.getOoxml();
             await context.sync();
-            if (revisionTextState(result.value).text !== expected) {
+            if (comparable(revisionTextState(result.value, options).text) !== expected) {
                 throw new RevisionSafetyError('Revision read-back differs from the proposal. Inspect Word before retrying.');
             }
         } finally {
@@ -195,6 +223,7 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         log('Applied and verified changes against current revision text; unrelated revisions were preserved.', 'info');
         return { strategy: 'revision', insertions, deletions, replacements };
     } catch (error) {
+        if (mutationAttempted) throw error instanceof MutationSafetyError ? error : new MutationSafetyError(error);
         throw error instanceof RevisionSafetyError ? error
             : new RevisionSafetyError(`Revision-safe application failed (${error.message}). Inspect Word before retrying.`);
     }

@@ -30,7 +30,7 @@ afterEach(() => { delete global.Word; });
 test('boundary-space-only changes use precise character edits instead of being trim-compared away', async () => {
   const { result, ranges } = await apply(['  Example body.  '], ['  Example body.  '], 'Example body.');
   expect(result.amendmentsApplied).toBe(1);
-  expect(applyCharDiffStrategy).toHaveBeenCalledWith(expect.anything(), ranges[0], '  Example body.  ', 'Example body.', expect.anything(), { trackChanges: false });
+  expect(applyCharDiffStrategy).toHaveBeenCalledWith(expect.anything(), ranges[0], '  Example body.  ', 'Example body.', expect.anything(), { trackChanges: false, paragraph: true });
   expect(applyTokenMapStrategy).not.toHaveBeenCalled();
 });
 

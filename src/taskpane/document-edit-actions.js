@@ -140,7 +140,7 @@ export async function readDocumentEditSnapshot({ signal, onWarning } = {}) {
             try {
                 structureFingerprint = paragraphStructureFingerprint(xml[index]);
                 if (!structureFingerprint) throw new Error('Word did not return one verifiable paragraph.');
-                revisions = revisionTextState(xml[index]);
+                revisions = revisionTextState(xml[index], { paragraph: true });
                 text = clean(revisions.text);
             } catch (error) {
                 structureUnavailable = true; firstFailure ||= error; xml[index] = null;
@@ -387,7 +387,7 @@ export async function applyDocumentEdit(deps, proposal, { signal } = {}) {
                     anchor.attempted = true;
                     const strategy = deps.appState.config.lineDiffEnabled ? applySentenceDiffStrategy
                         : (hasCjk(change.before) || hasCjk(change.after) ? applyCharDiffStrategy : applyTokenMapStrategy);
-                    await strategy(context, range, currentText, change.after, deps.log || (() => {}), { trackChanges: false });
+                    await strategy(context, range, currentText, change.after, deps.log || (() => {}), { trackChanges: false, paragraph: true });
                     written.push({ paragraph, expected: change.after });
                 } else {
                     const left = anchor.anchors[change.afterId];

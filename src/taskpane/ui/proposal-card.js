@@ -400,8 +400,11 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             .map((item) => item.id);
     }
 
-    /** Tracked applied item ids — cumulative across pause/resume runs. */
+    /** Verified applied item ids — cumulative across pause/resume runs. */
     const appliedIdSet = new Set();
+    // Finished attempts cannot be replayed from this proposal, even when a
+    // host failure left a section incomplete or its writes unverified.
+    const attemptedIdSet = new Set();
     let applyController = null;
     let applyInFlight = false;
     let state = 'pending';
@@ -417,10 +420,13 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
      * so the user sees each section land as the apply progresses.
      *
      * @param {string|number} id - The change item's id
-     * @param {{applied?: boolean, noChange?: boolean, error?: boolean, skipped?: boolean}} [status]
+     * @param {{applied?: boolean, noChange?: boolean, error?: boolean, skipped?: boolean, partial?: boolean, uncertain?: boolean}} [status]
      */
     function markItemApplied(id, status = {}) {
-        appliedIdSet.add(id);
+        if (attemptedIdSet.has(id)) return;
+        attemptedIdSet.add(id);
+        if (!status.error && !status.skipped && !status.noChange && !status.partial && !status.uncertain
+            && status.applied !== false) appliedIdSet.add(id);
         const entry = changeEntries.find((e) => String(e.id) === String(id));
         if (!entry) return;
         entry.box.checked = true;
@@ -428,7 +434,13 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         entry.row.classList.add('proposal-card-change-done');
         const tag = document.createElement('span');
         tag.className = 'proposal-card-change-status';
-        if (status.error) {
+        if (status.uncertain) {
+            tag.textContent = status.partial ? 'partial / unverified' : 'unverified';
+            entry.row.classList.add('proposal-card-change-error');
+        } else if (status.partial) {
+            tag.textContent = 'partially applied';
+            entry.row.classList.add('proposal-card-change-error');
+        } else if (status.error) {
             tag.textContent = 'error';
             entry.row.classList.add('proposal-card-change-error');
         } else if (status.skipped) {
@@ -538,7 +550,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         markApplied(message) {
             settle(
                 message || (changeBoxes.length
-                    ? `Applied ${appliedIdSet.size || lastAppliedCount} of ${changeBoxes.length} change(s) as tracked changes.`
+                    ? `Applied ${attemptedIdSet.size ? appliedIdSet.size : lastAppliedCount} of ${changeBoxes.length} change(s) as tracked changes.`
                     : 'Applied as tracked changes.'),
                 'proposal-applied'
             );
@@ -571,7 +583,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             }
             setState('error');
             applyBtn.disabled = changeBoxes.length > 0 && !selectedIds().length;
-            rejectBtn.disabled = appliedIdSet.size > 0;
+            rejectBtn.disabled = attemptedIdSet.size > 0;
             status.style.display = '';
             status.textContent = `Apply failed: ${message}`;
             el.classList.add('proposal-error');
@@ -582,7 +594,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     // method to sync the proposal's history metadata; calling settle()
     // directly would leave saved sessions stuck at "pending".
     rejectBtn.addEventListener('click', () => {
-        if (state === 'settled' || applyInFlight || appliedIdSet.size > 0) return;
+        if (state === 'settled' || applyInFlight || attemptedIdSet.size > 0) return;
         api.markRejected();
         if (onReject) onReject();
     });

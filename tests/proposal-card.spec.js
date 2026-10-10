@@ -227,6 +227,43 @@ describe('createProposalCard', () => {
     expect(rows[1].querySelector('.proposal-card-change-status').textContent).toBe('skipped');
   });
 
+  test('finished failures and no-op sections never inflate the applied count', () => {
+    const card = makeCard({ items: makeItems() });
+    card.markItemApplied('a', { applied: true });
+    card.markItemApplied('b', { applied: false, error: true });
+    card.markItemApplied('c', { applied: false, noChange: true });
+    card.markApplied();
+    expect(card.el.querySelector('.proposal-card-status').textContent)
+      .toBe('Applied 1 of 3 change(s) as tracked changes.');
+  });
+
+  test('partial and uncertain writes have distinct tags and cannot be replayed on resume', async () => {
+    const onApply = jest.fn(async () => {});
+    const card = makeCard({ items: makeItems(), onApply });
+    card.markItemApplied('a', { applied: false, error: true, partial: true });
+    card.markItemApplied('b', { applied: false, error: true, uncertain: true });
+    const rows = card.el.querySelectorAll('.proposal-card-change');
+    expect(rows[0].querySelector('.proposal-card-change-status').textContent).toBe('partially applied');
+    expect(rows[1].querySelector('.proposal-card-change-status').textContent).toBe('unverified');
+    card.setPaused('Paused');
+    await card.applyAll();
+    expect(onApply).toHaveBeenCalledWith(['c'], expect.anything());
+    expect(card.el.querySelector('.proposal-card-status').textContent)
+      .toBe('Applied 0 of 3 change(s) as tracked changes.');
+  });
+
+  test('repeated progress reports do not add duplicate tags or change an uncertain verdict', () => {
+    const card = makeCard({ items: makeItems() });
+    card.markItemApplied('a', { applied: false, error: true, partial: true, uncertain: true });
+    card.markItemApplied('a', { applied: true });
+    const row = card.el.querySelector('.proposal-card-change');
+    expect(row.querySelectorAll('.proposal-card-change-status')).toHaveLength(1);
+    expect(row.querySelector('.proposal-card-change-status').textContent).toBe('partial / unverified');
+    card.markApplied();
+    expect(card.el.querySelector('.proposal-card-status').textContent)
+      .toBe('Applied 0 of 3 change(s) as tracked changes.');
+  });
+
   test('setPaused re-enables Apply as "Continue applying"', () => {
     const card = makeCard({ items: makeItems() });
     card.markItemApplied('a', { applied: true });

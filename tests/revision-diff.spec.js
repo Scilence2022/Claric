@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 import { tryRevisionDiff } from '../src/lib/word-diff/revision-diff.js';
 import { applyTokenMapStrategy, applySentenceDiffStrategy, applyCharDiffStrategy } from '../src/lib/word-diff/index.js';
-import { revisionTextState, RevisionSafetyError } from '../src/lib/word-revisions.js';
+import { revisionTextState, RevisionSafetyError, MutationSafetyError } from '../src/lib/word-revisions.js';
 import { parseDocument } from '../src/lib/document-parser.js';
 import { readSelectionText, readSelectionContent, readSelectionSnippet, applySelectionAmendment } from '../src/taskpane/word-actions.js';
 import { readDocumentEditSnapshot, anchorDocumentEdit, applyDocumentEdit } from '../src/taskpane/document-edit-actions.js';
@@ -12,17 +12,25 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
 
 /** Word searches the physical text, including deleted runs. Writes retain
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
-function world(parts) {
+function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false } = {}) {
     let sequence = 0;
     const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence }) =>
         Array.from(text).map((text) => ({ text, type, id })));
     const ranges = [];
     const writes = [];
     const bookmarks = new Map();
-    const xml = (slice) => `<w:p xmlns:w="${W}">` + slice.map((atom) => {
+    const xml = (slice) => {
+        const groups = [[]];
+        for (const atom of slice) {
+            if (nativeParagraphs && atom.text === '\n') groups.push([]);
+            else groups.at(-1).push(atom);
+        }
+        const content = groups.map((group) => `<w:p xmlns:w="${W}">` + group.map((atom) => {
         const run = `<w:r><w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
         return atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
-    }).join('') + '</w:p>';
+        }).join('') + '</w:p>').join('');
+        return padding ? `<w:document xmlns:w="${W}"><w:body>${content}<w:p/></w:body></w:document>` : content;
+    };
     const table = { isNullObject: true, load: jest.fn() };
     const cell = { isNullObject: true, load: jest.fn() };
     const collection = (items) => ({ items, load: jest.fn(), getFirst: () => items[0], getLast: () => items.at(-1) });
@@ -34,6 +42,8 @@ function world(parts) {
             inlinePictures: collection([]),
             get text() { return atoms.slice(span.start, span.end).map((a) => a.text).join(''); },
             getOoxml: jest.fn(() => ({ value: xml(atoms.slice(span.start, span.end)) })),
+            ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value:
+                atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => atom.text).join('').replace(/\n/g, '\r') })) } : {}),
             getRange: (location) => location === 'Start' ? makeRange(span.start, span.start)
                 : location === 'End' ? makeRange(span.end, span.end) : range,
             expandTo: (other) => makeRange(span.start, other._span.end),
@@ -156,6 +166,16 @@ test('caller-owned tracking is respected, and a no-op does not write', async () 
     expect(w.writes).toHaveLength(count);
 });
 
+test('caller-owned revision edits do not read an unloaded native tracking property', async () => {
+    const w = world([{ text: 'Old ', type: 'del' }, { text: 'Current' }]);
+    const mode = jest.fn(() => 'TrackAll');
+    Object.defineProperty(w.context.document, 'changeTrackingMode', { get: mode });
+    await tryRevisionDiff(w.context, w.scope, 'Current', 'Current text', jest.fn(), { trackChanges: false });
+    // This mock's write recorder reads the mode once per actual write;
+    // the strategy itself must not read a property its caller did not load.
+    expect(mode).toHaveBeenCalledTimes(w.writes.length);
+});
+
 test('a missing or ambiguous search target fails before any write', async () => {
     const w = world([{ text: 'old', type: 'del' }, { text: 'new' }]);
     w.scope.search.mockImplementation(() => ({ items: [], load: jest.fn() }));
@@ -206,6 +226,94 @@ test('pristine ranges keep their normal strategy', async () => {
     const w = world([{ text: 'Text' }]);
     expect(await tryRevisionDiff(w.context, w.scope, 'Text', 'Updated')).toBeNull();
     expect(await tryRevisionDiff(w.context, { text: 'Text' }, 'Text', 'Updated')).toBeNull();
+});
+
+test('pristine ranges verify their baseline before allowing any fallback', async () => {
+    const w = world([{ text: 'Actual text.' }]);
+    await expect(applyTokenMapStrategy(w.context, w.scope, 'Stale text.', 'Edited text.', jest.fn())).rejects.toThrow(/baseline/);
+    expect(w.writes).toEqual([]);
+});
+
+test('paragraph padding is normalized in revision content, target prefixes and read-back', async () => {
+    const w = world([{ text: 'Earlier ', type: 'del' }, { text: 'Current text.', type: 'ins' }], { padding: true });
+    await applyTokenMapStrategy(w.context, w.scope, 'Current text.', 'Current revised text.', jest.fn(), { paragraph: true });
+    expect(revisionTextState(w.scope.getOoxml().value, { paragraph: true }).text).toBe('Current revised text.');
+});
+
+test.each(['First\nSecond', 'First\n\nSecond'])('native current-view prefixes preserve real paragraph boundaries while excluding export padding: %s', async (before) => {
+    const w = world([{ text: before, type: 'ins' }], { padding: true, nativeReviewed: true, nativeParagraphs: true });
+    const after = before.replace('Second', 'Better');
+    await applyTokenMapStrategy(w.context, w.scope, before, after, jest.fn());
+    expect(revisionTextState(w.scope.getOoxml().value).text).toBe(after + '\n');
+});
+
+test('unsupported current-view multi-paragraph prefixes fail before writing when XML export padding cannot resolve offsets', async () => {
+    const w = world([{ text: 'First\nSecond', type: 'ins' }], { padding: true, nativeParagraphs: true });
+    await expect(applyTokenMapStrategy(w.context, w.scope, 'First\nSecond', 'First\nBetter', jest.fn()))
+        .rejects.toBeInstanceOf(RevisionSafetyError);
+    expect(w.writes).toEqual([]);
+});
+
+test('unreadable native current-view prefixes cannot be treated as offset zero', async () => {
+    const w = world([{ text: 'Original text.', type: 'ins' }]);
+    const getRange = w.scope.getRange;
+    w.scope.getRange = (location) => {
+        const start = getRange(location);
+        const expand = start.expandTo;
+        start.expandTo = (other) => {
+            const prefix = expand(other);
+            prefix.getReviewedText = () => ({ value: undefined });
+            return prefix;
+        };
+        return start;
+    };
+    await expect(tryRevisionDiff(w.context, w.scope, 'Original text.', 'Updated text.', jest.fn()))
+        .rejects.toThrow(/prefix is unreadable/);
+    expect(w.writes).toEqual([]);
+});
+
+test('read-only token mapping failure tries another locator without a tracked baseline reset', async () => {
+    const w = world([{ text: 'Doctoral supervisor.' }]);
+    w.context.document.changeTrackingMode = 'TrackAll';
+    w.scope.search.mockImplementationOnce(() => ({ items: [], load: jest.fn() }));
+    const result = await applyTokenMapStrategy(w.context, w.scope, 'Doctoral supervisor.', 'PhD supervisor.', jest.fn(), { trackChanges: false, paragraph: true });
+    expect(result.strategy).toBe('char');
+    expect(w.state().text).toBe('PhD supervisor.');
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+    expect(w.writes.every((entry) => entry.mode === 'TrackAll')).toBe(true);
+});
+
+test.each([applyTokenMapStrategy, applyCharDiffStrategy])('a pristine strategy failure after writes never resets or applies another strategy: %p', async (strategy) => {
+    const w = world([{ text: 'Original text.' }]);
+    w.context.sync.mockImplementation(async () => {
+        if (w.writes.length) throw new Error('Host interrupted the write');
+    });
+    await expect(strategy(w.context, w.scope, 'Original text.', 'Updated text.', jest.fn(), { trackChanges: false }))
+        .rejects.toMatchObject({ mutationAttempted: true });
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test('revision read-back failure carries an explicit possible-mutation outcome', async () => {
+    const w = world([{ text: 'Old ', type: 'del' }, { text: 'Current text.' }]);
+    w.context.sync.mockImplementation(async () => { if (w.writes.length) throw new Error('Host write failed'); });
+    await expect(tryRevisionDiff(w.context, w.scope, 'Current text.', 'Changed text.', jest.fn(), { trackChanges: false }))
+        .rejects.toBeInstanceOf(MutationSafetyError);
+});
+
+test.each([applyTokenMapStrategy, applySentenceDiffStrategy, applyCharDiffStrategy])('tracking enable failures stop before text writes: %p', async (strategy) => {
+    const w = world([{ text: 'Original text.' }]);
+    w.context.sync.mockImplementation(async () => {
+        if (w.context.document.changeTrackingMode === 'TrackAll') throw new Error('Tracking unavailable');
+    });
+    await expect(strategy(w.context, w.scope, 'Original text.', 'Updated text.', jest.fn())).rejects.toThrow(/enable tracked changes/);
+    expect(w.writes).toEqual([]);
+});
+
+test.each([applyTokenMapStrategy, applySentenceDiffStrategy, applyCharDiffStrategy])('tracking-unavailable pristine hosts refuse requested tracked edits: %p', async (strategy) => {
+    const w = world([{ text: 'Original text.' }]);
+    delete global.Word.ChangeTrackingMode;
+    await expect(strategy(w.context, w.scope, 'Original text.', 'Updated text.', jest.fn())).rejects.toThrow(/enable tracked changes/);
+    expect(w.writes).toEqual([]);
 });
 
 test('structural revisions and protected objects refuse the revision path before writing', async () => {
