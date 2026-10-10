@@ -34,7 +34,7 @@ import DiffMatchPatch from './diff-wordmode.js';
 import { tryRevisionDiff } from './revision-diff.js';
 import { applySentenceDiffStrategy } from './sentence-diff.js';
 import { _occurrenceIndex, applyCharDiffStrategy } from './char-diff.js';
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites } from '../word-revisions.js';
 
 /** Word/punctuation/whitespace tokenization — MUST match the regex
  *  diff_wordMode tokenizes with (diff-wordmode.js), since the diff walk
@@ -70,6 +70,7 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
     // True only when THIS strategy enabled tracking (and must restore it).
     let trackingEnabled = false;
     let mutationAttempted = false;
+    const insertedRanges = [];
 
     try {
         // Run diff_wordMode
@@ -124,7 +125,7 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
                         lastAnchorIndex = token.index;
                         currentSurvivorIdx++;
                     } else {
-                        log(`Token mismatch: expected "${textToConsume.slice(0, 10)}..." but found "${token.text}"`, 'warning');
+                        log(`Token ${token.index + 1}: diff alignment mismatch.`, 'warning');
                         throw new Error('Map lookup failed: Token mismatch.');
                     }
                 }
@@ -157,7 +158,7 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
         for (const index of neededIndices) {
             const occurrence = _occurrenceIndex(originalText, tokenStarts[index], tokenTexts[index]);
             if (occurrence === null) {
-                throw new Error(`Token mapping failed for "${tokenTexts[index]}" (overlapping occurrences)`);
+                throw new Error(`Token ${index + 1}: overlapping occurrences prevent mapping.`);
             }
             occurrenceByIndex.set(index, occurrence);
         }
@@ -184,21 +185,15 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
             const occurrence = occurrenceByIndex.get(index);
             const matches = searchByToken.get(text);
             if (!matches.items || matches.items.length <= occurrence) {
-                log(`Could not map token "${text}" (occurrence ${occurrence + 1})`, 'warning');
-                throw new Error(`Token mapping failed for "${text}"`);
+                throw new Error(`Token mapping failed at offset ${tokenStarts[index]} (occurrence ${occurrence + 1}).`);
             }
             rangeByIndex.set(index, matches.items[occurrence]);
         }
 
         // --- Execution Phase ---
         if (trackChanges && Word.ChangeTrackingMode) {
-            try {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-                await context.sync();
-                trackingEnabled = true;
-            } catch (error) {
-                throw new RevisionSafetyError(`Could not enable tracked changes (${error.message}); no text was written.`);
-            }
+            await enableTrackedWrites(context);
+            trackingEnabled = true;
         }
 
         // Apply Deletes (reverse document order). Adjacent tokens (consecutive
@@ -229,17 +224,17 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
         insertOps.forEach((op) => {
             mutationAttempted = true;
             if (op.anchorIndex >= 0) {
-                rangeByIndex.get(op.anchorIndex).insertText(op.text, Word.InsertLocation.after);
+                insertedRanges.push(rangeByIndex.get(op.anchorIndex).insertText(op.text, Word.InsertLocation.after));
             } else {
                 // Insert at start of range
-                range.getRange(Word.RangeLocation.start).insertText(op.text, Word.InsertLocation.before);
+                insertedRanges.push(range.getRange(Word.RangeLocation.start).insertText(op.text, Word.InsertLocation.before));
             }
         });
         insertions = insertOps.length;
 
         // Commit all edits
         await context.sync();
-        await verifyMutationText(context, range, newText, options);
+        await verifyMutationText(context, range, newText, options, insertedRanges);
         log(`Word-level diff applied (${insertions} insertions, ${deletions} deletions)`, 'info');
 
         return { strategy: 'token', insertions, deletions };

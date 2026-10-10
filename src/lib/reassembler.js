@@ -19,7 +19,7 @@
 
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from './word-diff/index.js';
 import { hasCjk, applyCharDiffStrategy } from './word-diff/char-diff.js';
-import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError } from './word-revisions.js';
+import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, verifyMutationText } from './word-revisions.js';
 import { validateWhitespaceCleanup } from './whitespace-cleanup.js';
 
 /**
@@ -357,7 +357,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
     for (const para of allParaItems) {
       para.load('text');
     }
-    const revisionReads = allParaItems.map(queueRevisionRead);
+    const revisionReads = allParaItems.map((p) => queueRevisionRead(p, { paragraph: true }));
     const tableChecks = allParaItems.map((p) => {
       const t = p.parentTableOrNullObject;
       t.load('isNullObject');
@@ -465,7 +465,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
       const paraRange = paraItems[op.origIdx].getRange('Content');
       paraRange.load('text');
       changedParaRanges.set(op.origIdx, paraRange);
-      contentReads.set(op.origIdx, queueRevisionRead(paraRange));
+      contentReads.set(op.origIdx, queueRevisionRead(paraRange, { paragraph: true }));
     }
   }
   if (changedParaRanges.size > 0) {
@@ -532,7 +532,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           // The outer scope already owns the tracking mode (set above, restored
           // below), so the strategy must not clobber it mid-loop.
           try {
-            const diffOptions = { trackChanges: false, paragraph: true };
+            const diffOptions = { trackChanges: false, paragraph: true, verificationParagraph: paraItems[op.origIdx] };
             if (whitespaceOnly) {
               await applyCharDiffStrategy(context, paraRange, origText, newText, log, diffOptions);
             } else if (lineDiffEnabled) {
@@ -556,15 +556,8 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           }
           progress.mutationAttempted = true;
           progress.pendingVerification = true;
-          const readBack = queueRevisionRead(paraItems[op.origIdx]);
-          if (readBack) {
-            await context.sync();
-            const current = resolveRevisionRead(paraItems[op.origIdx], readBack, { paragraph: true });
-            const expected = whitespaceOnly ? newText : newText.trim();
-            if (current.text !== expected) {
-              throw new RevisionSafetyError(`Paragraph ${op.origIdx + 1}: applied text could not be verified. Inspect Word before drafting fresh edits.`);
-            }
-          }
+          await verifyMutationText(context, paraRange, whitespaceOnly ? newText : newText.trim(),
+            { paragraph: true, verificationParagraph: paraItems[op.origIdx] });
           progress.pendingVerification = false;
           progress.appliedParagraphs++;
         }
@@ -840,7 +833,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log, fingerprint
   for (const para of paraItems) {
     para.load('text');
   }
-  const revisionReads = paraItems.map(queueRevisionRead);
+  const revisionReads = paraItems.map((p) => queueRevisionRead(p, { paragraph: true }));
   const tableChecks = paraItems.map((p) => {
     const t = p.parentTableOrNullObject;
     t.load('isNullObject');
@@ -897,7 +890,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log, fingerprint
   for (const para of narrowedItems) {
     para.load('text');
   }
-  const narrowedReads = narrowedItems.map(queueRevisionRead);
+  const narrowedReads = narrowedItems.map((p) => queueRevisionRead(p, { paragraph: true }));
   const narrowedTableChecks = narrowedItems.map((p) => {
     const t = p.parentTableOrNullObject;
     t.load('isNullObject');

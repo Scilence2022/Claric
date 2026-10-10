@@ -473,7 +473,7 @@ describe('applySelectionAmendment (table route)', () => {
     expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
     expect(applyTokenMapStrategy.mock.calls[0][2]).toBe('old a');
     expect(applyTokenMapStrategy.mock.calls[0][3]).toBe('new a');
-    expect(applyTokenMapStrategy.mock.calls[0][5]).toEqual({ trackChanges: false, paragraph: true });
+    expect(applyTokenMapStrategy.mock.calls[0][5]).toEqual(expect.objectContaining({ trackChanges: false, paragraph: true, verificationParagraph: expect.any(Object) }));
     expect(calls).toEqual([
       'delete:3',
       'insert:1:After:[["n1","n2"]]',
@@ -772,7 +772,7 @@ describe('applySelectionAmendment (mixed table route)', () => {
     expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
     expect(applyTokenMapStrategy.mock.calls[0][2]).toBe('Cell A1');
     expect(applyTokenMapStrategy.mock.calls[0][3]).toBe('Cell A1 edited');
-    expect(applyTokenMapStrategy.mock.calls[0][5]).toEqual({ trackChanges: false, paragraph: true });
+    expect(applyTokenMapStrategy.mock.calls[0][5]).toEqual(expect.objectContaining({ trackChanges: false, paragraph: true, verificationParagraph: expect.any(Object) }));
     expect(trackingModes).toEqual(['TrackAll', 'Off']);
   });
 

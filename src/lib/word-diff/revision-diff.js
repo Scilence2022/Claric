@@ -1,7 +1,7 @@
 /** Map final-view differences to verified Word ranges, preserving earlier revisions. */
 import DiffMatchPatch from '../vendor/diff-match-patch.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState, normalizeRevisionText,
-    RevisionSafetyError, MutationSafetyError } from '../word-revisions.js';
+    RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier } from '../word-revisions.js';
 
 const MAX_TARGETS = 256;
 const MAX_CANDIDATES = 1024;
@@ -27,7 +27,7 @@ function planEdits(state, after) {
         if (op === 0) { pending = null; offset += text.length; continue; }
         if (!pending) { pending = { start: offset, end: offset, text: '', targets: [], anchor: null, location: null }; hunks.push(pending); }
         if (text.includes('\n') || text.includes('\t')) {
-            throw new RevisionSafetyError('A revision-bearing range cannot change paragraph or tab boundaries. Revise its text in place.');
+            throw new RevisionSafetyError('Cannot change paragraph or tab boundaries with unresolved revisions.');
         }
         if (op === -1) { offset += text.length; pending.end = offset; }
         else pending.text += text;
@@ -103,11 +103,11 @@ async function locate(context, scope, targets, options, allowSplit = true) {
                 try { currentPrefix = prefix.getReviewedText(Word.ChangeTrackingVersion?.current || 'Current'); }
                 catch { /* Older hosts retain the conservative XML locator. */ }
             }
-            return { ...candidate, xml: candidate.range.getOoxml(), prefix: prefix.getOoxml(), currentPrefix };
+            return { ...candidate, xml: queueRevisionRead(candidate.range, { paragraph: true }), prefix: prefix.getOoxml(), currentPrefix };
         });
         await context.sync();
         for (const candidate of batch) {
-            const content = revisionTextState(candidate.xml.value, { paragraph: true });
+            const content = resolveRevisionRead(candidate.range, candidate.xml, { paragraph: true });
             if (content.hasHiddenContent || content.protectedStructure || content.text !== candidate.text) continue;
             if (candidate.currentPrefix && typeof candidate.currentPrefix.value !== 'string') {
                 throw new RevisionSafetyError('The current-view revision prefix is unreadable. Generate a fresh proposal.');
@@ -125,7 +125,7 @@ async function locate(context, scope, targets, options, allowSplit = true) {
     }
     const missing = targets.filter((target) => !target.range);
     if (!missing.length) return;
-    if (!allowSplit) throw new RevisionSafetyError('A visible revision target could not be verified. Generate a fresh proposal.');
+    if (!allowSplit) throw new RevisionSafetyError('Unverified visible revision target. Generate a fresh proposal.');
     // Greedy Word searches can skip a self-overlapping occurrence of a long
     // piece. Locate its scalar endpoints, then verify the entire union.
     const endpoints = missing.map((target) => {
@@ -138,13 +138,13 @@ async function locate(context, scope, targets, options, allowSplit = true) {
     await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false);
     const unions = endpoints.map(({ target, first, last }) => {
         target.range = first.range.expandTo(last.range);
-        return { target, xml: target.range.getOoxml() };
+        return { target, xml: queueRevisionRead(target.range, { paragraph: true }) };
     });
     await context.sync();
     for (const { target, xml } of unions) {
-        const content = revisionTextState(xml.value, { paragraph: true });
+        const content = resolveRevisionRead(target.range, xml, { paragraph: true });
         if (content.hasHiddenContent || content.protectedStructure || content.text !== target.text) {
-            throw new RevisionSafetyError('The located revision span crosses hidden or changed text. Generate a fresh proposal.');
+            throw new RevisionSafetyError('Located text crosses a revision boundary. Generate a fresh proposal.');
         }
     }
 }
@@ -156,7 +156,8 @@ async function locate(context, scope, targets, options, allowSplit = true) {
 export async function tryRevisionDiff(context, range, before, after, log = () => {}, options = {}) {
     let mutationAttempted = false;
     try {
-        const read = queueRevisionRead(range);
+        await loadMutationVerifier();
+        const read = queueRevisionRead(range, options);
         if (!read) return null;
         await context.sync();
         const state = resolveRevisionRead(range, read, options);
@@ -165,11 +166,11 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         const comparable = (text) => options.paragraph
             ? String(text || '').replace(/\r\n|\r/g, '\n') : normalizeRevisionText(text);
         if (comparable(before) !== comparable(state.text)) {
-            throw new RevisionSafetyError('The current revision text differs from the proposal baseline. Generate a fresh proposal.');
+            throw new RevisionSafetyError('Current text differs from the proposal baseline. Generate a fresh proposal.');
         }
         if (!state.hasRevisions) return null;
         if (!state.fingerprint || state.protectedStructure) {
-            throw new RevisionSafetyError('This range contains structural revisions or protected objects. Choose a plain-text paragraph.');
+            throw new RevisionSafetyError('Structural revisions or protected objects prevent this edit.');
         }
         state.text = comparable(state.text);
         const expected = comparable(after);
@@ -179,15 +180,16 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         if (ownsTracking && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
         await locate(context, range, targets, options);
         if (ownsTracking) context.document.load('changeTrackingMode');
-        const baseline = range.getOoxml();
+        const baseline = queueRevisionRead(range, options);
         await context.sync();
-        if (revisionTextState(baseline.value, options).fingerprint !== state.fingerprint) {
-            throw new RevisionSafetyError('Revision state changed while locating the edit. Generate a fresh proposal.');
+        if (resolveRevisionRead(range, baseline, options).fingerprint !== state.fingerprint) {
+            throw new RevisionSafetyError('Revision state changed during location. Generate a fresh proposal.');
         }
         const previousMode = ownsTracking ? context.document.changeTrackingMode : null;
         let insertions = 0;
         let deletions = 0;
         let replacements = 0;
+        const insertedRanges = [];
         try {
             if (ownsTracking) {
                 try {
@@ -201,26 +203,22 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
                 mutationAttempted = true;
                 if (hunk.start === hunk.end) {
                     const anchor = hunk.anchor?.range || range.getRange(Word.RangeLocation.end);
-                    anchor.insertText(hunk.text, hunk.location);
+                    insertedRanges.push(anchor.insertText(hunk.text, hunk.location));
                     insertions++;
                 } else {
                     for (let i = hunk.targets.length - 1; i >= 0; i--) {
                         const target = hunk.targets[i].range;
-                        if (i === 0 && hunk.text) { target.insertText(hunk.text, Word.InsertLocation.replace); replacements++; }
+                        if (i === 0 && hunk.text) { insertedRanges.push(target.insertText(hunk.text, Word.InsertLocation.replace)); replacements++; }
                         else { target.delete(); deletions++; }
                     }
                 }
             }
             await context.sync();
-            const result = range.getOoxml();
-            await context.sync();
-            if (comparable(revisionTextState(result.value, options).text) !== expected) {
-                throw new RevisionSafetyError('Revision read-back differs from the proposal. Inspect Word before retrying.');
-            }
+            await verifyMutationText(context, range, after, options, insertedRanges);
         } finally {
             if (ownsTracking) { context.document.changeTrackingMode = previousMode; await context.sync(); }
         }
-        log('Applied and verified changes against current revision text; unrelated revisions were preserved.', 'info');
+        log('Verified edits against current revision text.', 'info');
         return { strategy: 'revision', insertions, deletions, replacements };
     } catch (error) {
         if (mutationAttempted) throw error instanceof MutationSafetyError ? error : new MutationSafetyError(error);

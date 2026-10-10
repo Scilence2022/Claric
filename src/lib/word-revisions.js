@@ -29,7 +29,7 @@ export class MutationSafetyError extends RevisionSafetyError {
 export const normalizeRevisionText = (text) => String(text || '').replace(/\r\n|\r/g, '\n').replace(/\n$/, '');
 
 /** Visible islands never span an insertion boundary or an earlier deletion. */
-export function revisionTextState(ooxml, { paragraph = false } = {}) {
+export function revisionTextState(ooxml, { paragraph = false, currentText = null } = {}) {
     const root = documentPartRoot(ooxml);
     if (!root) throw new RevisionSafetyError('Word revision XML is unreadable. Generate a fresh proposal.');
     let body = root.getElementsByTagNameNS(W, 'body')[0] || root;
@@ -38,7 +38,10 @@ export function revisionTextState(ooxml, { paragraph = false } = {}) {
     // arbitrary ranges must retain their genuine blank paragraphs.
     if (paragraph && body.namespaceURI === W && body.localName === 'body') {
         const paragraphs = Array.from(body.children).filter((node) => node.namespaceURI === W && node.localName === 'p');
-        if (paragraphs.length === 2 && emptyExportParagraph(paragraphs[1])) body = paragraphs[0];
+        if (paragraphs.length === 2 && (emptyExportParagraph(paragraphs[1])
+            || (typeof currentText === 'string' && emptyExportParagraph(paragraphs[1], true)
+                && revisionTextState(new XMLSerializer().serializeToString(paragraphs[0])).text
+                    === currentText.replace(/\r\n|\r/g, '\n')))) body = paragraphs[0];
     }
     const elements = [body, ...Array.from(body.getElementsByTagName('*'))];
     if (!elements.some((element) => element.namespaceURI === W)) {
@@ -96,33 +99,56 @@ export function revisionTextState(ooxml, { paragraph = false } = {}) {
             ? new XMLSerializer().serializeToString(body) : ooxml) };
 }
 
-function emptyExportParagraph(paragraph) {
+function emptyExportParagraph(paragraph, allowEmptyRevisionMarkers = false) {
     return Array.from(paragraph.getElementsByTagName('*')).every((node) => {
         if (node.namespaceURI !== W) return false;
-        if (PROTECTED.has(node.localName) || REVISIONS.has(node.localName)
+        if (PROTECTED.has(node.localName) || (REVISIONS.has(node.localName)
+            && !(allowEmptyRevisionMarkers && ['ins', 'del'].includes(node.localName)))
             || ['br', 'cr', 'tab', 'noBreakHyphen', 'sym', 'sectPr'].includes(node.localName)) return false;
-        return !['t', 'instrText'].includes(node.localName) || !(node.textContent || '');
+        return !['t', 'delText', 'instrText'].includes(node.localName) || !(node.textContent || '');
     });
 }
 
 /** Queue alongside existing loads, then resolve after the caller's sync. */
-export function queueRevisionRead(range) {
-    return typeof range.getOoxml === 'function' ? range.getOoxml() : null;
+export function queueRevisionRead(range, options = {}) {
+    if (typeof range.getOoxml !== 'function') return null;
+    const xml = range.getOoxml();
+    const currentText = options.paragraph
+        ? queueCurrentTextRead(typeof range.getRange === 'function' ? range.getRange('Content') : range) : null;
+    // Preserve the ClientResult value contract while pairing independent
+    // evidence that a revised, empty export paragraph is not native content.
+    return currentText ? { get value() { return xml.value; }, currentText } : xml;
 }
 
 export function resolveRevisionRead(range, read, options = {}) {
-    return read ? revisionTextState(read.value, options) : { text: range.text || '', hasRevisions: false,
+    return read ? revisionTextState(read.value, { ...options, currentText: read.currentText?.value }) : { text: range.text || '', hasRevisions: false,
         fingerprint: null, protectedStructure: false };
 }
 
-/** Verify final-view content after a strategy's writes without resetting it. */
-export async function verifyMutationText(context, range, expected, options = {}) {
-    const read = queueRevisionRead(range);
-    if (!read) return;
-    await context.sync();
-    const comparable = (text) => options.paragraph
-        ? String(text || '').replace(/\r\n|\r/g, '\n') : normalizeRevisionText(text);
-    if (comparable(resolveRevisionRead(range, read, options).text) !== comparable(expected)) {
-        throw new MutationSafetyError(new Error('Native read-back differs from the proposal. Inspect Word before retrying.'));
+/** Load read-back code before queuing writes, so a missing asset is read-only. */
+export async function loadMutationVerifier() {
+    return (await import(/* webpackChunkName: "word-mutation-verification" */ './word-mutation-verification.js')).verifyMutationText;
+}
+
+/** All callers share the same verifier, including paragraph replacement fallbacks. */
+export async function verifyMutationText(...args) {
+    return (await loadMutationVerifier())(...args);
+}
+
+/** Confirm tracking before any strategy queues its first text mutation. */
+export async function enableTrackedWrites(context) {
+    try {
+        context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+        await context.sync();
+    } catch (error) {
+        throw new RevisionSafetyError(`Could not enable tracked changes (${error.message}); no text was written.`);
     }
+}
+
+/** WordApi 1.4's final text avoids OOXML export-only paragraph boundaries. */
+export function queueCurrentTextRead(range) {
+    if (typeof range.getReviewedText !== 'function') return null;
+    if (typeof Office !== 'undefined' && Office.context?.requirements?.isSetSupported
+        && !Office.context.requirements.isSetSupported('WordApi', '1.4')) return null;
+    return range.getReviewedText(typeof Word !== 'undefined' ? Word.ChangeTrackingVersion?.current || 'Current' : 'Current');
 }

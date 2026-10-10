@@ -16,7 +16,7 @@
  *
  * @module lib/word-diff/block-replace
  */
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, enableTrackedWrites } from '../word-revisions.js';
 
 /**
  * Applies the "Block Replace" strategy.
@@ -33,6 +33,7 @@ import { RevisionSafetyError, MutationSafetyError, verifyMutationText } from '..
  * @returns {Promise<{strategy: string, insertions: number, deletions: number}>}
  */
 export async function applyBlockReplaceStrategy(context, range, newText, log, options = {}) {
+    await loadMutationVerifier();
     const trackChanges = options.trackChanges !== false;
     if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     log('Running block replace (final fallback)...', 'info');
@@ -43,13 +44,8 @@ export async function applyBlockReplaceStrategy(context, range, newText, log, op
 
     try {
         if (trackChanges && Word.ChangeTrackingMode) {
-            try {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-                await context.sync();
-                trackingEnabled = true;
-            } catch (e) {
-                throw new RevisionSafetyError(`Could not enable tracked changes (${e.message}); no text was written.`);
-            }
+            await enableTrackedWrites(context);
+            trackingEnabled = true;
         }
 
         // Get the content range
@@ -61,10 +57,10 @@ export async function applyBlockReplaceStrategy(context, range, newText, log, op
 
         // Insert new text after the deleted range
         // Using 'after' ensures it appears as a replacement in track changes
-        contentRange.insertText(newText, Word.InsertLocation.after);
+        const inserted = contentRange.insertText(newText, Word.InsertLocation.after);
 
         await context.sync();
-        await verifyMutationText(context, range, newText, options);
+        await verifyMutationText(context, range, newText, options, [inserted]);
         log('Block replacement applied.', 'info');
 
         return {
