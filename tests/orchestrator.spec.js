@@ -123,6 +123,69 @@ const log = () => {}; // No-op logger
 
 // --- Test Suites ---
 
+describe('processChunksParallel: chat replies are not document text', () => {
+  const config = { url: 'http://localhost:11434', apiKey: '', model: 'test-model' };
+  const REFUSAL = 'The Summary paragraph was not included in the text provided. '
+    + 'The section supplied for amendment contains only Recommendations, Risk assessment, and Budget.';
+
+  function chunkOf(id, paragraphs) {
+    return {
+      id,
+      paragraphs: paragraphs.map((text, i) => ({ index: i, text, headingLevel: 0 })),
+      startIndex: 0,
+      endIndex: paragraphs.length - 1,
+      tokenCount: 50,
+      sectionTitle: '',
+      overlapBefore: '',
+      oversized: false,
+    };
+  }
+
+  const paragraphs = [
+    'Recommendations', 'We recommend adopting the phased rollout described above.',
+    'Risk assessment', 'The overall delivery risk is moderate and manageable.',
+    'Budget', 'The projected budget is within the approved envelope.',
+  ];
+
+  async function run(response, warnings = []) {
+    return processChunksParallel([chunkOf('chunk-0', paragraphs)], {
+      config,
+      promptManager: mockPromptManager('amendment', { amendmentTemplate: 'Rewrite only the Summary paragraph.' }),
+      documentContext: mockDocumentContext(),
+      log: (message, type) => { if (type === 'warning') warnings.push(message); },
+      sendMessagesFn: mockSendMessages({ response }),
+    });
+  }
+
+  test('a refusal reply becomes "no change for this chunk" instead of an amendment', async () => {
+    const warnings = [];
+    const [result] = await run(REFUSAL, warnings);
+    expect(result.status).toBe('fulfilled');
+    expect(result.amendment).toBeNull();
+    expect(result.guard).toMatchObject({ metaReply: true });
+    expect(warnings.some((w) => /explanation instead of document text/.test(w))).toBe(true);
+  });
+
+  test('a genuine amendment of the chunk is kept', async () => {
+    const edited = paragraphs.map((p) => p.replace('moderate', 'low')).join('\n');
+    const [result] = await run(edited);
+    expect(result.amendment).toBe(edited);
+    expect(result.guard).toBeNull();
+  });
+
+  test('the prompt tells the model to echo the text instead of explaining', async () => {
+    let prompt = '';
+    await processChunksParallel([chunkOf('chunk-0', paragraphs)], {
+      config,
+      promptManager: mockPromptManager('amendment'),
+      documentContext: mockDocumentContext(),
+      log,
+      sendMessagesFn: async (_c, messages) => { prompt = messages.find((m) => m.role === 'user').content; return paragraphs.join('\n'); },
+    });
+    expect(prompt).toMatch(/output the text exactly as given/);
+  });
+});
+
 describe('processChunksParallel', () => {
   const defaultConfig = { url: 'http://localhost:11434', apiKey: '', model: 'test-model' };
 
