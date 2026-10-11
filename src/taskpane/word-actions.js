@@ -49,7 +49,6 @@ import {
 import { parseDocument } from '../lib/document-parser.js';
 import { chunkDocument } from '../lib/document-chunker.js';
 import { extractContext } from '../lib/context-extractor.js';
-import { processChunksParallel } from '../lib/orchestrator.js';
 import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
 import {
     buildIllustrationPrompt, buildImagePrompt, parseIllustration, sanitizeSvg,
@@ -63,7 +62,7 @@ import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
-import { loadTaskPlanner, loadFormatActions, loadFileQuestion, loadEditScope } from './task-module-loader.js';
+import { loadTaskPlanner, loadFormatActions, loadFileQuestion, loadEditScope, loadChunkProcessor } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
@@ -3054,6 +3053,8 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     const backendConfig = getActiveBackendConfig(appState);
     const concurrency = chunks.some(c => c.tokenCount > 8000) ? 4 : 6;
 
+    // Chunk processing runs only for whole-document skills, so it loads on demand.
+    const { processChunksParallel } = await loadChunkProcessor({ signal });
     const results = await processChunksParallel(chunks, {
         config: backendConfig,
         promptManager: promptShim,
@@ -3262,6 +3263,7 @@ export async function retryFailedChunks(deps, {
     setBusy(true);
     try {
         const chunks = failedResults.map((r) => r.chunk).filter(Boolean);
+        const { processChunksParallel } = await loadChunkProcessor({ signal: myController.signal });
         const results = await processChunksParallel(chunks, {
             config: backendConfig, promptManager: promptShim, documentContext,
             log, onProgress, onChunkToken, signal: myController.signal,

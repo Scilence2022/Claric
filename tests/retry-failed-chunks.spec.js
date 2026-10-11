@@ -268,6 +268,8 @@ describe('retryFailedChunks', () => {
         processChunksParallel.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
         const running = retryFailedChunks(deps, args);
         await retryFailedChunks(deps, args);
+        // Let the first retry finish loading its chunk processor on demand.
+        await new Promise((settle) => setTimeout(settle, 0));
         expect(processChunksParallel).toHaveBeenCalledTimes(1);
         const fulfilled = { chunkId: 'c', chunk, status: 'fulfilled', amendment: 'new' };
         resolve([fulfilled]);
