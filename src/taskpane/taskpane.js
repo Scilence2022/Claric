@@ -250,9 +250,12 @@ function updateModelPill() {
     const preset = getProviderPreset(appState.config.backend);
     const backendConfig = getActiveBackendConfig(appState);
     const label = preset ? preset.label : appState.config.backend;
+    const entry = appState.config.providers[appState.config.backend];
+    const profile = entry.profiles?.find((p) => p.id === entry.activeProfileId);
+    const profileLabel = entry.profiles?.length > 1 && profile ? ` / ${profile.name}` : '';
     const pill = document.getElementById('modelPill');
     if (pill) {
-        pill.textContent = `${label}: ${backendConfig.model || '(no model)'}`;
+        pill.textContent = `${label}${profileLabel}: ${backendConfig.model || '(no model)'}`;
         pill.title = 'Open settings';
     }
 }

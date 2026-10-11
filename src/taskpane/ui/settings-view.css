@@ -1,0 +1,64 @@
+/* Model and API-key controls load with the Settings view. */
+.profile-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
+}
+
+.model-input-row {
+    display: flex;
+    gap: var(--spacing-sm);
+}
+
+.model-input-row .form-control {
+    flex: 1 1 auto;
+}
+
+.model-combobox {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.model-dropdown {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--primary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    box-shadow: var(--shadow-lg);
+    z-index: 40;
+}
+
+.model-dropdown[hidden] {
+    display: none;
+}
+
+.model-dropdown-item {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.model-dropdown-item:hover {
+    background: var(--secondary-bg);
+}
+
+.model-dropdown-item.current {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.model-dropdown-empty {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    color: var(--secondary-text);
+}

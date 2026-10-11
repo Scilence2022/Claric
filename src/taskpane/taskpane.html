@@ -204,6 +204,19 @@
                         </select>
                     </div>
                     <div class="form-group">
+                        <label for="chatProfileSelect">API key configuration:</label>
+                        <select id="chatProfileSelect" class="form-control"></select>
+                        <div class="profile-actions">
+                            <button type="button" id="chatProfileAddBtn" class="btn btn-compact">Add API key</button>
+                            <button type="button" id="chatProfileRemoveBtn" class="btn btn-compact" disabled>Remove selected</button>
+                        </div>
+                        <small class="help-text">Each configuration keeps its own API key, endpoint, model and generation settings. Requests use the selected configuration.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="chatProfileName">Configuration name:</label>
+                        <input type="text" id="chatProfileName" class="form-control" placeholder="e.g., Personal or Team" autocomplete="off">
+                    </div>
+                    <div class="form-group">
                         <label for="modelSelect">Model:</label>
                         <div class="model-input-row">
                             <div class="model-combobox">
@@ -274,6 +287,19 @@
                             <option value="siliconflow">SiliconFlow Images</option>
                             <option value="custom">Custom (OpenAI-compatible)</option>
                         </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="imageProfileSelect">Image API key configuration:</label>
+                        <select id="imageProfileSelect" class="form-control"></select>
+                        <div class="profile-actions">
+                            <button type="button" id="imageProfileAddBtn" class="btn btn-compact">Add API key</button>
+                            <button type="button" id="imageProfileRemoveBtn" class="btn btn-compact" disabled>Remove selected</button>
+                        </div>
+                        <small class="help-text">Each configuration keeps its own API key, endpoint, image model and size.</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="imageProfileName">Configuration name:</label>
+                        <input type="text" id="imageProfileName" class="form-control" placeholder="e.g., Personal or Team" autocomplete="off">
                     </div>
                     <div class="form-group">
                         <label for="imageModelInput">Image model:</label>

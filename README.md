@@ -388,6 +388,16 @@ diff preferences. Configuration persists in localStorage. Switching hosting
 origins starts with separate settings. The activity log and connection or
 pending-comment indicators expose progress and failures.
 
+A provider can have multiple named **API key configurations** in
+**Settings → General**. Use **Add API key**, name the configuration (for example,
+Personal or Team), and enter its key. Each configuration saves its own endpoint,
+model and generation settings; image configurations also save their image size.
+Select a configuration before refreshing its model list or sending a request.
+Model suggestions are isolated by configuration and credentials, so keys with
+different model access do not share a catalog. Existing single-key settings
+remain the Default configuration. **Remove selected** deletes only that
+configuration, and at least one configuration is retained for each provider.
+
 </details>
 
 ## Setup
