@@ -24,6 +24,7 @@ describe('model capabilities', () => {
     ['ollama', 'gpt-oss:20b', 'ollama-gpt-oss', ['default', 'low', 'medium', 'high']],
     ['vllm', 'Qwen/Qwen3.5-35B-A3B', 'vllm-qwen3', ['default', 'off', 'low', 'medium', 'high']],
     ['deepseek', 'deepseek-v4-flash', 'deepseek-v4', ['default', 'off', 'low', 'high', 'max']],
+    ['deepseek', 'deepseek-flash', 'deepseek-v4', ['default', 'off', 'low', 'high', 'max']],
     ['glm', 'glm-4.7', 'glm-thinking-toggle', ['default', 'off', 'on']],
     ['glm', 'glm-5.2', 'glm-5.2', ['default', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']],
     ['glm', 'glm-5.3-flash', 'glm-5.3', ['default', 'low', 'high', 'max']],
@@ -136,6 +137,67 @@ describe('model capabilities', () => {
     expect(isTemperatureSupported(profile, 'low')).toBe(false);
     expect(isTemperatureSupported(profile, 'high')).toBe(false);
     expect(isTemperatureSupported(profile, 'default')).toBe(false);
+  });
+
+  describe('bare DeepSeek flash/pro ids (live /models: deepseek-flash)', () => {
+    test.each(['deepseek-flash', 'deepseek-pro', 'DeepSeek-Flash'])(
+      'deepseek/%s resolves to the V4 thinking profile',
+      (model) => {
+        const profile = getModelCapabilities('deepseek', model);
+        expect(profile.id).toBe('deepseek-v4');
+        expect(profile.protocol).toBe('deepseek-v4-thinking');
+      },
+    );
+
+    test('default leaves thinking to the provider but still withholds temperature', () => {
+      const profile = getModelCapabilities('deepseek', 'deepseek-flash');
+      expect(resolveThinkingLevel(profile, 'default')).toBe('default');
+      expect(buildThinkingRequest(profile, 'default')).toEqual({});
+      // Thinking is on by default upstream, so Temperature must not be sent.
+      expect(isTemperatureSupported(profile, 'default')).toBe(false);
+    });
+
+    test('off sends thinking.disabled and restores temperature', () => {
+      const profile = getModelCapabilities('deepseek', 'deepseek-flash');
+      expect(resolveThinkingLevel(profile, 'off')).toBe('off');
+      expect(buildThinkingRequest(profile, 'off')).toEqual({ thinking: { type: 'disabled' } });
+      expect(isTemperatureSupported(profile, 'off')).toBe(true);
+    });
+
+    test.each(['low', 'high', 'max'])('%s sends thinking.enabled plus reasoning_effort and no temperature', (level) => {
+      const profile = getModelCapabilities('deepseek', 'deepseek-flash');
+      expect(resolveThinkingLevel(profile, level)).toBe(level);
+      expect(buildThinkingRequest(profile, level)).toEqual({
+        thinking: { type: 'enabled' },
+        reasoning_effort: level,
+      });
+      expect(isTemperatureSupported(profile, level)).toBe(false);
+    });
+
+    test('levels outside low/high/max still collapse like the other V4 ids', () => {
+      const profile = getModelCapabilities('deepseek', 'deepseek-flash');
+      expect(resolveThinkingLevel(profile, 'medium')).toBe('high');
+      expect(resolveThinkingLevel(profile, 'xhigh')).toBe('high');
+    });
+
+    test('gateway providers match explicit upstream ids, namespaced or bare', () => {
+      for (const [provider, model] of [
+        ['custom', 'deepseek-flash'],
+        ['zhongkeyu', 'deepseek-pro'],
+        ['openrouter', 'deepseek/deepseek-flash'],
+        ['siliconflow', 'deepseek-ai/DeepSeek-Flash'],
+      ]) {
+        expect(getModelCapabilities(provider, model).id).toBe('deepseek-v4');
+      }
+    });
+
+    test('look-alike ids and non-DeepSeek providers stay on the generic profile', () => {
+      expect(getModelCapabilities('deepseek', 'deepseek-prover-v2').id).toBe('generic');
+      expect(getModelCapabilities('deepseek', 'deepseek-flashy').id).toBe('generic');
+      // The profile's wire fields are DeepSeek-specific: no leaking onto other first-party APIs.
+      expect(getModelCapabilities('openai', 'deepseek-flash').id).toBe('openai-legacy');
+      expect(getModelCapabilities('ollama', 'deepseek-flash').id).toBe('generic');
+    });
   });
 
   test('legacy DeepSeek models have no thinking dial', () => {
