@@ -1,4 +1,5 @@
-import { parseCommentDeletionRequest, prepareCommentDeletion, applyCommentDeletion } from '../src/taskpane/comment-actions.js';
+import { parseCommentDeletionRequest, prepareCommentDeletion, applyCommentDeletion, stageCommentDeletion } from '../src/taskpane/comment-actions.js';
+import { CAPABILITY_BY_TYPE } from '../src/lib/capability-catalog.js';
 
 function world(count = 3) {
     const w = { comments: [], selectionIds: ['c1'], selectionText: 'Selected passage', deleted: [],
@@ -49,6 +50,77 @@ test.each(['delete all resolved comments', 'delete all comments by Alice', 'dele
     'delete all code comments', 'delete all comments in chapter 2', 'resolve all comments', '删除所有已解决的批注'])(
 'never broadens filtered or unsupported instructions: %s', (instruction) => {
     expect(parseCommentDeletionRequest(instruction)).toBeNull();
+});
+
+// Wording the capability planner actually produced (offline pilot, 2026-10-11) plus close variants.
+test.each([
+    'Delete all Word comment threads and replies in the entire document.',
+    'Delete all comments in the entire document.',
+    'Delete all comments in the whole document',
+    'Delete all comments in this entire Word document.',
+    'Delete all comments in the document, including all comment threads and replies.',
+    'Delete all comments, including all comment threads and replies, in the document.',
+    'Delete all comment threads and replies in the document. Do not alter table content, structure, or formatting.',
+    'Delete all comments in the document. Keep the tables unchanged.',
+    'Delete all comments in the document and keep the tables unchanged.',
+    'Delete all comments in the document while leaving all other content intact.',
+    'Delete all comments in the document without modifying the text or formatting.',
+    'Delete all comments. Preserve the document structure and layout.',
+    "Delete all comments. Don’t change anything else.",
+    'Delete all comments (including replies) in the document.',
+    'Please delete every Word comment thread and reply throughout the document. Leave everything else unchanged.',
+])('accepts harmless planner variants as document-wide deletion: %s', (instruction) => {
+    expect(parseCommentDeletionRequest(instruction)).toEqual({ scope: 'document' });
+});
+test.each([
+    'Delete all Word comment threads and replies in the selection.',
+    'Delete all comments in the current selection. Keep the tables unchanged.',
+    'Delete all comments in the selection, including all replies.',
+])('keeps selection scope for harmless planner variants: %s', (instruction) => {
+    expect(parseCommentDeletionRequest(instruction)).toEqual({ scope: 'selection' });
+});
+test.each([
+    // filters on the comment set
+    'Delete all comments by Alice', 'Delete all resolved comments', 'Delete all Word comment threads and replies by Alice in the entire document.',
+    'Delete all unresolved comments in the document.', 'Delete all comments containing "TODO" in the document.',
+    'Delete all comments that mention the budget.', 'Delete all comments with replies.', 'Delete all comments older than 2024.',
+    'Delete all comments in the document except the first.', 'Delete all comments in the document, but only resolved ones.',
+    'Delete all comments and replies from Alice.', 'Delete all comments in the document by reviewer Bob.',
+    'Delete all comments in the document and resolve the rest.', 'Delete all comments in the document and polish the text.',
+    'Delete all comments in the document and then summarize it.',
+    // filters smuggled in as "preservation" clauses
+    'Delete all comments in the document. Do not delete resolved comments.',
+    'Delete all comments in the document. Do not delete comments by Alice.',
+    'Delete all comments in the document. Keep the resolved comments unchanged.',
+    'Delete all comments in the document. Keep Alice’s comments.',
+    'Delete all comments in the document. Keep the first comment intact.',
+    'Delete all comments in the document. Keep the replies unchanged.',
+    'Delete all comments in the document. Leave the comment text untouched.',
+    'Delete all comments in the document. Preserve the comment threads.',
+    'Delete all comments in the document, without deleting the resolved threads.',
+    'Delete all comments in the document. Do not alter table content, but keep comments from Alice.',
+    'Delete all comments in the document. Keep the tables.',
+    // not a deletion request at all
+    'Do not delete all comments.', "Don't delete all comments in the document.", 'Keep all comments in the document.',
+    'Reply to all comments in the document.', 'Resolve all comments in the document.', 'Delete all the tables in the document.',
+    'Delete all comments in the document and the selection.', 'Delete all comments in the selection from the document.',
+])('never widens filtered or unsupported planner wording to deletion of everything: %s', (instruction) => {
+    expect(parseCommentDeletionRequest(instruction)).toBeNull();
+});
+test('rejects pathological input quickly instead of backtracking', () => {
+    const started = Date.now();
+    for (const tail of [' and replies', ' and keep the tables unchanged', ' do not alter the text and']) {
+        expect(parseCommentDeletionRequest(`Delete all comments${tail.repeat(400)} by Alice`)).toBeNull();
+    }
+    expect(Date.now() - started).toBeLessThan(1000);
+});
+test('every instruction the capability catalog tells the planner to write is executable', () => {
+    const { description } = CAPABILITY_BY_TYPE.get('comment_management');
+    const examples = [...description.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    expect(examples).toEqual(expect.arrayContaining(['Delete all comments in the document.', 'Delete all comments in the selection.']));
+    for (const example of examples) expect(parseCommentDeletionRequest(example)).not.toBeNull();
+    expect(parseCommentDeletionRequest('Delete all comments in the selection.')).toEqual({ scope: 'selection' });
+    expect(parseCommentDeletionRequest('删除选区内的所有批注')).toEqual({ scope: 'selection' });
 });
 
 test('prepares threads and replies without changing Word, then deletes and verifies every thread', async () => {
@@ -142,4 +214,37 @@ test('unsupported hosts, empty selections, unsupported filters and preflight can
     const controller = new AbortController(); controller.abort();
     await expect(prepareCommentDeletion(w.deps, { instruction: 'delete all comments', signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
     expect(w.deleted).toEqual([]);
+});
+
+describe('planned comment_management tasks reach the real deletion path', () => {
+    const stage = (w, instruction) => {
+        const msg = { setStatus: jest.fn(), setText: jest.fn(), attachProposal: jest.fn() };
+        const makeProposalCard = jest.fn(() => ({ markApplied: jest.fn(), markWarning: jest.fn(), markError: jest.fn() }));
+        const turnDeps = { ...w.deps, isCurrentSession: () => true };
+        return { msg, makeProposalCard,
+            run: () => stageCommentDeletion({ turn: { instruction, planned: true }, msg, turnDeps, actions: {}, makeProposalCard }) };
+    };
+
+    test.each([
+        'Delete all Word comment threads and replies in the entire document.',
+        'Delete all comment threads and replies in the document. Do not alter table content, structure, or formatting.',
+    ])('stages the full-document deletion for the planner wording: %s', async (instruction) => {
+        const w = world();
+        const staged = stage(w, instruction);
+        expect(await staged.run()).toEqual({ status: 'staged' });
+        expect(staged.makeProposalCard).toHaveBeenCalledWith(expect.objectContaining({ countsText: '3 comment thread(s), 2 reply/replies' }));
+        expect(w.deleted).toEqual([]);
+    });
+
+    test('a planned task that carries a filter stays unsupported and reads nothing from Word', async () => {
+        const w = world();
+        for (const instruction of ['Delete all resolved Word comment threads and replies in the entire document.',
+            'Delete all comments in the document. Do not delete comments by Alice.']) {
+            const staged = stage(w, instruction);
+            await expect(staged.run()).rejects.toThrow(/not supported/);
+            expect(staged.makeProposalCard).not.toHaveBeenCalled();
+        }
+        expect(w.document.comments.load).not.toHaveBeenCalled();
+        expect(w.deleted).toEqual([]);
+    });
 });
