@@ -26,6 +26,7 @@ import {
   defangProtocolMarkers,
   restoreProtocolMarkers,
 } from './response-parser.js';
+import { classifyChunkReply } from './amendment-guard.js';
 
 /**
  * @typedef {import('./document-chunker.js').DocumentChunk} DocumentChunk
@@ -41,6 +42,8 @@ import {
  * @property {string|null} comment - Comment text (for comment/merged mode)
  * @property {string|null} error - Error message if rejected
  * @property {string|null} reasoning - Model chain-of-thought when streamed
+ * @property {{metaReply: boolean, reason: string}|null} guard - Set when the reply was
+ *   discarded as chat rather than document text (amendment is then null)
  * @property {DocumentChunk} chunk - Reference to original chunk
  */
 
@@ -137,6 +140,7 @@ function _composeChunkMessages(chunk, documentContext, promptManager, mode, comm
 - Preserve the original text structure. Only change content as instructed, not formatting.
 - Do NOT add any preamble like "Here is the amended text:" or similar.
 - Do NOT add any postscript explaining what was changed.
+- If the instruction does not apply to this text, or nothing here needs to change, output the text exactly as given. Never reply with an explanation, apology, question, or refusal: your whole reply is written into the document.
 - Do NOT include the delimiter markers [AMEND THIS TEXT], [END TEXT], [CONTEXT - DO NOT AMEND], or [END CONTEXT] in your output. These are input framing only.`;
   }
 
@@ -204,6 +208,8 @@ export async function processChunksParallel(chunks, options) {
   }
 
   const mode = promptManager.getActiveMode();
+  // The user's instruction, used to tell requested text from model chat.
+  const instructionText = promptManager.getActivePrompt('amendment')?.template || '';
   const results = new Array(chunks.length);
   let nextIndex = 0;
   let completed = 0;
@@ -244,6 +250,7 @@ export async function processChunksParallel(chunks, options) {
       comment: data.comment || null,
       error: data.error || null,
       reasoning: data.reasoning || null,
+      guard: data.guard || null,
       chunk,
     };
   }
@@ -355,9 +362,24 @@ export async function processChunksParallel(chunks, options) {
         comment = restoreProtocolMarkers(comment);
       }
 
+      // A chat reply about the chunk ("the section was not included in the
+      // text provided") is not the chunk's amended text. It is long enough to
+      // pass the reassembler's truncation guard and would be aligned as
+      // "delete every paragraph, insert the reply", so it is treated as "no
+      // change for this chunk" instead. Any comment in a merged reply stays.
+      let guard = null;
+      if (amendment) {
+        const verdict = classifyChunkReply(chunk.paragraphs.map((p) => p.text || ''), amendment, { instruction: instructionText });
+        if (verdict.metaReply) {
+          log(`Chunk ${chunk.id}: model replied with an explanation instead of document text; chunk left unchanged (${verdict.reason})`, 'warning');
+          guard = { metaReply: true, reason: verdict.reason };
+          amendment = null;
+        }
+      }
+
       completed++;
       chunkTimings.push(Date.now() - chunkStart);
-      results[chunkIndex] = makeResult(chunkIndex, chunk, 'fulfilled', { amendment, comment, reasoning: reasoningText });
+      results[chunkIndex] = makeResult(chunkIndex, chunk, 'fulfilled', { amendment, comment, reasoning: reasoningText, guard });
     } catch (error) {
       if (error.name === 'AbortError') {
         cancelled++;
