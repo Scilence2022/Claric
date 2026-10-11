@@ -19,6 +19,7 @@ import {
 } from '../lib/image-providers.js';
 import { THINKING_LEVEL_VALUES } from '../lib/model-capabilities.js';
 import { TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
+import { providerRequestConfig, normalizeProviderProfiles } from '../lib/provider-profiles.js';
 
 const KNOWN_RICHNESS = ['plain', 'headings', 'structured'];
 const KNOWN_THINKING_LEVELS = THINKING_LEVEL_VALUES;
@@ -92,7 +93,7 @@ appState.commentQueue = new CommentQueue((message, type) => appState.log(message
  */
 export function getActiveBackendConfig(state = appState) {
     const provider = state.config.backend;
-    return { ...state.config.providers[provider], provider };
+    return { ...providerRequestConfig(state.config.providers[provider]), provider };
 }
 
 /**
@@ -112,7 +113,7 @@ export function getActiveImageConfig(state = appState) {
     if (!image || !image.enabled) return null;
     const entry = image.providers && image.providers[image.provider];
     if (!entry || !entry.url || !entry.model) return null;
-    return { ...entry, provider: image.provider };
+    return { ...providerRequestConfig(entry), provider: image.provider };
 }
 
 /**
@@ -200,7 +201,9 @@ export function normalizeConfig(defaults, parsedInput) {
         for (const name of KNOWN_PROVIDERS) {
             const savedProvider = parsed.providers[name];
             if (savedProvider && typeof savedProvider === 'object') {
-                out.providers[name] = normalizeProviderEntry(defaults.providers[name], savedProvider);
+                out.providers[name] = normalizeProviderProfiles(savedProvider,
+                    normalizeProviderEntry(defaults.providers[name], savedProvider),
+                    (entry) => normalizeProviderEntry(defaults.providers[name], entry));
             }
         }
     } else if (parsed.backends && typeof parsed.backends === 'object') {
@@ -286,9 +289,9 @@ export function normalizeConfig(defaults, parsedInput) {
             for (const name of KNOWN_IMAGE_PROVIDERS) {
                 const saved = savedImage.providers[name];
                 if (saved && typeof saved === 'object') {
-                    out.imageGeneration.providers[name] = normalizeImageProviderEntry(
-                        defaults.imageGeneration.providers[name], saved, name
-                    );
+                    out.imageGeneration.providers[name] = normalizeProviderProfiles(saved,
+                        normalizeImageProviderEntry(defaults.imageGeneration.providers[name], saved, name),
+                        (entry) => normalizeImageProviderEntry(defaults.imageGeneration.providers[name], entry, name));
                 }
             }
         }

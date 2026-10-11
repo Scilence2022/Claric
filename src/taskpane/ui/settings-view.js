@@ -13,9 +13,14 @@
  * @module ui/settings-view
  */
 
+import './settings-view.css';
 import { testConnection as llmTestConnection } from '../../lib/llm-client.js';
 import { CATEGORIES } from '../../lib/prompt-manager.js';
 import { getProviderPreset } from '../../lib/providers.js';
+import {
+    ensureProviderProfiles, syncActiveProviderProfile, selectProviderProfile,
+    addProviderProfile, removeProviderProfile,
+} from '../../lib/provider-profile-actions.js';
 import { getImageProviderPreset, imageSizesFor, DEFAULT_IMAGE_SIZE } from '../../lib/image-providers.js';
 import { testImageConnection } from '../../lib/image-client.js';
 import {
@@ -44,17 +49,99 @@ let _lastFocusedElement = null;
 let _availableModels = [];
 const _modelsByProvider = new Map();
 let _connectionSequence = 0;
+let _imageConnectionSequence = 0;
+let _chatFormProvider = null;
 // Provider whose values are currently shown in the image form. The select
 // changes before the three text inputs are re-rendered, so this separate
 // value lets a change handler commit the old form to the old provider first.
 let _imageFormProvider = null;
-// Image model suggestions per provider id (in-memory only, same lifetime as
-// the chat list cache): swapping image providers swaps the cached list, and
-// Refresh repopulates only the provider whose form is visible.
+// Both model caches are scoped to provider/profile and checked against the
+// endpoint and key. Editing credentials immediately hides the old catalog.
 const _imageModelsByProvider = new Map();
 let _imageModels = [];
 let _chatCombo = null;
 let _imageCombo = null;
+
+function modelCacheKey(provider, entry) {
+    return JSON.stringify([provider, entry.activeProfileId || 'default']);
+}
+
+function modelConnectionIdentity(provider, entry) {
+    return JSON.stringify([modelCacheKey(provider, entry), entry.url, entry.apiPath, entry.apiKey]);
+}
+
+function cachedModels(cache, provider, entry) {
+    const saved = cache.get(modelCacheKey(provider, entry));
+    return saved?.identity === modelConnectionIdentity(provider, entry) ? saved.models : [];
+}
+
+function cacheModels(cache, provider, entry, models) {
+    cache.set(modelCacheKey(provider, entry), { identity: modelConnectionIdentity(provider, entry), models });
+}
+
+function refreshCachedModels() {
+    const config = appState.config;
+    _availableModels = cachedModels(_modelsByProvider, config.backend, config.providers[config.backend]);
+    const image = config.imageGeneration;
+    if (image) _imageModels = cachedModels(_imageModelsByProvider, image.provider, image.providers[image.provider]);
+    _chatCombo?.refreshIfOpen();
+    _imageCombo?.refreshIfOpen();
+}
+
+function renderProfileControls(entry, prefix) {
+    const select = document.getElementById(`${prefix}ProfileSelect`);
+    if (!select) return;
+    const profiles = entry.profiles || [{ id: 'default', name: 'Default' }];
+    select.textContent = '';
+    for (const profile of profiles) {
+        const option = document.createElement('option');
+        option.value = profile.id;
+        option.textContent = profile.name;
+        select.appendChild(option);
+    }
+    select.value = entry.activeProfileId || 'default';
+    document.getElementById(`${prefix}ProfileName`).value = profiles.find((p) => p.id === select.value)?.name || 'Default';
+    document.getElementById(`${prefix}ProfileRemoveBtn`).disabled = profiles.length <= 1;
+}
+
+function syncProfileName(entry, prefix) {
+    const name = document.getElementById(`${prefix}ProfileName`)?.value.trim();
+    const profile = entry.profiles?.find((p) => p.id === entry.activeProfileId);
+    if (profile && name) profile.name = name;
+    const option = document.getElementById(`${prefix}ProfileSelect`)?.selectedOptions[0];
+    if (option && profile) option.textContent = profile.name;
+    syncActiveProviderProfile(entry);
+}
+
+function initProfileControls(prefix, image, onTextInput) {
+    const select = document.getElementById(`${prefix}ProfileSelect`);
+    if (!select) return;
+    const entry = () => {
+        const config = image ? appState.config.imageGeneration : appState.config;
+        return config.providers[image ? config.provider : config.backend];
+    };
+    const change = (action) => {
+        syncChatFormToProvider();
+        syncImageFormToProvider();
+        action(entry());
+        _connectionSequence += 1;
+        _imageConnectionSequence += 1;
+        _chatCombo?.close();
+        _imageCombo?.close();
+        updateUIFromConfig();
+        saveSettings();
+    };
+    select.addEventListener('change', () => change((current) => selectProviderProfile(current, select.value)));
+    document.getElementById(`${prefix}ProfileAddBtn`).addEventListener('click', () => change(addProviderProfile));
+    document.getElementById(`${prefix}ProfileRemoveBtn`).addEventListener('click', () => change((current) => {
+        const id = modelCacheKey(image ? appState.config.imageGeneration.provider : appState.config.backend, current);
+        if (removeProviderProfile(current)) (image ? _imageModelsByProvider : _modelsByProvider).delete(id);
+    }));
+    document.getElementById(`${prefix}ProfileName`).addEventListener('input', () => {
+        ensureProviderProfiles(entry());
+        onTextInput();
+    });
+}
 
 /**
  * Wires the settings slide-over and prompt management UI. Called once at startup.
@@ -114,6 +201,12 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
     // connection probe per character. The header Save button is an explicit
     // affordance for the same saveSettings path.
     const debouncedSaveSettings = debounce(saveSettings, 400);
+    const onChatTextInput = () => {
+        syncChatFormToProvider();
+        refreshCachedModels();
+        debouncedSaveSettings();
+    };
+    initProfileControls('chat', false, onChatTextInput);
     const modelInput = document.getElementById('modelSelect');
     // Chat model combobox: clicking/focusing shows the full list, typing
     // filters (shared behavior with the image model field, see
@@ -126,7 +219,7 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
         getCurrent: () => getActiveBackendConfig(appState).model,
         onInput: () => {
             updateGenerationControls(modelInput.value);
-            debouncedSaveSettings();
+            onChatTextInput();
         },
         onPick: (id) => {
             updateGenerationControls(id);
@@ -134,11 +227,12 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
         },
     });
     document.getElementById('refreshModelsBtn').addEventListener('click', () => {
+        syncChatFormToProvider();
         addLog('Refreshing model list...', 'info');
         testConnectionUI();
     });
-    document.getElementById('endpointUrl').addEventListener('input', debouncedSaveSettings);
-    document.getElementById('apiKey').addEventListener('input', debouncedSaveSettings);
+    document.getElementById('endpointUrl').addEventListener('input', onChatTextInput);
+    document.getElementById('apiKey').addEventListener('input', onChatTextInput);
     document.getElementById('trackChangesCheckbox').addEventListener('change', saveSettings);
     document.getElementById('lineDiffCheckbox').addEventListener('change', saveSettings);
     document.getElementById('thinkingLevelSelect').addEventListener('change', (e) => {
@@ -162,6 +256,8 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
             // the old form to the provider it belonged to before switching;
             // otherwise the old key/URL/model would be copied to the new entry.
             syncImageFormToProvider(_imageFormProvider);
+            _imageConnectionSequence += 1;
+            _imageCombo?.close();
             if (appState.config.imageGeneration) {
                 appState.config.imageGeneration.provider = imageProviderEl.value;
             }
@@ -175,8 +271,10 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
             // only for localStorage persistence and the connection side effect;
             // it must not be the sole owner of the user's latest keystroke.
             syncImageFormToProvider();
+            refreshCachedModels();
             debouncedSaveSettings();
         };
+        initProfileControls('image', true, onImageTextInput);
         document.getElementById('imageEndpointUrl').addEventListener('input', onImageTextInput);
         document.getElementById('imageModelInput').addEventListener('input', onImageTextInput);
         document.getElementById('imageApiKey').addEventListener('input', onImageTextInput);
@@ -286,13 +384,14 @@ function switchSettingsTab(name) {
 }
 
 /**
- * Reads the settings form into appState.config and persists it.
- * Re-tests the connection and refreshes the model pill afterwards.
- * Returns true on success, false when persistSettings throws.
+ * Commits the visible chat fields before changing provider/profile, so a
+ * pending debounced save cannot overwrite another configuration.
  */
-function saveSettings() {
+function syncChatFormToProvider(provider = _chatFormProvider || appState.config.backend) {
     const config = appState.config;
-    const backend = document.getElementById('backendSelect').value;
+    const backend = provider;
+    const entry = config.providers[backend];
+    if (!entry) return;
     const endpointUrl = document.getElementById('endpointUrl').value.trim();
     const apiKey = document.getElementById('apiKey').value.trim();
     const selectedModel = document.getElementById('modelSelect').value;
@@ -300,7 +399,6 @@ function saveSettings() {
     const temperatureValue = Number(document.getElementById('temperatureInput').value);
     const profile = getModelCapabilities(backend, selectedModel || config.providers[backend].model);
 
-    config.backend = backend;
     config.providers[backend].url = endpointUrl || config.providers[backend].url;
     config.providers[backend].apiKey = apiKey;
     // Every provider's model is editable: users can type a model id not
@@ -310,6 +408,13 @@ function saveSettings() {
     config.providers[backend].temperature = Number.isFinite(temperatureValue) && temperatureValue >= 0 && temperatureValue <= 2
         ? temperatureValue
         : 1;
+    syncProfileName(entry, 'chat');
+}
+
+/** Persists settings and refreshes connection status and the model pill. */
+function saveSettings() {
+    const config = appState.config;
+    syncChatFormToProvider();
     config.trackChangesEnabled = document.getElementById('trackChangesCheckbox').checked;
     if (!config.trackChangesEnabled && config.autoApplyChanges) {
         config.autoApplyChanges = false;
@@ -330,6 +435,7 @@ function saveSettings() {
     config.commentGranularity = parseInt(document.getElementById('commentGranularity').value || '0', 10);
     config.includeCommentsInSelection = document.getElementById('includeCommentsInSelectionCheckbox').checked;
     saveImageSettings(config);
+    refreshCachedModels();
 
     try {
         persistSettings(appState);
@@ -396,6 +502,7 @@ export function syncImageFormToProvider(provider, config = appState.config) {
     if (sizeEl && imageSizesFor(formProvider).includes(sizeEl.value)) {
         entry.size = sizeEl.value;
     }
+    syncProfileName(entry, 'image');
     return true;
 }
 
@@ -437,6 +544,7 @@ function updateImageUIFromConfig() {
     _imageFormProvider = image.provider;
 
     const entry = image.providers[image.provider] || {};
+    renderProfileControls(entry, 'image');
     document.getElementById('imageEndpointUrl').value = entry.url || '';
     document.getElementById('imageModelInput').value = entry.model || '';
     document.getElementById('imageApiKey').value = entry.apiKey || '';
@@ -454,10 +562,12 @@ function updateImageUIFromConfig() {
     // Provider switched: show that provider's cached suggestions, if any —
     // Refresh still fetches fresh, but a cached list must not leak across
     // providers (a GLM model id is meaningless for OpenAI Images).
-    _imageModels = _imageModelsByProvider.get(image.provider) || [];
+    _imageModels = cachedModels(_imageModelsByProvider, image.provider, entry);
     if (_imageCombo) _imageCombo.refreshIfOpen();
 
     updateImageProviderHints();
+    const status = document.getElementById('imageTestStatus');
+    if (status) status.textContent = '';
 }
 
 /**
@@ -515,24 +625,27 @@ async function handleRefreshImageModels() {
 
     const preset = getImageProviderPreset(requestedProvider);
     const label = preset ? preset.label : requestedProvider;
+    const identity = modelConnectionIdentity(requestedProvider, entry);
+    const sequence = ++_imageConnectionSequence;
+    const isCurrent = () => sequence === _imageConnectionSequence
+        && image.provider === requestedProvider
+        && identity === modelConnectionIdentity(requestedProvider, image.providers[requestedProvider]);
     addLog(`Refreshing image model list for ${label}...`, 'info');
     try {
         const result = await llmTestConnection({ url: entry.url, apiPath: entry.apiPath, apiKey: entry.apiKey });
-        const currentProvider = providerEl ? providerEl.value : null;
-        if (currentProvider !== requestedProvider) return;
+        if (!isCurrent()) return;
         let ids = result.models.map((m) => m.id);
         const imageish = ids.filter((id) => IMAGE_MODEL_PATTERN.test(id));
         if (imageish.length > 0) ids = imageish;
         // The configured model stays selectable even when unlisted (or when
         // the heuristic filtered it out).
         if (entry.model && !ids.includes(entry.model)) ids.unshift(entry.model);
-        _imageModelsByProvider.set(requestedProvider, ids);
+        cacheModels(_imageModelsByProvider, requestedProvider, entry, ids);
         _imageModels = ids;
         addLog(`Found ${ids.length} image model(s) for ${label}.`, 'success');
         if (_imageCombo) _imageCombo.refreshIfOpen();
     } catch (error) {
-        const currentProvider = providerEl ? providerEl.value : null;
-        if (currentProvider !== requestedProvider) return;
+        if (!isCurrent()) return;
         addLog(`${label} image model refresh failed: ${error.message}`, 'error');
     }
 }
@@ -556,12 +669,15 @@ async function handleTestImageConnection() {
     }
 
     button.disabled = true;
+    const image = appState.config.imageGeneration;
+    const identity = modelConnectionIdentity(image.provider, image.providers[image.provider]);
+    const isCurrent = () => identity === modelConnectionIdentity(image.provider, image.providers[image.provider]);
     statusEl.textContent = 'Generating a test image...';
     try {
         const result = await testImageConnection(config, addLog);
-        statusEl.textContent = result.ok ? `OK — ${result.detail}` : `Failed — ${result.detail}`;
+        if (isCurrent()) statusEl.textContent = result.ok ? `OK — ${result.detail}` : `Failed — ${result.detail}`;
     } catch (error) {
-        statusEl.textContent = `Failed — ${error.message}`;
+        if (isCurrent()) statusEl.textContent = `Failed — ${error.message}`;
     } finally {
         button.disabled = false;
     }
@@ -576,6 +692,8 @@ export function updateUIFromConfig() {
     const modelSelect = document.getElementById('modelSelect');
 
     document.getElementById('backendSelect').value = config.backend;
+    _chatFormProvider = config.backend;
+    renderProfileControls(config.providers[config.backend], 'chat');
     document.getElementById('endpointUrl').value = backendConfig.url;
     document.getElementById('apiKey').value = backendConfig.apiKey;
     document.getElementById('trackChangesCheckbox').checked = config.trackChangesEnabled;
@@ -588,7 +706,7 @@ export function updateUIFromConfig() {
     document.getElementById('temperatureInput').value = String(Number.isFinite(backendConfig.temperature) ? backendConfig.temperature : 1);
     // Restore this provider's cached suggestions, then rebuild the
     // capability-aware thinking options before selecting the saved level.
-    _availableModels = _modelsByProvider.get(config.backend) || [];
+    _availableModels = cachedModels(_modelsByProvider, config.backend, config.providers[config.backend]);
     updateGenerationControls(modelSelect.value, backendConfig.thinkingLevel);
 
     const richnessSelect = document.getElementById('docRichnessSelect');
@@ -662,6 +780,8 @@ function updateGenerationControls(modelOverride, preferredLevel) {
  * settings, refreshes hints, and re-tests the connection.
  */
 function handleBackendSwitch() {
+    syncChatFormToProvider();
+    syncImageFormToProvider();
     appState.config.backend = document.getElementById('backendSelect').value;
     // Any in-flight connection probe belongs to the previous provider now;
     // its results must not repopulate this provider's model list or status.
@@ -718,6 +838,9 @@ export async function testConnectionUI() {
     const preset = getProviderPreset(backend);
     const backendLabel = preset ? preset.label : backend;
     const sequence = ++_connectionSequence;
+    const identity = modelConnectionIdentity(backend, appState.config.providers[backend]);
+    const isCurrent = () => sequence === _connectionSequence && backend === appState.config.backend
+        && identity === modelConnectionIdentity(backend, appState.config.providers[backend]);
 
     setConnectionStatus('connecting', `${backendLabel}: Connecting...`);
 
@@ -729,13 +852,12 @@ export async function testConnectionUI() {
 
     try {
         const result = await llmTestConnection(backendConfig);
-        _modelsByProvider.set(backend, result.models.map((m) => m.id));
-        if (sequence !== _connectionSequence || backend !== appState.config.backend) return;
+        if (!isCurrent()) return;
         setConnectionStatus('connected', `${backendLabel}: Connected`);
         addLog(`Connected to ${backendLabel}! Found ${result.models.length} model(s).`, 'success');
         populateModels(result.models);
     } catch (error) {
-        if (sequence !== _connectionSequence || backend !== appState.config.backend) return;
+        if (!isCurrent()) return;
         if (error.message && (error.message.includes('401') || error.message.includes('403'))) {
             setConnectionStatus('error', `${backendLabel}: API key required`);
             addLog(`${backendLabel} authentication failed: ${error.message}`, 'error');
@@ -766,7 +888,7 @@ function populateModels(models) {
     if (current && !ids.has(current)) {
         _availableModels.unshift(current);
     }
-    _modelsByProvider.set(appState.config.backend, [..._availableModels]);
+    cacheModels(_modelsByProvider, appState.config.backend, appState.config.providers[appState.config.backend], [..._availableModels]);
 
     if (_chatCombo) _chatCombo.refreshIfOpen();
     // A newly listed model can activate a model-specific capability profile.
