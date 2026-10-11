@@ -135,14 +135,20 @@ export function inferHeadingLevel(text) {
  * @property {number} totalTokens - Sum of all paragraph token estimates
  */
 
+/** Paragraphs read per sync; matches the addressable-edit snapshot batches. */
+export const PARSE_BATCH_SIZE = 24;
+
 /**
  * Parses the active Word document into a structured, paragraph-indexed model.
  *
- * Uses batched Word API load pattern to minimize context.sync() calls:
+ * Uses batched Word API loads:
  *   Sync 1: Load paragraph collection items
- *   Sync 2: Load text, styleBuiltIn, isListItem for all paragraphs
- *   Sync 3: Load listItem details for list paragraphs (if any)
- *   Sync 4: Load parentTableOrNullObject for all paragraphs
+ *   Syncs 2..n: Per batch of PARSE_BATCH_SIZE paragraphs, load text/style/list
+ *     flags, the revision-aware OOXML export and table membership. Each
+ *     OOXML export is a full package, so queuing one per paragraph for the
+ *     whole document in a single sync overwhelms Word on long documents
+ *     (the failure the addressable-edit snapshot already batches around).
+ *   Last sync: Load listItem details for list paragraphs (if any)
  *
  * Empty (whitespace-only) paragraphs are excluded from the output.
  *
@@ -156,12 +162,28 @@ export async function parseDocument() {
         paragraphs.load('items');
         await context.sync();
 
-        // Batch load paragraph properties (including custom style name)
-        for (const para of paragraphs.items) {
-            para.load('text,style,styleBuiltIn,isListItem');
+        // Paragraph properties, revision-aware text and table membership, one
+        // bounded batch per sync.
+        const revisionReads = [];
+        const tableChecks = [];
+        for (let start = 0; start < paragraphs.items.length; start += PARSE_BATCH_SIZE) {
+            const batch = paragraphs.items.slice(start, start + PARSE_BATCH_SIZE);
+            for (const para of batch) {
+                para.load('text,style,styleBuiltIn,isListItem');
+                revisionReads.push(queueRevisionRead(para, { paragraph: true }));
+                const tc = para.parentTableOrNullObject;
+                tc.load('isNullObject');
+                tableChecks.push(tc);
+            }
+            try {
+                await context.sync();
+            } catch (error) {
+                const wrapped = new Error(`Word could not read paragraphs ${start + 1}–${start + batch.length}: ${error?.message || String(error)}`,
+                    { cause: error });
+                Object.assign(wrapped, { code: error?.code, debugInfo: error?.debugInfo });
+                throw wrapped;
+            }
         }
-        const revisionReads = paragraphs.items.map((p) => queueRevisionRead(p, { paragraph: true }));
-        await context.sync();
 
         // Load list item details for list paragraphs
         const listParagraphs = [];
@@ -175,15 +197,6 @@ export async function parseDocument() {
         if (listParagraphs.length > 0) {
             await context.sync();
         }
-
-        // Check table membership for all paragraphs
-        const tableChecks = [];
-        for (const para of paragraphs.items) {
-            const tc = para.parentTableOrNullObject;
-            tc.load('isNullObject');
-            tableChecks.push(tc);
-        }
-        await context.sync();
 
         // Build in-memory model (no more sync calls)
         for (let i = 0; i < paragraphs.items.length; i++) {

@@ -287,3 +287,52 @@ test.each(['structural', 'fallback'])('%s application confirms tracking before q
   }
   expect(document.context.document.changeTrackingMode).toBe('Off');
 });
+
+test('a multi-paragraph section never falls back to a whole-range rewrite that would delete blank spacers', async () => {
+  // Blank spacer between the two stored paragraphs: present in Word, absent
+  // from the amendment (the parser skips it).
+  const document = nativeDocument([storedTexts[0], '', storedTexts[1]]);
+  document.contentRanges[2].getOoxml.mockImplementation(() => { throw new Error('GeneralException'); });
+  const { result, log, onChunkApplied } = await apply();
+
+  expect(result).toMatchObject({ amendmentsApplied: 0, appliedParagraphs: 0, appliedChunkIds: [],
+    failedChunkIds: ['section'], partialChunkIds: [], uncertainChunkIds: [] });
+  expect(result.errors[0]).toMatch(/GeneralException.*multi-paragraph section cannot fall back/);
+  expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+  expect(applySentenceDiffStrategy).not.toHaveBeenCalled();
+  expect(document.range.insertText).not.toHaveBeenCalled();
+  expect(document.states.map((state) => state.text)).toEqual([storedTexts[0], '', storedTexts[1]]);
+  expect(log).not.toHaveBeenCalledWith(expect.stringContaining('falling back to range-level'), 'warning');
+  expect(onChunkApplied).toHaveBeenCalledWith('section', { applied: false, error: true, partial: false, uncertain: false });
+  expect(document.context.document.changeTrackingMode).toBe('Off');
+});
+
+test('a range without a paragraph collection refuses the fallback when its text spans paragraphs', async () => {
+  const document = fallbackDocument('TrackMine');
+  document.range.getOoxml.mockImplementation(() => ({ value: `<w:document xmlns:w="${W}"><w:body>`
+    + '<w:p><w:r><w:t>First paragraph.</w:t></w:r></w:p><w:p/><w:p><w:r><w:t>Second paragraph.</w:t></w:r></w:p>'
+    + '</w:body></w:document>' }));
+  const result = await applyChunkResults([{ chunkId: 'section', status: 'fulfilled',
+    amendment: 'First paragraph.\nSecond paragraph, revised.', chunk: { id: 'section' } }],
+  new Map([['section', '_section']]), { trackChangesEnabled: true, lineDiffEnabled: false, log: jest.fn() });
+
+  expect(result).toMatchObject({ amendmentsApplied: 0, failedChunkIds: ['section'], partialChunkIds: [], uncertainChunkIds: [] });
+  expect(result.errors[0]).toContain('multi-paragraph section cannot fall back');
+  expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+  expect(document.range.insertText).not.toHaveBeenCalled();
+  expect(document.context.document.changeTrackingMode).toBe('TrackMine');
+});
+
+test('a pre-1.4 host refuses tracked writes even though office.js defines the tracking enum', async () => {
+  const document = nativeDocument(storedTexts);
+  global.Office = { context: { requirements: { isSetSupported: (name, version) => version !== '1.4' } } };
+  try {
+    const { result } = await apply();
+    expect(result).toMatchObject({ amendmentsApplied: 0, failedChunkIds: ['section'], uncertainChunkIds: [] });
+    expect(result.errors[0]).toContain('cannot enable tracked changes');
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+    expect(document.states.map((state) => state.text)).toEqual(storedTexts);
+  } finally {
+    delete global.Office;
+  }
+});

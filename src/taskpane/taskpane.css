@@ -1835,6 +1835,19 @@ textarea.form-control {
 
 .confirm-dialog h2 { font-size: 18px; }
 .confirm-dialog p { margin-top: 12px; }
+.confirm-dialog .confirm-args {
+    margin-top: 12px;
+    max-height: 160px;
+    overflow: auto;
+    padding: var(--spacing-sm);
+    background: var(--secondary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    font-family: 'SF Mono', Consolas, monospace;
+    font-size: var(--font-size-xs);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
 .modal-actions, .proposal-card-actions, .proposal-card-head { flex-wrap: wrap; }
 .settings-panel, .model-combobox, .proposal-card-title { min-width: 0; }
 .help-text, .proposal-card-status, .model-dropdown-item { overflow-wrap: anywhere; }

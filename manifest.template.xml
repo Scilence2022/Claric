@@ -14,9 +14,10 @@
   ${APP_DOMAINS_BLOCK}<Hosts>
     <Host Name="Document"/>
   </Hosts>
-  <!-- WordApi 1.3: table creation (insertTable, table style/headerRowCount).
-       Runtime code degrades gracefully on older hosts; this declaration keeps
-       the add-in installable everywhere while documenting the baseline. -->
+  <!-- WordApi 1.3 keeps the add-in installable on older hosts, where Q&A and
+       summaries work. Every document edit needs WordApi 1.4 (tracked changes,
+       bookmarks); the taskpane checks it at startup and refuses edit turns
+       before calling the model. -->
   <Requirements>
     <Sets DefaultMinVersion="1.1">
       <Set Name="WordApi" MinVersion="1.3"/>

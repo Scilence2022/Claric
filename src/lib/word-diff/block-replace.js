@@ -16,7 +16,7 @@
  *
  * @module lib/word-diff/block-replace
  */
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, enableTrackedWrites } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, enableTrackedWrites, hostSupportsTrackedChanges } from '../word-revisions.js';
 
 /**
  * Applies the "Block Replace" strategy.
@@ -35,7 +35,7 @@ import { RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutat
 export async function applyBlockReplaceStrategy(context, range, newText, log, options = {}) {
     await loadMutationVerifier();
     const trackChanges = options.trackChanges !== false;
-    if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
+    if (trackChanges && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     log('Running block replace (final fallback)...', 'info');
 
     // True only when THIS strategy enabled tracking (and must restore it).

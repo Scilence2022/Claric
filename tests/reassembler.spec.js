@@ -241,6 +241,10 @@ describe('applyChunkResults', () => {
     jest.clearAllMocks();
   });
 
+  // The ordering/count/comment tests below run through the range-level
+  // fallback (their bookmark mocks expose no paragraph collection), which is
+  // only permitted for single-paragraph ranges, so each staged section is one
+  // paragraph of text.
   test('processes chunks in reverse order (highest startIndex first)', async () => {
     const applicationOrder = [];
     applyTokenMapStrategy.mockImplementation(async (context, range, original, amended, log) => {
@@ -254,16 +258,16 @@ describe('applyChunkResults', () => {
     ];
 
     const bookmarkRanges = {
-      '_wdpbm0': { text: 'Para 0\nPara 1\nPara 2' },
-      '_wdpbm1': { text: 'Para 3\nPara 4\nPara 5' },
-      '_wdpbm2': { text: 'Para 6\nPara 7\nPara 8' },
+      '_wdpbm0': { text: 'Para 0 Para 1 Para 2' },
+      '_wdpbm1': { text: 'Para 3 Para 4 Para 5' },
+      '_wdpbm2': { text: 'Para 6 Para 7 Para 8' },
     };
     const mock = createMockWordRun(paragraphs, bookmarkRanges);
     global.Word.run = mock.wordRun;
 
-    const chunk0 = mockChunk('chunk-0', 0, 'Para 0\nPara 1\nPara 2', 0, 2);
-    const chunk1 = mockChunk('chunk-1', 1, 'Para 3\nPara 4\nPara 5', 3, 5);
-    const chunk2 = mockChunk('chunk-2', 2, 'Para 6\nPara 7\nPara 8', 6, 8);
+    const chunk0 = mockChunk('chunk-0', 0, 'Para 0 Para 1 Para 2', 0, 2);
+    const chunk1 = mockChunk('chunk-1', 1, 'Para 3 Para 4 Para 5', 3, 5);
+    const chunk2 = mockChunk('chunk-2', 2, 'Para 6 Para 7 Para 8', 6, 8);
 
     const results = [
       makeChunkResult('chunk-0', 0, 'fulfilled', { amendment: 'Amended 0', chunk: chunk0 }),
@@ -297,12 +301,12 @@ describe('applyChunkResults', () => {
     ];
 
     const bookmarkRanges = {
-      '_wdpbm0': { text: 'Original clause text here\nMore text' },
+      '_wdpbm0': { text: 'Original clause text here More text' },
     };
     const mock = createMockWordRun(paragraphs, bookmarkRanges);
     global.Word.run = mock.wordRun;
 
-    const chunk = mockChunk('chunk-0', 0, 'Original clause text here\nMore text', 0, 1);
+    const chunk = mockChunk('chunk-0', 0, 'Original clause text here More text', 0, 1);
 
     const results = [
       makeChunkResult('chunk-0', 0, 'fulfilled', { amendment: 'Revised clause text', chunk }),
@@ -482,8 +486,8 @@ describe('applyChunkResults', () => {
     ];
 
     const bookmarkRanges = {
-      '_wdpbm0': { text: 'Para 0\nPara 1' },
-      '_wdpbm1': { text: 'Para 2\nPara 3' },
+      '_wdpbm0': { text: 'Para 0 Para 1' },
+      '_wdpbm1': { text: 'Para 2 Para 3' },
     };
     const mock = createMockWordRun(paragraphs, bookmarkRanges);
     // Track insertComment calls
@@ -492,8 +496,8 @@ describe('applyChunkResults', () => {
     });
     global.Word.run = mock.wordRun;
 
-    const chunk0 = mockChunk('chunk-0', 0, 'Para 0\nPara 1', 0, 1);
-    const chunk1 = mockChunk('chunk-1', 1, 'Para 2\nPara 3', 2, 3);
+    const chunk0 = mockChunk('chunk-0', 0, 'Para 0 Para 1', 0, 1);
+    const chunk1 = mockChunk('chunk-1', 1, 'Para 2 Para 3', 2, 3);
 
     const results = [
       makeChunkResult('chunk-0', 0, 'fulfilled', { amendment: 'Amended 0', comment: 'Comment on chunk 0', chunk: chunk0 }),
@@ -526,16 +530,16 @@ describe('applyChunkResults', () => {
     ];
 
     const bookmarkRanges = {
-      '_wdpbm0': { text: 'Para 0\nPara 1' },
-      '_wdpbm1': { text: 'Para 2\nPara 3' },
-      '_wdpbm2': { text: 'Para 4\nPara 5' },
+      '_wdpbm0': { text: 'Para 0 Para 1' },
+      '_wdpbm1': { text: 'Para 2 Para 3' },
+      '_wdpbm2': { text: 'Para 4 Para 5' },
     };
     const mock = createMockWordRun(paragraphs, bookmarkRanges);
     global.Word.run = mock.wordRun;
 
-    const chunk0 = mockChunk('chunk-0', 0, 'Para 0\nPara 1', 0, 1);
-    const chunk1 = mockChunk('chunk-1', 1, 'Para 2\nPara 3', 2, 3);
-    const chunk2 = mockChunk('chunk-2', 2, 'Para 4\nPara 5', 4, 5);
+    const chunk0 = mockChunk('chunk-0', 0, 'Para 0 Para 1', 0, 1);
+    const chunk1 = mockChunk('chunk-1', 1, 'Para 2 Para 3', 2, 3);
+    const chunk2 = mockChunk('chunk-2', 2, 'Para 4 Para 5', 4, 5);
 
     const results = [
       makeChunkResult('chunk-0', 0, 'fulfilled', { amendment: 'Amended 0', comment: 'Comment 0', chunk: chunk0 }),
@@ -1355,18 +1359,18 @@ describe('applyChunkResults re-anchoring', () => {
       { text: 'Para 3' }, { text: 'Para 4' }, { text: 'Para 5' },
     ];
     const bookmarkRanges = {
-      '_wdpbm0': { text: 'Para 0\nPara 1\nPara 2' },
-      '_wdpbm1': { text: 'Para 3\nPara 4\nPara 5' },
+      '_wdpbm0': { text: 'Para 0 Para 1 Para 2' },
+      '_wdpbm1': { text: 'Para 3 Para 4 Para 5' },
     };
     const mock = createMockWordRun(paragraphs, bookmarkRanges);
     global.Word.run = mock.wordRun;
 
     const results = [
       makeChunkResult('chunk-0', 0, 'fulfilled', {
-        amendment: 'Amended 0', chunk: mockChunk('chunk-0', 0, 'Para 0\nPara 1\nPara 2', 0, 2),
+        amendment: 'Amended 0', chunk: mockChunk('chunk-0', 0, 'Para 0 Para 1 Para 2', 0, 2),
       }),
       makeChunkResult('chunk-1', 1, 'fulfilled', {
-        amendment: 'Amended 1', chunk: mockChunk('chunk-1', 1, 'Para 3\nPara 4\nPara 5', 3, 5),
+        amendment: 'Amended 1', chunk: mockChunk('chunk-1', 1, 'Para 3 Para 4 Para 5', 3, 5),
       }),
     ];
     const bookmarkMap = new Map([

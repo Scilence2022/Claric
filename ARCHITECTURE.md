@@ -326,32 +326,45 @@ assets/                        # Add-in icons (16/32/64/80px)
 ## Turn Routing
 
 `routeTurn(text, {hasSelection, skills, allowCompound})` in `conversation.js` is
-a pure function, evaluated in this exact order:
+a pure function. Every intent detector first normalizes the wording through
+`src/lib/intent-text.js`: negated clauses ("不要修改文档，…", "…but don't change
+the formatting") and formatting-preservation clauses are constraints, not
+actions, so they are removed before matching; a polite wrapper around an action
+verb ("Can you fix…?", "你能帮我润色…吗？") is a request, not a question, while
+capability questions and bodies that still ask something stay questions. The
+pipelines always receive the full instruction. `tests/routing-corpus.spec.js`
+holds realistic EN/ZH phrasings with their expected routes; extend it with
+every reported misroute. The order:
 
 1. Empty input → no turn.
 2. `/skill args` match → the skill's pipeline (chat/context → Q&A, summary →
    summary doc, comment → selection or document comment, amendment → selection
    edit or document edit).
-3. `countIntentFamilies(text) >= 2` → COMPOUND: the task planner
-   (`planDocumentTasks`) decomposes the instruction into ordered tasks
+3. A review/check request with no change verb ("Check the numbering",
+   "检查所有表格") → DOC_QA, unless an image or table region is selected
+   (those keep their object sessions).
+4. `countIntentFamilies(text) >= 2`, or a question followed by a separate
+   action step ("Tell me what changed, then fix the dates") → COMPOUND: the
+   task planner (`planDocumentTasks`) decomposes the instruction into ordered tasks
    (`insert` / `format` / `edit` / `append` / `illustration` / `qa`), and each
    task is dispatched to its pipeline in user-stated order. Planning failure
    re-routes with compound disabled.
-4. Illustration intent (`ILLUSTRATION_INTENT_RE`) → ILLUSTRATION.
-5. Append intent (`APPEND_INTENT_RE`) → DOC_APPEND.
-6. Format intent (`FORMAT_INTENT_RE`) → FORMAT (selection scope when a
+5. Illustration intent (`ILLUSTRATION_INTENT_RE`) → ILLUSTRATION (resize
+   wording such as "make the chart bigger" is image management instead).
+6. Append intent (`APPEND_INTENT_RE`) → DOC_APPEND.
+7. Format intent (`FORMAT_INTENT_RE`) → FORMAT (selection scope when a
    selection exists, else document scope).
-7. Cleanup intent (`CLEANUP_INTENT_RE`, "删除多余的空段落" / "delete empty
+8. Cleanup intent (`CLEANUP_INTENT_RE`, "删除多余的空段落" / "delete empty
    paragraphs") → CLEANUP — always document scope, deterministic (no LLM:
    the parser never sees blank paragraphs, so the text pipelines structurally
    cannot serve this).
-8. Selection present → question lead means Q&A with the selection as focused
+9. Selection present → question lead means Q&A with the selection as focused
    context; a review intent without edit verbs ("检查选择的表格的内容") is
    also Q&A (analysis, not a rewrite); otherwise SELECTION_EDIT.
-9. Edit intent (`EDIT_INTENT_RE`, EN + ZH verbs; update/enrich verbs require a
+10. Edit intent (`EDIT_INTENT_RE`, EN + ZH verbs; update/enrich verbs require a
    document-ish object) → DOC_EDIT (whole-document amendment).
-10. Question lead (`QUESTION_LEAD_RE`) → DOC_QA (never planner-mediated).
-11. Zero intent hits and not a question → COMPOUND, where the planner
+11. Question lead (`QUESTION_LEAD_RE`) → DOC_QA (never planner-mediated).
+12. Zero intent hits and not a question → COMPOUND, where the planner
     classifies the ambiguous instruction; falls back to DOC_QA on failure.
 
 Planned tasks are mapped to turns by `turnForTask`; a planned `edit` task

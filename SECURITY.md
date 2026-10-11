@@ -23,6 +23,13 @@ What this project does and does not promise:
 - **LLM output sanitization** — generated summary markup is sanitized with
   DOMPurify before insertion into Word. This limits active markup; it does not
   prevent semantic prompt injection, incorrect edits, or external tool side effects.
+- **MCP tool calls** — the `/mcp` turn lets the model call tools on servers you
+  configure, with document text in its prompt that may carry injected
+  instructions. A call to any tool its server does not declare read-only
+  (`annotations.readOnlyHint: true`) waits for your approval (allow once, allow
+  for the rest of the run, or deny) and is refused when no approval prompt is
+  available. The read-only hint is the server's own claim: configure only
+  servers you trust.
 - **Static server** — the production server (`scripts/docker-server.cjs`)
   rejects path traversal, malformed percent-encoded URLs, URLs containing
   control characters (a decoded NUL used to crash the process via

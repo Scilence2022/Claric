@@ -41,7 +41,7 @@
   "author": "Lifu Song",
   "license": "MIT",
   "dependencies": {
-    "dompurify": "^3.4.14",
+    "dompurify": "^3.4.16",
     "dotenv": "^17.2.3",
     "mammoth": "^1.12.2",
     "marked": "^17.0.4",

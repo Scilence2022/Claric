@@ -230,7 +230,7 @@ describe('MCP bridge cancellation', () => {
         const started = deferred();
         const error = new DOMException('cancelled', 'AbortError');
         const execute = createMcpToolExecutor(new Map([['read', {
-            originalName: 'read', client: { callTool: () => { started.resolve(); return result.promise; } },
+            originalName: 'read', readOnly: true, client: { callTool: () => { started.resolve(); return result.promise; } },
         }]]));
         const outcome = runToolLoop({ ...loopArgs, execute, send: async () => '{"tool":"read"}' });
         await started.promise;
