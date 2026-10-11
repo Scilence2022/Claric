@@ -860,6 +860,35 @@ describe('model-specific generation parameters', () => {
     expect(body.temperature).toBe(0.2);
   });
 
+  test('bare deepseek-flash withholds temperature at the default level (thinking is on upstream)', async () => {
+    const body = await bodyFor({
+      url: '/deepseek', apiKey: '', provider: 'deepseek', model: 'deepseek-flash',
+      thinkingLevel: 'default', temperature: 0.2,
+    });
+    expect(body).not.toHaveProperty('thinking');
+    expect(body).not.toHaveProperty('reasoning_effort');
+    expect(body).not.toHaveProperty('temperature');
+  });
+
+  test('bare deepseek-flash sends thinking.enabled plus reasoning_effort and no temperature', async () => {
+    const body = await bodyFor({
+      url: '/deepseek', apiKey: '', provider: 'deepseek', model: 'deepseek-flash',
+      thinkingLevel: 'high', temperature: 0.2,
+    });
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('high');
+    expect(body).not.toHaveProperty('temperature');
+  });
+
+  test('bare deepseek-flash Off disables thinking and restores temperature', async () => {
+    const body = await bodyFor({
+      url: '/deepseek', apiKey: '', provider: 'deepseek', model: 'deepseek-flash',
+      thinkingLevel: 'off', temperature: 0.2,
+    });
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body.temperature).toBe(0.2);
+  });
+
   test('GLM-5.2 maps canonical levels to thinking + effort', async () => {
     const body = await bodyFor({
       url: '/glm', apiPath: '/api/paas/v4', apiKey: 'k', provider: 'glm', model: 'glm-5.2',
