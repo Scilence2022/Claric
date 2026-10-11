@@ -191,6 +191,10 @@ src/
                                #   prepare+apply pairs, gated doc-scope runs,
                                #   planner, Q&A, summary, selection watch,
                                #   reveal/locate
+    word-table-actions.js      # Lazy "table-actions" chunk: table patch
+                               #   prepare/apply, style ops, mixed-selection
+                               #   apply, table creation (word-actions keeps
+                               #   same-named wrappers; table reads stay there)
     agent-actions.js           # Word glue for the tool-calling stack:
                                #   prepareTableToolEdit (chained table edits →
                                #   tablePatch proposal), prepareImageToolEdit +
@@ -798,6 +802,7 @@ Chat-driven UI split into focused modules:
 - `skills.js` — skill registry: built-in skills plus PromptManager prompts as custom slash commands
 - `message-shape.js` — the single definition of a persisted chat message (id generation, field validation, attachment/citation metadata). `sessions.js` normalizes through it on the way into localStorage and `ui/chat-view.js` on the way back into the DOM, so a new message field cannot be validated on one leg and dropped on the other
 - `word-actions.js` — the pipelines (selection/append/format/illustration/cleanup prepare+apply pairs, gated doc-scope runs, planner, Q&A, summary) with explicit args instead of DOM/active-prompt reads
+- `word-table-actions.js` — table write paths (multi-cell patch prepare/apply, style ops, mixed-selection apply, table creation) in a lazily loaded chunk; `word-actions.js` wrappers load it via `task-module-loader.js` only once a table region or table turn is confirmed
 - `ui/chat-view.js` — message list, streaming body, per-turn work log (auto-collapse to "Worked for Ns · M steps"), model activity region (reasoning dimmed, per-section split, pin-to-bottom auto-scroll that disengages when the user scrolls up), progress bar with ETA, citation pills
 - `ui/proposal-card.js` — staged proposals: per-change checkbox list with inline diffs and locate buttons, selective apply ("Applied X of Y"), per-item applied feedback (dimmed + status tag) driven by `markItemApplied`, pause/resume ("Continue applying") via `setPaused`, terminal applied/rejected/warning/error states, optional image preview (illustration)
 - `ui/diff-view.js` — display-only `<del>/<ins>` inline diff via diff-match-patch `diff_cleanupSemantic`
