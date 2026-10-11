@@ -1118,24 +1118,30 @@ export function createConversation(deps) {
         const beforeChars = amendedChunks.reduce((s, r) => s + chunkOriginalText(r).length, 0);
         const afterChars = amendedChunks.reduce((s, r) => s + (r.amendment || '').length, 0);
         msg.setStatus('');
+        const notice = outcome.scope?.notice || null;
+        // One selectable change per amended section: inline diff plus a
+        // locate-in-document link; Apply writes only the checked sections.
+        // Paragraph deletions are easy to miss in a section-sized diff, so the
+        // label states them.
+        const items = amendedChunks.map((r) => {
+            const citation = chunkCitation(r.chunk);
+            const removed = r.amendment ? r.deletedParagraphs || 0 : 0;
+            return {
+                id: r.chunk.id,
+                label: removed ? `${citation.label} — deletes ${removed} paragraph(s)` : citation.label,
+                before: chunkOriginalText(r),
+                after: r.amendment || (outcome.retryProposal ? `Comment: ${r.comment}` : ''),
+                searchText: citation.searchText,
+            };
+        });
 
         const card = makeProposalCard({
             title: `Proposed edits to ${amendedChunks.length} section(s)`,
             beforeChars,
             afterChars,
             comment: null,
-            // One selectable change per amended section: inline diff plus a
-            // locate-in-document link; Apply writes only the checked sections.
-            items: amendedChunks.map((r) => {
-                const citation = chunkCitation(r.chunk);
-                return {
-                    id: r.chunk.id,
-                    label: citation.label,
-                    before: chunkOriginalText(r),
-                    after: r.amendment || (outcome.retryProposal ? `Comment: ${r.comment}` : ''),
-                    searchText: citation.searchText,
-                };
-            }),
+            notice,
+            items,
             onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
             onApply: async (selectedChunkIds, applyCtx = {}) => {
                 appState.isProcessingDoc = true;
@@ -1213,16 +1219,7 @@ export function createConversation(deps) {
             title: `Proposed edits to ${amendedChunks.length} section(s)`,
             state: 'pending',
             countsText: `${beforeChars} → ${afterChars} chars`,
-            items: amendedChunks.map((r) => {
-                const citation = chunkCitation(r.chunk);
-                return {
-                    id: r.chunk.id,
-                    label: citation.label,
-                    before: chunkOriginalText(r),
-                    after: r.amendment || (outcome.retryProposal ? `Comment: ${r.comment}` : ''),
-                    searchText: citation.searchText,
-                };
-            }),
+            items,
         });
     }
 

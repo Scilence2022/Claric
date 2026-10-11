@@ -264,6 +264,7 @@ function buildImageDiffElement(item) {
  * @param {function(string)} [args.onLocate] - Locate-in-document callback
  *   (receives the item's searchText)
  * @param {string} [args.comment] - Optional comment text (merged mode)
+ * @param {string} [args.notice] - Optional scope or safety notice shown above the items
  * @param {function(Array<string|number>|undefined)} args.onApply - Async
  *   apply callback; receives the selected item ids when items are given
  * @param {function()} [args.onReject] - Reject callback
@@ -277,7 +278,7 @@ function buildImageDiffElement(item) {
  *   released the busy flags early, letting a second pipeline interleave.
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string), markItemApplied: function(string, object), setPaused: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, onApply, onReject, registerController, setApplyBusy, isBlocked, applyLabel = 'Apply as tracked changes' }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, notice, onApply, onReject, registerController, setApplyBusy, isBlocked, applyLabel = 'Apply as tracked changes' }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -314,6 +315,12 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     const tablePreviewEl = renderTablePreview(tablePreview);
     if (tablePreviewEl) el.appendChild(tablePreviewEl);
 
+    if (notice) {
+        const noticeEl = document.createElement('div');
+        noticeEl.className = 'proposal-card-comment proposal-card-notice';
+        noticeEl.textContent = notice;
+        el.appendChild(noticeEl);
+    }
     if (comment) {
         const commentEl = document.createElement('div');
         commentEl.className = 'proposal-card-comment';

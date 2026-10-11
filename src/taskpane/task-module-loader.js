@@ -18,6 +18,8 @@ export const loadFileQuestion = (options) => loadLazyModule('file-question',
     () => import(/* webpackChunkName: "file-question" */ '../lib/file-question.js'), { label: 'reference reading tools', ...options });
 export const loadMcpRuntime = (options) => loadLazyModule('mcp-runtime',
     () => import(/* webpackChunkName: "mcp-runtime" */ '../lib/mcp-runtime.js'), { label: 'MCP tools', ...options });
+export const loadEditScope = (options) => loadLazyModule('edit-scope',
+    () => import(/* webpackChunkName: "edit-scope" */ '../lib/edit-scope.js'), { label: 'edit scope guard', ...options });
 export const loadCommentActions = (options) => loadLazyModule('comment-actions',
     () => import(/* webpackChunkName: "comment-actions" */ './comment-actions.js'), { label: 'comment tools', ...options });
 

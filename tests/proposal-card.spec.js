@@ -29,6 +29,14 @@ function makeCard(overrides = {}) {
 }
 
 describe('createProposalCard', () => {
+  test('a scope notice is shown as text, separate from a model comment', () => {
+    const card = makeCard({ items: makeItems(), notice: 'Limited to <b>Abstract</b>. 2 model edit(s) outside it were discarded.' });
+    const notice = card.el.querySelector('.proposal-card-notice');
+    expect(notice.textContent).toBe('Limited to <b>Abstract</b>. 2 model edit(s) outside it were discarded.');
+    expect(notice.querySelector('b')).toBeNull();
+    expect(makeCard({ items: makeItems() }).el.querySelector('.proposal-card-notice')).toBeNull();
+  });
+
   test('a non-retryable failure retains its original error and prevents replay or revival', async () => {
     const onApply = jest.fn();
     const card = makeCard({ onApply, items: makeItems() });
