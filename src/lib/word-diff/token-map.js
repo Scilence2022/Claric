@@ -34,7 +34,7 @@ import DiffMatchPatch from './diff-wordmode.js';
 import { tryRevisionDiff } from './revision-diff.js';
 import { applySentenceDiffStrategy } from './sentence-diff.js';
 import { _occurrenceIndex, applyCharDiffStrategy } from './char-diff.js';
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges } from '../word-revisions.js';
 
 /** Word/punctuation/whitespace tokenization — MUST match the regex
  *  diff_wordMode tokenizes with (diff-wordmode.js), since the diff walk
@@ -62,7 +62,7 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
     const revised = await tryRevisionDiff(context, range, originalText, newText, log, options);
     if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
-    if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
+    if (trackChanges && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     log('Running word-level diff...', 'info');
 
     let insertions = 0;

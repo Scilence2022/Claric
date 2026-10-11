@@ -74,6 +74,9 @@ export const appState = {
     processDocController: null, // AbortController for document-scope runs
     chatController: null,       // AbortController for chat Q&A streaming
     supportsComments: false,    // set during initialize() via WordApi 1.4 check
+    // Tracked changes + bookmarks (WordApi 1.4) back every document write.
+    // Unknown hosts stay true; the write paths still refuse unsupported hosts.
+    supportsTrackedChanges: true,
     supportsTables: false,      // set during initialize() via WordApi 1.3 check
     platform: 'unknown',        // set during initialize() via Office.context.platform
     // Logging indirection so the CommentQueue can be constructed before the

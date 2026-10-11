@@ -1,7 +1,7 @@
 /** Map final-view differences to verified Word ranges, preserving earlier revisions. */
 import DiffMatchPatch from '../vendor/diff-match-patch.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState, normalizeRevisionText,
-    RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier } from '../word-revisions.js';
+    RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, hostSupportsTrackedChanges } from '../word-revisions.js';
 
 const MAX_TARGETS = 256;
 const MAX_CANDIDATES = 1024;
@@ -177,7 +177,7 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         const { hunks, targets } = planEdits(state, expected);
         if (!hunks.length) return { strategy: 'revision', insertions: 0, deletions: 0, replacements: 0 };
         const ownsTracking = options.trackChanges !== false;
-        if (ownsTracking && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
+        if (ownsTracking && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
         await locate(context, range, targets, options);
         if (ownsTracking) context.document.load('changeTrackingMode');
         const baseline = queueRevisionRead(range, options);

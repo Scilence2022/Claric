@@ -206,8 +206,9 @@ supports every Claric operation. Current defaults live in
   servers can still involve external services. Verify every enabled route.
 - **External tools can have side effects:** MCP tools do not directly edit the
   Word document through Claric's document-edit path, but their servers may
-  modify external systems. Only enable servers and tools you trust; Word
-  proposal review is not an approval boundary for external tool effects.
+  modify external systems. Claric asks before each call to a tool that its
+  server does not declare read-only; that declaration is the server's own
+  claim, so only enable servers and tools you trust.
 - **Review remains necessary:** AI output can be wrong, omit material, or change
   meaning. Formatting preservation and tracked revisions are best-effort and
   host-dependent. Keep backups and inspect text, tables, images, and comments.
@@ -356,10 +357,12 @@ paragraphs containing inline pictures. Application reports the removal count.
 
 Configure HTTP Streamable MCP servers in **Settings → MCP Servers**, then use
 `/mcp <instruction>` to call enabled tools. Servers can supply resources and
-prompt templates; tool output appears in the work log. Tool permissions and
-external side effects belong to the connected server, not Word's proposal
-review system. CORS-restricted servers may need a trusted same-origin proxy
-using `CUSTOM_PROXY_PATH` and `CUSTOM_PROXY_TARGET`.
+prompt templates; tool output appears in the work log. Before calling a tool
+that its server does not mark read-only (`readOnlyHint`), Claric shows the tool,
+server and arguments and asks you to allow it once, allow it for the rest of
+the run, or deny it; decisions are recorded in the activity log. Read-only
+tools and resource reads run without asking. CORS-restricted servers may need a
+trusted same-origin proxy using `CUSTOM_PROXY_PATH` and `CUSTOM_PROXY_TARGET`.
 
 ### Skill Packages (SKILL.md)
 

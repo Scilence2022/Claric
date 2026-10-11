@@ -22,7 +22,7 @@
 import DiffMatchPatch from './diff-wordmode.js';
 import { tryRevisionDiff } from './revision-diff.js';
 import { applyBlockReplaceStrategy } from './block-replace.js';
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges } from '../word-revisions.js';
 
 /**
  * Tokenizes text into sentences in OCCURRENCE order. A sentence boundary is
@@ -128,7 +128,7 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
     const revised = await tryRevisionDiff(context, range, text1, text2, log, options);
     if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
-    if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
+    if (trackChanges && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     log('Running sentence-level diff...', 'info');
 
     let insertions = 0;

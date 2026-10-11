@@ -493,15 +493,16 @@ describe('parseDocument', () => {
     // --- Word API interaction ---
 
     describe('Word API interaction', () => {
-        test('calls context.sync() multiple times for batch loading', async () => {
+        test('enumerates paragraphs before loading their properties', async () => {
             mockParagraphItems = [
                 createMockParagraph({ text: 'Text' })
             ];
 
             await parseDocument();
 
-            // At minimum: items load, properties load, table checks
-            expect(syncCallCount).toBeGreaterThanOrEqual(3);
+            // Items load, then one property batch (bounded batching is
+            // covered in document-parser-batching.spec.js).
+            expect(syncCallCount).toBe(2);
         });
 
         test('untrack is called on all paragraph proxy objects', async () => {

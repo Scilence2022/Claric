@@ -10,6 +10,7 @@ const {
     importServerPrompts,
     RESOURCE_TOOL_SPECS,
     MAX_MCP_RESULT_CHARS,
+    MCP_APPROVAL,
 } = require('../src/lib/mcp-tools.js');
 const { defineTool } = require('../src/lib/tool-registry.js');
 
@@ -89,7 +90,8 @@ describe('createMcpToolExecutor', () => {
     function setup(resultsByName) {
         const client = makeClient(resultsByName);
         const { mapping } = buildLoopTools([
-            { name: 's', client, mcpTools: [{ name: 'greet', description: '', inputSchema: {} }] },
+            { name: 's', client, mcpTools: [{ name: 'greet', description: '', inputSchema: {},
+                annotations: { readOnlyHint: true } }] },
         ]);
         return { client, execute: createMcpToolExecutor(mapping) };
     }
@@ -137,6 +139,91 @@ describe('createMcpToolExecutor', () => {
         expect(observation.ok).toBe(true);
         expect(observation.result.length).toBeLessThan(big.length);
         expect(observation.result).toMatch(/\[truncated/);
+    });
+});
+
+describe('MCP tool-call approval', () => {
+    function setup(confirmCall, annotations) {
+        const client = makeClient({});
+        const { mapping } = buildLoopTools([
+            { name: 'mail', client, mcpTools: [{ name: 'send_email', description: '', inputSchema: {}, annotations }] },
+        ]);
+        return { client, execute: createMcpToolExecutor(mapping, { confirmCall }) };
+    }
+
+    test('records the server-declared read-only hint in the mapping', () => {
+        const { mapping } = buildLoopTools([{ name: 's', client: makeClient({}), mcpTools: [
+            { name: 'search', annotations: { readOnlyHint: true } },
+            { name: 'write', annotations: { readOnlyHint: false } },
+            { name: 'plain' },
+        ] }]);
+        expect([...mapping.values()].map((entry) => entry.readOnly)).toEqual([true, false, false]);
+    });
+
+    test('a tool not declared read-only is refused when no approver is available', async () => {
+        const { client, execute } = setup(undefined);
+        const observation = await execute('send_email', { to: 'x@example.com' });
+        expect(observation).toEqual({ ok: false, error: expect.stringContaining("needs the user's approval") });
+        expect(client.callTool).not.toHaveBeenCalled();
+    });
+
+    test('the approver sees the server, original tool name and arguments', async () => {
+        const confirm = jest.fn(async () => MCP_APPROVAL.ONCE);
+        const { client, execute } = setup(confirm);
+        await execute('send_email', { to: 'x@example.com' });
+        expect(confirm).toHaveBeenCalledWith({ toolName: 'send_email', tool: 'send_email', serverName: 'mail',
+            args: { to: 'x@example.com' } });
+        expect(client.callTool).toHaveBeenCalledWith('send_email', { to: 'x@example.com' });
+    });
+
+    test('a declined call never reaches the server and tells the model not to retry', async () => {
+        const { client, execute } = setup(jest.fn(async () => MCP_APPROVAL.DENY));
+        const observation = await execute('send_email', {});
+        expect(observation).toEqual({ ok: false, error: expect.stringContaining('declined') });
+        expect(observation.error).toContain('Do not retry');
+        expect(client.callTool).not.toHaveBeenCalled();
+    });
+
+    test('an unexpected approver answer counts as a refusal', async () => {
+        const { client, execute } = setup(jest.fn(async () => true));
+        expect((await execute('send_email', {})).ok).toBe(false);
+        expect(client.callTool).not.toHaveBeenCalled();
+    });
+
+    test('"once" asks again on the next call; "run" approves the tool for the rest of the run', async () => {
+        const once = jest.fn(async () => MCP_APPROVAL.ONCE);
+        const first = setup(once);
+        await first.execute('send_email', {});
+        await first.execute('send_email', {});
+        expect(once).toHaveBeenCalledTimes(2);
+
+        const run = jest.fn(async () => MCP_APPROVAL.RUN);
+        const second = setup(run);
+        await second.execute('send_email', {});
+        await second.execute('send_email', {});
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(second.client.callTool).toHaveBeenCalledTimes(2);
+    });
+
+    test('read-only tools and the synthetic resource tools run without asking', async () => {
+        const confirm = jest.fn();
+        const readOnly = setup(confirm, { readOnlyHint: true });
+        await readOnly.execute('send_email', {});
+        const docs = makeClient({});
+        docs.listResources = async () => [];
+        const { mapping } = buildLoopTools([
+            { name: 'resources', client: createResourceClient([{ name: 'docs', client: docs }]), mcpTools: RESOURCE_TOOL_SPECS },
+        ]);
+        await createMcpToolExecutor(mapping, { confirmCall: confirm })('mcp_list_resources', {});
+        expect(confirm).not.toHaveBeenCalled();
+        expect(readOnly.client.callTool).toHaveBeenCalledTimes(1);
+    });
+
+    test('cancelling while approval is pending propagates the AbortError', async () => {
+        const error = new DOMException('cancelled', 'AbortError');
+        const { client, execute } = setup(jest.fn(async () => { throw error; }));
+        await expect(execute('send_email', {})).rejects.toBe(error);
+        expect(client.callTool).not.toHaveBeenCalled();
     });
 });
 

@@ -16,6 +16,8 @@ export const loadTaskGraph = (options) => loadLazyModule('task-graph',
     () => import(/* webpackChunkName: "task-planner" */ '../lib/task-runtime/task-graph.js'), { label: 'task execution tools', ...options });
 export const loadFileQuestion = (options) => loadLazyModule('file-question',
     () => import(/* webpackChunkName: "file-question" */ '../lib/file-question.js'), { label: 'reference reading tools', ...options });
+export const loadMcpRuntime = (options) => loadLazyModule('mcp-runtime',
+    () => import(/* webpackChunkName: "mcp-runtime" */ '../lib/mcp-runtime.js'), { label: 'MCP tools', ...options });
 export const loadCommentActions = (options) => loadLazyModule('comment-actions',
     () => import(/* webpackChunkName: "comment-actions" */ './comment-actions.js'), { label: 'comment tools', ...options });
 

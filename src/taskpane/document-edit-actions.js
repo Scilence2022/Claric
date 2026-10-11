@@ -1,6 +1,6 @@
 /** Word adapter for addressable prose edits. Only applyDocumentEdit writes text. */
 import { getHeadingLevel, mapStyleToHeadingLevel, inferHeadingLevel } from '../lib/document-parser.js';
-import { revisionTextState } from '../lib/word-revisions.js';
+import { revisionTextState, hostSupportsTrackedChanges } from '../lib/word-revisions.js';
 import { paragraphStructureFingerprint } from '../lib/ooxml-fingerprint.js';
 import { runDocumentEditSession } from '../lib/document-edit-session.js';
 import { DOCUMENT_EDIT_LIMITS } from '../lib/document-model.js';
@@ -368,7 +368,7 @@ export async function applyDocumentEdit(deps, proposal, { signal } = {}) {
         const previousMode = context.document.changeTrackingMode;
         const written = [];
         try {
-            if (deps.appState.config.trackChangesEnabled !== false && !Word.ChangeTrackingMode) throw new Error('This Word host cannot enable tracked changes.');
+            if (deps.appState.config.trackChangesEnabled !== false && !hostSupportsTrackedChanges()) throw new Error('This Word host cannot enable tracked changes.');
             if (Word.ChangeTrackingMode) context.document.changeTrackingMode = deps.appState.config.trackChangesEnabled !== false
                 ? Word.ChangeTrackingMode.trackAll : Word.ChangeTrackingMode.off;
             const replacements = patch.changes.filter((c) => c.kind === 'replace');
