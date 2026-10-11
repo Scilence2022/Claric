@@ -135,6 +135,20 @@ export async function verifyMutationText(...args) {
     return (await loadMutationVerifier())(...args);
 }
 
+/**
+ * True when this Word host can write tracked changes (WordApi 1.4:
+ * Document.changeTrackingMode). The Word.ChangeTrackingMode enum ships with
+ * office.js on every host, so on its own it is not evidence of support; the
+ * requirement set is checked when Office exposes it.
+ *
+ * @returns {boolean}
+ */
+export function hostSupportsTrackedChanges() {
+    if (typeof Word === 'undefined' || !Word.ChangeTrackingMode) return false;
+    const requirements = typeof Office !== 'undefined' ? Office.context?.requirements : null;
+    return typeof requirements?.isSetSupported === 'function' ? requirements.isSetSupported('WordApi', '1.4') : true;
+}
+
 /** Confirm tracking before any strategy queues its first text mutation. */
 export async function enableTrackedWrites(context) {
     try {

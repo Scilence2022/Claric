@@ -32,21 +32,21 @@
 import * as defaultActions from './word-actions.js';
 import { getActiveBackendConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
-import { connectMcpServer } from '../lib/mcp-client.js';
-import { buildLoopTools, createMcpToolExecutor, createResourceClient, RESOURCE_TOOL_SPECS } from '../lib/mcp-tools.js';
 import { runToolLoop } from '../lib/tool-loop.js';
 import { buildToolLoopSystemPrompt, TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
 import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
+import { confirmMcpToolCall } from './ui/dialog.js';
 import { describeFormatOp } from '../lib/format-ops.js';
 import { requestsEmptyParagraphCleanup } from '../lib/empty-paragraphs.js';
 import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib/file-attachments.js';
 import { buildConversationHistory } from '../lib/conversation-history.js';
 import { inspectEditRequest } from '../lib/edit-request.js';
+import { intentText, politeRequestBody, stripPlease } from '../lib/intent-text.js';
 import { resolveTaskScope } from '../lib/task-scope.js';
 import { requestsWhitespaceOnlyCleanup, validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 import { loadAgentActions, loadDocumentEditActions, loadTaskGraph, loadFileQuestion,
-    loadCommentActions, preloadTaskModules } from './task-module-loader.js';
+    loadCommentActions, loadMcpRuntime, preloadTaskModules } from './task-module-loader.js';
 
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
@@ -89,7 +89,7 @@ function looksLikeCommentAction(text) {
  * it is a question even if it contains an edit verb later ("how should I
  * improve this section?"), so Q&A takes precedence over edit intent.
  */
-const QUESTION_LEAD_RE = /^\s*(what|why|how|does|do|is|are|can|could|should|would|which|who|when|where|explain|describe|summarize|list|tell me)\b|^\s*(什么|为什么|为何|怎么|怎样|如何|哪些|哪个|是不是|是否|能否|解释|说明|总结|概述|介绍)/i;
+const QUESTION_LEAD_RE = /^\s*(what|why|how|does|do|is|are|can|could|should|would|which|who|when|where|explain|describe|summarize|list|tell me)\b|^\s*(什么|为什么|为何|怎么|怎样|如何|哪些|哪个|是不是|是否|能否|解释|说明|总结|概述|介绍|告诉我|请问)/i;
 
 /**
  * True when free text reads as a question (EN + ZH lead, 吗/呢, or a
@@ -103,11 +103,45 @@ const QUESTION_LEAD_RE = /^\s*(what|why|how|does|do|is|are|can|could|should|woul
  * @returns {boolean}
  */
 export function looksLikeQuestion(text) {
-    const trimmed = (text || '').trim();
-    if (QUESTION_LEAD_RE.test(trimmed)) return true;
-    if (/[吗呢]/.test(trimmed)) return true;
-    if (/[？?]$/.test(trimmed)) return true;
+    // Negated clauses are not part of the ask: "不要修改文档，只告诉我字数"
+    // asks for the word count.
+    const action = intentText(text);
+    if (!action) return false;
+    // A polite wrapper around a concrete action is a request, not a question
+    // ("Can you fix the typo?"). Capability questions without an action verb
+    // ("Can you read tracked changes?") and bodies that still ask something
+    // ("Can you tell me who…") keep the question reading.
+    const body = politeRequestBody(action);
+    if (body !== null && !isQuestionText(body) && hasActionIntent(body)) return false;
+    return isQuestionText(stripPlease(action));
+}
+
+function isQuestionText(text) {
+    if (QUESTION_LEAD_RE.test(text)) return true;
+    if (/[吗呢]/.test(text)) return true;
+    if (/[？?]$/.test(text)) return true;
     return false;
+}
+
+/**
+ * Verbs that change the document. A polite request needs one of these to
+ * count as an instruction, and a review request containing one is not a
+ * pure review ("检查并统一编号" asks for a change).
+ */
+const MUTATION_VERB_RE = /\b(?:insert|add|append|create|generate|draw|make|set|change|replace|delete|remove|edit|revise|rewrite|polish|proofread|fix|correct|amend|improve|rephrase|shorten|lengthen|condense|expand|simplify|translate|format|bold|italici[sz]e|underline|highlight|center|align|indent|resize|move|convert|apply|merge|split|renumber|update|redline)\b|插入|添加|增加|新增|创建|生成|绘制|设置|设为|改成|改为|改变|更改|替换|删除|删掉|移除|去掉|修改|修订|润色|校对|改写|修正|完善|精简|缩短|扩写|续写|翻译|加粗|标红|高亮|居中|对齐|缩进|调整|统一|合并|拆分|转换|移动|放大|缩小|重新编号/i;
+
+/**
+ * True when text (already known not to ask anything) names a document
+ * action the pipelines can execute. Uses the raw regexes because the
+ * looksLike* wrappers call back into looksLikeQuestion.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function hasActionIntent(text) {
+    return MUTATION_VERB_RE.test(text) || EDIT_INTENT_RE.test(text) || SELECTION_REWRITE_RE.test(text)
+        || APPEND_INTENT_RE.test(text) || TABLE_INTENT_RE.test(text) || ILLUSTRATION_INTENT_RE.test(text)
+        || IMAGE_TOOL_INTENT_RE.test(text) || requestsEmptyParagraphCleanup(text);
 }
 
 /**
@@ -119,7 +153,7 @@ export function looksLikeQuestion(text) {
  */
 export function looksLikeEditIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return EDIT_INTENT_RE.test(text);
+    return EDIT_INTENT_RE.test(intentText(text));
 }
 
 /**
@@ -156,7 +190,7 @@ const ILLUSTRATION_INTENT_RE = /插图|插画|配图|扉页图|题图|头图|画
  */
 export function looksLikeIllustrationIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return ILLUSTRATION_INTENT_RE.test(text);
+    return ILLUSTRATION_INTENT_RE.test(intentText(text));
 }
 
 /**
@@ -174,17 +208,18 @@ const FIGURE_LEGEND_INTENT_RE = /\b(?:legend|caption)s?\b|\b(?:figure|fig\.?)[^\
  * @returns {boolean}
  */
 export function looksLikeFigureLegendIntent(text) {
-    return FIGURE_LEGEND_INTENT_RE.test((text || '').trim());
+    return FIGURE_LEGEND_INTENT_RE.test(intentText(text));
 }
 
 /**
  * Image-tool intent markers: the user wants EXISTING images MANAGED —
  * deleted/replaced/resized/relabeled — or SEVERAL illustrations designed at
- * once. Single-image design stays on the dedicated illustration turn (its
+ * once. Size adjectives ("make the chart bigger", "把图片放大") are resize
+ * requests; without them the illustration branch would design a new image. Single-image design stays on the dedicated illustration turn (its
  * streaming UX is better); management and multi-image work need the
  * multi-step tool loop. Design verbs alone do not match.
  */
-const IMAGE_TOOL_INTENT_RE = /(删除|移除|去掉|替换|更换|重设|缩放|调整|居中|对齐|链接|超链接|比例|标题).{0,8}(图片|图像|插图|配图|插画)|(图片|图像|插图|配图|插画).{0,6}(删除|移除|去掉|替换|更换|太小|太大|大小|尺寸|居中|对齐|链接|超链接|标题|缩放|调整)|(两|三|四|五|几|多)张.{0,4}(插图|配图|插画|图片)|\b(delete|remove|replace|resize|relabel|center|align|link|hyperlink|scal)\w*\b.{0,20}\b(images?|pictures?|illustrations?)|\bset\b.{0,10}\balt\b/i;
+const IMAGE_TOOL_INTENT_RE = /(删除|移除|去掉|替换|更换|重设|缩放|调整|居中|对齐|链接|超链接|比例|标题).{0,8}(图片|图像|插图|配图|插画)|(图片|图像|插图|配图|插画).{0,6}(删除|移除|去掉|替换|更换|太小|太大|大小|尺寸|居中|对齐|链接|超链接|标题|缩放|调整)|(两|三|四|五|几|多)张.{0,4}(插图|配图|插画|图片)|\b(delete|remove|replace|resize|relabel|center|align|link|hyperlink|scal)\w*\b.{0,20}\b(images?|pictures?|illustrations?)|\bset\b.{0,10}\balt\b|\b(?:make|set)\b.{0,20}\b(?:images?|pictures?|illustrations?|photos?|charts?|figures?|diagrams?)\b.{0,15}\b(?:bigger|larger|smaller|wider|narrower|taller|shorter)\b|(图片|图像|插图|配图|插画|图表).{0,6}(放大|缩小|变大|变小|大一[点些]|小一[点些])|(放大|缩小).{0,4}(图片|图像|插图|配图|插画|图表)/i;
 
 /**
  * True when free text asks for image management or multi-image design.
@@ -196,7 +231,7 @@ const IMAGE_TOOL_INTENT_RE = /(删除|移除|去掉|替换|更换|重设|缩放|
  */
 export function looksLikeImageToolIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return IMAGE_TOOL_INTENT_RE.test(text);
+    return IMAGE_TOOL_INTENT_RE.test(intentText(text));
 }
 
 /**
@@ -224,9 +259,8 @@ const DOCUMENT_TABLE_INTENT_RE = /(所有|全部|每个|各|全文|整篇|文档
  * @returns {boolean}
  */
 export function looksLikeDocumentImageIntent(text) {
-    const trimmed = (text || '').trim();
-    if (looksLikeQuestion(trimmed)) return false;
-    return DOCUMENT_IMAGE_INTENT_RE.test(trimmed);
+    if (looksLikeQuestion(text)) return false;
+    return DOCUMENT_IMAGE_INTENT_RE.test(intentText(text));
 }
 
 /**
@@ -237,9 +271,8 @@ export function looksLikeDocumentImageIntent(text) {
  * @returns {boolean}
  */
 export function looksLikeDocumentTableIntent(text) {
-    const trimmed = (text || '').trim();
-    if (looksLikeQuestion(trimmed)) return false;
-    return DOCUMENT_TABLE_INTENT_RE.test(trimmed);
+    if (looksLikeQuestion(text)) return false;
+    return DOCUMENT_TABLE_INTENT_RE.test(intentText(text));
 }
 
 /**
@@ -259,7 +292,7 @@ const CHAIN_RE = /然后|接着|随后|并且|同时|最后|[，、;；]再/;
  * @returns {boolean}
  */
 export function looksLikeChainedInstruction(text) {
-    return CHAIN_RE.test((text || '').trim());
+    return CHAIN_RE.test(intentText(text));
 }
 
 /**
@@ -272,7 +305,7 @@ export function looksLikeChainedInstruction(text) {
  */
 export function looksLikeAppendIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return APPEND_INTENT_RE.test(text);
+    return APPEND_INTENT_RE.test(intentText(text));
 }
 
 /**
@@ -295,7 +328,7 @@ const TABLE_INTENT_RE = /(插入|创建|新增|添加|生成|制作|绘制|画|�
  */
 export function looksLikeTableIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return TABLE_INTENT_RE.test(text);
+    return TABLE_INTENT_RE.test(intentText(text));
 }
 
 /**
@@ -327,7 +360,7 @@ const TABLE_STYLE_HINT_RE = /表格|表头|边框|底纹|斑马纹|条纹|列宽
  */
 export function looksLikeFormatIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return FORMAT_INTENT_RE.test(text);
+    return FORMAT_INTENT_RE.test(intentText(text));
 }
 
 /**
@@ -345,7 +378,7 @@ export function looksLikeFormatIntent(text) {
  */
 export function looksLikeCleanupIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return requestsEmptyParagraphCleanup(text);
+    return requestsEmptyParagraphCleanup(intentText(text));
 }
 
 function scopedCleanupTurn(instruction, hasTextSelection) {
@@ -372,7 +405,43 @@ const REVIEW_INTENT_RE = /\b(check|review|inspect|examine|audit|analy[sz]e|look 
  */
 export function looksLikeReviewIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return REVIEW_INTENT_RE.test(text);
+    return REVIEW_INTENT_RE.test(intentText(text));
+}
+
+/**
+ * True for a review/check request that asks for no change ("Check the
+ * numbering", "检查所有表格"). Format and table nouns in such requests name
+ * what to inspect, so these are answered instead of drafted as edits.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+export function looksLikePureReviewIntent(text) {
+    return looksLikeReviewIntent(text) && !looksLikeEditIntent(text) && !hasActionIntent(intentText(text));
+}
+
+/**
+ * Sequence connectors that start a new step ("…, then fix the dates").
+ * Deliberately narrower than CHAIN_RE's sentence-level markers: "and"/并
+ * also join the objects of one question ("the difference between bold and
+ * italic formatting").
+ */
+const STEP_SPLIT_RE = /\b(?:and\s+)?then\b|\bafter\s+that\b|然后|接着|随后|[，,;；]\s*再/i;
+const HOW_TO_LEAD_RE = /^\s*(?:how\b|如何|怎么|怎样)/i;
+
+/**
+ * True when a question is followed by a separate action step: "Tell me what
+ * changed, then fix the dates". The question lead would otherwise route the
+ * whole input to Q&A and silently drop the action. How-to questions ("How
+ * do I insert a table and then bold it") stay questions.
+ *
+ * @param {string} text - Trimmed chat input
+ * @returns {boolean}
+ */
+function looksLikeQuestionThenAction(text) {
+    const steps = intentText(text).split(STEP_SPLIT_RE).map((step) => step.trim()).filter(Boolean);
+    if (steps.length < 2 || !looksLikeQuestion(steps[0]) || HOW_TO_LEAD_RE.test(steps[0])) return false;
+    return steps.slice(1).some((step) => countIntentFamilies(step) > 0);
 }
 
 /**
@@ -398,6 +467,24 @@ export function countIntentFamilies(text) {
     if (looksLikeEditIntent(text)) count++;
     if (looksLikeCleanupIntent(text) && !looksLikeFormatIntent(text)) count++;
     return count;
+}
+
+/**
+ * Turns whose pipelines write the document through tracked changes and
+ * bookmarks (WordApi 1.4). Comment management has its own WordApi 1.4 gate.
+ */
+const TRACKED_WRITE_TURNS = new Set([
+    TURN_TYPE.SELECTION_EDIT, TURN_TYPE.DOC_EDIT, TURN_TYPE.DOCUMENT_EDIT, TURN_TYPE.DOC_APPEND,
+    TURN_TYPE.FORMAT, TURN_TYPE.TABLE, TURN_TYPE.ILLUSTRATION, TURN_TYPE.IMAGE_TOOL, TURN_TYPE.TABLE_TOOL,
+    TURN_TYPE.DOCUMENT_IMAGE_TOOL, TURN_TYPE.DOCUMENT_TABLE_TOOL, TURN_TYPE.CLEANUP,
+]);
+
+export const TRACKED_WRITES_UNAVAILABLE = 'Editing needs Word API 1.4 (tracked changes and bookmarks), which this '
+    + 'version of Word does not support. Questions and summaries still work; update Word or use Word on the web to edit.';
+
+function requiresTrackedWrites(turn) {
+    return TRACKED_WRITE_TURNS.has(turn.type)
+        || (turn.type === TURN_TYPE.SKILL && turn.skill?.category === 'amendment');
 }
 
 /**
@@ -496,12 +583,22 @@ export function routeTurn(text, {
         };
     }
 
+    // A check/review request that asks for no change is answered, even when
+    // it names format or table objects ("Check the numbering"). Image and
+    // table-region selections keep their object sessions, which can inspect
+    // pixels and cells.
+    if (!imageSelected && !hasMultiCellTableRegion && looksLikePureReviewIntent(trimmed)) {
+        return { type: TURN_TYPE.DOC_QA, question: trimmed };
+    }
+
     // Compound instructions hit several intent families at once; the task
     // planner decomposes them into per-pipeline tasks, executed in order.
     // Document-scope image/table intents ONLY compound when the selection
     // would not already route to IMAGE_TOOL/TABLE_TOOL directly.
     if (allowCompound) {
-        const actionText = editHint.intentText || trimmed;
+        // Constraint clauses are already removed; an input that only negates
+        // actions has no action text and hits no family.
+        const actionText = editHint.intentText;
         const families = countIntentFamilies(actionText);
         const docCompound = !imageSelected && looksLikeDocumentImageIntent(actionText) ? 1 : 0;
         const tableDocCompound = !hasMultiCellTableRegion && looksLikeDocumentTableIntent(actionText) ? 1 : 0;
@@ -511,7 +608,8 @@ export function routeTurn(text, {
             && /(?:然后|接着|随后|并且|并|同时|再|以及|[，,;；]|\b(?:then|and|as well as)\b)/i.test(actionText)
             && actionCount >= 2
             && !(families === 1 && looksLikeFormatIntent(actionText) && looksLikeCleanupIntent(actionText));
-        if (families + docCompound + tableDocCompound >= 2 || proseAndFormat || crossActionSequence) {
+        if (families + docCompound + tableDocCompound >= 2 || proseAndFormat || crossActionSequence
+            || (!imageSelected && !hasMultiCellTableRegion && looksLikeQuestionThenAction(trimmed))) {
             return {
                 type: TURN_TYPE.COMPOUND,
                 instruction: trimmed,
@@ -562,7 +660,7 @@ export function routeTurn(text, {
     // Format intent wins over the selection/edit branches too: formatting ops
     // never rewrite text, so they must not enter the text-diff pipelines.
     if (looksLikeFormatIntent(trimmed)) {
-        if (requestScope === 'selection' && hasMultiCellTableRegion && TABLE_STYLE_HINT_RE.test(trimmed)) {
+        if (requestScope === 'selection' && hasMultiCellTableRegion && TABLE_STYLE_HINT_RE.test(intentText(trimmed))) {
             return { type: TURN_TYPE.TABLE_TOOL, instruction: trimmed };
         }
         return {
@@ -606,7 +704,7 @@ export function routeTurn(text, {
         if (looksLikeReviewIntent(trimmed) && !looksLikeEditIntent(trimmed)) {
             return { type: TURN_TYPE.DOC_QA, question: trimmed };
         }
-        if (looksLikeEditIntent(trimmed) || SELECTION_REWRITE_RE.test(trimmed)) {
+        if (looksLikeEditIntent(trimmed) || SELECTION_REWRITE_RE.test(intentText(trimmed))) {
             return { type: requestScope === 'document' ? TURN_TYPE.DOC_EDIT : TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
         }
         // A selection is context, not proof that the user wants a rewrite.
@@ -662,6 +760,9 @@ export function routeTurn(text, {
  *   readSelectionContent)
  * @param {function} [deps.getSelectionText] - Legacy/test override returning
  *   a plain string (treated as text-only selection)
+ * @param {function} [deps.confirmToolCall] - async (call, {signal}) => MCP_APPROVAL
+ *   value; approves MCP tool calls not declared read-only (defaults to the
+ *   approval dialog)
  * @returns {{ submit: Function, cancel: Function, newChat: Function }}
  */
 export function createConversation(deps) {
@@ -682,6 +783,7 @@ export function createConversation(deps) {
     // persisting (after a turn settles, and before newChat wipes the array).
     // The bootstrap wires this to sessions.saveSession(...).
     const onTurnCommitted = typeof deps.onTurnCommitted === 'function' ? deps.onTurnCommitted : null;
+    const confirmToolCall = typeof deps.confirmToolCall === 'function' ? deps.confirmToolCall : confirmMcpToolCall;
     let sessionEpoch = 0;
     let submissionOwner = null;
     const stagedResources = new Set();
@@ -2002,6 +2104,8 @@ export function createConversation(deps) {
 
         const myController = _beginChatTurn(turnController);
         try {
+            const { connectMcpServer, buildLoopTools, createMcpToolExecutor, createResourceClient,
+                RESOURCE_TOOL_SPECS, MCP_APPROVAL } = await loadMcpRuntime({ signal: myController.signal });
             log(`Connecting to ${servers.length} MCP server(s)...`, 'info');
             const connected = [];
             for (const server of servers) {
@@ -2040,7 +2144,21 @@ export function createConversation(deps) {
                 taskPrompt,
                 conversationHistory: turnDeps.conversationHistory,
                 tools: loopTools,
-                execute: createMcpToolExecutor(mapping),
+                execute: createMcpToolExecutor(mapping, {
+                    confirmCall: async (call) => {
+                        msg.setStatus(`Waiting for your approval: ${call.tool} (${call.serverName})`);
+                        try {
+                            const decision = await confirmToolCall(call, { signal: myController.signal });
+                            const outcome = decision === MCP_APPROVAL.RUN ? 'approved for this run'
+                                : decision === MCP_APPROVAL.ONCE ? 'approved once' : 'declined';
+                            log(`MCP "${call.serverName}" ${call.tool}: ${outcome}`, 'info');
+                            msg.appendLogLine(`MCP ${call.tool}: ${outcome}`);
+                            return decision;
+                        } finally {
+                            if (!myController.signal.aborted) msg.setStatus('Working with MCP tools...');
+                        }
+                    },
+                }),
                 send: (messages) => sendMessages(config, messages, log, myController.signal, 120000),
                 maxSteps: budget,
                 signal: myController.signal,
@@ -2456,6 +2574,12 @@ export function createConversation(deps) {
      * with every sub-task, so one cancel stops the whole chain.
      */
     async function dispatchTurn(turn, msg, turnDeps, selectionText, selectionImages, hasMultiCellTableRegion, turnController) {
+        // Refuse before any model call: on a pre-1.4 host the write would
+        // only fail after the user waited for (and paid for) a draft.
+        if (appState.supportsTrackedChanges === false && requiresTrackedWrites(turn)) {
+            msg.markError(TRACKED_WRITES_UNAVAILABLE);
+            return { status: 'failed', error: new Error(TRACKED_WRITES_UNAVAILABLE) };
+        }
         if (turn.type === TURN_TYPE.FORMAT) {
             // Reference documents can inform styling but cannot authorize
             // structural deletion through text appended to the instruction.

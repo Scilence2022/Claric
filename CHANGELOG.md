@@ -102,8 +102,50 @@ that drive the GHCR image publish in CI.
   `uninstall:windows` wrap both, and `npm run sideload` now installs on
   Windows instead of printing manual menu paths.
 
+### Security
+
+- **Approval for side-effecting MCP tool calls** (`src/lib/mcp-tools.js`,
+  `src/taskpane/ui/dialog.js`, `src/taskpane/conversation.js`) — the `/mcp`
+  loop called any tool a configured server offered, with document text (and
+  any instructions injected into it) in the prompt. Calls to tools whose
+  server does not declare `annotations.readOnlyHint: true` now wait for the
+  user (allow once / allow for this run / deny); without an approver they are
+  refused. Decisions are logged; read-only tools and resource reads still run
+  directly.
+- **DOMPurify 3.4.16** — clears GHSA-p98j-92pf-mc4p and GHSA-6688-9rhm-gjv2
+  (Claric does not use the affected `IN_PLACE` mode).
+
 ### Fixed
 
+- **Routing honours polite requests and negated clauses**
+  (`src/lib/intent-text.js`, `src/taskpane/conversation.js`,
+  `src/lib/edit-request.js`) — "Can you fix the typo…?" was answered in chat
+  instead of edited; "不要修改文档，只告诉我字数" drafted an edit; "润色全文，
+  不要改变格式" went to the formatting pipeline; "Tell me what changed, then
+  fix the dates" dropped the fix; "Check the numbering" drafted formatting
+  ops; "Make the chart bigger" designed a new image. All detectors now share
+  one normalization (constraint clauses removed, polite wrappers around an
+  action verb read as requests). `tests/routing-corpus.spec.js` pins 68 EN/ZH
+  routes; 25 of them misrouted before.
+- **Whole-document parsing reads paragraphs in bounded batches**
+  (`src/lib/document-parser.js`) — the revision-aware OOXML export of every
+  paragraph was queued in one sync, the failure mode the addressable-edit
+  snapshot already avoided. Reads now run 24 paragraphs per sync, and a
+  failure names the paragraph range.
+- **No whole-range rewrite of multi-paragraph sections**
+  (`src/lib/reassembler.js`) — when the paragraph-level apply failed before
+  writing, the range-level fallback diffed the section's full text, including
+  blank spacer paragraphs the amendment never contained, so it could delete
+  them and still pass read-back. The fallback now runs only for
+  single-paragraph ranges; larger sections fail closed with nothing written.
+- **Editing on pre-WordApi 1.4 hosts is refused before the model runs**
+  (`src/taskpane/conversation.js`, `src/taskpane/taskpane.js`,
+  `src/lib/word-revisions.js`) — every write pipeline needs tracked changes and
+  bookmarks (WordApi 1.4), but only comments were gated, so older Word failed
+  after drafting. Write turns now stop up front with an explanation (Q&A and
+  summaries still work), and the tracked-change refusal checks consult the
+  host requirement set instead of the `Word.ChangeTrackingMode` enum, which
+  office.js defines on every host.
 - **Task runtime typecheck** (`src/lib/task-planner.js`,
   `src/lib/task-runtime/task-graph.js`) — JSDoc was placed on
   `normalizePlan` that described `parsePlan`'s signature, and

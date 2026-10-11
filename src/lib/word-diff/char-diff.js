@@ -24,7 +24,7 @@
 
 import DiffMatchPatch from '../vendor/diff-match-patch.js';
 import { tryRevisionDiff } from './revision-diff.js';
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges } from '../word-revisions.js';
 
 /** Matches CJK ideographs, hiragana/katakana, and hangul. */
 const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/;
@@ -356,7 +356,7 @@ export async function applyCharDiffStrategy(context, range, originalText, newTex
     // tracking, force trackAll and ALWAYS restore off afterwards — even when
     // an edit throws mid-plan, so a failure never leaks tracking state.
     const trackChanges = options.trackChanges !== false;
-    if (trackChanges && !Word.ChangeTrackingMode) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
+    if (trackChanges && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
     if (trackChanges && Word.ChangeTrackingMode) {
         await enableTrackedWrites(context);
     }

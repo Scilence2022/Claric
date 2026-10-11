@@ -1314,6 +1314,41 @@ describe('createConversation.submit', () => {
     expect(view._msg.markError.mock.calls[0][0]).toMatch(/WordApi 1\.3/);
   });
 
+  test.each([
+    ['润色这段话', 'selected text', 'prepareSelectionAmendment'],
+    ['Please fix the typos in the document', '', 'runDocumentSkill'],
+    ['把所有标题设为居中', '', 'prepareFormatProposal'],
+    ['在文档的末尾插入一个三行三列的表格', '', 'prepareTableProposal'],
+  ])('a pre-1.4 host refuses %j before any model call', async (instruction, selection, action) => {
+    const { TRACKED_WRITES_UNAVAILABLE } = require('../src/taskpane/conversation.js');
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState({ supportsTrackedChanges: false }), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => selection,
+    });
+
+    await conv.submit(instruction);
+
+    expect(actions[action]).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+    expect(view._msg.markError).toHaveBeenCalledWith(TRACKED_WRITES_UNAVAILABLE);
+  });
+
+  test('a pre-1.4 host still answers questions', async () => {
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState({ supportsTrackedChanges: false }), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('What is the deadline?');
+
+    expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
+    expect(view._msg.markError).not.toHaveBeenCalled();
+  });
+
   test('table turn surfaces prepare failures as message errors', async () => {
     const appState = makeAppState();
     const view = makeView();
@@ -3375,15 +3410,19 @@ describe('turn lifecycle guards', () => {
   test('MCP cancellation reaches connect before listTools and skips subsequent servers', async () => {
     const mcp = require('../src/lib/mcp-client.js');
     let signal;
+    let connected;
+    const connecting = new Promise((resolve) => { connected = resolve; });
     const connect = jest.spyOn(mcp, 'connectMcpServer').mockImplementation((opts) => {
       signal = opts.signal;
+      connected();
       return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError'))));
     });
     try {
       const appState = makeAppState({ config: { mcpServers: [{ url: 'https://one.test' }, { url: 'https://two.test' }] } });
       const conv = createConversation({ appState, view: makeView(), input: makeInput(), actions: makeActions(), log: jest.fn(), getSelectionText: async () => '' });
       const running = conv.submit('/mcp list tools');
-      await Promise.resolve();
+      // The MCP runtime is a lazy chunk, so connect starts after the load.
+      await connecting;
       expect(signal).toBe(appState.chatController.signal);
       conv.cancel();
       await running;
@@ -3587,6 +3626,43 @@ describe('conversation history snapshots', () => {
       const expected = buildConversationHistory(chatView.getCurrentSession().messages);
       await conv.submit('/mcp follow up');
       expect(run).toHaveBeenCalledWith(expect.objectContaining({ conversationHistory: expected, taskPrompt: 'follow up' }));
+    } finally {
+      connect.mockRestore();
+      run.mockRestore();
+    }
+  });
+
+  test('MCP tool calls not declared read-only wait for user approval; read-only calls do not', async () => {
+    const mcp = require('../src/lib/mcp-client.js');
+    const loop = require('../src/lib/tool-loop.js');
+    const callTool = jest.fn(async (name) => ({ content: [{ type: 'text', text: `ran ${name}` }] }));
+    const connect = jest.spyOn(mcp, 'connectMcpServer').mockResolvedValue({
+      callTool,
+      listTools: jest.fn().mockResolvedValue([
+        { name: 'search', inputSchema: {}, annotations: { readOnlyHint: true } },
+        { name: 'send_mail', inputSchema: {} },
+      ]),
+    });
+    const observations = [];
+    const run = jest.spyOn(loop, 'runToolLoop').mockImplementation(async ({ execute }) => {
+      observations.push(await execute('search', { q: 'x' }), await execute('send_mail', { to: 'a@b.test' }));
+      return { summary: 'done' };
+    });
+    const confirmToolCall = jest.fn(async () => 'deny');
+    const log = jest.fn();
+    try {
+      const { conv } = setup(makeActions(), { log, confirmToolCall, appState: makeAppState({ config: {
+        backend: 'test', providers: { test: { model: 'model' } }, mcpServers: [{ url: 'https://example.test', name: 'mail' }],
+      } }) });
+      await conv.submit('/mcp email the summary');
+      expect(confirmToolCall).toHaveBeenCalledTimes(1);
+      expect(confirmToolCall).toHaveBeenCalledWith(
+        expect.objectContaining({ tool: 'send_mail', serverName: 'mail', args: { to: 'a@b.test' } }),
+        { signal: expect.any(AbortSignal) });
+      expect(callTool).toHaveBeenCalledTimes(1);
+      expect(callTool).toHaveBeenCalledWith('search', { q: 'x' });
+      expect(observations[1]).toEqual({ ok: false, error: expect.stringContaining('declined') });
+      expect(log).toHaveBeenCalledWith('MCP "mail" send_mail: declined', 'info');
     } finally {
       connect.mockRestore();
       run.mockRestore();

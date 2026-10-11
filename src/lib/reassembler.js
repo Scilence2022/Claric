@@ -19,7 +19,7 @@
 
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from './word-diff/index.js';
 import { hasCjk, applyCharDiffStrategy } from './word-diff/char-diff.js';
-import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, verifyMutationText } from './word-revisions.js';
+import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, verifyMutationText, hostSupportsTrackedChanges } from './word-revisions.js';
 import { validateWhitespaceCleanup } from './whitespace-cleanup.js';
 
 /**
@@ -487,7 +487,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
 
   // Set tracked changes explicitly (on OR off) so the whole alignment loop —
   // including the per-paragraph diff strategies — runs under one mode.
-  if (trackChangesEnabled && !Word.ChangeTrackingMode) {
+  if (trackChangesEnabled && !hostSupportsTrackedChanges()) {
     throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
   }
   const previousTrackingMode = context.document.changeTrackingMode ?? Word.ChangeTrackingMode?.off;
@@ -909,10 +909,32 @@ async function _reanchorChunkRange(context, range, storedTexts, log, fingerprint
 }
 
 /**
+ * Number of paragraphs in a chunk's working range, or null when the range
+ * exposes no paragraph collection (exotic bookmarks, test mocks).
+ *
+ * @private
+ */
+async function _rangeParagraphCount(context, range, preloaded) {
+  if (preloaded) return preloaded.paraItems.length;
+  if (!range.paragraphs) return null;
+  const paragraphs = range.paragraphs;
+  paragraphs.load('items');
+  await context.sync();
+  return paragraphs.items.length;
+}
+
+/** @private */
+function _multiParagraphFallbackError(paraErr) {
+  return new RevisionSafetyError(`paragraph-level edit failed (${paraErr.message}); a multi-paragraph section `
+    + 'cannot fall back to a whole-range rewrite safely. No text was written; draft a new proposal.');
+}
+
+/**
  * Applies all chunk results to the document.
  * Amendments applied in reverse chunk order as tracked changes.
- * Uses paragraph-level strategy to preserve formatting; falls back to
- * range-level diff strategies if paragraph-level operations fail.
+ * Uses paragraph-level strategy to preserve formatting; a single-paragraph
+ * range falls back to range-level diff strategies if paragraph-level
+ * operations fail before writing. Multi-paragraph ranges fail closed.
  * Comments inserted after all amendments, on bookmarked ranges.
  *
  * @param {Array} results - ChunkResult[]
@@ -1048,10 +1070,20 @@ export async function applyChunkResults(results, bookmarkMap, options) {
             // the document is left untouched.
             throw paraErr;
           }
+          // A range-level strategy diffs the range's whole text. Across
+          // several paragraphs that text includes blank spacer paragraphs the
+          // amendment never contained (the parser skips them), so the diff
+          // would delete them and still pass read-back, which compares
+          // against the amendment. Only a single-paragraph range may fall
+          // back; anything larger fails closed like every other unsafe path.
+          const paragraphCount = await _rangeParagraphCount(context, workRange, preloaded);
+          if (paragraphCount > 1) {
+            throw _multiParagraphFallbackError(paraErr);
+          }
           log(`Chunk ${result.chunkId}: paragraph-level strategy failed (${paraErr.message}), falling back to range-level`, 'warning');
 
           // Fallback to range-level diff strategies
-          if (trackChangesEnabled && !Word.ChangeTrackingMode) {
+          if (trackChangesEnabled && !hostSupportsTrackedChanges()) {
             throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
           }
           const previousMode = context.document.changeTrackingMode ?? Word.ChangeTrackingMode?.off;
@@ -1068,6 +1100,11 @@ export async function applyChunkResults(results, bookmarkMap, options) {
             const revisionRead = queueRevisionRead(workRange);
             if (revisionRead) await context.sync();
             const originalText = _normalizeLineEndings(resolveRevisionRead(workRange, revisionRead).text);
+            // Without a paragraph collection, a paragraph break in the text is
+            // the only evidence of a multi-paragraph range.
+            if (!paragraphCount && originalText.includes('\n')) {
+              throw _multiParagraphFallbackError(paraErr);
+            }
             const normalizedAmendment = _normalizeLineEndings(result.amendment);
 
             const strategyOptions = { trackChanges: false };

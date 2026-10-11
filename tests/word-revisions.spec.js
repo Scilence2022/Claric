@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 import { revisionTextState, queueRevisionRead, resolveRevisionRead, normalizeRevisionText,
-    verifyMutationText, MutationSafetyError } from '../src/lib/word-revisions.js';
+    verifyMutationText, MutationSafetyError, hostSupportsTrackedChanges } from '../src/lib/word-revisions.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const wrap = (xml) => `<w:document xmlns:w="${W}"><w:body>${xml}</w:body></w:document>`;
@@ -119,4 +119,32 @@ test('older hosts retain strict XML verification without calling unsupported cur
         await expect(verifyMutationText({ sync: async () => {} }, range, 'Expected', { paragraph: true })).rejects.toThrow(/OOXML/);
         expect(range.getReviewedText).not.toHaveBeenCalled();
     } finally { delete global.Office; }
+});
+
+describe('hostSupportsTrackedChanges', () => {
+    afterEach(() => {
+        delete global.Word;
+        delete global.Office;
+    });
+
+    test('requires the Word API and its tracking enum', () => {
+        expect(hostSupportsTrackedChanges()).toBe(false);
+        global.Word = {};
+        expect(hostSupportsTrackedChanges()).toBe(false);
+    });
+
+    test('the enum alone is not host support when Office reports the requirement set', () => {
+        global.Word = { ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' } };
+        const isSetSupported = jest.fn((name, version) => name === 'WordApi' && version === '1.3');
+        global.Office = { context: { requirements: { isSetSupported } } };
+        expect(hostSupportsTrackedChanges()).toBe(false);
+        expect(isSetSupported).toHaveBeenCalledWith('WordApi', '1.4');
+        isSetSupported.mockReturnValue(true);
+        expect(hostSupportsTrackedChanges()).toBe(true);
+    });
+
+    test('without Office requirement data the enum decides', () => {
+        global.Word = { ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' } };
+        expect(hostSupportsTrackedChanges()).toBe(true);
+    });
 });

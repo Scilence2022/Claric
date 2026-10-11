@@ -78,3 +78,92 @@ export function confirmAutoApply() {
         release = containFocus(dialog, () => finish(false), cancel);
     });
 }
+
+/** Longest argument preview shown in the MCP approval dialog. */
+export const MCP_ARGS_PREVIEW_CHARS = 1200;
+
+/**
+ * Asks the user to approve one MCP tool call that may have side effects
+ * outside the document. Server, tool and arguments come from the model and
+ * the server, so they are rendered as text, never markup.
+ *
+ * @param {{serverName: string, tool: string, args: object}} call
+ * @param {{signal?: AbortSignal}} [options] - Aborting closes the dialog and
+ *   rejects with AbortError (the turn was cancelled)
+ * @returns {Promise<'once'|'run'|'deny'>} Matches MCP_APPROVAL in lib/mcp-tools.js
+ */
+export function confirmMcpToolCall({ serverName, tool, args }, { signal } = {}) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException('MCP approval cancelled.', 'AbortError'));
+            return;
+        }
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-overlay';
+        const dialog = document.createElement('section');
+        dialog.className = 'confirm-dialog';
+        dialog.setAttribute('role', 'alertdialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-labelledby', 'mcpConfirmTitle');
+        dialog.setAttribute('aria-describedby', 'mcpConfirmDescription');
+
+        const title = document.createElement('h2');
+        title.id = 'mcpConfirmTitle';
+        title.textContent = 'Allow this tool call?';
+        const description = document.createElement('p');
+        description.id = 'mcpConfirmDescription';
+        description.append('The model wants to run ');
+        const toolName = document.createElement('strong');
+        toolName.textContent = tool;
+        description.append(toolName, ' on MCP server ');
+        const server = document.createElement('strong');
+        server.textContent = serverName || 'unknown';
+        description.append(server, '. The server does not mark this tool read-only, so it may change data outside '
+            + 'Word. Instructions inside your document can influence what the model asks for.');
+        const preview = document.createElement('pre');
+        preview.className = 'confirm-args';
+        let json;
+        try { json = JSON.stringify(args ?? {}, null, 2); } catch { json = String(args); }
+        preview.textContent = json.length > MCP_ARGS_PREVIEW_CHARS
+            ? `${json.slice(0, MCP_ARGS_PREVIEW_CHARS)}\n… (${json.length - MCP_ARGS_PREVIEW_CHARS} more characters)`
+            : json;
+
+        const actions = document.createElement('div');
+        actions.className = 'modal-actions';
+        const button = (label, value, primary = false) => {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = `btn ${primary ? 'btn-primary' : 'btn-secondary'}`;
+            el.dataset.confirm = value;
+            el.textContent = label;
+            el.addEventListener('click', () => finish(value));
+            return el;
+        };
+        const deny = button('Deny', 'deny');
+        actions.append(deny, button('Allow for this run', 'run'), button('Allow once', 'once', true));
+        dialog.append(title, description, preview, actions);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        let release;
+        let settled = false;
+        const close = () => {
+            settled = true;
+            overlay.remove();
+            release?.();
+            signal?.removeEventListener('abort', onAbort);
+        };
+        function finish(value) {
+            if (settled) return;
+            close();
+            resolve(value);
+        }
+        function onAbort() {
+            if (settled) return;
+            close();
+            reject(new DOMException('MCP approval cancelled.', 'AbortError'));
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
+        release = containFocus(dialog, () => finish('deny'), deny);
+    });
+}

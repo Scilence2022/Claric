@@ -1,7 +1,7 @@
 jest.mock('../src/lib/lazy-module-loader.js', () => ({ loadLazyModule: jest.fn(async () => ({})) }));
 const { loadLazyModule } = require('../src/lib/lazy-module-loader.js');
 const { preloadTaskModules, loadAgentActions, loadDocumentEditActions, loadFormatPlanning,
-    loadFormatActions, loadTaskPlanner, loadTaskGraph, loadFileQuestion, loadCommentActions } = require('../src/taskpane/task-module-loader.js');
+    loadFormatActions, loadTaskPlanner, loadTaskGraph, loadFileQuestion, loadCommentActions, loadMcpRuntime } = require('../src/taskpane/task-module-loader.js');
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -41,6 +41,7 @@ test.each([
     [loadFormatPlanning, 'visual-format'], [loadTaskPlanner, 'task-planner'],
     [loadFormatActions, 'format-actions'],
     [loadTaskGraph, 'task-graph'], [loadFileQuestion, 'file-question'], [loadCommentActions, 'comment-actions'],
+    [loadMcpRuntime, 'mcp-runtime'],
 ])('module wrapper %p uses the shared loader with a cancellable import', async (load, id) => {
     const signal = new AbortController().signal;
     await load({ signal });

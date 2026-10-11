@@ -17,7 +17,7 @@ AI-powered Microsoft Word add-in for tracked changes, document summarization, an
 
 - Office.js Word add-in (Claric, runs in WebView2)
 - Chat-driven taskpane: `src/taskpane/` split into `app-state.js`, `skills.js`, `conversation.js`, `word-actions.js`, and `ui/*`; `taskpane.js` is bootstrap only
-- Chat providers (11): Ollama, vLLM, OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international), MiniMax China, 中科大模型 (zhongkeyu.com), and Custom (OpenAI-compatible)
+- Chat providers (13): Ollama, vLLM, OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international), MiniMax China, 中科大模型 (zhongkeyu.com), OpenRouter, SiliconFlow, and Custom (OpenAI-compatible)
 - Provider adapters keep the shared chat contract while handling provider-specific API formats and model controls; Claude uses the native Anthropic Messages API
 - Image generation has an independent provider/model route: OpenAI Images, Zhipu CogView, MiniMax Images, 中科云 Images (zhongkeyu.com), OpenRouter Images, SiliconFlow Images, and Custom (OpenAI-compatible), with separate endpoint, API key, model, and size settings. OpenAI Images, 中科云 Images, OpenRouter Images, SiliconFlow Images, and Custom use `/images/generations`; CogView uses that endpoint and returns a hosted URL; MiniMax uses `/image_generation` with `aspect_ratio` and base64 output. The client normalizes all response forms to raw raster base64
 - Ordinary schematic/illustration requests use a configured image model and insert its raster output; explicit SVG/vector requests use the sanitized chat-LLM SVG route, and disabled or failed image generation falls back to SVG

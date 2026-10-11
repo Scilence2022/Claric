@@ -11,7 +11,11 @@
  *
  * Security contract: MCP tool results are OBSERVATIONS (data), never
  * direct document writes — anything that should mutate the Word document
- * still has to go through the proposal-card staging pipeline.
+ * still has to go through the proposal-card staging pipeline. Tool CALLS can
+ * still have side effects outside Word, and the loop's prompt carries
+ * document text that may contain injected instructions, so every call to a
+ * tool its server does not declare read-only (`annotations.readOnlyHint`)
+ * needs the user's approval; without an approver such calls are refused.
  *
  * Pure module — no DOM, no network (the clients carry it).
  *
@@ -19,6 +23,14 @@
  */
 
 import { defineTool } from './tool-registry.js';
+
+/** User decisions for a call to a tool that is not declared read-only. */
+export const MCP_APPROVAL = Object.freeze({
+    ONCE: 'once',
+    /** Approve this tool for the rest of the current run. */
+    RUN: 'run',
+    DENY: 'deny',
+});
 
 /** Max characters of one MCP tool result accepted into an observation. */
 export const MAX_MCP_RESULT_CHARS = 64 * 1024;
@@ -75,7 +87,7 @@ function exampleFromSchema(schema) {
  * @param {Array<{name: string, client: object, mcpTools: Array}>} clients - Connected
  *   clients paired with their mcpTools arrays (from client.listTools()), plus any
  *   synthetic pseudo-servers (e.g. the resource tools client).
- * @returns {{loopTools: Array, mapping: Map<string, {client: object, originalName: string, serverName: string}>}}
+ * @returns {{loopTools: Array, mapping: Map<string, {client: object, originalName: string, serverName: string, readOnly: boolean}>}}
  */
 export function buildLoopTools(clients) {
     const loopTools = [];
@@ -97,7 +109,8 @@ export function buildLoopTools(clients) {
                 description,
                 argsExample: exampleFromSchema(tool.inputSchema),
             }));
-            mapping.set(loopName, { client: entry.client, originalName: tool.name, serverName });
+            mapping.set(loopName, { client: entry.client, originalName: tool.name, serverName,
+                readOnly: tool.annotations?.readOnlyHint === true });
         }
     }
     return { loopTools, mapping };
@@ -148,16 +161,35 @@ function observationFromResult(mcpResult, { maxChars = MAX_MCP_RESULT_CHARS } = 
  * servers. Failures become error observations (the loop feeds them back to
  * the model); cancellation errors propagate to the caller.
  *
- * @param {Map<string, {client: object, originalName: string, serverName: string}>} mapping
+ * Tools not declared read-only run only after `confirmCall` approves them.
+ * A declined (or unapprovable) call becomes an error observation so the
+ * model can continue without it. "Approve for this run" lasts for this
+ * executor, i.e. one tool-loop turn.
+ *
+ * @param {Map<string, {client: object, originalName: string, serverName: string, readOnly?: boolean}>} mapping
  * @param {object} [options]
  * @param {number} [options.maxChars=MAX_MCP_RESULT_CHARS]
+ * @param {function({toolName: string, tool: string, serverName: string, args: object}): Promise<string>} [options.confirmCall] -
+ *   Resolves to an MCP_APPROVAL value; may reject with AbortError
  * @returns {function(string, object): Promise<object>} execute(toolName, args) → observation
  */
-export function createMcpToolExecutor(mapping, { maxChars = MAX_MCP_RESULT_CHARS } = {}) {
+export function createMcpToolExecutor(mapping, { maxChars = MAX_MCP_RESULT_CHARS, confirmCall } = {}) {
+    const approvedForRun = new Set();
     return async function execute(toolName, args) {
         const entry = mapping.get(toolName);
         if (!entry) {
             return { ok: false, error: `Unknown MCP tool "${toolName}".` };
+        }
+        if (!entry.readOnly && !approvedForRun.has(toolName)) {
+            if (typeof confirmCall !== 'function') {
+                return { ok: false, error: `${entry.originalName} may change data outside the document and needs the user's approval, which is unavailable here. Continue without it.` };
+            }
+            const decision = await confirmCall({ toolName, tool: entry.originalName,
+                serverName: entry.serverName || '', args: args || {} });
+            if (decision === MCP_APPROVAL.RUN) approvedForRun.add(toolName);
+            else if (decision !== MCP_APPROVAL.ONCE) {
+                return { ok: false, error: `The user declined the call to ${entry.originalName}. Do not retry it; continue without it or finish with a summary.` };
+            }
         }
         try {
             const result = await entry.client.callTool(entry.originalName, args);
@@ -183,6 +215,7 @@ export const RESOURCE_TOOL_SPECS = Object.freeze([
         name: 'mcp_list_resources',
         description: 'List reference resources (documents, notes, files) exposed by the connected MCP servers. Returns one "server | uri | name" line per resource.',
         inputSchema: Object.freeze({ type: 'object', properties: {} }),
+        annotations: Object.freeze({ readOnlyHint: true }),
     }),
     Object.freeze({
         name: 'mcp_read_resource',
@@ -194,6 +227,7 @@ export const RESOURCE_TOOL_SPECS = Object.freeze([
                 uri: { type: 'string', description: 'Resource uri as shown by mcp_list_resources' },
             },
         }),
+        annotations: Object.freeze({ readOnlyHint: true }),
     }),
 ]);
 

@@ -218,12 +218,18 @@ async function initialize() {
     // comment-category turns report the requirement instead of failing).
     if (typeof Office !== 'undefined' && Office.context && Office.context.requirements) {
         appState.supportsComments = Office.context.requirements.isSetSupported('WordApi', '1.4');
+        // Tracked changes and chunk bookmarks are WordApi 1.4 too; without
+        // them every write pipeline is refused before the model runs.
+        appState.supportsTrackedChanges = appState.supportsComments;
         // WordApi 1.3 covers table creation (Body/Range.insertTable, table
         // style/headerRowCount); table turns degrade gracefully without it.
         appState.supportsTables = Office.context.requirements.isSetSupported('WordApi', '1.3');
     }
     if (!appState.supportsComments) {
         addLog('Comment features unavailable (requires Word API 1.4)', 'info');
+    }
+    if (!appState.supportsTrackedChanges) {
+        addLog('Document editing unavailable (requires Word API 1.4); questions and summaries still work', 'warning');
     }
     if (!appState.supportsTables) {
         addLog('Table creation unavailable (requires Word API 1.3)', 'info');
