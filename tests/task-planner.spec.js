@@ -213,6 +213,16 @@ describe('auditable capability plans', () => {
     expect(parseCapabilityPlan(JSON.stringify(plan))).toBeNull();
   });
 
+  test('two tasks of the same capability cannot both cover one action', () => {
+    const plan = valid();
+    plan.tasks.push({ ...plan.tasks[0], taskId: 'copy', covers: ['r1'] });
+    expect(parseCapabilityPlan(JSON.stringify(plan))).toBeNull();
+    // A constraint may still bind several tasks of one capability.
+    plan.requirements.push({ id: 'r4', kind: 'action', outcome: 'document', text: 'Add a closing paragraph' });
+    plan.tasks[1].covers = ['r3', 'r4'];
+    expect(parseCapabilityPlan(JSON.stringify(plan))).toMatchObject({ tasks: [{ covers: ['r1', 'r2', 'r3'] }, { covers: ['r3', 'r4'] }] });
+  });
+
   test('scope survives parsing and invalid scope values reject the plan', () => {
     const plan = valid();
     plan.tasks[0].scope = 'document';
@@ -250,7 +260,8 @@ describe('auditable capability plans', () => {
       expect(prompt).toContain('redundant spaces in body text');
       expect(prompt).toContain('separate proposal');
     }
-    expect(buildPlanPrompt('x', true)).toContain('Tasks may jointly cover one action');
+    expect(buildPlanPrompt('x', true)).toContain('Tasks of different capabilities may jointly cover one action');
+    expect(buildPlanPrompt('x', true)).toContain('Never cover one action with two tasks of the same capability');
     expect(buildPlanReviewPrompt()).not.toContain('Any doubt means');
   });
 

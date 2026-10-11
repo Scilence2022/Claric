@@ -6,13 +6,15 @@
  *   accepted as the chunk's amended text
  * - an unrelated paragraph rewritten under "Rewrite only X, change nothing else"
  */
+const { classifyChunkReply, summarizeAmendment } = require('../src/lib/amendment-guard.js');
 const {
-  classifyChunkReply,
-  summarizeAmendment,
   parseEditScope,
   locateScopeTargets,
   confineAmendment,
-} = require('../src/lib/amendment-guard.js');
+  confineChunkResults,
+  markParagraphDeletions,
+  applyEditScope,
+} = require('../src/lib/edit-scope.js');
 
 const CHUNK = [
   'Recommendations',
@@ -211,5 +213,62 @@ describe('confineAmendment', () => {
     const reply = [ORIG[0], 'A second abstract paragraph.', ORIG[1], ORIG[2]];
     const confined = confineAmendment(ORIG, [true, false, false], reply.join('\n'));
     expect(confined.text.split('\n')).toEqual(reply);
+  });
+});
+
+describe('confineChunkResults', () => {
+  const targets = { indexes: new Set([1]), label: 'Abstract' };
+  const chunk = (paragraphs) => ({ paragraphs: paragraphs.map(([index, text]) => ({ index, text })) });
+
+  test('keeps target edits, reverts others, and drops chunks without a target', () => {
+    const results = [
+      { status: 'fulfilled', chunk: chunk([[0, 'Abstract'], [1, 'We study X.'], [2, 'Y rose.']]), amendment: 'Abstract\nWe examine X.\nY increased.' },
+      { status: 'fulfilled', chunk: chunk([[4, 'Discussion'], [5, 'A causal link.']]), amendment: 'Discussion\nA likely causal link.' },
+      { status: 'rejected', chunk: chunk([[6, 'Other.']]), amendment: null, error: 'timeout' },
+    ];
+    const note = confineChunkResults(results, targets);
+    expect(results[0].amendment.split('\n')).toEqual(['Abstract', 'We examine X.', 'Y rose.']);
+    expect(results[1].amendment).toBeNull();
+    expect(results[2].status).toBe('rejected');
+    expect(note).toEqual({ label: 'Abstract', revertedParagraphs: 2, droppedChunks: 1 });
+  });
+});
+
+describe('markParagraphDeletions', () => {
+  test('records paragraph deletions per fulfilled amendment', () => {
+    const results = [
+      { status: 'fulfilled', chunk: { paragraphs: [{ text: 'Keep me.' }, { text: 'Drop me entirely.' }] }, amendment: 'Keep me.' },
+      { status: 'rejected', chunk: { paragraphs: [{ text: 'x' }] }, amendment: null },
+    ];
+    markParagraphDeletions(results);
+    expect(results[0].deletedParagraphs).toBe(1);
+    expect(results[1].deletedParagraphs).toBeUndefined();
+  });
+});
+
+describe('applyEditScope', () => {
+  const paragraphs = [
+    { index: 0, text: 'Abstract', headingLevel: 1 }, { index: 1, text: 'We study X.', headingLevel: 0 },
+    { index: 2, text: 'Discussion', headingLevel: 1 }, { index: 3, text: 'A causal link.', headingLevel: 0 },
+  ];
+  const results = () => [
+    { status: 'fulfilled', chunk: { paragraphs: paragraphs.slice(0, 2) }, amendment: 'Abstract\nWe examine X.' },
+    { status: 'fulfilled', chunk: { paragraphs: paragraphs.slice(2) }, amendment: 'Discussion\nA likely causal link.' },
+  ];
+
+  test('resolves, confines and describes a named target; a retry reuses the targets', () => {
+    const first = results();
+    const { scope, targets } = applyEditScope(first, { paragraphs, instruction: 'Rewrite only the Abstract paragraph.' });
+    expect(first.map((r) => r.amendment)).toEqual(['Abstract\nWe examine X.', null]);
+    expect(scope.notice).toBe('Limited to Abstract. 1 model edit(s) outside it were discarded.');
+    const retry = results();
+    applyEditScope(retry, { targets });
+    expect(retry[1].amendment).toBeNull();
+  });
+
+  test('an unrestricted instruction only records deletions', () => {
+    const all = results();
+    expect(applyEditScope(all, { paragraphs, instruction: 'Polish the wording.' })).toEqual({ scope: null, targets: null });
+    expect(all.map((r) => r.deletedParagraphs)).toEqual([0, 0]);
   });
 });

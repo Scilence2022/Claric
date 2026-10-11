@@ -49,7 +49,6 @@ import {
 import { parseDocument } from '../lib/document-parser.js';
 import { chunkDocument } from '../lib/document-chunker.js';
 import { extractContext } from '../lib/context-extractor.js';
-import { processChunksParallel } from '../lib/orchestrator.js';
 import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
 import {
     buildIllustrationPrompt, buildImagePrompt, parseIllustration, sanitizeSvg,
@@ -63,7 +62,7 @@ import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
-import { loadTaskPlanner, loadFormatActions, loadFileQuestion } from './task-module-loader.js';
+import { loadTaskPlanner, loadFormatActions, loadFileQuestion, loadEditScope, loadChunkProcessor } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
@@ -3054,6 +3053,8 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     const backendConfig = getActiveBackendConfig(appState);
     const concurrency = chunks.some(c => c.tokenCount > 8000) ? 4 : 6;
 
+    // Chunk processing runs only for whole-document skills, so it loads on demand.
+    const { processChunksParallel } = await loadChunkProcessor({ signal });
     const results = await processChunksParallel(chunks, {
         config: backendConfig,
         promptManager: promptShim,
@@ -3080,6 +3081,17 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
                 log(`Space cleanup refused for ${result.chunkId}: ${check.reason}`, 'warning');
             }
         }
+    }
+
+    // A gated request that names one part of the document ("rewrite only the
+    // Abstract") may change only that part (edit-scope.js). A target that
+    // cannot be located unambiguously keeps every section, and the card says so.
+    let scope = null;
+    let scopeTargets = null;
+    if (gateApply && !whitespaceOnly) {
+        ({ scope, targets: scopeTargets } = (await loadEditScope({ signal }))
+            .applyEditScope(results, { paragraphs: docModel.paragraphs, instruction: promptTemplate }));
+        if (scope) log(scope.notice, scope.unresolved ? 'warning' : 'info');
     }
 
     const failed = results.filter(r => r.status === 'rejected').length;
@@ -3174,7 +3186,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         }
         return retryFailedChunks(deps, {
             failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress, setBusy,
-            documentContext, commentInstructions, concurrency, onChunkToken, conversationHistory,
+            documentContext, commentInstructions, concurrency, onChunkToken, conversationHistory, scopeTargets,
         });
     };
 
@@ -3193,7 +3205,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     // when every chunk failed there is nothing to stage, and this is the
     // only handle the caller has to offer a retry link.
     if (gateApply) {
-        return { staged: true, results, chunks, apply, discard, retryFailed, failedCount: failed, cancelledCount: cancelled };
+        return { staged: true, results, chunks, apply, discard, retryFailed, failedCount: failed, cancelledCount: cancelled, scope };
     }
 
     const applicationResult = await apply(undefined, { signal });
@@ -3208,6 +3220,8 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
  * @param {object} args
  * @param {Array} args.failedResults - ChunkResult objects with status 'rejected'
  * @param {Map} args.bookmarkMap - Original chunkId -> bookmarkName map
+ * @param {{indexes: Set<number>, label: string}|null} [args.scopeTargets] - The original run's
+ *   resolved edit scope; retried chunks are confined to it
  * @param {object} args.backendConfig - Backend configuration
  * @param {object} args.promptShim - PromptManager shim from the original run
  * @param {function} [args.onProgress] - Progress callback
@@ -3223,7 +3237,7 @@ export async function retryFailedChunks(deps, {
     failedResults, bookmarkMap, backendConfig, promptShim, onProgress,
     documentContext = null, commentInstructions = '', concurrency = 4,
     conversationHistory = deps.conversationHistory,
-    onChunkToken, setBusy = () => {}, lifecycle,
+    onChunkToken, setBusy = () => {}, lifecycle, scopeTargets = null,
 } = {}) {
     const { appState, log } = deps;
     if (deps.isCurrentSession && !deps.isCurrentSession()) return;
@@ -3249,6 +3263,7 @@ export async function retryFailedChunks(deps, {
     setBusy(true);
     try {
         const chunks = failedResults.map((r) => r.chunk).filter(Boolean);
+        const { processChunksParallel } = await loadChunkProcessor({ signal: myController.signal });
         const results = await processChunksParallel(chunks, {
             config: backendConfig, promptManager: promptShim, documentContext,
             log, onProgress, onChunkToken, signal: myController.signal,
@@ -3268,6 +3283,9 @@ export async function retryFailedChunks(deps, {
                 }
             }
         }
+        // Retried chunks stay inside the original run's resolved scope.
+        const scope = whitespaceChunkIds.size ? null : (await loadEditScope({ signal: myController.signal }))
+            .applyEditScope(results, { targets: scopeTargets }).scope;
         if (myController.signal.aborted || (deps.isCurrentSession && !deps.isCurrentSession())) return;
         const retryBookmarks = new Map(failedResults
             .map((r) => [r.chunkId, bookmarkMap.get(r.chunkId)]).filter(([, name]) => name));
@@ -3276,7 +3294,7 @@ export async function retryFailedChunks(deps, {
         let closed = false;
         let applying = false;
         const outcome = {
-            staged: true, retryProposal: true, revision, results, chunks, failedCount,
+            staged: true, retryProposal: true, revision, results, chunks, failedCount, scope,
             cancelledCount: results.filter((r) => r.status === 'cancelled').length,
             apply: async (ids, { signal, onChunkApplied } = {}) => {
                 if (closed || revision !== state.revision || applying) throw new Error('This retry proposal is no longer active.');

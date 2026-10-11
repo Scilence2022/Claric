@@ -74,3 +74,46 @@ test('interrupted application preserves bookmarks for untouched remaining sectio
   await staged.apply();
   expect(cleanupBookmarks).not.toHaveBeenCalled();
 });
+
+describe('targeted edit scope', () => {
+  const doc = [
+    { index: 0, text: 'Abstract', headingLevel: 1 },
+    { index: 1, text: 'We study X.', headingLevel: 0 },
+    { index: 2, text: 'Discussion', headingLevel: 1 },
+    { index: 3, text: 'A causal link.', headingLevel: 0 },
+  ];
+  const twoChunks = [
+    { id: 'abstract', tokenCount: 5, paragraphs: doc.slice(0, 2) },
+    { id: 'discussion', tokenCount: 5, paragraphs: doc.slice(2) },
+  ];
+  beforeEach(() => {
+    parseDocument.mockResolvedValue({ paragraphs: doc, totalTokens: 10 });
+    chunkDocument.mockReturnValue(twoChunks);
+    processChunksParallel.mockResolvedValue([
+      { status: 'fulfilled', chunk: twoChunks[0], chunkId: 'abstract', amendment: 'Abstract\nWe examine X.' },
+      { status: 'fulfilled', chunk: twoChunks[1], chunkId: 'discussion', amendment: 'Discussion\nA likely causal link.' },
+    ]);
+  });
+
+  test('a request naming one part changes only that part', async () => {
+    const staged = await runDocumentSkill(deps(), { category: 'amendment',
+      promptTemplate: 'Rewrite only the Abstract paragraph. Do not change any other paragraph.', gateApply: true });
+    expect(staged.results.map((r) => r.amendment)).toEqual(['Abstract\nWe examine X.', null]);
+    expect(staged.scope).toEqual({ label: 'Abstract', revertedParagraphs: 1, droppedChunks: 1,
+      notice: 'Limited to Abstract. 1 model edit(s) outside it were discarded.' });
+  });
+
+  test('an unlocatable target keeps every section and is reported', async () => {
+    const staged = await runDocumentSkill(deps(), { category: 'amendment',
+      promptTemplate: 'Rewrite only the Conclusion paragraph.', gateApply: true });
+    expect(staged.results.map((r) => r.amendment)).toEqual(['Abstract\nWe examine X.', 'Discussion\nA likely causal link.']);
+    expect(staged.scope).toMatchObject({ label: 'Conclusion', unresolved: true });
+    expect(staged.scope.notice).toContain('could not be located unambiguously');
+  });
+
+  test('an unrestricted request is not confined', async () => {
+    const staged = await runDocumentSkill(deps(), { category: 'amendment', promptTemplate: 'Polish the wording.', gateApply: true });
+    expect(staged.scope).toBeNull();
+    expect(staged.results.every((r) => r.amendment)).toBe(true);
+  });
+});

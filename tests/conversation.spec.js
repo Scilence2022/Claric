@@ -1512,6 +1512,34 @@ describe('createConversation.submit', () => {
     expect(view._msg.addCitationPills).toHaveBeenCalledTimes(1);
   });
 
+  test('a scoped document proposal states its limit and any paragraph deletions', async () => {
+    const appState = makeAppState();
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'Abstract\nShorter.', deletedParagraphs: 1,
+        chunk: { id: 'c0', paragraphs: [{ text: 'Abstract' }, { text: 'Long.' }, { text: 'Extra.' }] } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'Abstract' }, { text: 'Long.' }, { text: 'Extra.' }] }],
+      apply: jest.fn(async () => ({ amendmentsApplied: 1, commentsInserted: 0 })),
+      discard: jest.fn(async () => {}),
+      failedCount: 0,
+      cancelledCount: 0,
+      scope: { label: 'Abstract', revertedParagraphs: 2, droppedChunks: 1, notice: 'Limited to Abstract. 2 model edit(s) outside it were discarded.' },
+    };
+    const actions = makeActions({ runDocumentSkill: jest.fn(async () => staged) });
+    const conv = createConversation({
+      appState, view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('rewrite only the Abstract paragraph');
+
+    const cardEl = view._msg.attachProposal.mock.calls[0][0].el;
+    expect(cardEl.querySelector('.proposal-card-notice').textContent)
+      .toBe('Limited to Abstract. 2 model edit(s) outside it were discarded.');
+    expect(cardEl.textContent).toContain('deletes 1 paragraph(s)');
+  });
+
   test('staged document proposal with no amendments is discarded', async () => {
     const appState = makeAppState();
     const view = makeView();

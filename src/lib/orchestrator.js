@@ -26,7 +26,12 @@ import {
   defangProtocolMarkers,
   restoreProtocolMarkers,
 } from './response-parser.js';
-import { classifyChunkReply } from './amendment-guard.js';
+import { loadLazyModule } from './lazy-module-loader.js';
+
+// The reply guard runs only for amendment runs, so it stays out of the task
+// pane's start-up bundle.
+const loadAmendmentGuard = (options) => loadLazyModule('amendment-guard',
+  () => import(/* webpackChunkName: "amendment-guard" */ './amendment-guard.js'), { label: 'amendment safeguards', ...options });
 
 /**
  * @typedef {import('./document-chunker.js').DocumentChunk} DocumentChunk
@@ -210,6 +215,7 @@ export async function processChunksParallel(chunks, options) {
   const mode = promptManager.getActiveMode();
   // The user's instruction, used to tell requested text from model chat.
   const instructionText = promptManager.getActivePrompt('amendment')?.template || '';
+  const { classifyChunkReply } = mode === 'comment' ? { classifyChunkReply: null } : await loadAmendmentGuard({ signal });
   const results = new Array(chunks.length);
   let nextIndex = 0;
   let completed = 0;
@@ -368,7 +374,7 @@ export async function processChunksParallel(chunks, options) {
       // "delete every paragraph, insert the reply", so it is treated as "no
       // change for this chunk" instead. Any comment in a merged reply stays.
       let guard = null;
-      if (amendment) {
+      if (amendment && classifyChunkReply) {
         const verdict = classifyChunkReply(chunk.paragraphs.map((p) => p.text || ''), amendment, { instruction: instructionText });
         if (verdict.metaReply) {
           log(`Chunk ${chunk.id}: model replied with an explanation instead of document text; chunk left unchanged (${verdict.reason})`, 'warning');
