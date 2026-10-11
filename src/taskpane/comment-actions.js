@@ -4,12 +4,52 @@ const BATCH_SIZE = 32;
 const DELETE_VERBS = '删除|移除|清除|清空|去掉|去除';
 const LOCATIONS = '全文|文档|文章|选区|所选内容|选中的文本';
 
+/*
+ * English grammar for an unqualified bulk deletion.
+ *
+ * SAFETY: this is a closed whitelist, not a filter blacklist. Every word of an
+ * accepted instruction must be consumed by one of the parts below, so any
+ * qualifier that is not listed (author, content, status, "resolved", "except",
+ * "with replies", "reply to", ...) fails the match and the request is rejected
+ * instead of widened to "all". Add vocabulary only if it cannot narrow or
+ * redirect WHICH comments are deleted. Notably, EN_KEEP_OBJECT never contains
+ * comment/reply/thread words, so "Do not delete resolved comments" or "Keep
+ * Alice's comments" can never pass as a harmless preservation clause.
+ *
+ *   VERB ALL COMMENTS [ALSO]* [LOCATION] [ALSO]* [KEEP]*
+ */
+const EN_COMMENTS = '(?:word\\s+)?(?:comments?|comment\\s+threads?)';
+const EN_REPLIES = '(?:comment\\s+)?(?:threads?|repl(?:y|ies)|reply\\s+threads?)';
+// Widens the target only to the threads/replies of the comments already named:
+// "and replies", "including all comment threads and replies". Bare "with
+// replies" is deliberately absent; it reads as the filter "comments that have replies".
+const EN_ALSO = `\\s+(?:and|including|along\\s+with)\\s+(?:all\\s+)?(?:(?:of\\s+)?(?:their|the)\\s+)?${EN_REPLIES}`;
+const EN_LOCATION = '(?:in|from|on|throughout|across|within|of)\\s+(?:(?:the|this|entire|whole|current|word)\\s+)*(document|article|selection|selected\\s+text|selected\\s+passage)';
+// Preservation clauses, e.g. "Do not alter table content, structure, or formatting."
+// or "Keep the tables unchanged." Objects are non-comment document parts only, and
+// "and"/"or" appear only between two of them, so clause boundaries stay unambiguous.
+const EN_KEEP_WORD = '(?:the|all|any|other|remaining|existing|its|their|of|document|body|tables?|cells?|text|contents?|formatting|formats?|structure|layout|styles?|paragraphs?|headings?|images?|figures?|everything\\s+else|anything\\s+else)';
+const EN_KEEP_OBJECT = `${EN_KEEP_WORD}(?:\\s+(?:(?:and|or)\\s+)?${EN_KEEP_WORD})*`;
+const EN_CHANGE = 'alter|change|modify|touch|edit|affect|rewrite|reformat|disturb|delete|remove';
+const EN_CHANGING = 'altering|changing|modifying|touching|editing|affecting|rewriting|reformatting|disturbing|deleting|removing';
+const EN_UNCHANGED = '(?:unchanged|untouched|intact|unmodified|unaltered|as\\s+is|as\\s+they\\s+are|the\\s+same)';
+const EN_KEEP = `\\s+(?:(?:and|while|but|also)\\s+)?(?:`
+    + `(?:please\\s+)?(?:do\\s+not|don['’]t|never)\\s+(?:${EN_CHANGE})\\s+${EN_KEEP_OBJECT}`
+    + `|without\\s+(?:${EN_CHANGING})\\s+${EN_KEEP_OBJECT}`
+    + `|(?:keep(?:ing)?|leav(?:e|ing))\\s+${EN_KEEP_OBJECT}\\s+${EN_UNCHANGED}`
+    + `|(?:preserv(?:e|ing)|retain(?:ing)?|maintain(?:ing)?)\\s+${EN_KEEP_OBJECT}(?:\\s+${EN_UNCHANGED})?)`;
+const EN_DELETE_ALL = new RegExp(
+    `^(?:delete|remove|clear|erase)\\s+(?:all(?:\\s+of)?(?:\\s+the)?|every)\\s+${EN_COMMENTS}`
+    + `(?:${EN_ALSO})*(?:\\s+${EN_LOCATION})?(?:${EN_ALSO})*(?:${EN_KEEP})*$`, 'i');
+
 /** Only unqualified bulk deletion is executable; filters must never broaden to all. */
 export function parseCommentDeletionRequest(instruction) {
     const text = String(instruction || '').trim().replace(/[.!?。！？]+$/, '').trim()
         .replace(/^(?:(?:please|(?:can|could|would) you)\s+)+/i, '')
         .replace(/^(?:请(?:帮我)?|麻烦(?:你)?(?:帮我)?)/, '');
-    const en = text.match(/^(?:delete|remove|clear|erase)\s+(?:all(?:\s+of)?(?:\s+the)?|every)\s+(?:comments?|comment threads?)(?:\s+(?:and|including)\s+(?:all\s+)?(?:their\s+)?replies)?(?:\s+(?:in|from|on|throughout)\s+(?:(?:the|this|entire|whole)\s+)?(document|article|selection|selected text|selected passage))?$/i);
+    // Punctuation carries no meaning for the whitelist grammar; fold it away so
+    // multi-sentence planner output ("...in the document. Keep the tables unchanged.") is one stream.
+    const en = text.replace(/[,;:()]+|[.!?]+(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim().match(EN_DELETE_ALL);
     if (en) return { scope: /selection|selected/i.test(en[1] || '') ? 'selection' : 'document' };
     const compact = text.replace(/\s+/g, '');
     const location = `(?:(${LOCATIONS})(?:中|内|里)?的?)?`;
