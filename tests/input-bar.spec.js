@@ -349,14 +349,29 @@ describe('file attachment chips', () => {
         };
         return { bar, onSubmit, onLog, pick };
     }
-    // FileReader-backed reads (jsdom Blobs lack .text()) settle a macrotask
-    // late — give them a real timeout, not a 0ms tick.
-    const flush = () => new Promise((r) => setTimeout(r, 30));
+    // Files parse one after another through jsdom's FileReader (its Blobs lack
+    // .text()), two setImmediate hops each, so no fixed delay is safe on a
+    // loaded runner. Wait for the composer's own ready signal instead: the send
+    // button carries aria-busy exactly while a batch is parsing (the state
+    // submitCurrent() refuses to send in).
+    const untilParsed = () => new Promise((resolve) => {
+        const sendBtn = document.getElementById('sendBtn');
+        if (!sendBtn.hasAttribute('aria-busy')) {
+            resolve();
+            return;
+        }
+        const observer = new MutationObserver(() => {
+            if (sendBtn.hasAttribute('aria-busy')) return;
+            observer.disconnect();
+            resolve();
+        });
+        observer.observe(sendBtn, { attributes: true, attributeFilter: ['aria-busy'] });
+    });
 
     test('picked text files render removable chips; submit passes and clears them', async () => {
         const { onSubmit, pick } = setupWithAttachments();
         pick([new File(['hello world'], 'notes.txt', { type: 'text/plain' })]);
-        await flush();
+        await untilParsed();
 
         const chips = document.querySelectorAll('.attachment-chip');
         expect(chips).toHaveLength(1);
@@ -379,7 +394,7 @@ describe('file attachment chips', () => {
     test('attachments allow submitting with an empty input', async () => {
         const { onSubmit, pick } = setupWithAttachments();
         pick([new File(['body'], 'a.md')]);
-        await flush();
+        await untilParsed();
 
         document.getElementById('chatInput').value = '   ';
         document.getElementById('sendBtn').click();
@@ -390,7 +405,7 @@ describe('file attachment chips', () => {
     test('remove button drops a chip before sending', async () => {
         const { onSubmit, pick } = setupWithAttachments();
         pick([new File(['x'], 'a.txt'), new File(['y'], 'b.txt')]);
-        await flush();
+        await untilParsed();
         expect(document.querySelectorAll('.attachment-chip')).toHaveLength(2);
 
         document.querySelectorAll('.attachment-chip-remove')[0].click();
@@ -406,7 +421,7 @@ describe('file attachment chips', () => {
     test('unsupported and oversized files are rejected with a log entry', async () => {
         const { onLog, pick } = setupWithAttachments();
         pick([new File(['x'], 'archive.zip', { type: 'application/zip' })]);
-        await flush();
+        await untilParsed();
         expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
         expect(onLog).toHaveBeenCalledWith(expect.stringContaining('unsupported file type'), 'warning');
         const error = document.getElementById('inputError');
@@ -415,7 +430,7 @@ describe('file attachment chips', () => {
 
         const big = { name: 'huge.txt', type: 'text/plain', size: 10 * 1024 * 1024 + 1, text: async () => 'x' };
         pick([big]);
-        await flush();
+        await untilParsed();
         expect(onLog).toHaveBeenCalledWith('huge.txt: 10.0 MB exceeds the 10.0 MB per-file limit.', 'warning');
         expect(error.hidden).toBe(false);
         expect(error.textContent).toBe('archive.zip: unsupported file type (use text, image, .docx or .pdf).\n'
@@ -434,7 +449,7 @@ describe('file attachment chips', () => {
         }]);
         // The chip appears as pending before the failure lands.
         expect(document.querySelectorAll('.attachment-chip-pending')).toHaveLength(1);
-        await flush();
+        await untilParsed();
         const error = document.getElementById('inputError');
         expect(error.hidden).toBe(false);
         expect(error.textContent).toBe('broken.txt: read failed');
@@ -462,7 +477,7 @@ describe('file attachment chips', () => {
         expect(chips[1].querySelector('.attachment-chip-name').textContent).toBe('fast.txt');
 
         resolve('slow body');
-        await flush();
+        await untilParsed();
         const settled = document.querySelectorAll('.attachment-chip');
         expect(settled).toHaveLength(2);
         for (const chip of settled) {
@@ -482,7 +497,7 @@ describe('file attachment chips', () => {
         expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
 
         resolve('late body');
-        await flush();
+        await untilParsed();
         expect(document.querySelectorAll('.attachment-chip')).toHaveLength(0);
 
         document.getElementById('chatInput').value = 'go';
@@ -494,7 +509,7 @@ describe('file attachment chips', () => {
     test('image files render a thumbnail chip', async () => {
         const { pick } = setupWithAttachments();
         pick([new File([new Uint8Array([1, 2, 3])], 'pic.png', { type: 'image/png' })]);
-        await flush();
+        await untilParsed();
         const thumb = document.querySelector('.attachment-chip-thumb');
         expect(thumb).not.toBeNull();
         expect(thumb.src).toMatch(/^data:image\/png;base64,/);
@@ -503,7 +518,7 @@ describe('file attachment chips', () => {
     test('batch failures survive later success and ordinary typing until reset', async () => {
         const { bar, pick } = setupWithAttachments();
         pick([new File(['x'], 'bad.zip'), new File(['ok'], 'good.txt')]);
-        await flush();
+        await untilParsed();
         const error = document.getElementById('inputError');
         expect(error.textContent).toContain('bad.zip');
         expect(document.querySelectorAll('.attachment-chip')).toHaveLength(1);
@@ -523,7 +538,7 @@ describe('file attachment chips', () => {
         bar.clearAttachments();
         pick([new File(['new'], 'new.txt')]);
         resolve('old');
-        await flush();
+        await untilParsed();
         expect([...document.querySelectorAll('.attachment-chip-name')].map((el) => el.textContent)).toEqual(['new.txt']);
         document.getElementById('sendBtn').click();
         expect(onSubmit.mock.calls[0][1][0].name).toBe('new.txt');
@@ -532,7 +547,7 @@ describe('file attachment chips', () => {
     test('clearAttachments empties the list', async () => {
         const { bar, pick } = setupWithAttachments();
         pick([new File(['x'], 'a.txt')]);
-        await flush();
+        await untilParsed();
         bar.clearAttachments();
         expect(document.getElementById('attachmentChips').hasAttribute('hidden')).toBe(true);
     });
