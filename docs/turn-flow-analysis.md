@@ -298,7 +298,7 @@ families = countIntentFamilies(text)            // 插图/表格/追加/格式/�
 ### 7.2 SELECTION_EDIT（选区改写，conversation.js:1021-1151）
 
 **路由前分流**（word-actions.js 读侧）：
-- 多单元格表格选区 → `_prepareTableAmendment`（坐标网格 R1C1 + JSON patch 协议）。
+- 多单元格表格选区 → `prepareTableAmendment`（word-table-actions.js，按需懒加载；坐标网格 R1C1 + JSON patch 协议）。
 - 混合选区（段落+表格，如题注+表+注）→ `readMixedTableSelection` 段落粒度（:517-547）。
 - 其余 → 平文本。
 
@@ -376,7 +376,7 @@ Apply（:2620-2695）预检全致命：无 ops、锚点缺失、**已尝试过**
 
 ### 7.6 TABLE（新建表，conversation.js:1293-1356）
 
-`supportsTables === false` → "This Word host does not support the table APIs (WordApi 1.3)…"（:1294-1296）。`prepareTableProposal`（word-actions.js:2240）：
+`supportsTables === false` → "This Word host does not support the table APIs (WordApi 1.3)…"（:1294-1296）。`prepareTableProposal`（word-table-actions.js，经 word-actions.js 同名包装懒加载）：
 - 显式维度且无内容措辞（`TABLE_CONTENT_HINT_RE`）→ **确定性空网格，零 LLM 调用**（model:null）。
 - 有内容/无维度 → 严格 JSON 契约；指定维度则复述为硬约束，**网格不匹配整体拒收**（:2295-2304）。
 - spec 缺失 → "No table could be drafted from this instruction."

@@ -1,7 +1,7 @@
 jest.mock('../src/lib/lazy-module-loader.js', () => ({ loadLazyModule: jest.fn(async () => ({})) }));
 const { loadLazyModule } = require('../src/lib/lazy-module-loader.js');
 const { preloadTaskModules, loadAgentActions, loadDocumentEditActions, loadFormatPlanning,
-    loadFormatActions, loadTaskPlanner, loadTaskGraph, loadFileQuestion, loadCommentActions, loadMcpRuntime } = require('../src/taskpane/task-module-loader.js');
+    loadFormatActions, loadTableActions, loadTaskPlanner, loadTaskGraph, loadFileQuestion, loadCommentActions, loadMcpRuntime } = require('../src/taskpane/task-module-loader.js');
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -12,7 +12,7 @@ test('preflight loads all required code once before a composite request starts',
         { type: 'image_management' }, { type: 'document_edit' }, { type: 'comment_management' },
     ], { signal, visualFormatting: true });
     expect(loadLazyModule.mock.calls.map(([id]) => id).sort()).toEqual([
-        'agent-actions', 'comment-actions', 'document-edit-actions', 'format-actions', 'task-graph', 'visual-format',
+        'agent-actions', 'comment-actions', 'document-edit-actions', 'format-actions', 'table-actions', 'task-graph', 'visual-format',
     ]);
     for (const [, callback, options] of loadLazyModule.mock.calls) {
         expect(typeof callback).toBe('function');
@@ -23,6 +23,11 @@ test('preflight loads all required code once before a composite request starts',
 test('plain body editing preflight does not download table or rendering tools', async () => {
     await preloadTaskModules([{ type: 'edit' }, { type: 'qa' }]);
     expect(loadLazyModule.mock.calls.map(([id]) => id)).toEqual(['task-graph']);
+});
+
+test('table creation preflight loads table code without the tool-loop agent', async () => {
+    await preloadTaskModules([{ type: 'table' }]);
+    expect(loadLazyModule.mock.calls.map(([id]) => id)).toEqual(['task-graph', 'table-actions']);
 });
 
 test('formatting on a host without visual tools does not require optional rendering code', async () => {
@@ -39,7 +44,7 @@ test('failed capability code preflight rejects without running native actions', 
 test.each([
     [loadAgentActions, 'agent-actions'], [loadDocumentEditActions, 'document-edit-actions'],
     [loadFormatPlanning, 'visual-format'], [loadTaskPlanner, 'task-planner'],
-    [loadFormatActions, 'format-actions'],
+    [loadFormatActions, 'format-actions'], [loadTableActions, 'table-actions'],
     [loadTaskGraph, 'task-graph'], [loadFileQuestion, 'file-question'], [loadCommentActions, 'comment-actions'],
     [loadMcpRuntime, 'mcp-runtime'],
 ])('module wrapper %p uses the shared loader with a cancellable import', async (load, id) => {

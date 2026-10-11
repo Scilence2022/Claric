@@ -517,6 +517,18 @@ module.exports = (env, argv) => {
     resolve: {
       extensions: ['.js', '.json']
     },
+    optimization: {
+      splitChunks: {
+        // A module shared by several lazy chunks (lib/table-patch.js serves
+        // both agent-actions and table-actions) is split out by webpack's
+        // default cache group. Name it after its consumers so it keeps the
+        // semantic chunkFilename above instead of a numeric id.
+        name: (module, chunks) => {
+          const names = chunks.map((chunk) => chunk.name);
+          return names.every(Boolean) ? names.sort().join('~') : undefined;
+        }
+      }
+    },
     performance: {
       // Size gates prevent bundle regressions; same-origin delivery still
       // incurs network and parsing costs. The PDF worker is loaded on demand
