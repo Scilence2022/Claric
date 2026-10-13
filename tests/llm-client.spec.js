@@ -889,6 +889,58 @@ describe('model-specific generation parameters', () => {
     expect(body.temperature).toBe(0.2);
   });
 
+  describe('versioned DeepSeek V4 ids per gateway provider', () => {
+    // New API gateways (zhongkeyu) forward top-level `thinking` and
+    // `reasoning_effort` unchanged to DeepSeek-type channels, so every
+    // gateway gets the DeepSeek-native fields.
+    const routes = [
+      ['zhongkeyu', '/zhongkeyu', '/v1', 'deepseek-v4.1-flash'],
+      ['custom', 'https://gw.example.com', '/v1', 'deepseek-v4.1-flash'],
+      ['openrouter', '/openrouter', '/api/v1', 'deepseek/deepseek-v4.1-flash'],
+      ['siliconflow', '/siliconflow', '/v1', 'deepseek-ai/DeepSeek-V4.1-Flash'],
+      ['deepseek', '/deepseek', '/v1', 'deepseek-v4.1-flash'],
+    ];
+
+    test.each(routes)('%s Off sends thinking.disabled and temperature', async (provider, url, apiPath, model) => {
+      const body = await bodyFor({
+        url, apiPath, apiKey: 'k', provider, model, thinkingLevel: 'off', temperature: 0.2,
+      });
+      expect(body.model).toBe(model);
+      expect(body.thinking).toEqual({ type: 'disabled' });
+      expect(body).not.toHaveProperty('reasoning_effort');
+      expect(body.temperature).toBe(0.2);
+    });
+
+    test.each(routes)('%s High sends thinking.enabled plus effort and no temperature', async (provider, url, apiPath, model) => {
+      const body = await bodyFor({
+        url, apiPath, apiKey: 'k', provider, model, thinkingLevel: 'high', temperature: 0.2,
+      });
+      expect(body.thinking).toEqual({ type: 'enabled' });
+      expect(body.reasoning_effort).toBe('high');
+      expect(body).not.toHaveProperty('temperature');
+    });
+
+    test.each(routes)('%s Default sends no thinking fields and no temperature', async (provider, url, apiPath, model) => {
+      const body = await bodyFor({
+        url, apiPath, apiKey: 'k', provider, model, thinkingLevel: 'default', temperature: 0.2,
+      });
+      expect(body).not.toHaveProperty('thinking');
+      expect(body).not.toHaveProperty('reasoning_effort');
+      expect(body).not.toHaveProperty('temperature');
+    });
+
+    test('an unrecognised zhongkeyu DeepSeek id keeps the generic payload', async () => {
+      const body = await bodyFor({
+        url: '/zhongkeyu', apiPath: '/v1', apiKey: 'k', provider: 'zhongkeyu',
+        model: 'deepseek-v41-flash', thinkingLevel: 'off', temperature: 0.2,
+      });
+      // The generic profile has no Off option, so nothing can disable thinking.
+      expect(body).not.toHaveProperty('thinking');
+      expect(body).not.toHaveProperty('reasoning_effort');
+      expect(body.temperature).toBe(0.2);
+    });
+  });
+
   test('GLM-5.2 maps canonical levels to thinking + effort', async () => {
     const body = await bodyFor({
       url: '/glm', apiPath: '/api/paas/v4', apiKey: 'k', provider: 'glm', model: 'glm-5.2',
