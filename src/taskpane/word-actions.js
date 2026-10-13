@@ -28,7 +28,6 @@ import {
     stripMarkdown,
     stripChunkDelimiters,
 } from '../lib/llm-client.js';
-import { buildTableUserPrompt, parseTablePatchResponse } from '../lib/table-patch.js';
 import {
     inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
     validateTableCreationSpec,
@@ -62,7 +61,7 @@ import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
-import { loadTaskPlanner, loadFormatActions, loadFileQuestion, loadEditScope, loadChunkProcessor } from './task-module-loader.js';
+import { loadTaskPlanner, loadFormatActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTablePatch } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
@@ -1142,6 +1141,8 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
 async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, commentInstructions, backendConfig, onToken, onReasoning, signal }) {
     const { appState, log } = deps;
     const { rowCount, colCount, cells } = tableRegion;
+    // Table patches run only for multi-cell table selections, so the protocol loads on demand.
+    const { buildTableUserPrompt, parseTablePatchResponse } = await loadTablePatch({ signal });
     log(`Processing table selection (${cells.length} cells) via ${backendConfig.model}...`, 'info');
     if (commentInstructions && commentInstructions.trim()) {
         log('Comment instructions are ignored for table selections — the patch protocol returns JSON.', 'info');
