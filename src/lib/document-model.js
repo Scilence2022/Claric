@@ -4,6 +4,10 @@ export const DOCUMENT_EDIT_LIMITS = Object.freeze({
     outlineBlocks: 100, readBlocks: 12,
 });
 
+/** Hard cap on the serialized review preview, and the default unchanged-context excerpt per side. */
+const REVIEW_CONTEXT_CHARS = 60000;
+const REVIEW_EXCERPT_CHARS = 1500;
+
 function fail(message) { throw new Error(message); }
 /** @param {any} value @param {string} label @param {number} [max] */
 function text(value, label, max = DOCUMENT_EDIT_LIMITS.paragraphChars) {
@@ -20,6 +24,22 @@ function insertedFormat(value) {
         || !Object.keys(value).length || Object.keys(value).some((key) => !['bold', 'italic'].includes(key))
         || Object.values(value).some((item) => typeof item !== 'boolean')) fail('New paragraph format supports only explicit bold and italic booleans.');
     return { ...value };
+}
+
+/**
+ * Bound an unchanged context block to the excerpt(s) facing the edit: its end
+ * when a change follows, its start when a change precedes. The omitted span is
+ * named inline and in `elided` so it cannot be mistaken for a deletion.
+ * @param {string} value @param {number} limit @param {{head: boolean, tail: boolean}} sides
+ */
+function elide(value, limit, { head, tail }) {
+    const keepHead = head || !tail ? limit : 0;
+    const keepTail = tail ? limit : 0;
+    if (value.length <= keepHead + keepTail + 200) return {};
+    const start = keepHead;
+    const end = value.length - keepTail;
+    return { text: `${value.slice(0, start)}[… unchanged text elided: characters ${start}–${end} of ${value.length} …]${value.slice(end)}`,
+        elided: { start, end, chars: value.length } };
 }
 
 /**
@@ -212,12 +232,24 @@ export function createDocumentModel(snapshot) {
                 for (const neighbor of original.slice(Math.max(0, i - 1), i + 2)) ids.add(neighbor.id);
             }
         }
-        const before = original.filter((b) => ids.has(b.id)).map((b) => ({ id: b.id, text: b.text, section: b.section || '' }));
-        const after = draft.filter((b) => !b.original || ids.has(b.id)).map((b) => ({ id: b.id, text: b.text,
-            section: b.section || '', ...(b.format ? { format: b.format } : {}) }));
-        const result = { contract, ...patch, before, after };
-        if (JSON.stringify(result).length > 60000) fail('Review context is too large. Reduce the draft to fewer paragraphs.');
-        return result;
+        // Changed blocks are always shown in full. Unchanged neighbours are context
+        // only, so a long one is cut to the end(s) facing the nearest change.
+        const edited = draft.map((b) => !b.original || b.text !== originals.get(b.id).text);
+        const changedIds = new Set(draft.filter((_, i) => edited[i]).map((b) => b.id));
+        const sides = new Map(draft.map((b, i) => [b.id, { head: edited.lastIndexOf(true, i) !== -1, tail: edited.indexOf(true, i) !== -1 }]));
+        const view = (list, excerpt, include) => list.filter(include).map((b) => ({ id: b.id, text: b.text, section: b.section || '',
+            ...(changedIds.has(b.id) ? {} : elide(b.text, excerpt, sides.get(b.id))), ...(b.format ? { format: b.format } : {}) }));
+        const full = (list) => view(list, 0, (b) => changedIds.has(b.id));
+        if (JSON.stringify({ contract, ...patch, before: full(original), after: full(draft) }).length > REVIEW_CONTEXT_CHARS) {
+            fail(`Review context is too large: the proposed changes alone exceed ${REVIEW_CONTEXT_CHARS} characters. Reduce the draft to fewer or shorter paragraphs.`);
+        }
+        // Many long neighbours can still add up; shrink their excerpts before giving up.
+        for (const excerpt of [REVIEW_EXCERPT_CHARS, 600, 200, 0]) {
+            const result = { contract, ...patch, before: view(original, excerpt, (b) => ids.has(b.id)),
+                after: view(draft, excerpt, (b) => !b.original || ids.has(b.id)) };
+            if (JSON.stringify(result).length <= REVIEW_CONTEXT_CHARS) return result;
+        }
+        fail('Review context is too large. Reduce the draft to fewer paragraphs.');
     }
     return { outline, search, read, setContract, stage, compile, preview,
         get revision() { return revision; }, get contract() { return contract; } };
