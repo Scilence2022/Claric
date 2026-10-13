@@ -132,3 +132,78 @@ test('sharing failure is explained in the UI without claiming visual access', as
     expect(document.getElementById('wordViewStatus').textContent).toContain('does not support window sharing');
     window.dispatchEvent(new Event('pagehide'));
 });
+
+function mountToolbar() {
+    document.body.innerHTML = '<button id="shareWordViewBtn"></button><div id="wordViewStatus" hidden></div>';
+    const log = jest.fn(); initScreenSharingView({ log });
+    return { log, button: document.getElementById('shareWordViewBtn') };
+}
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const shareDialog = () => document.querySelector('[aria-labelledby="wordShareRequestTitle"]');
+const dialogButton = (label) => [...shareDialog().querySelectorAll('button')].find((el) => el.textContent === label);
+
+test('models ask through a prompt whose button takes the toolbar sharing path', async () => {
+    const w = setup(); const { log, button } = mountToolbar();
+    const visual = createWordVisualTools();
+    expect(visual.tools.map((tool) => tool.name)).toEqual(['read_word_screen', 'request_word_screen_share']);
+    const asking = visual.execute('request_word_screen_share', { reason: '  Check the   selected heading.  ' });
+    await tick();
+    expect(shareDialog().textContent).toContain('Check the selected heading.');
+    expect(w.getDisplayMedia).not.toHaveBeenCalled();
+    dialogButton('Share Word window').click();
+    expect(await asking).toMatchObject({ ok: true, result: { shared: true } });
+    expect(w.getDisplayMedia).toHaveBeenCalledTimes(1);
+    expect(shareDialog()).toBeNull();
+    expect(button.getAttribute('aria-pressed')).toBe('true');
+    expect(log).toHaveBeenCalledWith('Word window shared for model screenshots.', 'info');
+    expect((await visual.execute('read_word_screen', {})).ok).toBe(true);
+    expect(await visual.execute('request_word_screen_share', {})).toMatchObject({ ok: false, error: expect.stringContaining('already requested') });
+    window.dispatchEvent(new Event('pagehide'));
+});
+
+test('declining, cancelling the chooser or a wrong surface never starts sharing', async () => {
+    const w = setup(); mountToolbar();
+    const declined = createWordVisualTools().execute('request_word_screen_share', {});
+    await tick();
+    expect(shareDialog().querySelector('.confirm-args').hidden).toBe(true);
+    dialogButton('Not now').click();
+    expect(await declined).toMatchObject({ ok: true, result: { shared: false } });
+    expect(w.getDisplayMedia).not.toHaveBeenCalled();
+
+    w.getDisplayMedia.mockRejectedValueOnce(new DOMException('User declined', 'NotAllowedError'));
+    const cancelled = createWordVisualTools().execute('request_word_screen_share', {});
+    await tick(); dialogButton('Share Word window').click();
+    expect(await cancelled).toMatchObject({ ok: true, result: { shared: false } });
+    expect(shareDialog()).toBeNull();
+
+    w.track.getSettings = () => ({ displaySurface: 'monitor' });
+    const wrongSurface = createWordVisualTools().execute('request_word_screen_share', {});
+    await tick(); dialogButton('Share Word window').click(); await tick();
+    expect(shareDialog().querySelector('[role="alert"]').textContent).toMatch(/Choose the Word application window/);
+    shareDialog().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(await wrongSurface).toMatchObject({ ok: true, result: { shared: false } });
+    expect(screenCaptureState().active).toBe(false);
+    window.dispatchEvent(new Event('pagehide'));
+});
+
+test('cancelling the turn closes the share prompt', async () => {
+    setup(); mountToolbar();
+    const controller = new AbortController();
+    const asking = createWordVisualTools({ signal: controller.signal }).execute('request_word_screen_share', {});
+    await tick();
+    controller.abort();
+    await expect(asking).rejects.toMatchObject({ name: 'AbortError' });
+    expect(shareDialog()).toBeNull();
+    window.dispatchEvent(new Event('pagehide'));
+});
+
+test('the request tool is offered only when a prompt can start sharing', async () => {
+    setup();
+    expect(createWordVisualTools().tools.map((tool) => tool.name)).toEqual(['read_word_screen']);
+    mountToolbar();
+    await startWordScreenSharing();
+    expect(createWordVisualTools().tools.map((tool) => tool.name)).toEqual(['read_word_screen']);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(screenCaptureState().active).toBe(false);
+    expect(createWordVisualTools().tools.map((tool) => tool.name)).toEqual(['read_word_screen']);
+});

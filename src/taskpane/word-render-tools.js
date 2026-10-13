@@ -1,6 +1,7 @@
 /** Read-only visual evidence from Word's own PDF export, never HTML reconstruction. */
 import { defineTool } from '../lib/tool-registry.js';
-import { WORD_SCREEN_TOOL_SPEC, readWordScreen, screenCaptureState } from './word-screen-capture.js';
+import { WORD_SCREEN_REQUEST_TOOL_SPEC, WORD_SCREEN_TOOL_SPEC, canRequestWordScreenSharing, readWordScreen,
+    requestWordScreenSharing, screenCaptureState } from './word-screen-capture.js';
 import { loadLazyModule } from '../lib/lazy-module-loader.js';
 import { readPdfPageText } from '../lib/pdf-text-reader.js';
 
@@ -27,13 +28,34 @@ export function canReadWordVisuals() { return canReadWordRendering() || screenCa
 /** Prefer the user-shared window; native pages cover unsupported/offscreen views. */
 export function createWordVisualTools(options = {}) {
     const native = canReadWordRendering() ? createWordRenderTools(options) : null;
+    const canRequest = !screenCaptureState().active && canRequestWordScreenSharing();
     let inspectedScreen = false;
     let screenError = null;
+    let shareRequested = false;
+    async function requestShare(args) {
+        if (shareRequested) return { ok: false, error: 'Word window sharing was already requested in this task. Use read_word_screen if it is shared; otherwise continue with native rendered pages or text.' };
+        if (args.reason !== undefined && typeof args.reason !== 'string') return { ok: false, error: 'reason must be one short sentence.' };
+        shareRequested = true;
+        options.log?.('Asked the user to share the Word window.', 'info');
+        try {
+            const outcome = await requestWordScreenSharing({ reason: args.reason, signal: options.signal });
+            if (outcome.shared) {
+                screenError = null;
+                return { ok: true, result: { shared: true, note: 'The user shared the Word window. Call read_word_screen for a fresh screenshot of the visible view.' } };
+            }
+            screenError = outcome.error || 'The user did not share the Word window.';
+            return { ok: true, result: { shared: false, note: 'The user did not share the Word window. Do not ask again; continue with native rendered pages or text.' } };
+        } catch (error) {
+            check(options.signal); screenError = error.message;
+            return { ok: false, error: error.message };
+        }
+    }
     return {
-        tools: [WORD_SCREEN_TOOL_SPEC, ...(native?.tools || [])],
+        tools: [WORD_SCREEN_TOOL_SPEC, ...(canRequest ? [WORD_SCREEN_REQUEST_TOOL_SPEC] : []), ...(native?.tools || [])],
         status: () => ({ ...(native?.status() || { inspectedPages: [], unavailable: screenError }), inspectedScreen,
             preferredSource: screenCaptureState().active ? 'word_shared_window' : 'word_native_pdf' }),
-        async execute(name, args) {
+        async execute(name, args = {}) {
+            if (canRequest && name === WORD_SCREEN_REQUEST_TOOL_SPEC.name) return requestShare(args);
             if (name !== WORD_SCREEN_TOOL_SPEC.name) {
                 return native ? native.execute(name, args) : { ok: false, error: 'Native PDF rendering is unavailable on this Word host.' };
             }
