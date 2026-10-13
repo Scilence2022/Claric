@@ -20,6 +20,8 @@ export const loadMcpRuntime = (options) => loadLazyModule('mcp-runtime',
     () => import(/* webpackChunkName: "mcp-runtime" */ '../lib/mcp-runtime.js'), { label: 'MCP tools', ...options });
 export const loadChunkProcessor = (options) => loadLazyModule('chunk-processor',
     () => import(/* webpackChunkName: "chunk-processor" */ '../lib/orchestrator.js'), { label: 'document processing tools', ...options });
+export const loadTableCreation = (options) => loadLazyModule('table-creation',
+    () => import(/* webpackChunkName: "table-creation" */ '../lib/table-ops.js'), { label: 'table creation tools', ...options });
 export const loadEditScope = (options) => loadLazyModule('edit-scope',
     () => import(/* webpackChunkName: "edit-scope" */ '../lib/edit-scope.js'), { label: 'edit scope guard', ...options });
 export const loadCommentActions = (options) => loadLazyModule('comment-actions',

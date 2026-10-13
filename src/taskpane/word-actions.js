@@ -29,10 +29,6 @@ import {
     stripChunkDelimiters,
 } from '../lib/llm-client.js';
 import { buildTableUserPrompt, parseTablePatchResponse } from '../lib/table-patch.js';
-import {
-    inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
-    validateTableCreationSpec,
-} from '../lib/table-ops.js';
 import { supportsTrackedRowOps } from '../lib/platform.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
@@ -62,7 +58,7 @@ import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
-import { loadTaskPlanner, loadFormatActions, loadFileQuestion, loadEditScope, loadChunkProcessor } from './task-module-loader.js';
+import { loadTaskPlanner, loadFormatActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
@@ -2285,6 +2281,10 @@ export async function prepareTableProposal(deps, { instruction, onToken, onReaso
         throw new Error('No table instruction given.');
     }
 
+    // Table creation runs only for table requests, so its protocol loads on demand.
+    const {
+        inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
+    } = await loadTableCreation({ signal });
     const inferred = inferTableCreationSpec(text);
     if (inferred && !TABLE_CONTENT_HINT_RE.test(text)) {
         const rowCount = inferred.rows.length;
@@ -2370,6 +2370,7 @@ export async function applyTableProposal(deps, proposal) {
     const { appState, log } = deps;
     // Re-validate at apply time: the proposal may have round-tripped through
     // session persistence, so its spec is treated as untrusted input again.
+    const { validateTableCreationSpec } = await loadTableCreation();
     const validation = validateTableCreationSpec(proposal && proposal.spec);
     if (!validation.spec) {
         const first = validation.errors[0];
