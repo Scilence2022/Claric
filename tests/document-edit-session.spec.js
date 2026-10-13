@@ -242,3 +242,30 @@ test('pinning unread sources fails before spending model review budget', async (
         .rejects.toThrow(/did not complete/);
     expect(send.mock.calls.some(([messages]) => messages[0].content.startsWith('Review a PROPOSED'))).toBe(false);
 });
+
+test('an insertion after a 30,000-character paragraph is reviewed with a bounded excerpt and validates', async () => {
+    const log = `Data-quality log start. ${'Sensor 4 reported a dropout; '.repeat(1050)}Data-quality log end.`;
+    expect(log.length).toBeGreaterThan(30000);
+    const longSnapshot = { id: 'long', blocks: [
+        { id: 'p1', text: 'Data quality', headingLevel: 1 }, { id: 'p2', text: log }, { id: 'p3', text: 'Next steps.' },
+    ] };
+    const paragraph = 'Sensor 4 dropouts dominate the log.';
+    const send = scripted([
+        call('set_edit_contract', { goal: 'Summarize the log', requirements: ['Summarize after the log'] }),
+        call('read_blocks', { ids: ['p2'], limit: 24000 }), call('read_blocks', { ids: ['p2', 'p3'], offset: 24000, limit: 24000 }),
+        call('read_blocks', { ids: ['p3'] }),
+        call('stage_patch', { operations: [{ kind: 'insert', afterId: 'p2', paragraphs: [paragraph], reason: 'After the log.' }] }),
+        call('read_draft'), call('validate_patch'), review(), finish]);
+    const result = await runDocumentEditSession({ snapshot: longSnapshot, instruction: 'Summarize the data-quality log after it.', send });
+    expect(result.status).toBe('staged');
+    expect(result.preview.after.find((b) => b.id === 'draft-1').text).toBe(paragraph);
+    expect(result.preview.after.find((b) => b.id === 'p2')).toMatchObject({ elided: { start: 0, end: log.length - 1500, chars: log.length } });
+    const draftObservation = send.mock.calls.flatMap(([messages]) => messages).map((m) => m.content)
+        .find((content) => typeof content === 'string' && content.includes('unchanged text elided'));
+    expect(draftObservation).toBeDefined();
+    expect(draftObservation).not.toContain('Review context is too large');
+    const reviewRequest = send.mock.calls.find(([messages]) => messages[0].content.startsWith('Review a PROPOSED'))[0];
+    expect(reviewRequest[0].content).toContain('not deleted');
+    expect(JSON.parse(reviewRequest[1].content).after.find((b) => b.id === 'p2').text)
+        .toMatch(/^\[… unchanged text elided: characters 0–\d+ of \d+ …\].*Data-quality log end\.$/);
+});

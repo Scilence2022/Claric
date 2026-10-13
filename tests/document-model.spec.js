@@ -203,3 +203,89 @@ test('replacement argument errors identify the correct field before changing the
         .toThrow(/blockId.*not id/);
     expect(model.read({ ids: ['draft-1'] }).blocks[0]).toMatchObject({ text: insert.paragraphs[0], originalText: false });
 });
+
+describe('review preview with very long unchanged neighbours', () => {
+    const long = (label, chars) => `${label} start. ${'x'.repeat(chars)} ${label} end.`;
+    function readyLong(blocks) {
+        const model = createDocumentModel({ id: 'long', blocks });
+        model.setContract({ goal: 'Extend the log discussion', requirements: ['Keep the log intact'] });
+        for (const b of blocks) {
+            for (let offset = 0; offset < b.text.length; offset += 24000) model.read({ ids: [b.id], offset, limit: 24000 });
+        }
+        return model;
+    }
+    const contextOf = (list, id) => list.find((b) => b.id === id);
+
+    test('an insertion after a 30,000-character paragraph keeps the change complete and excerpts the neighbour tail', () => {
+        const log = long('Log', 30000);
+        const model = readyLong([{ id: 'p1', text: 'Data quality' }, { id: 'p2', text: log }, { id: 'p3', text: 'Next steps.' }]);
+        const paragraph = 'The log shows three recurring sensor faults.';
+        model.stage({ operations: [{ kind: 'insert', afterId: 'p2', paragraphs: [paragraph], reason: 'Summarize the log.' }] });
+        const preview = model.preview();
+        expect(JSON.stringify(preview).length).toBeLessThanOrEqual(60000);
+        expect(contextOf(preview.after, 'draft-1').text).toBe(paragraph);
+        for (const list of [preview.before, preview.after]) {
+            const context = contextOf(list, 'p2');
+            const { start, end } = context.elided;
+            expect(context.elided).toEqual({ start: 0, end: log.length - 1500, chars: log.length });
+            expect(context.text).toBe(`[… unchanged text elided: characters ${start}–${end} of ${log.length} …]${log.slice(end)}`);
+            expect(context.text.endsWith('Log end.')).toBe(true);
+            expect(contextOf(list, 'p3')).toMatchObject({ text: 'Next steps.' });
+            expect(contextOf(list, 'p3').elided).toBeUndefined();
+        }
+        expect(preview.changes).toMatchObject([{ kind: 'insert', afterId: 'p2', beforeId: 'p3', paragraphs: [paragraph] }]);
+    });
+
+    test('a replacement between two long paragraphs shows the facing end of each and the full change', () => {
+        const left = long('Left', 30000);
+        const right = long('Right', 30000);
+        const model = readyLong([{ id: 'p1', text: left }, { id: 'p2', text: 'Short bridge.' }, { id: 'p3', text: right }]);
+        model.stage({ operations: [{ kind: 'replace', blockId: 'p2', text: 'A clearer bridge.', reason: 'Clarify.' }] });
+        const preview = model.preview();
+        expect(JSON.stringify(preview).length).toBeLessThanOrEqual(60000);
+        expect(contextOf(preview.before, 'p2')).toMatchObject({ text: 'Short bridge.' });
+        expect(contextOf(preview.after, 'p2')).toMatchObject({ text: 'A clearer bridge.' });
+        for (const list of [preview.before, preview.after]) {
+            expect(contextOf(list, 'p1').elided).toEqual({ start: 0, end: left.length - 1500, chars: left.length });
+            expect(contextOf(list, 'p1').text.endsWith('Left end.')).toBe(true);
+            expect(contextOf(list, 'p3').elided).toEqual({ start: 1500, end: right.length, chars: right.length });
+            expect(contextOf(list, 'p3').text.startsWith('Right start.')).toBe(true);
+            expect(contextOf(list, 'p3').text).toMatch(/\[… unchanged text elided: characters 1500–\d+ of \d+ …\]$/);
+        }
+    });
+
+    test('a long unchanged block between two changes keeps both facing ends', () => {
+        const middle = long('Middle', 30000);
+        const model = readyLong([{ id: 'p1', text: 'Before.' }, { id: 'p2', text: middle }, { id: 'p3', text: 'After.' }]);
+        model.stage({ operations: [
+            { kind: 'replace', blockId: 'p1', text: 'Revised before.', reason: 'Clarify.' },
+            { kind: 'replace', blockId: 'p3', text: 'Revised after.', reason: 'Clarify.' },
+        ] });
+        const context = contextOf(model.preview().after, 'p2');
+        expect(context.elided).toEqual({ start: 1500, end: middle.length - 1500, chars: middle.length });
+        expect(context.text.startsWith('Middle start.')).toBe(true);
+        expect(context.text.endsWith('Middle end.')).toBe(true);
+    });
+
+    test('many long neighbours shrink their excerpts instead of failing', () => {
+        const blocks = Array.from({ length: 24 }, (_, i) => ({ id: `p${i}`, text: long(`B${i}`, 10000) }));
+        const model = readyLong(blocks);
+        model.stage({ operations: blocks.filter((_, i) => i % 2).slice(0, 12)
+            .map((b) => ({ kind: 'insert', afterId: b.id, paragraphs: [`Note after ${b.id}.`], reason: 'Annotate.' })) });
+        const preview = model.preview();
+        expect(JSON.stringify(preview).length).toBeLessThanOrEqual(60000);
+        expect(preview.after.filter((b) => !b.elided && b.id.startsWith('draft-'))).toHaveLength(12);
+        const excerpts = preview.after.filter((b) => b.elided);
+        expect(excerpts).toHaveLength(24);
+        // The 1,500-character default no longer fits, so every block keeps at most 600 per facing side.
+        const kept = excerpts.map(({ elided }) => elided.chars - (elided.end - elided.start));
+        expect(Math.max(...kept)).toBeLessThanOrEqual(1200);
+        expect(Math.min(...kept)).toBeGreaterThan(0);
+    });
+
+    test('changed content that alone exceeds the review cap still fails clearly', () => {
+        const model = readyLong([{ id: 'p1', text: 'Short.' }, { id: 'p2', text: 'Also short.' }]);
+        model.stage({ operations: [{ kind: 'insert', afterId: 'p1', paragraphs: ['a'.repeat(23000), 'b'.repeat(23000)], reason: 'Large addition.' }] });
+        expect(() => model.preview()).toThrow(/Review context is too large: the proposed changes alone exceed 60000 characters/);
+    });
+});
