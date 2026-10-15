@@ -598,6 +598,77 @@ body {
     display: none;
 }
 
+.msg-markdown {
+    white-space: normal;
+    line-height: 1.65;
+    min-width: 0;
+}
+
+.msg-markdown > :first-child { margin-top: 0; }
+.msg-markdown > :last-child { margin-bottom: 0; }
+.msg-markdown p { margin: 0 0 0.8em; }
+.msg-markdown h1,
+.msg-markdown h2,
+.msg-markdown h3,
+.msg-markdown h4,
+.msg-markdown h5,
+.msg-markdown h6 {
+    line-height: 1.35;
+    margin: 1.1em 0 0.5em;
+    font-weight: 650;
+}
+.msg-markdown h1 { font-size: 1.4em; }
+.msg-markdown h2 { font-size: 1.25em; }
+.msg-markdown h3 { font-size: 1.1em; }
+.msg-markdown h4,
+.msg-markdown h5,
+.msg-markdown h6 { font-size: 1em; }
+.msg-markdown ul,
+.msg-markdown ol { padding-left: 1.6em; margin: 0.5em 0 0.9em; }
+.msg-markdown li { margin: 0.25em 0; }
+.msg-markdown li > p { margin-bottom: 0.35em; }
+.msg-markdown blockquote {
+    margin: 0.8em 0;
+    padding-left: 0.9em;
+    border-left: 3px solid var(--border-color);
+    color: var(--secondary-text);
+}
+.msg-markdown code {
+    font-family: Consolas, Monaco, monospace;
+    font-size: 0.9em;
+    padding: 0.1em 0.3em;
+    border-radius: var(--border-radius-sm);
+    background: var(--tertiary-bg);
+    white-space: pre-wrap;
+}
+.msg-markdown pre {
+    max-width: 100%;
+    overflow-x: auto;
+    padding: var(--spacing-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--tertiary-bg);
+    white-space: pre;
+}
+.msg-markdown pre code { padding: 0; white-space: pre; }
+.msg-markdown a { color: var(--accent-color); text-decoration: underline; }
+.msg-markdown hr { border: 0; border-top: 1px solid var(--border-color); margin: 1em 0; }
+.msg-markdown-table { max-width: 100%; overflow-x: auto; margin: 0.8em 0; }
+.msg-markdown table { border-collapse: collapse; width: 100%; font-size: 0.95em; }
+.msg-markdown th,
+.msg-markdown td { border: 1px solid var(--border-color); padding: 0.4em 0.6em; text-align: left; }
+.msg-markdown th { background: var(--tertiary-bg); }
+
+.msg-completion {
+    margin-top: var(--spacing-md);
+    padding-top: var(--spacing-sm);
+    border-top: 1px solid var(--border-color);
+    white-space: normal;
+    line-height: 1.5;
+    font-size: var(--font-size-sm);
+}
+.msg-completion p { margin: 0.35em 0 0; }
+
 .msg-progress {
     margin-top: var(--spacing-sm);
 }
