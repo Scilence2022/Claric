@@ -190,6 +190,7 @@ export function buildConversationHistory(records, { log, config } = {}) {
                     rejected: 'rejected; not applied',
                     warning: 'warning; application may be partial, verify the document',
                     error: 'error; application failed or may be partial, verify the document',
+                    paused: 'paused; application may be partial, verify the document',
                 };
                 const state = Object.hasOwn(states, proposal.state) ? states[proposal.state] : 'unknown; application not confirmed';
                 parts.push(`Proposal: ${detail(proposal.title) || 'Untitled'} [${state}]`);

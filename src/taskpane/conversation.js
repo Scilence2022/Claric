@@ -1219,6 +1219,8 @@ export function createConversation(deps) {
             title: `Proposed edits to ${amendedChunks.length} section(s)`,
             state: 'pending',
             countsText: `${beforeChars} → ${afterChars} chars`,
+            summary: amendedChunks.map((r) => typeof r.comment === 'string' ? r.comment.trim() : '')
+                .filter(Boolean).slice(0, 3).join(' '),
             items,
         });
     }
@@ -1271,7 +1273,8 @@ export function createConversation(deps) {
                 },
                 onReject: () => resource.dispose(),
             });
-            msg.attachProposal(card, { title, state: 'pending', countsText: `${before.length} → ${after.length} chars`, items: [item] });
+            msg.attachProposal(card, { title, state: 'pending', summary: proposal.summary,
+                countsText: `${before.length} → ${after.length} chars`, items: [item] });
             msg.setStatus('Focused changes are ready for review.');
             return { status: 'staged', summary: proposal.summary, artifacts: [{ kind: 'document-draft', before, after }] };
         } catch (error) {
@@ -1405,6 +1408,7 @@ export function createConversation(deps) {
             msg.attachProposal(card, {
                 title,
                 state: 'pending',
+                summary: proposal.commentText,
                 countsText: `${beforeChars} → ${afterChars} chars`,
                 items: items || [],
             });

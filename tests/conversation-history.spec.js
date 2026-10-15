@@ -39,7 +39,7 @@ describe('buildConversationHistory', () => {
   test('retains proposal states and diffs without claiming all proposed changes happened', () => {
     const history = buildConversationHistory([user('Edit'), assistant('', {
       status: 'Review the document.',
-      proposals: ['pending', 'applied', 'rejected', 'warning', 'error', 'unknown', 'toString'].map((state) => ({
+      proposals: ['pending', 'applied', 'rejected', 'warning', 'error', 'paused', 'unknown', 'toString'].map((state) => ({
         state, title: `Title ${state}`, detail: 'One item', countsText: '2 changes',
         items: [{ label: 'Clause', before: 'old wording', after: 'new wording' }],
         previewSvg: 'NEVER_INCLUDE_SVG', previewSrc: 'NEVER_INCLUDE_BYTES',
@@ -51,6 +51,7 @@ describe('buildConversationHistory', () => {
     expect(content).toContain('rejected; not applied');
     expect(content).toContain('application may be partial');
     expect(content).toContain('application failed or may be partial');
+    expect(content).toContain('paused; application may be partial');
     expect(content).toContain('unknown; application not confirmed');
     expect(content).toContain('Before: old wording\nProposed after: new wording');
     expect(content).toContain('Proposal detail: One item');
