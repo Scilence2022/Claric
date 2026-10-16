@@ -2363,6 +2363,22 @@ export function createConversation(deps) {
             const checkedGraph = validateTaskGraph({ tasks: plan.tasks });
             if (!checkedGraph.valid) throw new Error(checkedGraph.errors.join('; '));
             const graphInput = checkedGraph.graph;
+            const taskTurns = new Map(graphInput.tasks.map((task) => [task.taskId,
+                turnForTask(task, selectionFacts, turn.instruction)]));
+            // Only these native pipelines guarantee disjoint write targets:
+            // document amendment chunks exclude tables (and split at them),
+            // while document table tools operate solely on existing tables.
+            // Selection edits, formatting and structural inserts can overlap.
+            const independentDrafts = (left, right) => {
+                const types = [taskTurns.get(left)?.type, taskTurns.get(right)?.type];
+                return types.includes(TURN_TYPE.DOC_EDIT) && types.includes(TURN_TYPE.DOCUMENT_TABLE_TOOL);
+            };
+            const dependsOnTask = (taskId, precedingId, visited = new Set()) => {
+                if (visited.has(taskId)) return false;
+                visited.add(taskId);
+                return graphInput.tasks.find((task) => task.taskId === taskId)?.dependsOn
+                    .some((id) => id === precedingId || dependsOnTask(id, precedingId, visited));
+            };
             const setGraphStatus = () => {
                 const entries = [...(graphResults?.entries() || [])];
                 const results = entries.map(([, result]) => result);
@@ -2429,9 +2445,9 @@ export function createConversation(deps) {
                 }
             };
             const runGraph = (controller, initialResults) => {
-                // Plans can omit write dependencies. Stage each native write
-                // against the live document after the preceding proposal has
-                // been applied; an independent failed task is not a barrier.
+                // Stage disjoint body/table drafts in the same pass. Writes
+                // still use the shared Apply lock and native freshness checks.
+                // Overlapping drafts and explicit dependencies wait for Apply.
                 const pendingWrites = new Set([...(initialResults || [])]
                     .filter(([, result]) => result.value?.status === 'staged').map(([id]) => id));
                 return executeTaskGraph(graphInput, async (task, { inputs }) => {
@@ -2458,15 +2474,18 @@ export function createConversation(deps) {
                             return result;
                         };
                     } });
-                    if (task.type !== 'qa' && (pendingWrites.size || inputs.some((item) => item.value?.status === 'staged'))) {
-                        return { status: 'blocked', error: new Error('Awaiting a preceding proposal. Apply it to continue, or combine prose edits in one draft.') };
+                    const precedingWrites = [...pendingWrites].filter((id) =>
+                        !independentDrafts(task.taskId, id) || dependsOnTask(task.taskId, id));
+                    if (task.type !== 'qa' && (precedingWrites.length || inputs.some((item) => item.value?.status === 'staged'))) {
+                        const waiting = precedingWrites.map((id) => `${id} (${taskTurns.get(id)?.type || 'document changes'})`).join(', ');
+                        return { status: 'blocked', error: new Error(`Task ${task.taskId} (${task.type}) awaits application of ${waiting || 'a required proposal'}. Apply it to continue.`) };
                     }
                     const taskDeps = inputs.length ? { ...turnDeps, conversationHistory: [...turnDeps.conversationHistory,
                         { role: 'assistant', content: `Prior task results: ${JSON.stringify(inputs.map((item) => ({
                             taskId: item.taskId, status: item.value?.status, summary: item.value?.summary || '',
                             artifactCount: item.value?.artifacts?.length || 0,
                         })))}` }] } : turnDeps;
-                    const taskTurn = turnForTask(task, selectionFacts, turn.instruction);
+                    const taskTurn = { ...taskTurns.get(task.taskId) };
                     if (taskTurn.type === TURN_TYPE.FORMAT) taskTurn.cleanupRequested = requestsEmptyParagraphCleanup(taskTurn.instruction)
                         && requestsEmptyParagraphCleanup(turn.instruction);
                     if (turn.temporaryAttachments?.length) {
@@ -2492,7 +2511,11 @@ export function createConversation(deps) {
                     signal: controller.signal,
                     initialResults,
                     onEvent: (event) => {
-                        if (event.value?.status === 'staged') pendingWrites.add(event.taskId);
+                        // Do not leapfrog an earlier overlapping task that is
+                        // itself waiting for Apply (for example global format
+                        // between a body draft and a table task).
+                        if (event.value?.status === 'staged'
+                            || (event.type === 'task.blocked' && taskTurns.get(event.taskId)?.type !== TURN_TYPE.DOC_QA)) pendingWrites.add(event.taskId);
                         if (event.error) log(`Task [${event.taskId}]: ${event.error}`, event.type === 'task.failed' ? 'error' : 'info');
                         const { value, ...details } = event;
                         msg.appendModelToken({ id: 'task-runtime-events' }, 'content',

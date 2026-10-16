@@ -23,11 +23,13 @@ function setupDom() {
 
 function makeCard() {
     const el = document.createElement('div');
-    return {
+    const card = {
         el,
         applyAll: jest.fn(),
         markApplied: jest.fn(),
     };
+    card.applyAll.mockImplementation(async () => card.markApplied());
+    return card;
 }
 
 describe('auto-apply pipeline', () => {
@@ -77,7 +79,7 @@ describe('auto-apply pipeline', () => {
         const msg = createAssistantMessage();
         let release;
         const first = makeCard();
-        first.applyAll.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+        first.applyAll.mockImplementation(() => new Promise((resolve) => { release = resolve; }).then(() => first.markApplied()));
         const next = makeCard();
         msg.attachProposal(first, { title: 'First', state: 'pending', items: [] });
         msg.attachProposal(next, { title: 'Next', state: 'pending', items: [] });
@@ -178,7 +180,7 @@ describe('auto-apply pipeline', () => {
         const first = makeCard();
         // The card's real runApply owns a cross-card mutex while in flight,
         // so the queue must await each apply before starting the next.
-        first.applyAll = jest.fn(() => new Promise((resolve) => { releaseFirst = resolve; }));
+        first.applyAll = jest.fn(() => new Promise((resolve) => { releaseFirst = resolve; }).then(() => first.markApplied()));
         const second = makeCard();
         msg.attachProposal(first, { title: 'T1', state: 'pending', items: [] });
         msg.attachProposal(second, { title: 'T2', state: 'pending', items: [] });
@@ -198,7 +200,7 @@ describe('auto-apply pipeline', () => {
         const msg = createAssistantMessage();
         const first = makeCard();
         const second = makeCard();
-        first.applyAll.mockImplementation(async () => { appState.config[setting] = false; });
+        first.applyAll.mockImplementation(async () => { appState.config[setting] = false; first.markApplied(); });
         msg.attachProposal(first, { title: 'T1', state: 'pending', items: [] });
         msg.attachProposal(second, { title: 'T2', state: 'pending', items: [] });
         msg.finalizeForHistory();
