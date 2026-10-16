@@ -795,11 +795,11 @@ describe('processChunksParallel', () => {
         documentContext: mockDocumentContext(),
         log,
         onChunkToken: () => {},
-        sendMessagesStreamFn: async () => ({ content: 'out', reasoning: '' }),
+        sendMessagesStreamFn: async () => ({ content: 'output', reasoning: '' }),
         formatContextPrefixFn: () => '',
       });
 
-      expect(results[0].amendment).toBe('out');
+      expect(results[0].amendment).toBe('output');
       expect(results[0].reasoning).toBeNull();
     });
   });

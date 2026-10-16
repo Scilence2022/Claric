@@ -125,6 +125,22 @@ test('a failed automatic Apply does not retry a native write or start downstream
     expect(chatView.getCurrentSession().messages[1].proposals[0].state).toBe('error');
 });
 
+test('an unverified item overrides an optimistic aggregate count and stops dependent automatic edits', async () => {
+    const f = fixture();
+    f.outcome.apply.mockImplementation(async (_ids, { onChunkApplied }) => {
+        onChunkApplied('body', { applied: false, uncertain: true });
+        return { amendmentsApplied: 1, commentsInserted: 0 };
+    });
+    await f.conversation.submit(request);
+    await jest.advanceTimersByTimeAsync(50);
+    expect(f.outcome.apply).toHaveBeenCalledTimes(1);
+    expect(f.actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(f.actions.readDocumentTableRegions).not.toHaveBeenCalled();
+    expect(chatView.getCurrentSession().messages[1].proposals[0].state).toBe('warning');
+    expect(chatView.getCurrentSession().messages[1].status).not.toMatch(/^Done:/);
+    expect(document.querySelector('.proposal-applied')).toBeNull();
+});
+
 test('Stop during automatic Apply pauses its card and does not resume or retry the chain', async () => {
     const f = fixture();
     f.outcome.apply.mockImplementation(async (_ids, { signal }) => new Promise((resolve) => {

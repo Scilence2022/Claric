@@ -22,6 +22,7 @@ import { hasCjk, applyCharDiffStrategy } from './word-diff/char-diff.js';
 import { alignParagraphs } from './paragraph-alignment.js';
 import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, verifyMutationText, hostSupportsTrackedChanges } from './word-revisions.js';
 import { validateWhitespaceCleanup } from './whitespace-cleanup.js';
+import { tryRevisionDiff } from './word-diff/revision-diff.js';
 
 /**
  * Thrown when an LLM amendment fails the content-length sanity check (the
@@ -254,6 +255,16 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   if (alignment.some((op) => op.type === 'delete' && states[op.origIdx].hasRevisions)) {
     throw new RevisionSafetyError('Deleting a paragraph with unresolved revisions requires a fresh in-place text edit.');
   }
+  let structuralAnchor = 0;
+  for (const op of alignment) {
+    if (op.type === 'delete' && inTable[op.origIdx]) {
+      throw new RevisionSafetyError('Cannot delete a table paragraph through a prose amendment. Preserve its paragraph structure.');
+    }
+    if (op.type === 'insert' && amendedLines[op.newIdx].trim() && inTable[structuralAnchor]) {
+      throw new RevisionSafetyError('Cannot insert a prose paragraph inside a table. Preserve its paragraph structure.');
+    }
+    if (op.origIdx !== undefined) structuralAnchor = op.origIdx;
+  }
 
   // Pre-resolve every changed paragraph's content range in ONE batched read
   // (a single sync for the whole chunk) instead of a load+sync inside the
@@ -285,6 +296,12 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
       }
       if (state.hasRevisions && state.protectedStructure) {
         throw new RevisionSafetyError(`Paragraph ${index + 1}: structural revisions or protected objects cannot be safely edited in place.`);
+      }
+      if (state.hasRevisions) {
+        const op = alignment.find((op) => op.type === 'keep' && op.origIdx === index);
+        const after = whitespaceOnly ? amendedLines[op.newIdx] : amendedLines[op.newIdx].trim();
+        await tryRevisionDiff(context, changedParaRanges.get(index), origTexts[index], after, log,
+          { trackChanges: false, paragraph: true, preflightOnly: true });
       }
     }
   }
@@ -366,12 +383,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           progress.appliedParagraphs++;
         }
       } else if (op.type === 'delete') {
-        // Paragraph was removed by LLM -- delete it. Table paragraphs are
-        // skipped: deleting cell content never deletes a row, it corrupts one.
-        if (inTable[op.origIdx]) {
-          log(`Para ${op.origIdx}: skipping delete — paragraph is inside a table`, 'warning');
-          continue;
-        }
+        // Structural table operations were refused before the first write.
         const para = paraItems[op.origIdx];
         progress.mutationAttempted = true;
         progress.pendingStructuralWrites = true;
@@ -394,12 +406,6 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         }
 
         if (anchorOrigIdx >= 0 && anchorOrigIdx < paraItems.length) {
-          // Anchoring inside a table would insert an in-cell paragraph, not a
-          // new row — skip instead of corrupting the table layout.
-          if (inTable[anchorOrigIdx]) {
-            log(`Skipping insert after para ${anchorOrigIdx} — anchor is inside a table`, 'warning');
-            continue;
-          }
           const anchorPara = paraItems[anchorOrigIdx];
           progress.mutationAttempted = true;
           progress.pendingStructuralWrites = true;
