@@ -746,6 +746,10 @@ export function createAssistantMessage() {
                 if (!isCurrentSession() || /^Cancelled\b/.test(lastStatus) || el.classList.contains('chat-message-error') || appState.config.autoApplyChanges !== true || appState.config.trackChangesEnabled === false) break;
                 if (meta.state !== 'pending') continue;
                 try { await cardToApply.applyAll(); } catch (_err) { /* The card reports its own failure. */ }
+                // Several disjoint drafts can share one turn. A failed,
+                // unverified or paused write stops further automatic writes;
+                // their cards remain available for manual review.
+                if (meta.state !== 'applied') break;
             }
         }, 0);
     }

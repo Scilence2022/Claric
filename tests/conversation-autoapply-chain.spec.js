@@ -42,6 +42,15 @@ function fixture({ dependencies = true } = {}) {
     return { conversation, actions, outcome, events };
 }
 
+function bodyAndTablesFixture({ tablesFirst = false, dependent = false } = {}) {
+    const f = fixture();
+    const body = { taskId: 'body', type: 'edit', scope: 'document', instruction: '润色全文非表格正文，保持原意。' };
+    const tables = { taskId: 'tables', type: 'table_management', scope: 'document', instruction: '将所有现有表格修改为三线格。',
+        dependsOn: dependent ? ['body'] : [] };
+    f.actions.planDocumentTasks.mockResolvedValue({ tasks: tablesFirst ? [tables, body] : [body, tables] });
+    return f;
+}
+
 beforeEach(() => {
     jest.useFakeTimers();
     document.body.innerHTML = '<div id="chatMessages"></div><div id="welcome"></div>';
@@ -58,6 +67,93 @@ afterEach(() => {
     appState.config.autoApplyChanges = false;
     jest.clearAllTimers();
     jest.useRealTimers();
+});
+
+test.each([false, true])('independent body and table drafts are both reviewable before Apply (tables first: %s)', async (tablesFirst) => {
+    appState.config.autoApplyChanges = false;
+    const f = bodyAndTablesFixture({ tablesFirst });
+    await f.conversation.submit('全文润色修改，所有表格修改为三线格');
+    expect(f.events).toEqual(tablesFirst ? ['read-tables', 'read-body'] : ['read-body', 'read-tables']);
+    const message = chatView.getCurrentSession().messages[1];
+    expect(message.proposals.map((proposal) => proposal.state)).toEqual(['pending', 'pending']);
+    expect(message.status).not.toContain('await application');
+    expect(document.body.textContent).not.toContain('task.blocked');
+    expect(f.outcome.apply).not.toHaveBeenCalled();
+    expect(f.actions.applySelectionAmendment).not.toHaveBeenCalled();
+
+    // Review mode permits applying the independent cards in either order.
+    const buttons = [...document.querySelectorAll('.proposal-card button')].filter((button) => button.textContent === 'Apply as tracked changes');
+    buttons[1].click();
+    await jest.advanceTimersByTimeAsync(10);
+    buttons[0].click();
+    await jest.advanceTimersByTimeAsync(10);
+    expect(message.proposals.map((proposal) => proposal.state)).toEqual(['applied', 'applied']);
+    expect(f.outcome.apply).toHaveBeenCalledTimes(1);
+    expect(f.actions.applySelectionAmendment).toHaveBeenCalledTimes(1);
+});
+
+test('a failed body-generation section does not suppress the independent three-line table draft', async () => {
+    appState.config.autoApplyChanges = false;
+    const f = bodyAndTablesFixture();
+    f.outcome.failedCount = 1;
+    const failed = { id: 'failed', paragraphs: [{ text: 'Another synthetic paragraph.' }] };
+    f.outcome.chunks.push(failed);
+    f.outcome.results.push({ status: 'rejected', chunk: failed, chunkId: failed.id, error: 'Upstream temporarily unavailable' });
+    await f.conversation.submit('全文润色修改，所有表格修改为三线格');
+    expect(f.actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+    expect(chatView.getCurrentSession().messages[1].proposals).toHaveLength(2);
+    expect(f.events).toEqual(['read-body', 'read-tables']);
+});
+
+test('independent drafts auto-apply serially after both preparation steps finish', async () => {
+    const f = bodyAndTablesFixture();
+    await f.conversation.submit('全文润色修改，所有表格修改为三线格');
+    expect(f.events).toEqual(['read-body', 'read-tables']);
+    await jest.advanceTimersByTimeAsync(50);
+    expect(f.events).toEqual(['read-body', 'read-tables', 'apply-body', 'apply-tables']);
+    expect(chatView.getCurrentSession().messages[1].proposals.map((proposal) => proposal.state)).toEqual(['applied', 'applied']);
+});
+
+test.each(['error', 'warning', 'paused'])('a body Apply %s leaves the independently drafted table available for review', async (state) => {
+    const f = bodyAndTablesFixture();
+    if (state === 'error') f.outcome.apply.mockRejectedValue(new Error('Native write failed'));
+    else f.outcome.apply.mockResolvedValue(state === 'warning'
+        ? { amendmentsApplied: 0, uncertainChunkIds: ['body'], errors: ['Native read-back differs'] }
+        : { interrupted: true, amendmentsApplied: 0, appliedChunkIds: [] });
+    await f.conversation.submit('全文润色修改，所有表格修改为三线格');
+    await jest.advanceTimersByTimeAsync(50);
+    expect(f.events).toEqual(['read-body', 'read-tables']);
+    expect(f.outcome.apply).toHaveBeenCalledTimes(1);
+    expect(f.actions.applySelectionAmendment).not.toHaveBeenCalled();
+    expect(chatView.getCurrentSession().messages[1].proposals.map((proposal) => proposal.state)).toEqual([state, 'pending']);
+});
+
+test('an explicit dependency between body and table tasks still waits for verified Apply', async () => {
+    appState.config.autoApplyChanges = false;
+    const f = bodyAndTablesFixture({ dependent: true });
+    await f.conversation.submit('先润色正文，应用后再按新正文修改表格为三线格');
+    expect(f.actions.readDocumentTableRegions).not.toHaveBeenCalled();
+    const button = document.querySelector('.proposal-card .btn-primary');
+    button.click();
+    await jest.advanceTimersByTimeAsync(50);
+    expect(f.events).toEqual(['read-body', 'apply-body', 'read-tables']);
+    expect(chatView.getCurrentSession().messages[1].proposals.map((proposal) => proposal.state)).toEqual(['applied', 'pending']);
+});
+
+test('a dependency through read-only QA cannot bypass the body Apply boundary', async () => {
+    appState.config.autoApplyChanges = false;
+    const f = bodyAndTablesFixture();
+    const plan = await f.actions.planDocumentTasks();
+    plan.tasks.splice(1, 0, { taskId: 'answer', type: 'qa', instruction: 'Explain the planned changes', dependsOn: ['body'] });
+    plan.tasks[2].dependsOn = ['answer'];
+    f.actions.answerQuestion = jest.fn(async () => 'Synthetic answer');
+    await f.conversation.submit('全文润色修改，所有表格修改为三线格');
+    expect(f.actions.answerQuestion).toHaveBeenCalledTimes(1);
+    expect(f.actions.readDocumentTableRegions).not.toHaveBeenCalled();
+    document.querySelector('.proposal-card .btn-primary').click();
+    await jest.advanceTimersByTimeAsync(50);
+    expect(f.actions.readDocumentTableRegions).toHaveBeenCalledTimes(1);
+    expect(f.actions.answerQuestion).toHaveBeenCalledTimes(1);
 });
 
 test.each([true, false])('three tasks auto-apply in order with real message/card state (dependencies: %s)', async (dependencies) => {

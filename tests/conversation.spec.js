@@ -2106,6 +2106,23 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
   });
 
+  test('a selected-text draft may include table cells and still blocks table preparation until Apply', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'selected', type: 'edit', scope: 'selection', instruction: '润色所选文本' },
+      { taskId: 'tables', type: 'table_management', scope: 'document', instruction: '所有表格改为三线格' },
+    ] })), prepareTableToolEdit: jest.fn(async () => ({ noOps: true, answer: 'Tables already satisfy the request.' })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'before' });
+    await conv.submit('润色所选文本，所有表格改为三线格');
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
+    expect(actions.readDocumentTableRegions).not.toHaveBeenCalled();
+    await view._msg.attachProposal.mock.calls[0][0].applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(actions.readDocumentTableRegions).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+  });
+
   test('verified unchanged body results do not re-inject full document chunks into later tasks', async () => {
     const view = makeView();
     const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
