@@ -70,6 +70,58 @@ beforeEach(() => {
 });
 afterEach(() => { delete global.Word; });
 
+test('an unverified native write stops before touching the remaining section or inserting comments', async () => {
+  const document = nativeDocument(storedTexts);
+  document.range.insertComment = jest.fn();
+  const nativeError = Object.assign(new Error('GeneralException'), { code: 'GeneralException', debugInfo: { errorLocation: 'Range.insertText' } });
+  applyTokenMapStrategy.mockRejectedValueOnce(new MutationSafetyError(nativeError));
+  const onChunkApplied = jest.fn();
+  const results = ['head', 'tail'].map((id, index) => ({ chunkId: id, status: 'fulfilled',
+    amendment: amendedTexts.join('\n'), comment: 'Review note.', chunk: { id, endIndex: index,
+      paragraphs: storedTexts.map((text) => ({ text })) } }));
+  const result = await applyChunkResults(results, new Map([['head', '_head'], ['tail', '_tail']]),
+    { trackChangesEnabled: true, log: jest.fn(), onChunkApplied });
+  expect(result).toMatchObject({ halted: true, interrupted: false, attemptedChunkIds: ['tail'],
+    uncertainChunkIds: ['tail'], skippedChunkIds: ['head'], commentsInserted: 0 });
+  expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
+  expect(document.context.document.getBookmarkRangeOrNullObject).toHaveBeenCalledTimes(1);
+  expect(document.range.insertComment).not.toHaveBeenCalled();
+  expect(onChunkApplied).toHaveBeenCalledWith('head', { applied: false, skipped: true });
+  expect(result.errors[0]).toContain('Range.insertText');
+  expect(result.errors[0]).toContain('paragraph 2: native text edit');
+});
+
+test('apply-time re-anchoring and changed-content reads bound full OOXML exports to 24 per sync', async () => {
+  const source = Array.from({ length: 50 }, (_, index) => `The original paragraph number ${index} has clear wording.`);
+  const amended = source.map((text) => text.replace('clear', 'precise'));
+  const document = nativeDocument(source);
+  let pending = 0;
+  let largest = 0;
+  for (const range of [...document.paragraphs, ...document.contentRanges]) {
+    const getXml = range.getOoxml.getMockImplementation();
+    range.getOoxml.mockImplementation(() => { pending++; return getXml(); });
+  }
+  document.context.sync.mockImplementation(async () => { largest = Math.max(largest, pending); pending = 0; });
+  const result = await applyChunkResults([{ chunkId: 'section', status: 'fulfilled', amendment: amended.join('\n'),
+    chunk: { id: 'section', paragraphs: source.map((text) => ({ text })) } }], new Map([['section', '_section']]),
+  { trackChangesEnabled: true, log: jest.fn() });
+  expect(result.amendmentsApplied).toBe(1);
+  expect(largest).toBeLessThanOrEqual(24);
+  expect(largest).toBe(24);
+});
+
+test('model blank separator lines never cause structural paragraph writes', async () => {
+  const document = nativeDocument(storedTexts);
+  const result = await applyChunkResults([{ chunkId: 'section', status: 'fulfilled', amendment: amendedTexts.join('\n\n\n'),
+    chunk: { id: 'section', paragraphs: storedTexts.map((text) => ({ text })) } }], new Map([['section', '_section']]),
+  { trackChangesEnabled: true, log: jest.fn() });
+  expect(result.amendmentsApplied).toBe(1);
+  for (const paragraph of document.paragraphs) {
+    expect(paragraph.insertParagraph).not.toHaveBeenCalled();
+    expect(paragraph.delete).not.toHaveBeenCalled();
+  }
+});
+
 test('native content mismatch in the first paragraph prevents writes to the tail of the section', async () => {
   const document = nativeDocument(storedTexts, { 0: 'A different native content baseline.' });
   const { result, onChunkApplied } = await apply();
@@ -93,7 +145,7 @@ test('unlocatable existing revisions fail preflight before any paragraph is writ
   tryRevisionDiff.mockRejectedValueOnce(new RevisionSafetyError('Unverified visible revision target.'));
   const { result } = await apply();
   expect(tryRevisionDiff).toHaveBeenCalledWith(document.context, document.contentRanges[0], storedTexts[0], amendedTexts[0],
-    expect.any(Function), { trackChanges: false, paragraph: true, preflightOnly: true });
+    expect.any(Function), { trackChanges: false, paragraph: true, preflightOnly: true, nativeTargets: true });
   expect(result).toMatchObject({ amendmentsApplied: 0, appliedParagraphs: 0, partialChunkIds: [], uncertainChunkIds: [] });
   expect(result.errors[0]).toMatch(/Unverified visible revision target/);
   expect(applyTokenMapStrategy).not.toHaveBeenCalled();

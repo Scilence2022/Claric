@@ -1,36 +1,22 @@
 /** Map final-view differences to verified Word ranges, preserving earlier revisions. */
-import DiffMatchPatch from '../vendor/diff-match-patch.js';
+import { textEditHunks, touchesProtectedSpan } from '../text-edit-plan.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState, normalizeRevisionText,
-    RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, hostSupportsTrackedChanges } from '../word-revisions.js';
+    RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, hostSupportsTrackedChanges,
+    normalizeWordText, textMismatchDetail, queueCurrentTextRead, wordErrorDetail } from '../word-revisions.js';
 
 const MAX_TARGETS = 256;
 const MAX_CANDIDATES = 1024;
-
-/** Diff Unicode scalars so an emoji replacement never searches for half a surrogate. */
-function scalarDiff(before, after) {
-    const values = [''];
-    const ids = new Map();
-    const encode = (text) => Array.from(text).map((scalar) => {
-        if (!ids.has(scalar)) { ids.set(scalar, values.length); values.push(scalar); }
-        if (values.length > 65535) throw new RevisionSafetyError('Too many distinct characters for a safe revision diff.');
-        return String.fromCharCode(ids.get(scalar));
-    }).join('');
-    const diffs = new DiffMatchPatch().diff_main(encode(before), encode(after), false);
-    return diffs.map(([op, encoded]) => [op, Array.from(encoded).map((id) => values[id.charCodeAt(0)]).join('')]);
-}
+const READ_BATCH_SIZE = 24;
 
 function planEdits(state, after) {
-    const hunks = [];
-    let offset = 0;
-    let pending = null;
-    for (const [op, text] of scalarDiff(state.text, after)) {
-        if (op === 0) { pending = null; offset += text.length; continue; }
-        if (!pending) { pending = { start: offset, end: offset, text: '', targets: [], anchor: null, location: null }; hunks.push(pending); }
-        if (text.includes('\n') || text.includes('\t')) {
+    const hunks = textEditHunks(state.text, after).map((hunk) => ({ ...hunk, targets: [], anchor: null, location: null }));
+    for (const hunk of hunks) {
+        if (/[\n\t]/.test(hunk.text + state.text.slice(hunk.start, hunk.end))) {
             throw new RevisionSafetyError('Cannot change paragraph or tab boundaries with unresolved revisions.');
         }
-        if (op === -1) { offset += text.length; pending.end = offset; }
-        else pending.text += text;
+        if (touchesProtectedSpan(hunk, state.protectedSpans)) {
+            throw new RevisionSafetyError('The proposed text changes a native field result. Preserve citations, bibliography fields and links; edit surrounding prose only.');
+        }
     }
     const targets = [];
     function target(start, text) {
@@ -44,13 +30,16 @@ function planEdits(state, after) {
             // Anchor to visible text, never the beginning of a deleted run.
             const prior = Array.from(state.text.slice(0, hunk.start)).pop();
             const next = Array.from(state.text.slice(hunk.start))[0];
-            if (prior && prior !== '\n' && prior !== '\t') {
+            const protectedAt = (position) => state.protectedSpans.some(({ start, end }) => position >= start && position < end);
+            if (prior && prior !== '\n' && prior !== '\t' && !protectedAt(hunk.start - prior.length)) {
                 hunk.anchor = target(hunk.start - prior.length, prior);
                 hunk.location = Word.InsertLocation.after;
-            } else if (next && next !== '\n' && next !== '\t') {
+            } else if (next && next !== '\n' && next !== '\t' && !protectedAt(hunk.start)) {
                 hunk.anchor = target(hunk.start, next);
                 hunk.location = Word.InsertLocation.before;
-            } else if (!state.text) hunk.location = Word.InsertLocation.before;
+            } else if (!hunk.start || hunk.start === state.text.length) {
+                hunk.location = hunk.start ? Word.InsertLocation.after : Word.InsertLocation.before;
+            }
             else throw new RevisionSafetyError('No safe visible insertion anchor. Select one paragraph.');
         } else {
             for (const segment of state.segments) {
@@ -78,7 +67,8 @@ async function locate(context, scope, targets, options, allowSplit = true) {
     const searches = new Map();
     for (const { text } of targets) {
         if (searches.has(text)) continue;
-        const matches = scope.search(text, { matchCase: true, matchWholeWord: false, matchWildcards: false });
+        const matches = scope.search(text, { matchCase: true, matchWholeWord: false, matchWildcards: false,
+            ignorePunct: false, ignoreSpace: false, matchPrefix: false, matchSuffix: false });
         matches.load('items');
         searches.set(text, matches);
     }
@@ -89,33 +79,48 @@ async function locate(context, scope, targets, options, allowSplit = true) {
     }
     if (candidates.length > MAX_CANDIDATES) throw new RevisionSafetyError('Too many ambiguous revision matches. Use a smaller selection.');
     const verified = new Map();
+    const needed = new Set(targets.map((target) => JSON.stringify([target.start, target.text])));
     // Verify both content and final-view position. Nth raw search matches
     // are unsafe when old deletions contain the same word as visible text.
-    for (let start = 0; start < candidates.length; start += 64) {
-        const batch = candidates.slice(start, start + 64).map((candidate) => {
+    for (let start = 0; start < candidates.length; start += READ_BATCH_SIZE) {
+        const batch = candidates.slice(start, start + READ_BATCH_SIZE).map((candidate) => {
             const prefix = scope.getRange(Word.RangeLocation.start).expandTo(candidate.range.getRange(Word.RangeLocation.start));
             // OOXML exports can include a terminal empty paragraph that is
             // indistinguishable from a genuine paragraph-start fragment in
             // a multi-paragraph prefix. Current-view native text retains
             // the exact range boundary without that export padding.
-            let currentPrefix = null;
-            if (typeof prefix.getReviewedText === 'function') {
-                try { currentPrefix = prefix.getReviewedText(Word.ChangeTrackingVersion?.current || 'Current'); }
-                catch { /* Older hosts retain the conservative XML locator. */ }
-            }
-            return { ...candidate, xml: queueRevisionRead(candidate.range, { paragraph: true }), prefix: prefix.getOoxml(), currentPrefix };
+            const currentPrefix = queueCurrentTextRead(prefix);
+            const currentContent = queueCurrentTextRead(candidate.range);
+            return { ...candidate, currentPrefix, currentContent,
+                xml: currentContent ? null : queueRevisionRead(candidate.range, { paragraph: true }),
+                prefix: currentPrefix ? null : prefix.getOoxml() };
         });
         await context.sync();
+        const selected = [];
         for (const candidate of batch) {
-            const content = resolveRevisionRead(candidate.range, candidate.xml, { paragraph: true });
-            if (content.hasHiddenContent || content.protectedStructure || content.text !== candidate.text) continue;
             if (candidate.currentPrefix && typeof candidate.currentPrefix.value !== 'string') {
                 throw new RevisionSafetyError('The current-view revision prefix is unreadable. Generate a fresh proposal.');
             }
+            if (candidate.currentContent && typeof candidate.currentContent.value !== 'string') {
+                throw new RevisionSafetyError('The current-view search target is unreadable. Generate a fresh proposal.');
+            }
+            if (candidate.currentContent && normalizeWordText(candidate.currentContent.value) !== candidate.text) continue;
             const offset = candidate.currentPrefix
-                ? candidate.currentPrefix.value.replace(/\r\n|\r/g, '\n').length
+                ? normalizeWordText(candidate.currentPrefix.value).length
                 : revisionTextState(candidate.prefix.value, options).text.length;
             const key = JSON.stringify([offset, candidate.text]);
+            if (!needed.has(key)) continue;
+            selected.push({ ...candidate, key, xml: candidate.xml || queueRevisionRead(candidate.range, { paragraph: true }) });
+        }
+        // Full OOXML exports are expensive in macOS Word. Read only the
+        // candidates at requested native offsets, rather than every repeated
+        // character match and every prefix in the paragraph.
+        if (selected.some((candidate) => candidate.currentContent)) await context.sync();
+        for (const candidate of selected) {
+            const content = resolveRevisionRead(candidate.range, candidate.xml, { paragraph: true });
+            if (content.hasHiddenContent || (content.protectedStructure && !(options.nativeTargets && content.fieldOnlyProtection))
+                || content.protectedSpans.some(({ start, end }) => end > start) || content.text !== candidate.text) continue;
+            const key = candidate.key;
             if (verified.has(key)) throw new RevisionSafetyError('Ambiguous visible revision target. Generate a fresh proposal.');
             verified.set(key, candidate.range);
         }
@@ -136,20 +141,24 @@ async function locate(context, scope, targets, options, allowSplit = true) {
         return { target, first, last };
     });
     await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false);
-    const unions = endpoints.map(({ target, first, last }) => {
-        target.range = first.range.expandTo(last.range);
-        return { target, xml: queueRevisionRead(target.range, { paragraph: true }) };
-    });
-    await context.sync();
-    for (const { target, xml } of unions) {
+    for (let start = 0; start < endpoints.length; start += READ_BATCH_SIZE) {
+      const unions = endpoints.slice(start, start + READ_BATCH_SIZE).map(({ target, first, last }) => {
+          target.range = first.range.expandTo(last.range);
+          return { target, xml: queueRevisionRead(target.range, { paragraph: true }) };
+      });
+      await context.sync();
+      for (const { target, xml } of unions) {
         const content = resolveRevisionRead(target.range, xml, { paragraph: true });
-        if (content.hasHiddenContent || content.protectedStructure || content.text !== target.text) {
+        if (content.hasHiddenContent || (content.protectedStructure && !(options.nativeTargets && content.fieldOnlyProtection))
+            || content.protectedSpans.some(({ start, end }) => end > start) || content.text !== target.text) {
             throw new RevisionSafetyError('Located text crosses a revision boundary. Generate a fresh proposal.');
         }
+      }
     }
 }
 
-/** Returns null for pristine ranges; all errors here must bypass destructive fallbacks.
+/** Returns null for pristine legacy ranges; nativeTargets verifies pristine ranges too.
+ * All errors here must bypass destructive fallbacks.
  * @param {Word.RequestContext} context @param {Word.Range} range
  * @param {string} before @param {string} after @param {function} [log] @param {object} [options]
  */
@@ -164,12 +173,18 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         // Paragraph reads preserve actual manual line breaks. Whole-range
         // protocols normalize the native terminal paragraph boundary.
         const comparable = (text) => options.paragraph
-            ? String(text || '').replace(/\r\n|\r/g, '\n') : normalizeRevisionText(text);
+            ? normalizeWordText(text) : normalizeRevisionText(text);
         if (comparable(before) !== comparable(state.text)) {
             throw new RevisionSafetyError('Current text differs from the proposal baseline. Generate a fresh proposal.');
         }
-        if (!state.hasRevisions) return null;
-        if (!state.fingerprint || state.protectedStructure) {
+        if (read.currentText && typeof read.currentText.value !== 'string') {
+            throw new RevisionSafetyError('Native current text is unreadable before writing. Draft a new proposal.');
+        }
+        if (read.currentText && comparable(read.currentText.value) !== comparable(state.text)) {
+            throw new RevisionSafetyError(`Native text and XML disagree before writing (${textMismatchDetail(comparable(state.text), comparable(read.currentText.value))}). Draft a new proposal.`);
+        }
+        if (!state.hasRevisions && !options.nativeTargets) return null;
+        if (!state.fingerprint || (state.protectedStructure && !(options.nativeTargets && state.fieldOnlyProtection))) {
             throw new RevisionSafetyError('Structural revisions or protected objects prevent this edit.');
         }
         state.text = comparable(state.text);
@@ -206,7 +221,8 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
             for (const hunk of [...hunks].reverse()) {
                 mutationAttempted = true;
                 if (hunk.start === hunk.end) {
-                    const anchor = hunk.anchor?.range || range.getRange(Word.RangeLocation.end);
+                    const anchor = hunk.anchor?.range || range.getRange(hunk.location === Word.InsertLocation.before
+                        ? Word.RangeLocation.start : Word.RangeLocation.end);
                     insertedRanges.push(anchor.insertText(hunk.text, hunk.location));
                     insertions++;
                 } else {
@@ -222,11 +238,11 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         } finally {
             if (ownsTracking) { context.document.changeTrackingMode = previousMode; await context.sync(); }
         }
-        log('Verified edits against current revision text.', 'info');
+        log(options.nativeTargets ? 'Verified edits against native text and positions.' : 'Verified edits against current revision text.', 'info');
         return { strategy: 'revision', insertions, deletions, replacements };
     } catch (error) {
         if (mutationAttempted) throw error instanceof MutationSafetyError ? error : new MutationSafetyError(error);
         throw error instanceof RevisionSafetyError ? error
-            : new RevisionSafetyError(`Revision-safe application failed (${error.message}). Inspect Word before retrying.`);
+            : new RevisionSafetyError(`Revision-safe application failed (${wordErrorDetail(error)}). Inspect Word before retrying.`);
     }
 }

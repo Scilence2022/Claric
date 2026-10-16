@@ -24,6 +24,9 @@ describe('hasCjk', () => {
 });
 
 describe('computeCharEdits', () => {
+  test('an emoji replacement never emits lone surrogate halves for Word searches or writes', () => {
+    expect(computeCharEdits('A😀B', 'A😃B')).toEqual([[0, 'A'], [-1, '😀'], [1, '😃'], [0, 'B']]);
+  });
   test('a comma insertion is a single minimal INSERT op', () => {
     const ops = computeCharEdits(
       '但有一个女孩选择不备份自己与母亲的回忆。',
