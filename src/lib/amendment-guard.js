@@ -28,7 +28,8 @@
  * @module amendment-guard
  */
 
-import { alignParagraphs, paragraphSimilarity, SIMILARITY_THRESHOLD } from './paragraph-alignment.js';
+import { alignParagraphs, amendmentParagraphTexts, paragraphSimilarity, SIMILARITY_THRESHOLD } from './paragraph-alignment.js';
+import { textEditHunks, touchesProtectedSpan } from './text-edit-plan.js';
 
 /**
  * @typedef {Object} ReplyVerdict
@@ -176,7 +177,7 @@ const WHOLESALE_DELETE_FRACTION = 0.5;
  */
 export function summarizeAmendment(origTexts, amendedText) {
   const orig = origTexts.map((text) => String(text || ''));
-  const amended = amendedLines(amendedText);
+  const amended = amendmentParagraphTexts(orig, amendedText);
   const ops = alignParagraphs(orig, amended);
   let unchanged = 0;
   let modified = 0;
@@ -208,14 +209,16 @@ export function amendedLines(text) {
 export function checkChunkAmendment(chunk, amendment) {
   const paragraphs = (chunk.paragraphs || []).filter((p) => String(p.text || '').trim());
   const original = paragraphs.map((p) => String(p.text));
-  const amended = amendedLines(amendment);
+  let amended;
+  try { amended = amendmentParagraphTexts(original, amendment); }
+  catch (error) { return { valid: false, issues: [error.message] }; }
   const issues = [];
   const beforeChars = original.reduce((count, text) => count + text.length, 0);
   const afterChars = amended.reduce((count, text) => count + text.length, 0);
   if (beforeChars && afterChars < beforeChars * 0.3) {
     issues.push('Output appears truncated (less than 30% of the source). Return the complete amended section, including unchanged paragraphs.');
   }
-  const alignment = original.length === amended.length && paragraphs.some((p) => p.hasRevisions)
+  const alignment = original.length === amended.length && paragraphs.some((p) => p.hasRevisions || p.protectedSpans?.length)
     ? original.map((_text, index) => ({ type: 'keep', origIdx: index, newIdx: index }))
     : alignParagraphs(original, amended);
   let anchor = -1;
@@ -225,10 +228,15 @@ export function checkChunkAmendment(chunk, amendment) {
       if (paragraph.hasRevisions || paragraph.inTable) {
         issues.push(`Paragraph ${op.origIdx + 1} cannot be deleted or replaced structurally (${paragraph.inTable ? 'table content' : 'unresolved revisions'}). Preserve it and edit its text in place.`);
       }
+      if (paragraph.protectedSpans?.length) issues.push(`Paragraph ${op.origIdx + 1} contains native fields. Keep this paragraph and its field results intact.`);
+    } else if (op.type === 'keep' && paragraphs[op.origIdx].protectedSpans?.length
+        && textEditHunks(original[op.origIdx], amended[op.newIdx])
+          .some((hunk) => touchesProtectedSpan(hunk, paragraphs[op.origIdx].protectedSpans))) {
+      issues.push(`Paragraph ${op.origIdx + 1} changes a native field result. Preserve its exact citation, bibliography or link text and edit surrounding prose only.`);
     } else if (op.type === 'insert' && amended[op.newIdx].trim() && paragraphs[Math.max(0, anchor)]?.inTable) {
       issues.push(`Cannot insert a prose paragraph inside table content near paragraph ${Math.max(0, anchor) + 1}. Preserve the table paragraph structure.`);
     }
     if (op.origIdx !== undefined) anchor = op.origIdx;
   }
-  return { valid: issues.length === 0, issues };
+  return { valid: issues.length === 0, issues, amendment: amended.join('\n') };
 }

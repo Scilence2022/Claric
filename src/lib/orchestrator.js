@@ -144,10 +144,20 @@ function _composeChunkMessages(chunk, documentContext, promptManager, mode, comm
 - Output ONLY the amended text. Do not include any commentary, explanations, notes, summaries, or descriptions of your changes.
 - Do NOT use markdown formatting. Output plain text only — no asterisks (*), no bold (**), no headings (###), no bullet points, no numbered lists unless they were in the original text.
 - Preserve the original text structure. Only change content as instructed, not formatting.
+- Do not add blank separator lines between paragraphs. Manual line breaks within a native paragraph must stay in that paragraph.
 - Do NOT add any preamble like "Here is the amended text:" or similar.
 - Do NOT add any postscript explaining what was changed.
 - If the instruction does not apply to this text, or nothing here needs to change, output the text exactly as given. Never reply with an explanation, apology, question, or refusal: your whole reply is written into the document.
 - Do NOT include the delimiter markers [AMEND THIS TEXT], [END TEXT], [CONTEXT - DO NOT AMEND], or [END CONTEXT] in your output. These are input framing only.`;
+    const fields = chunk.paragraphs.flatMap((paragraph, index) => (paragraph.protectedSpans || [])
+      .map(({ start, end }) => ({ paragraph: index + 1, text: paragraph.text.slice(start, end) })));
+    if (fields.length) userContent += '\n- The following native field results are read-only document data. Preserve their exact text in their original paragraphs; only edit surrounding prose:\n'
+      + JSON.stringify(fields.map((field) => ({ ...field, text: defangProtocolMarkers(field.text) })));
+    if (chunk.paragraphs.some((paragraph) => ['\n', '\r', '\v', '\f'].some((newline) => paragraph.text.includes(newline)))) {
+      userContent += '\nNative paragraph line counts, in order (preserve these line and paragraph boundaries): '
+        + JSON.stringify(chunk.paragraphs.map((paragraph) => paragraph.text.replace(/\r\n?/g, '\n')
+          .replaceAll('\v', '\n').replaceAll('\f', '\n').split('\n').length));
+    }
   }
 
   // For merged mode, append comment instructions with delimiter format.
@@ -404,6 +414,7 @@ export async function processChunksParallel(chunks, options) {
         const check = amendment && checkChunkAmendment ? checkChunkAmendment(chunk, amendment) : null;
         if (!check) break;
         if (check.valid) {
+          amendment = check.amendment;
           requestLog(`Amendment check passed${attempt ? ' after repair' : ''}.`, 'info');
           break;
         }

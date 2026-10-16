@@ -12,9 +12,38 @@
  */
 
 import { hasCjk } from './word-diff/char-diff.js';
+import { normalizeWordText } from './word-revisions.js';
 
 /** Minimum similarity for two paragraphs to count as the same, edited, paragraph. */
 export const SIMILARITY_THRESHOLD = 0.4;
+
+/**
+ * A newline in the text protocol can be a native manual break, while blank
+ * output lines are often model presentation. Preserve the known native
+ * grouping instead of manufacturing paragraphs from either case.
+ */
+export function amendmentParagraphTexts(original, amendment) {
+  const lines = normalizeWordText(amendment).split('\n');
+  while (lines.length && !lines[0].trim()) lines.shift();
+  while (lines.length && !lines.at(-1).trim()) lines.pop();
+  const sourceLines = original.map((text) => normalizeWordText(text).split('\n'));
+  const counts = sourceLines.map((lines) => lines.length);
+  if (counts.every((count) => count === 1)) return lines.filter((line) => line.trim());
+  const expected = counts.reduce((sum, count) => sum + count, 0);
+  const nonEmpty = lines.filter((line) => line.trim());
+  const flatSource = sourceLines.flat();
+  if (nonEmpty.length !== flatSource.filter((line) => line.trim()).length) {
+    throw new Error(`Cannot map ${nonEmpty.length} output content lines to ${original.length} native paragraphs containing ${expected} lines. Preserve every original manual line break and paragraph boundary.`);
+  }
+  let contentOffset = 0;
+  const contentLines = flatSource.map((line) => line.trim() ? nonEmpty[contentOffset++] : line);
+  let offset = 0;
+  return counts.map((count) => {
+    const text = contentLines.slice(offset, offset + count).join('\n');
+    offset += count;
+    return text;
+  });
+}
 
 /**
  * Computes word-level similarity between two strings as a ratio (0-1).

@@ -5,6 +5,23 @@ import { revisionTextState, queueRevisionRead, resolveRevisionRead, normalizeRev
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const wrap = (xml) => `<w:document xmlns:w="${W}"><w:body>${xml}</w:body></w:document>`;
 
+test('complex EndNote-style fields and nested links expose immutable visible spans without field codes', () => {
+    const xml = wrap('<w:p><w:r><w:t>Before </w:t><w:fldChar w:fldCharType="begin"/></w:r>'
+        + '<w:r><w:instrText>ADDIN EN.CITE private field code</w:instrText><w:fldChar w:fldCharType="separate"/></w:r>'
+        + '<w:r><w:t>(Example 2025)</w:t><w:fldChar w:fldCharType="end"/><w:t> after.</w:t></w:r></w:p>');
+    expect(revisionTextState(xml)).toMatchObject({ text: 'Before (Example 2025) after.',
+        protectedStructure: true, fieldOnlyProtection: true, protectedSpans: [{ start: 7, end: 21 }] });
+    const partial = wrap('<w:p><w:r><w:t>Continuing field result</w:t><w:fldChar w:fldCharType="end"/><w:t> prose</w:t></w:r></w:p>');
+    expect(revisionTextState(partial).protectedSpans).toEqual([{ start: 0, end: 23 }]);
+});
+
+test('native manual and page break representations verify without ignoring meaningful character differences', async () => {
+    const context = { sync: async () => {} };
+    const range = { getReviewedText: () => ({ value: 'First\u000bSecond\u000cThird' }) };
+    await expect(verifyMutationText(context, range, 'First\nSecond\nThird', { paragraph: true })).resolves.toBeUndefined();
+    await expect(verifyMutationText(context, range, 'First Second\nThird', { paragraph: true })).rejects.toThrow(/U\+0020.*U\+000A/);
+});
+
 test('current text ignores deletions and move sources while islands retain physical revision boundaries', () => {
     const state = revisionTextState(wrap('<w:p><w:r><w:t>A</w:t></w:r><w:del><w:r><w:delText>old</w:delText></w:r></w:del>'
         + '<w:ins><w:r><w:t>B</w:t></w:r></w:ins><w:r><w:t>C</w:t></w:r></w:p>'));

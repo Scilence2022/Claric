@@ -2,6 +2,7 @@
 
 import { checkChunkAmendment } from '../src/lib/amendment-guard.js';
 import { processChunksParallel } from '../src/lib/orchestrator.js';
+import { amendmentParagraphTexts, alignParagraphs } from '../src/lib/paragraph-alignment.js';
 
 const source = ['The first paragraph explains the original method in detail.',
   'The second paragraph explains the original results in detail.'];
@@ -10,6 +11,45 @@ const options = (sendMessagesFn, overrides = {}) => ({
   config: {}, log: jest.fn(), sendMessagesFn,
   promptManager: { getActiveMode: () => 'amendment', getActivePrompt: () => ({ template: 'Polish the wording. {selection}' }) },
   formatContextPrefixFn: () => '', ...overrides,
+});
+
+test('68 model output lines stay 24 native paragraphs after presentation-only blank lines are removed', () => {
+  const paragraphs = Array.from({ length: 24 }, (_, index) => `Reference ${index + 1}: Original journal text.`);
+  const edited = paragraphs.map((text) => text.replace('Original', 'Revised'));
+  const output = edited.map((text, index) => index < 22 ? `${text}\n\n` : text).join('\n');
+  expect(output.split('\n')).toHaveLength(68);
+  expect(amendmentParagraphTexts(paragraphs, output)).toEqual(edited);
+  expect(alignParagraphs(paragraphs, amendmentParagraphTexts(paragraphs, output)))
+    .toEqual(paragraphs.map((_, index) => ({ type: 'keep', origIdx: index, newIdx: index })));
+});
+
+test('manual line breaks retain native paragraph grouping; ambiguous regrouping needs repair', () => {
+  const original = ['First line\nSecond line', 'Another paragraph'];
+  expect(amendmentParagraphTexts(original, 'First revised line\nSecond revised line\n\nAnother paragraph'))
+    .toEqual(['First revised line\nSecond revised line', 'Another paragraph']);
+  expect(checkChunkAmendment({ paragraphs: original.map((text) => ({ text })) }, 'A single replacement paragraph').issues.join(' '))
+    .toContain('manual line break');
+});
+
+test('meaningful native blank manual lines survive even at paragraph and section boundaries', () => {
+  const original = ['\nFirst line\n\nSecond line\n', 'Final line\n'];
+  const output = '\nFirst revised line\n\nSecond revised line\n\nFinal revised line\n\n';
+  expect(amendmentParagraphTexts(original, output))
+    .toEqual(['\nFirst revised line\n\nSecond revised line\n', 'Final revised line\n']);
+});
+
+test('field mutations receive a repair request and the reviewed preview contains only canonical paragraph boundaries', async () => {
+  const text = 'An original (Example 2025) result.';
+  const fieldStart = text.indexOf('(Example');
+  const fieldEnd = text.indexOf(')') + 1;
+  const fieldChunk = chunk({ paragraphs: [{ text, protectedSpans: [{ start: fieldStart, end: fieldEnd }] }] });
+  const send = jest.fn().mockResolvedValueOnce('A revised (Example 2026) result.')
+    .mockResolvedValueOnce('A revised (Example 2025) result.\n\n');
+  const result = await processChunksParallel([fieldChunk], options(send));
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[1][1].at(-1).content).toContain('native field result');
+  expect(result[0]).toMatchObject({ status: 'fulfilled', amendment: 'A revised (Example 2025) result.' });
+  expect(send.mock.calls[0][1].find((message) => message.role === 'user').content).toContain('read-only document data');
 });
 
 test('checks allow normal edits and in-place revisions but detect unsupported structure', () => {
