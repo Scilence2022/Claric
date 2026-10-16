@@ -203,3 +203,32 @@ export function amendedLines(text) {
   while (lines.length && lines[0].trim() === '') lines.shift();
   return lines;
 }
+
+/** Check the same paragraph constraints used by the writer before staging a preview. */
+export function checkChunkAmendment(chunk, amendment) {
+  const paragraphs = (chunk.paragraphs || []).filter((p) => String(p.text || '').trim());
+  const original = paragraphs.map((p) => String(p.text));
+  const amended = amendedLines(amendment);
+  const issues = [];
+  const beforeChars = original.reduce((count, text) => count + text.length, 0);
+  const afterChars = amended.reduce((count, text) => count + text.length, 0);
+  if (beforeChars && afterChars < beforeChars * 0.3) {
+    issues.push('Output appears truncated (less than 30% of the source). Return the complete amended section, including unchanged paragraphs.');
+  }
+  const alignment = original.length === amended.length && paragraphs.some((p) => p.hasRevisions)
+    ? original.map((_text, index) => ({ type: 'keep', origIdx: index, newIdx: index }))
+    : alignParagraphs(original, amended);
+  let anchor = -1;
+  for (const op of alignment) {
+    if (op.type === 'delete') {
+      const paragraph = paragraphs[op.origIdx];
+      if (paragraph.hasRevisions || paragraph.inTable) {
+        issues.push(`Paragraph ${op.origIdx + 1} cannot be deleted or replaced structurally (${paragraph.inTable ? 'table content' : 'unresolved revisions'}). Preserve it and edit its text in place.`);
+      }
+    } else if (op.type === 'insert' && amended[op.newIdx].trim() && paragraphs[Math.max(0, anchor)]?.inTable) {
+      issues.push(`Cannot insert a prose paragraph inside table content near paragraph ${Math.max(0, anchor) + 1}. Preserve the table paragraph structure.`);
+    }
+    if (op.origIdx !== undefined) anchor = op.origIdx;
+  }
+  return { valid: issues.length === 0, issues };
+}

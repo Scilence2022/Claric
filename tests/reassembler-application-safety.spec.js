@@ -4,10 +4,12 @@ jest.mock('../src/lib/word-diff/index.js', () => ({
   applyTokenMapStrategy: jest.fn(),
   applySentenceDiffStrategy: jest.fn(),
 }));
+jest.mock('../src/lib/word-diff/revision-diff.js', () => ({ tryRevisionDiff: jest.fn() }));
 
 const { applyTokenMapStrategy, applySentenceDiffStrategy } = require('../src/lib/word-diff/index.js');
 const { applyChunkResults } = require('../src/lib/reassembler.js');
 const { RevisionSafetyError, MutationSafetyError } = require('../src/lib/word-revisions.js');
+const { tryRevisionDiff } = require('../src/lib/word-diff/revision-diff.js');
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const escaped = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
@@ -81,6 +83,21 @@ test('native content mismatch in the first paragraph prevents writes to the tail
   expect(document.contentRanges.every((range) => !range.insertText.mock.calls.length)).toBe(true);
   expect(document.range.insertText).not.toHaveBeenCalled();
   expect(onChunkApplied).toHaveBeenCalledWith('section', { applied: false, error: true, partial: false, uncertain: false });
+});
+
+test('unlocatable existing revisions fail preflight before any paragraph is written', async () => {
+  const document = nativeDocument(storedTexts);
+  const revisedXml = () => ({ value: paragraphXml(storedTexts[0]).replace('<w:r>', '<w:ins><w:r>').replace('</w:r>', '</w:r></w:ins>') });
+  document.paragraphs[0].getOoxml.mockImplementation(revisedXml);
+  document.contentRanges[0].getOoxml.mockImplementation(revisedXml);
+  tryRevisionDiff.mockRejectedValueOnce(new RevisionSafetyError('Unverified visible revision target.'));
+  const { result } = await apply();
+  expect(tryRevisionDiff).toHaveBeenCalledWith(document.context, document.contentRanges[0], storedTexts[0], amendedTexts[0],
+    expect.any(Function), { trackChanges: false, paragraph: true, preflightOnly: true });
+  expect(result).toMatchObject({ amendmentsApplied: 0, appliedParagraphs: 0, partialChunkIds: [], uncertainChunkIds: [] });
+  expect(result.errors[0]).toMatch(/Unverified visible revision target/);
+  expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+  expect(document.states.map((state) => state.text)).toEqual(storedTexts);
 });
 
 test('a later baseline failure reports already verified paragraph edits without retrying the whole range', async () => {

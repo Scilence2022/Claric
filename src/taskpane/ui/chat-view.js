@@ -21,7 +21,7 @@
 import { sanitizeSvg } from '../../lib/illustration.js';
 import { buildTextDiffElement } from './diff-view.js';
 import { appState } from '../app-state.js';
-import { renderTablePreview, sanitizeTablePreview } from './proposal-card.js';
+import { renderTablePreview, sanitizeTablePreview, renderProposalItemOutcome } from './proposal-card.js';
 import { newId, normalizeAttachments, normalizeCitations, normalizeMessage } from '../message-shape.js';
 import { renderMarkdown } from './markdown.js';
 import { buildCompletionSummary } from './completion-summary.js';
@@ -125,6 +125,7 @@ function _proposalRecordFromMeta(p) {
             before: it.before,
             after: it.after,
             searchText: it.searchText,
+            outcome: typeof it.outcome === 'string' ? it.outcome : undefined,
         })) : [],
     };
 }
@@ -404,11 +405,17 @@ function _wrapProposalCard(card, meta, onStateChange) {
         card[method] = function (message, options) {
             if (terminal) return;
             const result = original.call(card, message, options);
-            meta.state = state;
-            terminal = ['applied', 'rejected', 'warning'].includes(state)
+            const actualState = card.el.dataset.outcome || state;
+            meta.state = actualState;
+            for (const { id, outcome } of card.getItemOutcomes?.() || []) {
+                const item = meta.items?.find((item) => String(item.id) === String(id));
+                if (item) item.outcome = outcome;
+            }
+            terminal = ['applied', 'rejected', 'warning'].includes(actualState)
                 || (method === 'markError' && options?.retryable === false);
-            if (message && ['applied', 'warning', 'error', 'paused'].includes(state)) meta.detail = String(message);
-            else if (state === 'applied') delete meta.detail;
+            const detail = actualState !== state ? card.el.querySelector('.proposal-card-status')?.textContent : message;
+            if (detail && ['applied', 'warning', 'error', 'paused'].includes(actualState)) meta.detail = String(detail);
+            else if (actualState === 'applied') delete meta.detail;
             notify();
             return result;
         };
@@ -537,12 +544,16 @@ export function renderStaticProposalCard(p) {
         list.className = 'proposal-card-changes-static';
         for (const item of p.items) {
             if (!item) continue;
-            const row = document.createElement('div');
+            const row = document.createElement('details');
             row.className = 'proposal-card-change';
-            const label = document.createElement('div');
+            const rowHead = document.createElement('summary');
+            rowHead.className = 'proposal-card-change-head';
+            const label = document.createElement('span');
             label.className = 'proposal-card-change-label';
             label.textContent = item.label || '';
-            row.appendChild(label);
+            rowHead.appendChild(label);
+            row.appendChild(rowHead);
+            renderProposalItemOutcome(row, item.outcome);
             if (item.before !== undefined && item.after !== undefined) {
                 row.appendChild(buildTextDiffElement(item.before, item.after));
             }

@@ -201,6 +201,17 @@ test('replaces a span split by an existing deletion using disjoint visible targe
     expect(w.atoms.filter((a) => a.id === 'history').map((a) => a.text).join('')).toBe('and ');
 });
 
+test('preflight locates revised text without writes and the apply pass still verifies it', async () => {
+    const w = world([{ text: 'Hello ' }, { text: 'and ', type: 'del', id: 'history' }, { text: 'world!' }]);
+    const baseline = w.state().text;
+    await tryRevisionDiff(w.context, w.scope, baseline, 'Hi!', jest.fn(), { preflightOnly: true, trackChanges: false });
+    expect(w.state().text).toBe(baseline);
+    expect(w.writes).toHaveLength(0);
+    expect(w.context.document.changeTrackingMode).toBe('TrackMineOnly');
+    await tryRevisionDiff(w.context, w.scope, baseline, 'Hi!', jest.fn());
+    expect(w.state().text).toBe('Hi!');
+});
+
 test.each([
     ['原来', '我们继续修订这个文档。', '我们继续修订，这个文档。'],
     ['old', 'A 😀 fox', 'A 😃 fox'],

@@ -931,6 +931,25 @@ body {
     cursor: pointer;
 }
 
+.proposal-card-change-head::before {
+    content: '▸';
+    flex: 0 0 auto;
+    color: var(--secondary-text);
+}
+
+.proposal-card-change[open] > .proposal-card-change-head::before {
+    content: '▾';
+}
+
+.proposal-card-change-head::-webkit-details-marker {
+    display: none;
+}
+
+.proposal-card-change-head:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: 2px;
+}
+
 .proposal-card-change-label {
     flex: 1;
     word-break: break-word;
@@ -947,12 +966,12 @@ body {
 }
 
 .proposal-card-change-error {
-    opacity: 0.75;
+    opacity: 1;
 }
 
 .proposal-card-change-error .proposal-card-change-label {
     color: var(--error-color);
-    text-decoration: line-through;
+    text-decoration: none;
 }
 
 .proposal-card-change-status {
@@ -965,6 +984,10 @@ body {
 
 .proposal-card-change-error .proposal-card-change-status {
     color: var(--error-color);
+}
+
+.proposal-card-change-skipped .proposal-card-change-status {
+    color: var(--secondary-text);
 }
 
 .proposal-card-locate {

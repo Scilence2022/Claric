@@ -1188,7 +1188,16 @@ export function createConversation(deps) {
                         msg.setStatus('');
                         return;
                     }
+                    if (applicationResult.failedChunkIds?.length || applyErrors.length) {
+                        card.markWarning(`${applicationResult.amendmentsApplied} section(s) applied; some sections failed or were skipped. ${applyErrors[0] || 'Review the item statuses.'}`);
+                        msg.setStatus('');
+                        return;
+                    }
                     card.markApplied();
+                    if (card.el.dataset.outcome !== 'applied') {
+                        msg.setStatus('');
+                        return;
+                    }
                     msg.setStatus(
                         `Done: ${applicationResult.amendmentsApplied} amendment(s), ` +
                         `${applicationResult.commentsInserted} comment(s) across ${outcome.chunks.length} section(s).` +
@@ -2409,9 +2418,10 @@ export function createConversation(deps) {
                     card[method] = (...args) => {
                         const result = original.apply(card, args);
                         if (record.state !== 'applied' && record.state !== 'rejected' && record.state !== 'warning') {
-                            record.state = state;
-                            if (state === 'applied') resumeAfterApply();
-                            else if (state !== 'error') msg.setStatus('Preceding proposal not applied; dependent tasks stopped.');
+                            const actualState = card.el?.dataset.outcome || state;
+                            record.state = actualState;
+                            if (actualState === 'applied') resumeAfterApply();
+                            else if (actualState !== 'error') msg.setStatus('Preceding proposal not applied; dependent tasks stopped.');
                         }
                         return result;
                     };

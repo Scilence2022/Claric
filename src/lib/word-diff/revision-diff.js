@@ -185,6 +185,10 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         if (resolveRevisionRead(range, baseline, options).fingerprint !== state.fingerprint) {
             throw new RevisionSafetyError('Revision state changed during location. Generate a fresh proposal.');
         }
+        // A section can locate every revised paragraph before its first
+        // write. The write pass repeats location and baseline validation so
+        // this read-only check never becomes a stale permission to mutate.
+        if (options.preflightOnly) return { strategy: 'revision', insertions: 0, deletions: 0, replacements: 0 };
         const previousMode = ownsTracking ? context.document.changeTrackingMode : null;
         let insertions = 0;
         let deletions = 0;

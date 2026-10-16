@@ -234,6 +234,25 @@ function buildImageDiffElement(item) {
     return wrap;
 }
 
+const ITEM_OUTCOMES = {
+    applied: 'applied', partial: 'partially applied', uncertain: 'unverified',
+    'partial-uncertain': 'partial / unverified', error: 'error', skipped: 'skipped',
+    'no-change': 'no change', 'not-applied': 'not applied',
+};
+
+/** Shared by live cards and history: only verified success gets completion styling. */
+export function renderProposalItemOutcome(row, outcome) {
+    if (!Object.hasOwn(ITEM_OUTCOMES, outcome)) return;
+    row.dataset.outcome = outcome;
+    row.classList.toggle('proposal-card-change-done', outcome === 'applied');
+    row.classList.toggle('proposal-card-change-error', ['error', 'partial', 'uncertain', 'partial-uncertain', 'not-applied'].includes(outcome));
+    row.classList.toggle('proposal-card-change-skipped', ['skipped', 'no-change'].includes(outcome));
+    const tag = document.createElement('span');
+    tag.className = 'proposal-card-change-status';
+    tag.textContent = ITEM_OUTCOMES[outcome];
+    row.querySelector('.proposal-card-change-head').appendChild(tag);
+}
+
 /**
  * Creates a proposal card.
  *
@@ -359,14 +378,16 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         details.appendChild(summary);
 
         for (const item of items) {
-            const row = document.createElement('div');
+            const row = document.createElement('details');
             row.className = 'proposal-card-change';
 
-            const rowHead = document.createElement('label');
+            const rowHead = document.createElement('summary');
             rowHead.className = 'proposal-card-change-head';
             const box = document.createElement('input');
             box.type = 'checkbox';
             box.checked = true;
+            box.setAttribute('aria-label', `Select change: ${item.label}`);
+            box.addEventListener('click', (event) => event.stopPropagation());
             changeBoxes.push(box);
             const text = document.createElement('span');
             text.className = 'proposal-card-change-label';
@@ -380,7 +401,10 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
                 locate.className = 'proposal-card-locate';
                 locate.title = 'Show in document';
                 locate.textContent = '§';
-                locate.addEventListener('click', () => onLocate(item.searchText));
+                locate.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    onLocate(item.searchText);
+                });
                 rowHead.appendChild(locate);
             }
             row.appendChild(rowHead);
@@ -412,6 +436,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     // Finished attempts cannot be replayed from this proposal, even when a
     // host failure left a section incomplete or its writes unverified.
     const attemptedIdSet = new Set();
+    const itemOutcomes = new Map();
     let applyController = null;
     let applyInFlight = false;
     let state = 'pending';
@@ -422,43 +447,25 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     setState('pending');
 
     /**
-     * Visually marks one change item as applied (checked + disabled, row
-     * dimmed + status tag). Called live by applyChunkResults' onChunkApplied
-     * so the user sees each section land as the apply progresses.
+     * Records a finished attempt. Only verified success is checked and dimmed;
+     * failures retain their own status and cannot be replayed. Called live
+     * by applyChunkResults' onChunkApplied as sections finish.
      *
      * @param {string|number} id - The change item's id
      * @param {{applied?: boolean, noChange?: boolean, error?: boolean, skipped?: boolean, partial?: boolean, uncertain?: boolean}} [status]
      */
     function markItemApplied(id, status = {}) {
-        if (attemptedIdSet.has(id)) return;
-        attemptedIdSet.add(id);
-        if (!status.error && !status.skipped && !status.noChange && !status.partial && !status.uncertain
-            && status.applied !== false) appliedIdSet.add(id);
         const entry = changeEntries.find((e) => String(e.id) === String(id));
-        if (!entry) return;
-        entry.box.checked = true;
+        if (!entry || attemptedIdSet.has(entry.id)) return;
+        attemptedIdSet.add(entry.id);
+        const outcome = status.uncertain ? (status.partial ? 'partial-uncertain' : 'uncertain')
+            : status.partial ? 'partial' : status.error ? 'error' : status.skipped ? 'skipped'
+                : status.noChange ? 'no-change' : status.applied === true ? 'applied' : 'not-applied';
+        itemOutcomes.set(entry.id, outcome);
+        if (outcome === 'applied') appliedIdSet.add(entry.id);
+        entry.box.checked = outcome === 'applied';
         entry.box.disabled = true;
-        entry.row.classList.add('proposal-card-change-done');
-        const tag = document.createElement('span');
-        tag.className = 'proposal-card-change-status';
-        if (status.uncertain) {
-            tag.textContent = status.partial ? 'partial / unverified' : 'unverified';
-            entry.row.classList.add('proposal-card-change-error');
-        } else if (status.partial) {
-            tag.textContent = 'partially applied';
-            entry.row.classList.add('proposal-card-change-error');
-        } else if (status.error) {
-            tag.textContent = 'error';
-            entry.row.classList.add('proposal-card-change-error');
-        } else if (status.skipped) {
-            tag.textContent = 'skipped';
-            entry.row.classList.add('proposal-card-change-skipped');
-        } else if (status.noChange) {
-            tag.textContent = 'no change';
-        } else {
-            tag.textContent = 'applied';
-        }
-        entry.rowHead.appendChild(tag);
+        renderProposalItemOutcome(entry.row, outcome);
     }
 
     actions.appendChild(applyBtn);
@@ -470,6 +477,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     function settle(text, className) {
         if (state === 'settled') return;
         setState('settled');
+        el.dataset.outcome = className.replace('proposal-', '');
         changeBoxes.forEach((box) => { box.disabled = true; });
         applyBtn.disabled = true;
         rejectBtn.disabled = true;
@@ -555,6 +563,15 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         el,
         /** Terminal state after a successful apply. */
         markApplied(message) {
+            const failed = [...itemOutcomes.values()].some((outcome) => !['applied', 'no-change'].includes(outcome));
+            if (failed) {
+                settle(`${appliedIdSet.size} of ${changeBoxes.length} change(s) verified as applied. Some changes failed or remain unverified; review the item statuses and Word.`, 'proposal-warning');
+                return;
+            }
+            if (itemOutcomes.size && !appliedIdSet.size) {
+                settle('Nothing applied — the staged edits already match the document.', 'proposal-warning');
+                return;
+            }
             settle(
                 message || (changeBoxes.length
                     ? `Applied ${attemptedIdSet.size ? appliedIdSet.size : lastAppliedCount} of ${changeBoxes.length} change(s) as tracked changes.`
@@ -579,6 +596,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         },
         /** Marks one change item applied live (chunk progress). */
         markItemApplied,
+        getItemOutcomes: () => [...itemOutcomes].map(([id, outcome]) => ({ id, outcome })),
         /** Enables "Continue applying" after a paused (interrupted) apply. */
         setPaused,
         /** Only replayable proposals may retry after an apply failure. */

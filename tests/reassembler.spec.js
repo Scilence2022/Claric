@@ -1429,7 +1429,7 @@ describe('applyChunkResults table-paragraph guards', () => {
     jest.clearAllMocks();
   });
 
-  test('in-cell keep edits still diff granularly; insert anchored at a table paragraph is skipped', async () => {
+  test('an unsafe table insertion fails before any other text edit in the section', async () => {
     const mock = createParagraphAwareMockRun([
       'Intro',
       { text: 'Cell A1 text', inTable: true },
@@ -1453,22 +1453,16 @@ describe('applyChunkResults table-paragraph guards', () => {
       log,
     });
 
-    expect(outcome.errors).toHaveLength(0);
-    expect(outcome.amendmentsApplied).toBe(1);
-    // The in-cell text edit went through the granular strategy as usual.
-    expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
-    expect(applyTokenMapStrategy.mock.calls[0][2]).toBe('Cell A1 text');
-    expect(applyTokenMapStrategy.mock.calls[0][3]).toBe('Cell A1 text revised');
-    // The new paragraph would anchor inside the table — skipped, not inserted.
+    expect(outcome.errors[0]).toMatch(/Cannot insert.*inside a table/);
+    expect(outcome.amendmentsApplied).toBe(0);
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
     for (const item of mock.items) {
       expect(item.insertParagraph).not.toHaveBeenCalled();
       expect(item.delete).not.toHaveBeenCalled();
     }
-    const warnings = log.mock.calls.filter((c) => c[1] === 'warning').map((c) => c[0]).join('\n');
-    expect(warnings).toMatch(/Skipping insert after para 1/);
   });
 
-  test('delete op on a table paragraph is skipped (cell content is not a row)', async () => {
+  test('an unsafe table deletion is reported as failed instead of silently applied', async () => {
     const mock = createParagraphAwareMockRun([
       'Intro',
       { text: 'Cell A1 text', inTable: true },
@@ -1492,11 +1486,10 @@ describe('applyChunkResults table-paragraph guards', () => {
       log,
     });
 
-    expect(outcome.errors).toHaveLength(0);
+    expect(outcome.errors[0]).toMatch(/Cannot delete a table paragraph/);
+    expect(outcome.amendmentsApplied).toBe(0);
     expect(mock.items[1].delete).not.toHaveBeenCalled();
     expect(applyTokenMapStrategy).not.toHaveBeenCalled();
-    const warnings = log.mock.calls.filter((c) => c[1] === 'warning').map((c) => c[0]).join('\n');
-    expect(warnings).toMatch(/skipping delete/);
   });
 
   test('insert anchored at a non-table paragraph still inserts', async () => {

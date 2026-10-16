@@ -2556,6 +2556,28 @@ describe('createConversation.submit', () => {
       .toContain('already match the document');
   });
 
+  test('a mix of successful and failed sections cannot settle the document proposal as applied', async () => {
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => ({ amendmentsApplied: 1, commentsInserted: 0,
+        failedChunkIds: ['c1'], errors: ['Chunk c1: original content changed'] })),
+      discard: jest.fn(), failedCount: 0, cancelledCount: 0,
+    };
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions: makeActions({ runDocumentSkill: jest.fn(async () => staged) }), getSelectionText: async () => '',
+    });
+    await conv.submit('please polish the whole document');
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    await card.applyAll();
+    expect(card.el.classList.contains('proposal-applied')).toBe(false);
+    expect(card.el.classList.contains('proposal-warning')).toBe(true);
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain('some sections failed');
+  });
+
   test.each([
     { amendmentsApplied: 0, partialChunkIds: ['c0'], uncertainChunkIds: [], appliedParagraphs: 2,
       expected: 'Partially applied: 2 paragraph edit(s) were verified.' },
@@ -2677,8 +2699,9 @@ describe('createConversation.submit', () => {
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(cardEl.classList.contains('proposal-applied')).toBe(true);
-    expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('1 section(s) skipped'));
+    expect(cardEl.classList.contains('proposal-applied')).toBe(false);
+    expect(cardEl.classList.contains('proposal-warning')).toBe(true);
+    expect(cardEl.querySelector('.proposal-card-status').textContent).toContain('some sections failed or were skipped');
   });
 
   test('format card warns when no formatting targets matched', async () => {
