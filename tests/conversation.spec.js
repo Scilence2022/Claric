@@ -842,6 +842,24 @@ describe('createConversation.submit', () => {
     expect(input.setProcessing).toHaveBeenLastCalledWith(false);
   });
 
+  test.each([false, true])('selection failures allow retry only before a possible write, mutationAttempted=%s', async (mutationAttempted) => {
+    const view = makeView();
+    const failure = Object.assign(new Error('Native read-back differs from the proposal'), { mutationAttempted });
+    const actions = makeActions({ applySelectionAmendment: jest.fn(async () => { throw failure; }) });
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'some selected text',
+    });
+    await conv.submit('make it formal');
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    await card.applyAll();
+    expect(card.el.querySelector('.btn-primary').disabled).toBe(mutationAttempted);
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain(failure.message);
+    expect(card.el.classList.contains('proposal-applied')).toBe(false);
+    await card.applyAll();
+    expect(actions.applySelectionAmendment).toHaveBeenCalledTimes(mutationAttempted ? 1 : 2);
+  });
+
   test('chained instruction + selection tries the table tool loop first', async () => {
     const appState = makeAppState();
     const view = makeView();

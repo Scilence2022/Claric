@@ -1408,7 +1408,7 @@ export function createConversation(deps) {
                         }
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
+                        card.markError(error.message, { retryable: !error.mutationAttempted });
                     }
                 },
                 onReject: () => {
