@@ -34,7 +34,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
         }).join('') + '</w:p>').join('');
         const end = revisedPadding && slice.some((atom) => atom.type !== 'plain')
             ? '<w:p><w:pPr><w:rPr><w:ins w:id="999"/></w:rPr></w:pPr></w:p>' : '<w:p/>';
-        return padding ? `<w:document xmlns:w="${W}"><w:body>${content}${end}</w:body></w:document>` : content;
+        return padding || nativeParagraphs ? `<w:document xmlns:w="${W}"><w:body>${content}${padding ? end : ''}</w:body></w:document>` : content;
     };
     const table = { isNullObject: true, load: jest.fn() };
     const cell = { isNullObject: true, load: jest.fn() };
@@ -68,7 +68,8 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             }),
             getTextRanges: jest.fn(() => {
                 const raw = atoms.slice(span.start, span.end).map((atom) => atom.text).join('');
-                return collection(Array.from(raw.matchAll(/.+?(?:\. {1,2}|$)/gs), (match) =>
+                const sentences = nativeParagraphs ? /[^\n]+?(?:\. {1,2}|\n|$)|\n/g : /.+?(?:\. {1,2}|$)/gs;
+                return collection(Array.from(raw.matchAll(sentences), (match) =>
                     makeRange(span.start + match.index, span.start + match.index + match[0].length)));
             }),
             delete: jest.fn(() => {
@@ -117,6 +118,36 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
 }
 
 afterEach(() => { delete global.Word; });
+
+test.each([[false, false], [false, true], [true, false]])('selection edits keep headings, blank paragraphs and repeated sentences in place, sentence mode=%s, missing searches=%s', async (lineDiffEnabled, missingSearches) => {
+    const before = '3.1 Summary\n\nThe first result is clear. The next result is preliminary.\nThe first result is clear. Further tests are needed.';
+    const after = '3.1 Summary\n\nThe first result is robust. The next result is preliminary.\nThe first result is clear. Further tests remain necessary.';
+    const w = world([{ text: before }], { nativeReviewed: true, nativeParagraphs: true });
+    w.deps.appState.config.lineDiffEnabled = lineDiffEnabled;
+    // Native searches do not locate a literal LF across Word paragraphs.
+    const search = w.scope.search.getMockImplementation();
+    w.scope.search.mockImplementation((text) => missingSearches || text.includes('\n') ? { items: [], load: jest.fn() } : search(text));
+    const baseline = await readSelectionText(w.deps);
+    await applySelectionAmendment(w.deps, { selectionText: baseline.plainSelectionText,
+        revisionFingerprint: baseline.revisionFingerprint, amendedText: after });
+    expect(w.state().text).toBe(after);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+    if (missingSearches) expect(w.deps.log).toHaveBeenCalledWith(expect.stringContaining('trying sentence diff'), 'warning');
+});
+
+test('sentence editing a partial selection preserves text outside both boundaries', async () => {
+    const prefix = 'Unselected beginning. ';
+    const before = 'Selected ending.\nSelected start. Keep this sentence.';
+    const after = 'Revised ending.\nRevised start. Keep this sentence.';
+    const suffix = ' Unselected ending.';
+    const w = world([{ text: prefix + before + suffix }], { nativeReviewed: true, nativeParagraphs: true });
+    w.scope._span.start = prefix.length;
+    w.scope._span.end -= suffix.length;
+    w.deps.appState.config.lineDiffEnabled = true;
+    await applySelectionAmendment(w.deps, { selectionText: before, amendedText: after });
+    expect(w.atoms.filter((atom) => atom.type !== 'del').map((atom) => atom.text).join('')).toBe(prefix + after + suffix);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
 
 test.each([['甲\u00a0乙 丙', '甲\u00a0乙，丙', ' '],
     ['An old‑form and old-form.', 'An old‑form and new-form.', 'old']])(
