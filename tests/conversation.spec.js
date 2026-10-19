@@ -1491,6 +1491,20 @@ describe('createConversation.submit', () => {
     expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
   });
 
+  test('wording questions pass the submit-time paragraph snapshot without proposing edits', async () => {
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(), actions,
+      getSelectionContent: async () => ({ text: 'use', images: [], paragraphContext: 'Declaration of generative AI use' }),
+    });
+    await conv.submit('use or usage?');
+    expect(actions.answerQuestion).toHaveBeenCalledWith(
+      expect.objectContaining({ selectionParagraphContext: 'Declaration of generative AI use' }),
+      expect.objectContaining({ question: 'use or usage?', selectionText: 'use' }),
+    );
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+  });
+
   test('edit intent without selection stages a document proposal (no direct apply)', async () => {
     const appState = makeAppState();
     const view = makeView();

@@ -158,6 +158,27 @@ const CURSOR_PARA_MAX_CHARS = 300;
 const HEADING_MAX_CHARS = 120;
 
 /**
+ * Preserve the containing sentence/heading for short text selections. Only a
+ * paragraph read from the selected Word range belongs here, never a document
+ * search result: repeated words elsewhere are not the user's selection.
+ * Large paragraphs are clipped around a unique match; ambiguous matches are
+ * omitted rather than presenting the wrong occurrence as selected.
+ */
+export function formatSelectionParagraphContext(paragraphText, selectionText) {
+    const normalize = (text) => String(text || '').replace(/\r\n?/g, '\n').trim();
+    const paragraph = normalize(paragraphText);
+    const selected = normalize(selectionText);
+    if (!selected || !paragraph.includes(selected) || paragraph === selected) return '';
+    const maxChars = 4000;
+    if (paragraph.length <= maxChars) return paragraph;
+    const index = paragraph.indexOf(selected);
+    if (selected.length > maxChars || paragraph.indexOf(selected, index + 1) !== -1) return '';
+    const start = Math.max(0, index - Math.floor((maxChars - selected.length) / 2));
+    const end = Math.min(paragraph.length, start + maxChars);
+    return (start ? '[…] ' : '') + paragraph.slice(start, end) + (end < paragraph.length ? ' […]' : '');
+}
+
+/**
  * Formats cursor-location context: where the user's caret sits when no
  * text is selected, so document-scope answers can account for it.
  *
