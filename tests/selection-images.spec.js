@@ -35,7 +35,7 @@ function nullAnchor() {
  * to simulate in-table selections.
  */
 function setSelectionWorld({
-    text = '', pictures = [],
+    text = '', pictures = [], paragraphs,
     parentTable = false, parentTableCell = false,
     startCell, endCell,
 } = {}) {
@@ -53,6 +53,7 @@ function setSelectionWorld({
             document: {
                 getSelection: () => ({
                     text,
+                    paragraphs,
                     load: jest.fn(),
                     inlinePictures: { items: pictures, load: jest.fn() },
                     parentTableOrNullObject: parentTable
@@ -101,6 +102,20 @@ const EMPTY_CONTENT = {
 };
 
 describe('readSelectionContent', () => {
+    test('captures the containing heading alongside the exact selected word', async () => {
+        setSelectionWorld({ text: 'use', paragraphs: {
+            load: jest.fn(), items: [{ text: 'Declaration of generative AI use', load: jest.fn() }],
+        } });
+        expect(await readSelectionContent()).toMatchObject({
+            text: 'use', paragraphContext: 'Declaration of generative AI use',
+        });
+    });
+
+    test('optional paragraph read failures do not erase the selected text', async () => {
+        setSelectionWorld({ text: 'use', paragraphs: { load: () => { throw new Error('Unavailable'); } } });
+        expect(await readSelectionContent()).toMatchObject({ text: 'use' });
+    });
+
     test('reads text plus picture metadata and data URLs', async () => {
         setSelectionWorld({
             text: 'hello',

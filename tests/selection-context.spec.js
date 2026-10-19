@@ -13,7 +13,34 @@ const {
     formatTableMarkdown,
     formatMixedContext,
     formatCursorContext,
+    formatSelectionParagraphContext,
 } = require('../src/lib/selection-context.js');
+
+describe('formatSelectionParagraphContext', () => {
+    test('keeps the full containing heading for a selected word', () => {
+        expect(formatSelectionParagraphContext('Declaration of generative AI use\r', 'use'))
+            .toBe('Declaration of generative AI use');
+    });
+
+    test('omits missing, unrelated, and redundant context', () => {
+        expect(formatSelectionParagraphContext('Heading', '')).toBe('');
+        expect(formatSelectionParagraphContext('Heading', 'use')).toBe('');
+        expect(formatSelectionParagraphContext('use\r', 'use')).toBe('');
+        expect(formatSelectionParagraphContext(null, 'use')).toBe('');
+    });
+
+    test('clips around a unique late occurrence instead of losing it to a prefix cap', () => {
+        const result = formatSelectionParagraphContext('x'.repeat(6000) + ' token usage is measured.', 'usage');
+        expect(result).toContain('token usage is measured.');
+        expect(result).toMatch(/^\[…\]/);
+        expect(result.length).toBeLessThanOrEqual(4008);
+        expect(formatSelectionParagraphContext('usage ' + 'x'.repeat(6000), 'usage')).toMatch(/\[…\]$/);
+    });
+
+    test('does not guess which repeated occurrence to center a clipped paragraph on', () => {
+        expect(formatSelectionParagraphContext('use ' + 'x'.repeat(6000) + ' use', 'use')).toBe('');
+    });
+});
 
 describe('formatTableMarkdown', () => {
     it('renders marker, header, separator, and data rows', () => {

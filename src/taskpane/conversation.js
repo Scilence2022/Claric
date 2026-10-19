@@ -2736,6 +2736,7 @@ export function createConversation(deps) {
 
     async function submitOwned(effective, list, owner) {
         let selectionText = '';
+        let selectionParagraphContext = '';
         // Metadata only — base64 payloads never leave the selection readers
         // (preview thumbnails come from watchSelection's own read).
         let selectionImages = [];
@@ -2748,6 +2749,7 @@ export function createConversation(deps) {
             const sel = _normalizeSelection(raw);
             const extras = (raw && typeof raw === 'object') ? raw : {};
             selectionText = (sel.text || '').trim();
+            selectionParagraphContext = typeof extras.paragraphContext === 'string' ? extras.paragraphContext : '';
             selectionImages = sel.images;
             hasMultiCellTableRegion = !!extras.hasMultiCellTableRegion;
         } catch (_err) {
@@ -2804,6 +2806,7 @@ export function createConversation(deps) {
         });
         const turnDeps = actionDepsFor(msg, owner.conversationHistory, owner.isCurrentSession);
         turnDeps.fileReferences = fileReferences;
+        turnDeps.selectionParagraphContext = selectionParagraphContext;
 
         try {
             await dispatchTurn(
