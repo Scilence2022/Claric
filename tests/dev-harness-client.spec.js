@@ -7,6 +7,11 @@ const setup = require('../scripts/dev-e2e-middlewares.cjs');
 const { baseUrl, command } = require('../scripts/dev-harness-client.cjs');
 
 const TOKEN = 'synthetic-client-token-not-a-real-secret';
+// Every cli() call spawns a fresh Node process and runs it to exit. Run alone
+// that is ~100 ms each, but under full-suite load startup can take a second
+// or more, so tests that spawn the CLI get an explicit budget instead of
+// Jest's 5 s default (the global timeout stays unchanged).
+const CLI_PROCESS_TEST_TIMEOUT_MS = 30_000;
 let root;
 let servers;
 let url;
@@ -117,7 +122,7 @@ test('CLI executes explicit status/trigger/claim/complete/pause and cursor reads
   expect(Array.isArray((await cli(['get-logs'])).body)).toBe(true);
   expect((await cli(['status'], '')).code).toBe(1);
   expect((await cli(['status'], 'x'.repeat(40))).code).toBe(1);
-});
+}, CLI_PROCESS_TEST_TIMEOUT_MS);
 
 test('CLI redacts even an echoed token and does not follow redirects', async () => {
   await request('/log', { message: TOKEN });
@@ -132,7 +137,7 @@ test('CLI redacts even an echoed token and does not follow redirects', async () 
   expect(redirected.code).toBe(1);
   expect(redirected.stderr).toContain('302');
   expect(requests).toBe(1);
-});
+}, CLI_PROCESS_TEST_TIMEOUT_MS);
 
 test('byte retention reports the exact oldest sequence and leaves the complete snapshot within 4 MiB', async () => {
   const entries = Array.from({ length: 100 }, (_, i) => ({ seq: i + 1, message: 'x'.repeat(41000) }));
@@ -156,7 +161,7 @@ test('CLI invalid arguments, malformed responses and connection errors exit nonz
   const server = servers.pop();
   await new Promise(resolve => server.close(resolve));
   expect((await cli(['status'])).code).toBe(1);
-});
+}, CLI_PROCESS_TEST_TIMEOUT_MS);
 
 test('CLI refuses unsafe destinations and ambiguous commands without making requests', () => {
   expect(baseUrl().origin).toBe('https://localhost:3000');

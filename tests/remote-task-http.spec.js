@@ -4,6 +4,15 @@ const { createCoordinationServer } = require('../scripts/coordination-server.cjs
 const { CoordinationState } = require('../src/lib/coordination/state.cjs');
 const { createCoordinationClient } = require('../src/taskpane/coordination-client.js');
 const { createRemoteTaskRunner } = require('../src/taskpane/remote-task-runner.js');
+const { createDocumentAgent } = require('../src/taskpane/document-agent.js');
+const { webcrypto } = require('crypto');
+
+// The document-agent test drives a full submit/refresh/claim/propose/apply
+// round trip over real loopback HTTP. Its module graph is required above so
+// the Babel transform cost is paid at file load, not inside the test, and the
+// test still gets an explicit budget because under full-suite load the HTTP
+// round trips alone can exceed Jest's 5 s default.
+const HTTP_ROUND_TRIP_TEST_TIMEOUT_MS = 30_000;
 
 function httpFetch(url, options = {}) {
     return new Promise((resolve, reject) => {
@@ -142,8 +151,6 @@ describe('remote tasks through real HTTP v2', () => {
         expect(agent.applyProposal).toHaveBeenCalledTimes(1);
     });
     test('uses the actual document agent for preparation, review and local application over HTTP', async () => {
-        const { createDocumentAgent } = require('../src/taskpane/document-agent.js');
-        const { webcrypto } = require('crypto');
         let text = 'Original target passage';
         const model = jest.fn(async () => ({ selectionText: text, amendedText: 'Revised target passage' }));
         const write = jest.fn(async (deps, proposal) => { text = proposal.amendedText; });
@@ -164,7 +171,7 @@ describe('remote tasks through real HTTP v2', () => {
         expect((await review.runtime.apply(['text-1'])).ok).toBe(true);
         expect(text).toBe('Revised target passage');
         expect((await source.transport.getSnapshot()).tasks[0].state).toBe('succeeded');
-    });
+    }, HTTP_ROUND_TRIP_TEST_TIMEOUT_MS);
     test('local write exception is unknown and cannot be retried', async () => {
         const { review, agent } = await prepare({ agent: { applyProposal: jest.fn(async () => { throw new Error('Word sync lost'); }) } });
         expect(await review.runtime.apply()).toMatchObject({ ok: false, record: { state: 'unknown' } });
