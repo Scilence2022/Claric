@@ -507,9 +507,11 @@ const PROFILE_MATCHERS = [
         // The "v4" segment is optional: DeepSeek's live /models lists the V4.1
         // Flash tier as the bare id "deepseek-flash" (display name
         // "DeepSeek-V4.1-Flash"), and "deepseek-pro" is matched defensively
-        // for the same naming. The trailing guard keeps look-alikes such as
+        // for the same naming. Gateways such as zhongkeyu keep the minor
+        // version in the id ("deepseek-v4.1-flash"), so "v4" may carry a
+        // ".N" suffix. The trailing guard keeps look-alikes such as
         // "deepseek-prover" on the generic profile.
-        matcher: /(?:^|[/:._-])deepseek[-_. ]?(?:v4[-_. ]?)?(?:flash|pro)(?:[^a-z]|$)/i,
+        matcher: /(?:^|[/:._-])deepseek[-_. ]?(?:v4(?:[._-][0-9]+)?[-_. ]?)?(?:flash|pro)(?:[^a-z]|$)/i,
     },
     {
         providers: ['deepseek', 'siliconflow'],

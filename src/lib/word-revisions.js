@@ -23,10 +23,28 @@ export class MutationSafetyError extends RevisionSafetyError {
         this.name = 'MutationSafetyError';
         this.mutationAttempted = true;
         this.cause = error;
+        this.code = error?.code;
+        this.errorLocation = error?.debugInfo?.errorLocation || error?.errorLocation;
     }
 }
 
-export const normalizeRevisionText = (text) => String(text || '').replace(/\r\n|\r/g, '\n').replace(/\n$/, '');
+export const normalizeWordText = (text) => String(text || '').replace(/\r\n|\r/g, '\n').replaceAll('\v', '\n').replaceAll('\f', '\n');
+export const normalizeRevisionText = (text) => normalizeWordText(text).replace(/\n$/, '');
+
+/** Report the mismatch precisely without logging document excerpts. */
+export function textMismatchDetail(wanted, actual) {
+    let offset = 0;
+    while (offset < Math.min(wanted.length, actual.length) && wanted[offset] === actual[offset]) offset++;
+    const code = (text) => offset >= text.length ? 'end' : `U+${text.codePointAt(offset).toString(16).toUpperCase().padStart(4, '0')}`;
+    return `expected ${wanted.length} chars, received ${actual.length}; first mismatch at ${offset}; expected ${code(wanted)}, received ${code(actual)}`;
+}
+
+export function wordErrorDetail(error) {
+    const code = error?.code;
+    const location = error?.debugInfo?.errorLocation || error?.errorLocation;
+    return (error?.message || String(error)) + (code || location
+        ? ` [${[code, location].filter(Boolean).map((value) => String(value).slice(0, 160)).join('; ')}]` : '');
+}
 
 /** Visible islands never span an insertion boundary or an earlier deletion. */
 export function revisionTextState(ooxml, { paragraph = false, currentText = null } = {}) {
@@ -41,7 +59,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         if (paragraphs.length === 2 && (emptyExportParagraph(paragraphs[1])
             || (typeof currentText === 'string' && emptyExportParagraph(paragraphs[1], true)
                 && revisionTextState(new XMLSerializer().serializeToString(paragraphs[0])).text
-                    === currentText.replace(/\r\n|\r/g, '\n')))) body = paragraphs[0];
+                    === normalizeWordText(currentText)))) body = paragraphs[0];
     }
     const elements = [body, ...Array.from(body.getElementsByTagName('*'))];
     if (!elements.some((element) => element.namespaceURI === W)) {
@@ -49,10 +67,13 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     }
     let hasRevisions = false;
     let protectedStructure = false;
+    let nonFieldProtection = false;
     let hasHiddenContent = false;
     let paragraphCount = 0;
     let text = '';
     const segments = [];
+    const protectedSpans = [];
+    const fields = [];
     let boundary = true;
     function append(value) {
         if (!value) return;
@@ -68,7 +89,10 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         if (REVISIONS.has(name)) hasRevisions = true;
         const parent = element.parentElement?.localName;
         if (PROTECTED.has(name) || (name === 'del' && ['rPr', 'pPr'].includes(parent))
-            || (['ins', 'del'].includes(name) && ['trPr', 'tcPr'].includes(parent))) protectedStructure = true;
+            || (['ins', 'del'].includes(name) && ['trPr', 'tcPr'].includes(parent))) {
+            protectedStructure = true;
+            if (!['fldChar', 'fldSimple'].includes(name)) nonFieldProtection = true;
+        }
     }
     function walk(element) {
         if (element.namespaceURI !== W) return;
@@ -79,6 +103,22 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
             return;
         }
         if (name === 'delText') { hasHiddenContent = true; boundary = true; return; }
+        if (name === 'fldChar') {
+            const type = element.getAttributeNS(W, 'fldCharType') || element.getAttribute('w:fldCharType');
+            boundary = true;
+            if (type === 'begin') fields.push(text.length);
+            else if (type === 'separate' && !fields.length) fields.push(0);
+            else if (type === 'end') protectedSpans.push({ start: fields.length ? fields.pop() : 0, end: text.length });
+            return;
+        }
+        if (name === 'fldSimple') {
+            const start = text.length;
+            boundary = true;
+            for (const child of Array.from(element.children)) walk(child);
+            protectedSpans.push({ start, end: text.length });
+            boundary = true;
+            return;
+        }
         if (['pPr', 'rPr', 'instrText', 'proofErr', 'drawing', 'object', 'pict'].includes(name)) return;
         if (name === 'p') {
             if (paragraphCount++) { text += '\n'; boundary = true; }
@@ -94,7 +134,9 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     // pkg:xmlData is a wrapper, not a Word element.
     if (body.namespaceURI === W) walk(body);
     else for (const child of Array.from(body.children)) walk(child);
+    for (const start of fields) protectedSpans.push({ start, end: text.length });
     return { text, segments, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
+        protectedSpans, fieldOnlyProtection: protectedStructure && !nonFieldProtection,
         fingerprint: rangeStructureFingerprint(body.localName === 'p' && body !== root
             ? new XMLSerializer().serializeToString(body) : ooxml) };
 }
@@ -113,8 +155,8 @@ function emptyExportParagraph(paragraph, allowEmptyRevisionMarkers = false) {
 export function queueRevisionRead(range, options = {}) {
     if (typeof range.getOoxml !== 'function') return null;
     const xml = range.getOoxml();
-    const currentText = options.paragraph
-        ? queueCurrentTextRead(typeof range.getRange === 'function' ? range.getRange('Content') : range) : null;
+    const currentText = queueCurrentTextRead(options.paragraph && typeof range.getRange === 'function'
+        ? range.getRange('Content') : range);
     // Preserve the ClientResult value contract while pairing independent
     // evidence that a revised, empty export paragraph is not native content.
     return currentText ? { get value() { return xml.value; }, currentText } : xml;

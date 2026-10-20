@@ -126,6 +126,7 @@ export function inferHeadingLevel(text) {
  * @property {string|null} listString - List bullet/number string
  * @property {number} listLevel - List nesting level
  * @property {boolean} inTable - Whether paragraph is inside a table
+ * @property {Array<{start: number, end: number}>} [protectedSpans] - Immutable native field results in current text
  * @property {number} tokenEstimate - Estimated tokens (chars/4)
  */
 
@@ -225,6 +226,7 @@ export async function parseDocument() {
                 text,
                 revisionFingerprint: revisionState.fingerprint,
                 hasRevisions: revisionState.hasRevisions,
+                protectedSpans: revisionState.protectedSpans || [],
                 headingLevel,
                 style: para.style || '',
                 styleBuiltIn: para.styleBuiltIn || '',

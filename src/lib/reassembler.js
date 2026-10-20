@@ -19,9 +19,11 @@
 
 import { applyTokenMapStrategy, applySentenceDiffStrategy } from './word-diff/index.js';
 import { hasCjk, applyCharDiffStrategy } from './word-diff/char-diff.js';
-import { alignParagraphs } from './paragraph-alignment.js';
-import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, verifyMutationText, hostSupportsTrackedChanges } from './word-revisions.js';
+import { alignParagraphs, amendmentParagraphTexts } from './paragraph-alignment.js';
+import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, verifyMutationText, hostSupportsTrackedChanges,
+  normalizeWordText, wordErrorDetail } from './word-revisions.js';
 import { validateWhitespaceCleanup } from './whitespace-cleanup.js';
+import { tryRevisionDiff } from './word-diff/revision-diff.js';
 
 /**
  * Thrown when an LLM amendment fails the content-length sanity check (the
@@ -89,11 +91,35 @@ function _yieldToEventLoop() {
  * @private
  */
 function _normalizeLineEndings(text) {
-  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return normalizeWordText(text);
 }
 
 // Paragraph pairing is shared with the amendment guards (paragraph-alignment.js).
 const _alignParagraphs = alignParagraphs;
+const NATIVE_READ_BATCH_SIZE = 24;
+const _paragraphTargetText = (text, whitespaceOnly) => whitespaceOnly ? text : text.replace(/^[ \u00a0]+|[ \u00a0]+$/g, '');
+
+/** Full paragraph OOXML packages must stay bounded during apply as during parse. */
+async function _readParagraphStates(context, paraItems) {
+  const inTable = [];
+  const revisionStates = [];
+  for (let start = 0; start < paraItems.length; start += NATIVE_READ_BATCH_SIZE) {
+    const batch = paraItems.slice(start, start + NATIVE_READ_BATCH_SIZE);
+    const reads = batch.map((para) => {
+      para.load('text');
+      return queueRevisionRead(para, { paragraph: true });
+    });
+    const tables = batch.map((para) => {
+      const table = para.parentTableOrNullObject;
+      table.load('isNullObject');
+      return table;
+    });
+    await context.sync();
+    inTable.push(...tables.map((table) => !table.isNullObject));
+    revisionStates.push(...batch.map((para, index) => resolveRevisionRead(para, reads[index], { paragraph: true })));
+  }
+  return { inTable, revisionStates };
+}
 
 /**
  * Applies a paragraph-level amendment strategy that preserves document formatting.
@@ -134,7 +160,8 @@ const _alignParagraphs = alignParagraphs;
  */
 async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log, preloaded = null,
   { whitespaceOnly = false, expectedTexts = null,
-    progress = { appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false } } = {}) {
+    progress = { appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false,
+      stage: 'paragraph read' } } = {}) {
   let allParaItems;
   let inTable;
   let revisionStates;
@@ -158,18 +185,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
     // paragraph they would add an in-cell paragraph or delete cell content —
     // never a table row (in-cell 'keep' text edits are safe and still
     // tracked).
-    for (const para of allParaItems) {
-      para.load('text');
-    }
-    const revisionReads = allParaItems.map((p) => queueRevisionRead(p, { paragraph: true }));
-    const tableChecks = allParaItems.map((p) => {
-      const t = p.parentTableOrNullObject;
-      t.load('isNullObject');
-      return t;
-    });
-    await context.sync();
-    inTable = tableChecks.map((t) => !t.isNullObject);
-    revisionStates = allParaItems.map((p, i) => resolveRevisionRead(p, revisionReads[i], { paragraph: true }));
+    ({ inTable, revisionStates } = await _readParagraphStates(context, allParaItems));
   }
 
   // Blank spacer paragraphs never enter the alignment: the amendment text
@@ -193,7 +209,9 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   inTable = paraInTable;
 
   const origTexts = states.map((s) => s.text);
-  const amendedLines = _normalizeLineEndings(amendedText).split('\n');
+  let amendedLines;
+  try { amendedLines = amendmentParagraphTexts(origTexts, amendedText); }
+  catch (error) { throw new RevisionSafetyError(error.message); }
 
   if (whitespaceOnly) {
     if (expectedTexts && (expectedTexts.length !== origTexts.length
@@ -202,16 +220,6 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
     }
     const check = validateWhitespaceCleanup(origTexts.join('\n'), amendedText);
     if (!check.valid) throw new Error(check.reason);
-    // The text protocol represents both paragraph separators and native
-    // line breaks as newlines. Keep the original native paragraph grouping.
-    let lineOffset = 0;
-    const grouped = origTexts.map((text) => {
-      const lineCount = _normalizeLineEndings(text).split('\n').length;
-      const paragraph = amendedLines.slice(lineOffset, lineOffset + lineCount).join('\n');
-      lineOffset += lineCount;
-      return paragraph;
-    });
-    amendedLines.splice(0, amendedLines.length, ...grouped);
   }
 
   // Filter out trailing empty lines from amended text (LLM sometimes adds trailing newline)
@@ -248,44 +256,64 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   // a substantial rewrite falls below the fuzzy alignment threshold. A
   // delete+insert interpretation would otherwise touch its revision marks.
   /** @type {Array<{type: 'keep'|'delete'|'insert', origIdx?: number, newIdx?: number}>} */
-  const alignment = origTexts.length === amendedLines.length && (whitespaceOnly || states.some((s) => s.hasRevisions))
+  const alignment = origTexts.length === amendedLines.length && (whitespaceOnly || states.some((s) => s.hasRevisions || s.protectedSpans?.length))
     ? origTexts.map((_text, index) => ({ type: 'keep', origIdx: index, newIdx: index }))
     : _alignParagraphs(origTexts, amendedLines);
   if (alignment.some((op) => op.type === 'delete' && states[op.origIdx].hasRevisions)) {
     throw new RevisionSafetyError('Deleting a paragraph with unresolved revisions requires a fresh in-place text edit.');
   }
+  if (alignment.some((op) => op.type === 'delete' && states[op.origIdx].protectedSpans?.length)) {
+    throw new RevisionSafetyError('Cannot delete a paragraph containing native fields through a prose amendment. Preserve its field results.');
+  }
+  let structuralAnchor = 0;
+  for (const op of alignment) {
+    if (op.type === 'delete' && inTable[op.origIdx]) {
+      throw new RevisionSafetyError('Cannot delete a table paragraph through a prose amendment. Preserve its paragraph structure.');
+    }
+    if (op.type === 'insert' && amendedLines[op.newIdx].trim() && inTable[structuralAnchor]) {
+      throw new RevisionSafetyError('Cannot insert a prose paragraph inside a table. Preserve its paragraph structure.');
+    }
+    if (op.origIdx !== undefined) structuralAnchor = op.origIdx;
+  }
 
-  // Pre-resolve every changed paragraph's content range in ONE batched read
-  // (a single sync for the whole chunk) instead of a load+sync inside the
-  // edit loop — those per-paragraph round-trips dominated full-document
-  // applies. All ranges are resolved against the pristine text, before any
-  // edit is queued, and reverse-order edits never move another paragraph's
-  // own content span, so the proxies stay valid for the whole loop.
+  // Resolve changed content in bounded read batches before the first write.
+  // Each write still revalidates its native text and target positions.
   /** @type {Map<number, Word.Range>} */
   const changedParaRanges = new Map();
   const contentReads = new Map();
-  for (const op of alignment) {
-    if (op.type === 'keep' && comparableText(origTexts[op.origIdx]) !== comparableText(amendedLines[op.newIdx])) {
+  const contentStates = new Map();
+  const changedOps = alignment.filter((op) => op.type === 'keep'
+    && comparableText(origTexts[op.origIdx]) !== comparableText(amendedLines[op.newIdx]));
+  progress.stage = 'paragraph preflight';
+  for (let start = 0; start < changedOps.length; start += NATIVE_READ_BATCH_SIZE) {
+    const batch = changedOps.slice(start, start + NATIVE_READ_BATCH_SIZE);
+    for (const op of batch) {
       const paraRange = paraItems[op.origIdx].getRange('Content');
       paraRange.load('text');
       changedParaRanges.set(op.origIdx, paraRange);
       contentReads.set(op.origIdx, queueRevisionRead(paraRange, { paragraph: true }));
     }
+    await context.sync();
+    for (const op of batch) contentStates.set(op.origIdx,
+      resolveRevisionRead(changedParaRanges.get(op.origIdx), contentReads.get(op.origIdx), { paragraph: true }));
   }
   if (changedParaRanges.size > 0) {
-    await context.sync();
     // Validate every native content range before the first write. Paragraph
     // exports and content-range exports can differ at their end boundaries;
     // a mismatch must not leave the earlier reverse-order edits half applied.
     for (const [index, read] of contentReads) {
       if (!read) continue;
-      const state = resolveRevisionRead(changedParaRanges.get(index), read, { paragraph: true });
+      const state = contentStates.get(index);
       if (state.text !== origTexts[index]) {
         throw new RevisionSafetyError(`Paragraph ${index + 1}: native content differs from the staged baseline. Draft a new proposal.`);
       }
-      if (state.hasRevisions && state.protectedStructure) {
+      if (state.protectedStructure && !state.fieldOnlyProtection) {
         throw new RevisionSafetyError(`Paragraph ${index + 1}: structural revisions or protected objects cannot be safely edited in place.`);
       }
+      const op = alignment.find((op) => op.type === 'keep' && op.origIdx === index);
+      const after = _paragraphTargetText(amendedLines[op.newIdx], whitespaceOnly);
+      await tryRevisionDiff(context, changedParaRanges.get(index), origTexts[index], after, log,
+        { trackChanges: false, paragraph: true, preflightOnly: true, nativeTargets: true });
     }
   }
 
@@ -319,8 +347,10 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         // to preserve run-level formatting (bold, italic, font, color).
         const origText = origTexts[op.origIdx];
         const newText = amendedLines[op.newIdx];
+        const targetText = _paragraphTargetText(newText, whitespaceOnly);
 
         if (comparableText(origText) !== comparableText(newText)) {
+          progress.stage = `paragraph ${op.origIdx + 1}: native text edit`;
           const paraRange = changedParaRanges.get(op.origIdx);
 
           // Use word-level token map strategy scoped to single paragraph.
@@ -336,15 +366,15 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           // The outer scope already owns the tracking mode (set above, restored
           // below), so the strategy must not clobber it mid-loop.
           try {
-            const diffOptions = { trackChanges: false, paragraph: true, verificationParagraph: paraItems[op.origIdx] };
+            const diffOptions = { trackChanges: false, paragraph: true, nativeTargets: true, verificationParagraph: paraItems[op.origIdx] };
             if (whitespaceOnly) {
-              await applyCharDiffStrategy(context, paraRange, origText, newText, log, diffOptions);
+              await applyCharDiffStrategy(context, paraRange, origText, targetText, log, diffOptions);
             } else if (lineDiffEnabled) {
-              await applySentenceDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
+              await applySentenceDiffStrategy(context, paraRange, origText, targetText, log, diffOptions);
             } else if (hasCjk(origText) || hasCjk(newText)) {
-              await applyCharDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
+              await applyCharDiffStrategy(context, paraRange, origText, targetText, log, diffOptions);
             } else {
-              await applyTokenMapStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
+              await applyTokenMapStrategy(context, paraRange, origText, targetText, log, diffOptions);
             }
           } catch (_diffErr) {
             if (_diffErr.mutationAttempted) progress.mutationAttempted = true;
@@ -355,28 +385,26 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
             log(`Para ${op.origIdx}: word-level diff failed (${_diffErr.message}), using text replacement`, 'warning');
             progress.mutationAttempted = true;
             progress.pendingVerification = true;
-            paraRange.insertText(newText.trim(), Word.InsertLocation.replace);
+            paraRange.insertText(targetText, Word.InsertLocation.replace);
             await context.sync();
           }
           progress.mutationAttempted = true;
           progress.pendingVerification = true;
-          await verifyMutationText(context, paraRange, whitespaceOnly ? newText : newText.trim(),
+          progress.stage = `paragraph ${op.origIdx + 1}: read-back`;
+          await verifyMutationText(context, paraRange, targetText,
             { paragraph: true, verificationParagraph: paraItems[op.origIdx] });
           progress.pendingVerification = false;
           progress.appliedParagraphs++;
         }
       } else if (op.type === 'delete') {
-        // Paragraph was removed by LLM -- delete it. Table paragraphs are
-        // skipped: deleting cell content never deletes a row, it corrupts one.
-        if (inTable[op.origIdx]) {
-          log(`Para ${op.origIdx}: skipping delete — paragraph is inside a table`, 'warning');
-          continue;
-        }
+        progress.stage = `paragraph ${op.origIdx + 1}: structural delete`;
+        // Structural table operations were refused before the first write.
         const para = paraItems[op.origIdx];
         progress.mutationAttempted = true;
         progress.pendingStructuralWrites = true;
         para.delete();
       } else if (op.type === 'insert') {
+        progress.stage = `output paragraph ${op.newIdx + 1}: structural insert`;
         // New paragraph from LLM -- insert after the preceding original paragraph.
         // Find the last 'keep' or 'delete' op before this one that references an origIdx.
         const insertText = amendedLines[op.newIdx].trim();
@@ -394,12 +422,6 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         }
 
         if (anchorOrigIdx >= 0 && anchorOrigIdx < paraItems.length) {
-          // Anchoring inside a table would insert an in-cell paragraph, not a
-          // new row — skip instead of corrupting the table layout.
-          if (inTable[anchorOrigIdx]) {
-            log(`Skipping insert after para ${anchorOrigIdx} — anchor is inside a table`, 'warning');
-            continue;
-          }
           const anchorPara = paraItems[anchorOrigIdx];
           progress.mutationAttempted = true;
           progress.pendingStructuralWrites = true;
@@ -466,7 +488,14 @@ export async function bookmarkChunkRanges(chunks) {
       para.load('text');
       boundaryParagraphs.set(idx, para);
     }
-    await context.sync();
+    const boundaryStates = new Map();
+    const boundaryEntries = [...boundaryParagraphs];
+    for (let start = 0; start < boundaryEntries.length; start += NATIVE_READ_BATCH_SIZE) {
+      const batch = boundaryEntries.slice(start, start + NATIVE_READ_BATCH_SIZE);
+      const reads = batch.map(([, para]) => queueRevisionRead(para, { paragraph: true }));
+      await context.sync();
+      batch.forEach(([index, para], i) => boundaryStates.set(index, resolveRevisionRead(para, reads[i], { paragraph: true })));
+    }
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
@@ -476,8 +505,8 @@ export async function bookmarkChunkRanges(chunks) {
       if (Array.isArray(chunk.paragraphs) && chunk.paragraphs.length > 0) {
         const expectedStart = (chunk.paragraphs[0].text || '').trim();
         const expectedEnd = (chunk.paragraphs[chunk.paragraphs.length - 1].text || '').trim();
-        const actualStart = (boundaryParagraphs.get(chunk.startIndex).text || '').trim();
-        const actualEnd = (boundaryParagraphs.get(chunk.endIndex).text || '').trim();
+        const actualStart = (boundaryStates.get(chunk.startIndex).text || '').trim();
+        const actualEnd = (boundaryStates.get(chunk.endIndex).text || '').trim();
         if (actualStart !== expectedStart || actualEnd !== expectedEnd) {
           throw new Error(
             'Document changed while staging: chunk boundary paragraphs no longer match ' +
@@ -634,18 +663,7 @@ async function _reanchorChunkRange(context, range, storedTexts, log, fingerprint
 
   // Paragraph texts (for the drift window match) and table membership (for
   // the amendment's table guards) in a single batched read.
-  for (const para of paraItems) {
-    para.load('text');
-  }
-  const revisionReads = paraItems.map((p) => queueRevisionRead(p, { paragraph: true }));
-  const tableChecks = paraItems.map((p) => {
-    const t = p.parentTableOrNullObject;
-    t.load('isNullObject');
-    return t;
-  });
-  await context.sync();
-  const inTable = tableChecks.map((t) => !t.isNullObject);
-  const revisionStates = paraItems.map((p, i) => resolveRevisionRead(p, revisionReads[i], { paragraph: true }));
+  const { inTable, revisionStates } = await _readParagraphStates(context, paraItems);
 
   // Compare on the non-empty paragraphs only: blank spacer paragraphs are
   // absent from the staged sequence but present in the live range.
@@ -691,23 +709,13 @@ async function _reanchorChunkRange(context, range, storedTexts, log, fingerprint
   await context.sync();
 
   const narrowedItems = narrowed.paragraphs.items;
-  for (const para of narrowedItems) {
-    para.load('text');
-  }
-  const narrowedReads = narrowedItems.map((p) => queueRevisionRead(p, { paragraph: true }));
-  const narrowedTableChecks = narrowedItems.map((p) => {
-    const t = p.parentTableOrNullObject;
-    t.load('isNullObject');
-    return t;
-  });
-  await context.sync();
+  const narrowedState = await _readParagraphStates(context, narrowedItems);
 
   return {
     range: narrowed,
     preloaded: {
       paraItems: narrowedItems,
-      revisionStates: narrowedItems.map((p, i) => resolveRevisionRead(p, narrowedReads[i], { paragraph: true })),
-      inTable: narrowedTableChecks.map((t) => !t.isNullObject),
+      ...narrowedState,
     },
   };
 }
@@ -758,7 +766,8 @@ function _multiParagraphFallbackError(paraErr) {
  *   UI can mark individual items applied as they land
  * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, noChangeCount: number,
  *   errors: string[], appliedChunkIds: string[], attemptedChunkIds: string[], failedChunkIds: string[],
- *   partialChunkIds: string[], uncertainChunkIds: string[], appliedParagraphs: number, interrupted: boolean}>}
+ *   partialChunkIds: string[], uncertainChunkIds: string[], appliedParagraphs: number, interrupted: boolean,
+ *   halted: boolean, skippedChunkIds: string[]}>}
  */
 export async function applyChunkResults(results, bookmarkMap, options) {
   const {
@@ -782,6 +791,8 @@ export async function applyChunkResults(results, bookmarkMap, options) {
   const uncertainChunkIds = [];
   let appliedParagraphs = 0;
   let interrupted = false;
+  let halted = false;
+  const skippedChunkIds = [];
 
   // Collect rejected/cancelled errors for reporting
   for (const result of results) {
@@ -815,7 +826,8 @@ export async function applyChunkResults(results, bookmarkMap, options) {
       continue;
     }
 
-    const progress = { appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false };
+    const progress = { appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false,
+      stage: 'bookmark and source read' };
     try {
       let chunkApplied = false;
       await Word.run(async (context) => {
@@ -954,22 +966,33 @@ export async function applyChunkResults(results, bookmarkMap, options) {
       failedChunkIds.push(result.chunkId);
       if (partial) partialChunkIds.push(result.chunkId);
       if (uncertain) uncertainChunkIds.push(result.chunkId);
-      errors.push(`Chunk ${result.chunkId}: ${err.message || String(err)}`);
-      log(`Chunk ${result.chunkId}: amendment failed -- ${err.message}`
+      const detail = wordErrorDetail(err);
+      errors.push(`Chunk ${result.chunkId}: ${detail} (${progress.stage})`);
+      log(`Chunk ${result.chunkId}: amendment failed -- ${detail} (${progress.stage})`
         + (partial ? `; ${progress.appliedParagraphs} paragraph edit(s) already applied` : '')
         + (uncertain ? '; writes could not be verified; inspect Word before drafting fresh edits' : ''), 'error');
       onChunkApplied(result.chunkId, { applied: false, error: true, partial, uncertain });
+      if (uncertain) halted = true;
     }
     appliedParagraphs += progress.appliedParagraphs;
+    if (halted) {
+      // A host mutation no longer matches its draft. Stop this write pass;
+      // continuing would spread the same failure over untouched sections.
+      for (const remaining of reverseSorted.slice(reverseSorted.indexOf(result) + 1)) {
+        skippedChunkIds.push(remaining.chunkId);
+        onChunkApplied(remaining.chunkId, { applied: false, skipped: true });
+      }
+      log(`Application stopped after an unverified write; ${skippedChunkIds.length} remaining section(s) left untouched.`, 'warning');
+      break;
+    }
 
     // Yield to event loop between chunks to prevent UI freeze
     await _yieldToEventLoop();
   }
 
   // Phase 2: Comments in document order (after all amendments).
-  // Skipped entirely when the apply was paused mid-way — the resume re-runs
-  // this for the remaining chunks.
-  if (!interrupted) {
+  // Never add comments after a paused or unverified write pass.
+  if (!interrupted && !halted) {
     const allCommentResults = results
       .filter((r) => r.status === 'fulfilled' && r.comment)
       .filter((r) => bookmarkMap.get(r.chunkId));
@@ -1066,7 +1089,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
   }
 
   return { amendmentsApplied, commentsInserted, noChangeCount, errors, appliedChunkIds, attemptedChunkIds,
-    failedChunkIds, partialChunkIds, uncertainChunkIds, appliedParagraphs, interrupted };
+    failedChunkIds, partialChunkIds, uncertainChunkIds, appliedParagraphs, interrupted, halted, skippedChunkIds };
 }
 
 /**

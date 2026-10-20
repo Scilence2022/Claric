@@ -12,6 +12,8 @@
  *     Upstream built the diff input from the DEDUPED sentence list, so any
  *     repeated sentence silently shifted every later sentence out of
  *     alignment (wrong deletions/insertions with no error raised).
+ *   - Paragraph/manual-break boundaries participate in sentence mapping;
+ *     every native sentence range is checked against its baseline before writes.
  *   - Accepts options.trackChanges (default true); when false the strategy
  *     does not touch the document's changeTrackingMode (caller owns it).
  *   - Typed activity-log messages instead of DEBUG/emoji lines.
@@ -22,13 +24,16 @@
 import DiffMatchPatch from './diff-wordmode.js';
 import { tryRevisionDiff } from './revision-diff.js';
 import { applyBlockReplaceStrategy } from './block-replace.js';
-import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges } from '../word-revisions.js';
+import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges, normalizeWordText } from '../word-revisions.js';
+
+const SENTENCE_ENDINGS = ['. ', '.  ', '\r', '\n', '\v', '\f'];
 
 /**
  * Tokenizes text into sentences in OCCURRENCE order. A sentence boundary is
- * '. ' or '.  ' (period + space(s)); the boundary stays attached to the
- * sentence it terminates. Repeated sentences keep their positions — the diff
- * input must mirror the document's actual sentence sequence.
+ * '. ' or '.  ' (period + space(s)), or a paragraph/manual line break. The
+ * boundary stays attached to the sentence it terminates. Word never returns
+ * a sentence range spanning paragraphs, even for headings without a period.
+ * Repeated sentences keep their positions.
  *
  * @private
  * @param {string} text
@@ -36,37 +41,13 @@ import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTra
  */
 export function tokenizeToSentences(text) {
     const sentences = [];
-    let remaining = text;
-
-    while (remaining.length > 0) {
-        const match1 = remaining.indexOf('. ');
-        const match2 = remaining.indexOf('.  ');
-        let nextBoundary = -1;
-        let boundaryLen = 0;
-
-        if (match1 !== -1 && match2 !== -1) {
-            if (match1 < match2) {
-                nextBoundary = match1;
-                boundaryLen = 2;
-            } else {
-                nextBoundary = match2;
-                boundaryLen = 3;
-            }
-        } else if (match1 !== -1) {
-            nextBoundary = match1;
-            boundaryLen = 2;
-        } else if (match2 !== -1) {
-            nextBoundary = match2;
-            boundaryLen = 3;
-        }
-
-        if (nextBoundary === -1) {
-            sentences.push(remaining);
-            break;
-        }
-        sentences.push(remaining.substring(0, nextBoundary + boundaryLen));
-        remaining = remaining.substring(nextBoundary + boundaryLen);
+    let start = 0;
+    for (const match of text.matchAll(/\. {1,2}|\r\n|[\r\n\v\f]/g)) {
+        const end = match.index + match[0].length;
+        sentences.push(text.slice(start, end));
+        start = end;
     }
+    if (start < text.length) sentences.push(text.slice(start));
     return sentences;
 }
 
@@ -125,6 +106,8 @@ export function diff_sentenceMode(text1, text2) {
  * @throws {Error} If all strategies fail
  */
 export async function applySentenceDiffStrategy(context, range, text1, text2, log, options = {}) {
+    text1 = normalizeWordText(text1);
+    text2 = normalizeWordText(text2);
     const revised = await tryRevisionDiff(context, range, text1, text2, log, options);
     if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
@@ -155,12 +138,20 @@ export async function applySentenceDiffStrategy(context, range, text1, text2, lo
 
         // Strategy: Sentence Map
         // 1. Get ranges for sentences using sentence separators
-        const sentenceRanges = range.getTextRanges(['. ', '.  '], false);
+        const sentenceRanges = range.getTextRanges(SENTENCE_ENDINGS, false);
         sentenceRanges.load('items/text');
         await context.sync();
 
         // 2. Build Sentence Map (Index -> Range)
-        const sentenceMap = sentenceRanges.items.map((r, index) => ({ index, range: r, text: r.text }));
+        const sentenceMap = sentenceRanges.items.map((r, index) => ({ index, range: r, text: normalizeWordText(r.text) }));
+        const expectedSentences = tokenizeToSentences(text1);
+        // A host may segment or omit whitespace differently. A matching
+        // total count alone does not prove that an index names the intended
+        // sentence: check every range before queuing any deletion.
+        if (sentenceMap.length !== expectedSentences.length
+            || sentenceMap.some((sentence, index) => sentence.text !== expectedSentences[index])) {
+            throw new RevisionSafetyError('Native sentence ranges differ from the proposal baseline; no text was written. Generate a fresh proposal.');
+        }
 
         // Pass 1 (compute only): Deletions. A diff chunk can carry MULTIPLE
         // consecutive sentences (diff_charsToLines decodes one op back to the

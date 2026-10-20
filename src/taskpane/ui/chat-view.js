@@ -5,8 +5,8 @@
  * lines, streaming text, progress bars, proposal cards, and citation pills.
  * Also owns the welcome empty state container.
  *
- * All text is rendered via textContent (no innerHTML for model output), so
- * LLM responses cannot inject markup into the taskpane.
+ * Assistant answers use sanitized Markdown; user input, logs, errors, and
+ * proposal diffs remain literal text.
  *
  * In addition to live DOM, the module keeps a parallel `currentSessionMessages`
  * array so the conversation can be serialized (history view, restart on
@@ -21,8 +21,10 @@
 import { sanitizeSvg } from '../../lib/illustration.js';
 import { buildTextDiffElement } from './diff-view.js';
 import { appState } from '../app-state.js';
-import { renderTablePreview, sanitizeTablePreview } from './proposal-card.js';
+import { renderTablePreview, sanitizeTablePreview, renderProposalItemOutcome } from './proposal-card.js';
 import { newId, normalizeAttachments, normalizeCitations, normalizeMessage } from '../message-shape.js';
+import { renderMarkdown } from './markdown.js';
+import { buildCompletionSummary } from './completion-summary.js';
 
 let _messagesEl = null;
 let _welcomeEl = null;
@@ -113,6 +115,7 @@ function _proposalRecordFromMeta(p) {
         state: p.state || 'pending',
         detail: p.detail,
         countsText: p.countsText,
+        summary: typeof p.summary === 'string' ? p.summary.slice(0, 1000) : '',
         previewSrc: p.previewSrc || null,
         previewSvg: p.previewSvg || null,
         tablePreview: sanitizeTablePreview(p.tablePreview),
@@ -122,6 +125,7 @@ function _proposalRecordFromMeta(p) {
             before: it.before,
             after: it.after,
             searchText: it.searchText,
+            outcome: typeof it.outcome === 'string' ? it.outcome : undefined,
         })) : [],
     };
 }
@@ -275,30 +279,23 @@ function _queueScroll(el) {
 }
 
 /**
- * Appends text incrementally: a text-node append is O(token), while
- * `el.textContent = fullString` rewrites the whole accumulated text per
- * token (O(n²) across a long stream). Falls back to a full render when the
- * element holds non-text content.
- * @private
- */
-function _appendStreamText(el, text) {
-    if (el.childNodes.length === 0) {
-        el.appendChild(document.createTextNode(text));
-        return;
-    }
-    if (el.childNodes.length === 1 && el.firstChild.nodeType === Node.TEXT_NODE) {
-        el.firstChild.appendData(text);
-        return;
-    }
-    el.textContent += text;
-}
-
-/**
  * Renders a text node safely (no innerHTML).
  * @private
  */
 function _renderText(el, text) {
     el.textContent = text;
+}
+
+function _renderCompletionSummary(element, message) {
+    const text = buildCompletionSummary(message);
+    element.replaceChildren();
+    element.hidden = !text;
+    if (!text) return;
+    const label = document.createElement('strong');
+    label.textContent = 'Task summary';
+    const body = document.createElement('div');
+    renderMarkdown(body, text);
+    element.append(label, body);
 }
 
 /**
@@ -401,17 +398,24 @@ function _normalizeMessage(m) {
 function _wrapProposalCard(card, meta, onStateChange) {
     const notify = typeof onStateChange === 'function' ? onStateChange : () => {};
     let terminal = ['applied', 'rejected', 'warning'].includes(meta.state);
-    for (const [method, state] of Object.entries({ markApplied: 'applied', markRejected: 'rejected', markWarning: 'warning', markError: 'error' })) {
+    for (const [method, state] of Object.entries({ markApplied: 'applied', markRejected: 'rejected',
+        markWarning: 'warning', markError: 'error', setPaused: 'paused' })) {
         const original = card[method];
         if (typeof original !== 'function') continue;
         card[method] = function (message, options) {
             if (terminal) return;
             const result = original.call(card, message, options);
-            meta.state = state;
-            terminal = ['applied', 'rejected', 'warning'].includes(state)
+            const actualState = card.el.dataset.outcome || state;
+            meta.state = actualState;
+            for (const { id, outcome } of card.getItemOutcomes?.() || []) {
+                const item = meta.items?.find((item) => String(item.id) === String(id));
+                if (item) item.outcome = outcome;
+            }
+            terminal = ['applied', 'rejected', 'warning'].includes(actualState)
                 || (method === 'markError' && options?.retryable === false);
-            if (message && ['applied', 'warning', 'error'].includes(state)) meta.detail = String(message);
-            else if (state === 'applied') delete meta.detail;
+            const detail = actualState !== state ? card.el.querySelector('.proposal-card-status')?.textContent : message;
+            if (detail && ['applied', 'warning', 'error', 'paused'].includes(actualState)) meta.detail = String(detail);
+            else if (actualState === 'applied') delete meta.detail;
             notify();
             return result;
         };
@@ -452,7 +456,8 @@ function _renderHistoricalAssistant(m) {
 
     const body = document.createElement('div');
     body.className = 'msg-body';
-    body.textContent = m.error ? `Error: ${m.error}` : (m.text || '');
+    if (m.error) body.textContent = `Error: ${m.error}`;
+    else renderMarkdown(body, m.text || '');
     el.appendChild(body);
 
     if (Array.isArray(m.proposals)) {
@@ -470,6 +475,11 @@ function _renderHistoricalAssistant(m) {
         el.appendChild(_buildCitationRow(citations, _citationSelectHandler));
     }
 
+    const summary = document.createElement('div');
+    summary.className = 'msg-completion';
+    _renderCompletionSummary(summary, m);
+    el.appendChild(summary);
+
     return el;
 }
 
@@ -479,7 +489,7 @@ function _renderHistoricalAssistant(m) {
  *
  * @param {object} p
  * @param {string} [p.title]
- * @param {string} [p.state] - 'applied' | 'rejected' | 'warning' | 'error'
+ * @param {string} [p.state] - 'pending' | 'applied' | 'rejected' | 'warning' | 'error' | 'paused'
  * @param {string} [p.detail] - extra status text for warning/error
  * @param {string} [p.countsText]
  * @param {string} [p.previewSrc]
@@ -534,12 +544,16 @@ export function renderStaticProposalCard(p) {
         list.className = 'proposal-card-changes-static';
         for (const item of p.items) {
             if (!item) continue;
-            const row = document.createElement('div');
+            const row = document.createElement('details');
             row.className = 'proposal-card-change';
-            const label = document.createElement('div');
+            const rowHead = document.createElement('summary');
+            rowHead.className = 'proposal-card-change-head';
+            const label = document.createElement('span');
             label.className = 'proposal-card-change-label';
             label.textContent = item.label || '';
-            row.appendChild(label);
+            rowHead.appendChild(label);
+            row.appendChild(rowHead);
+            renderProposalItemOutcome(row, item.outcome);
             if (item.before !== undefined && item.after !== undefined) {
                 row.appendChild(buildTextDiffElement(item.before, item.after));
             }
@@ -556,6 +570,7 @@ export function renderStaticProposalCard(p) {
         else if (p.state === 'rejected') label = 'Rejected — no changes were made.';
         else if (p.state === 'warning') label = p.detail || 'Nothing applied.';
         else if (p.state === 'error') label = `Apply failed: ${p.detail || ''}`;
+        else if (p.state === 'paused') label = p.detail || 'Application paused; some changes may already be applied.';
         else label = p.state;
         status.textContent = label;
         status.style.display = '';
@@ -651,12 +666,18 @@ export function createAssistantMessage() {
     const extrasEl = document.createElement('div');
     extrasEl.className = 'msg-extras';
 
+    const completionEl = document.createElement('div');
+    completionEl.className = 'msg-completion';
+    completionEl.hidden = true;
+    completionEl.setAttribute('role', 'status');
+
     el.appendChild(worklogEl);
     el.appendChild(modelEl);
     el.appendChild(statusEl);
     el.appendChild(bodyEl);
     el.appendChild(progressEl);
     el.appendChild(extrasEl);
+    el.appendChild(completionEl);
     _messagesEl.appendChild(el);
     _scrollToBottom();
 
@@ -675,6 +696,20 @@ export function createAssistantMessage() {
     const pendingAutoApplyCards = [];
     let finalized = false;
     let finalizedRecord = null;
+    let bodyRenderFrame = null;
+
+    function renderBody() {
+        if (bodyRenderFrame !== null) cancelAnimationFrame(bodyRenderFrame);
+        bodyRenderFrame = null;
+        if (lastError !== null) {
+            bodyEl.classList.remove('msg-markdown');
+            bodyEl.textContent = streamed;
+        } else renderMarkdown(bodyEl, streamed);
+    }
+
+    function renderCompletion() {
+        _renderCompletionSummary(completionEl, { proposals: trackedProposals, status: lastStatus, error: lastError });
+    }
 
     /**
      * Re-syncs the finalized history record when a proposal settles late
@@ -682,6 +717,7 @@ export function createAssistantMessage() {
      * bootstrap so the session is re-persisted.
      */
     function _syncFinalizedProposals() {
+        if (finalized && isCurrentSession()) renderCompletion();
         if (!finalizedRecord || !isCurrentSession()) return;
         finalizedRecord.text = streamed || '';
         finalizedRecord.status = lastStatus || '';
@@ -710,6 +746,10 @@ export function createAssistantMessage() {
                 if (!isCurrentSession() || /^Cancelled\b/.test(lastStatus) || el.classList.contains('chat-message-error') || appState.config.autoApplyChanges !== true || appState.config.trackChangesEnabled === false) break;
                 if (meta.state !== 'pending') continue;
                 try { await cardToApply.applyAll(); } catch (_err) { /* The card reports its own failure. */ }
+                // Several disjoint drafts can share one turn. A failed,
+                // unverified or paused write stops further automatic writes;
+                // their cards remain available for manual review.
+                if (meta.state !== 'applied') break;
             }
         }, 0);
     }
@@ -763,17 +803,28 @@ export function createAssistantMessage() {
             lastStatus = text || '';
             statusEl.style.display = text ? '' : 'none';
             statusEl.textContent = text;
+            if (finalized) _syncFinalizedProposals();
             _scrollToBottom();
         },
         setText(text) {
             streamed = text || '';
-            _renderText(bodyEl, streamed);
+            renderBody();
             _scrollToBottom();
         },
         appendText(token) {
             streamed += token;
-            _appendStreamText(bodyEl, token);
-            _scrollToBottom();
+            if (typeof requestAnimationFrame !== 'function') {
+                renderBody();
+                _scrollToBottom();
+                return;
+            }
+            // Coalesce token bursts to one sanitized Markdown render per frame.
+            if (bodyRenderFrame === null) {
+                bodyRenderFrame = requestAnimationFrame(() => {
+                    renderBody();
+                    _scrollToBottom();
+                });
+            }
         },
         appendLogLine(text) {
             if (logLineCount === 0) {
@@ -908,7 +959,8 @@ export function createAssistantMessage() {
             streamed = `Error: ${lastError}`;
             el.classList.add('chat-message-error');
             statusEl.style.display = 'none';
-            bodyEl.textContent = streamed;
+            renderBody();
+            if (finalized) _syncFinalizedProposals();
             _scrollToBottom();
         },
         /**
@@ -920,9 +972,13 @@ export function createAssistantMessage() {
             if (finalized) return;
             finalized = true;
             if (!isCurrentSession()) {
+                if (bodyRenderFrame !== null) cancelAnimationFrame(bodyRenderFrame);
+                bodyRenderFrame = null;
                 pendingAutoApplyCards.length = 0;
                 return;
             }
+            renderBody();
+            renderCompletion();
             _schedulePendingAutoApply();
             _currentSessionUpdatedAt = new Date().toISOString();
             const now = new Date().toISOString();

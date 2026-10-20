@@ -327,6 +327,31 @@ describe('proposal state persistence', () => {
   });
   afterEach(() => setProposalStateChangeHandler(null));
 
+  test('failed item outcomes and a warning verdict survive saving and restoring independently collapsible rows', () => {
+    const msg = createAssistantMessage();
+    const items = [{ id: 'a', label: 'First', before: 'old', after: 'new' },
+      { id: 'b', label: 'Second', before: 'old', after: 'new' }];
+    const meta = { title: 'Edits', state: 'pending', items };
+    const card = createProposalCard({ title: 'Edits', items, onApply: async () => {} });
+    msg.attachProposal(card, meta);
+    msg.finalizeForHistory();
+    card.markItemApplied('a', { applied: true });
+    card.markItemApplied('b', { applied: false, uncertain: true });
+    card.markApplied();
+    const saved = getCurrentSession().messages[0].proposals[0];
+    expect(saved.state).toBe('warning');
+    expect(saved.items.map((item) => item.outcome)).toEqual(['applied', 'uncertain']);
+    const restored = renderStaticProposalCard(saved);
+    expect(restored.classList.contains('proposal-applied')).toBe(false);
+    const rows = [...restored.querySelectorAll('.proposal-card-change')];
+    expect(rows.every((row) => row.tagName === 'DETAILS' && !row.open)).toBe(true);
+    expect(rows[0].querySelector('.proposal-card-change-status').textContent).toBe('applied');
+    expect(rows[1].querySelector('.proposal-card-change-status').textContent).toBe('unverified');
+    expect(rows[1].classList.contains('proposal-card-change-done')).toBe(false);
+    rows[1].querySelector('summary').click();
+    expect(rows.map((row) => row.open)).toEqual([false, true]);
+  });
+
   test('reject click flows through markRejected so meta leaves "pending"', () => {
     const msg = createAssistantMessage();
     const meta = { title: 'Proposed table', state: 'pending', countsText: '', items: [] };

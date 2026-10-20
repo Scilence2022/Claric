@@ -5,7 +5,7 @@ import { revisionTextState, RevisionSafetyError, MutationSafetyError } from '../
 import { parseDocument } from '../src/lib/document-parser.js';
 import { readSelectionText, readSelectionContent, readSelectionSnippet, applySelectionAmendment } from '../src/taskpane/word-actions.js';
 import { readDocumentEditSnapshot, anchorDocumentEdit, applyDocumentEdit } from '../src/taskpane/document-edit-actions.js';
-import { applyChunkResults } from '../src/lib/reassembler.js';
+import { applyChunkResults, bookmarkChunkRanges } from '../src/lib/reassembler.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -15,11 +15,12 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
     stickyContent = false, revisedPadding = false } = {}) {
     let sequence = 0;
-    const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence }) =>
-        Array.from(text).map((text) => ({ text, type, id })));
+    const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false }) =>
+        Array.from(text).map((text) => ({ text, type, id, field })));
     const ranges = [];
     const writes = [];
     const bookmarks = new Map();
+    let xmlReads = 0;
     const xml = (slice) => {
         const groups = [[]];
         for (const atom of slice) {
@@ -28,11 +29,12 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
         }
         const content = groups.map((group) => `<w:p xmlns:w="${W}">` + group.map((atom) => {
         const run = `<w:r><w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
-        return atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
+        const visible = atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
+        return atom.field ? `<w:fldSimple w:instr="HYPERLINK example">${visible}</w:fldSimple>` : visible;
         }).join('') + '</w:p>').join('');
         const end = revisedPadding && slice.some((atom) => atom.type !== 'plain')
             ? '<w:p><w:pPr><w:rPr><w:ins w:id="999"/></w:rPr></w:pPr></w:p>' : '<w:p/>';
-        return padding ? `<w:document xmlns:w="${W}"><w:body>${content}${end}</w:body></w:document>` : content;
+        return padding || nativeParagraphs ? `<w:document xmlns:w="${W}"><w:body>${content}${padding ? end : ''}</w:body></w:document>` : content;
     };
     const table = { isNullObject: true, load: jest.fn() };
     const cell = { isNullObject: true, load: jest.fn() };
@@ -44,7 +46,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             isNullObject: false, load: jest.fn(), parentTableOrNullObject: table, parentTableCellOrNullObject: cell,
             inlinePictures: collection([]),
             get text() { return atoms.slice(span.start, span.end).map((a) => a.text).join(''); },
-            getOoxml: jest.fn(() => ({ value: xml(atoms.slice(span.start, span.end)) })),
+            getOoxml: jest.fn(() => { xmlReads++; return { value: xml(atoms.slice(span.start, span.end)) }; }),
             ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value:
                 atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => atom.text).join('').replace(/\n/g, '\r') })) } : {}),
             getRange: (location) => location === 'Start' ? makeRange(span.start, span.start)
@@ -66,7 +68,8 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             }),
             getTextRanges: jest.fn(() => {
                 const raw = atoms.slice(span.start, span.end).map((atom) => atom.text).join('');
-                return collection(Array.from(raw.matchAll(/.+?(?:\. {1,2}|$)/gs), (match) =>
+                const sentences = nativeParagraphs ? /[^\n]+?(?:\. {1,2}|\n|$)|\n/g : /.+?(?:\. {1,2}|$)/gs;
+                return collection(Array.from(raw.matchAll(sentences), (match) =>
                     makeRange(span.start + match.index, span.start + match.index + match[0].length)));
             }),
             delete: jest.fn(() => {
@@ -110,10 +113,115 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
         ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' } };
     const deps = { appState: { config: { trackChangesEnabled: true, lineDiffEnabled: false } }, log: jest.fn() };
     return { atoms, scope, paragraph, context, writes, deps, bookmarks,
+        xmlReadCount: () => xmlReads,
         state: () => revisionTextState(paragraphScope.getOoxml().value, { paragraph: true }) };
 }
 
 afterEach(() => { delete global.Word; });
+
+test.each([[false, false], [false, true], [true, false]])('selection edits keep headings, blank paragraphs and repeated sentences in place, sentence mode=%s, missing searches=%s', async (lineDiffEnabled, missingSearches) => {
+    const before = '3.1 Summary\n\nThe first result is clear. The next result is preliminary.\nThe first result is clear. Further tests are needed.';
+    const after = '3.1 Summary\n\nThe first result is robust. The next result is preliminary.\nThe first result is clear. Further tests remain necessary.';
+    const w = world([{ text: before }], { nativeReviewed: true, nativeParagraphs: true });
+    w.deps.appState.config.lineDiffEnabled = lineDiffEnabled;
+    // Native searches do not locate a literal LF across Word paragraphs.
+    const search = w.scope.search.getMockImplementation();
+    w.scope.search.mockImplementation((text) => missingSearches || text.includes('\n') ? { items: [], load: jest.fn() } : search(text));
+    const baseline = await readSelectionText(w.deps);
+    await applySelectionAmendment(w.deps, { selectionText: baseline.plainSelectionText,
+        revisionFingerprint: baseline.revisionFingerprint, amendedText: after });
+    expect(w.state().text).toBe(after);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+    if (missingSearches) expect(w.deps.log).toHaveBeenCalledWith(expect.stringContaining('trying sentence diff'), 'warning');
+});
+
+test('sentence editing a partial selection preserves text outside both boundaries', async () => {
+    const prefix = 'Unselected beginning. ';
+    const before = 'Selected ending.\nSelected start. Keep this sentence.';
+    const after = 'Revised ending.\nRevised start. Keep this sentence.';
+    const suffix = ' Unselected ending.';
+    const w = world([{ text: prefix + before + suffix }], { nativeReviewed: true, nativeParagraphs: true });
+    w.scope._span.start = prefix.length;
+    w.scope._span.end -= suffix.length;
+    w.deps.appState.config.lineDiffEnabled = true;
+    await applySelectionAmendment(w.deps, { selectionText: before, amendedText: after });
+    expect(w.atoms.filter((atom) => atom.type !== 'del').map((atom) => atom.text).join('')).toBe(prefix + after + suffix);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test.each([['甲\u00a0乙 丙', '甲\u00a0乙，丙', ' '],
+    ['An old‑form and old-form.', 'An old‑form and new-form.', 'old']])(
+    'native location checks handle approximate whitespace matches and repeated text: %s', async (before, after, needle) => {
+        const w = world([{ text: before }], { nativeReviewed: true });
+        if (needle === ' ') {
+            const search = w.scope.search.getMockImplementation();
+            w.scope.search.mockImplementation((text) => {
+                const matches = search(text);
+                return text === ' ' ? { ...matches, items: [...search('\u00a0').items, ...matches.items] } : matches;
+            });
+        }
+        await applyCharDiffStrategy(w.context, w.scope, before, after, jest.fn(),
+            { paragraph: true, nativeTargets: true });
+        expect(w.state().text).toBe(after);
+    });
+
+test.each([false, true])('native field results survive surrounding prose edits, existing revisions=%s', async (revised) => {
+    const w = world([{ text: 'An old ', type: revised ? 'ins' : 'plain' }, { text: '(Example 2025)', field: true }, { text: ' result.' }],
+        { nativeReviewed: true });
+    const before = w.state().text;
+    await applyTokenMapStrategy(w.context, w.scope, before, 'A revised (Example 2025) result.', jest.fn(),
+        { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe('A revised (Example 2025) result.');
+    expect(w.atoms.filter((atom) => atom.field).every((atom) => atom.type === 'plain')).toBe(true);
+});
+
+test('a pristine native field mutation fails before any write, including before surrounding edits', async () => {
+    const w = world([{ text: 'An old ' }, { text: '(Example 2025)', field: true }, { text: ' result.' }], { nativeReviewed: true });
+    await expect(applyCharDiffStrategy(w.context, w.scope, w.state().text, 'A new (Example 2026) result.', jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toThrow(/native field result/);
+    expect(w.writes).toHaveLength(0);
+});
+
+test('pristine native text disagrees with XML before writing rather than failing only after mutation', async () => {
+    const w = world([{ text: 'Original text.' }], { nativeReviewed: true });
+    w.scope.getReviewedText.mockReturnValue({ value: 'Original\u00a0text.' });
+    await expect(applyCharDiffStrategy(w.context, w.scope, 'Original text.', 'Revised text.', jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toThrow(/before writing.*U\+0020.*U\+00A0/);
+    expect(w.writes).toHaveLength(0);
+});
+
+test('many repeated native search matches do not export every candidate and prefix as full OOXML packages', async () => {
+    const before = 'A '.repeat(120) + 'End.';
+    const after = before.slice(0, 120) + ',' + before.slice(120);
+    const w = world([{ text: before }], { nativeReviewed: true });
+    await applyCharDiffStrategy(w.context, w.scope, before, after, jest.fn(), { paragraph: true, nativeTargets: true });
+    expect(w.xmlReadCount()).toBeLessThanOrEqual(5);
+    expect(w.state().text).toBe(after);
+});
+
+test('bookmark staging compares final-view boundary text when earlier revisions remain unresolved', async () => {
+    const w = world([{ text: 'Earlier words ', type: 'del' }, { text: 'Current paragraph.', type: 'ins' }], { nativeReviewed: true });
+    const parsed = await parseDocument();
+    const chunk = { id: 'section', startIndex: 0, endIndex: 0, paragraphs: parsed.paragraphs };
+    const bookmarks = await bookmarkChunkRanges([chunk]);
+    expect(bookmarks.has('section')).toBe(true);
+    expect(w.writes).toHaveLength(0);
+});
+
+test('full-document prose edits preserve manual blank lines at native paragraph boundaries', async () => {
+    const before = '\nOriginal line.\nSecond line.\n';
+    const after = '\nRevised line.\nSecond revised line.\n';
+    const w = world([{ text: before }], { nativeReviewed: true });
+    const parsed = await parseDocument();
+    w.bookmarks.set('_section', w.scope);
+    const result = await applyChunkResults([{ chunkId: 'section', status: 'fulfilled', amendment: after,
+        chunk: { id: 'section', paragraphs: parsed.paragraphs } }], new Map([['section', '_section']]),
+    { trackChangesEnabled: true, log: jest.fn() });
+    expect(result.errors).toEqual([]);
+    expect(result.amendmentsApplied).toBe(1);
+    expect(w.state().text).toBe(after);
+    expect(w.paragraph.delete).not.toHaveBeenCalled();
+});
 
 test.each([applyTokenMapStrategy, applyCharDiffStrategy])('pristine paragraph edits use native current text when tracked export padding appears: %p', async (strategy) => {
     const w = world([{ text: 'Kind Regards, ' }], { padding: true, revisedPadding: true, nativeReviewed: true });
@@ -199,6 +307,17 @@ test('replaces a span split by an existing deletion using disjoint visible targe
     await tryRevisionDiff(w.context, w.scope, 'Hello world!', 'Hi!', jest.fn());
     expect(w.state().text).toBe('Hi!');
     expect(w.atoms.filter((a) => a.id === 'history').map((a) => a.text).join('')).toBe('and ');
+});
+
+test('preflight locates revised text without writes and the apply pass still verifies it', async () => {
+    const w = world([{ text: 'Hello ' }, { text: 'and ', type: 'del', id: 'history' }, { text: 'world!' }]);
+    const baseline = w.state().text;
+    await tryRevisionDiff(w.context, w.scope, baseline, 'Hi!', jest.fn(), { preflightOnly: true, trackChanges: false });
+    expect(w.state().text).toBe(baseline);
+    expect(w.writes).toHaveLength(0);
+    expect(w.context.document.changeTrackingMode).toBe('TrackMineOnly');
+    await tryRevisionDiff(w.context, w.scope, baseline, 'Hi!', jest.fn());
+    expect(w.state().text).toBe('Hi!');
 });
 
 test.each([

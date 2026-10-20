@@ -200,6 +200,61 @@ describe('model capabilities', () => {
     });
   });
 
+  describe('versioned DeepSeek V4 ids served by gateways (zhongkeyu: deepseek-v4.1-flash)', () => {
+    test.each([
+      ['zhongkeyu', 'deepseek-v4.1-flash'],
+      ['zhongkeyu', 'deepseek-v4-flash'],
+      ['zhongkeyu', 'deepseek-v4-pro'],
+      ['zhongkeyu', 'DeepSeek-V4.1-Flash'],
+      ['custom', 'deepseek-v4.1-pro'],
+      ['openrouter', 'deepseek/deepseek-v4.1-flash'],
+      ['openrouter', 'deepseek/deepseek-v4.1-flash:free'],
+      ['siliconflow', 'deepseek-ai/DeepSeek-V4.1-Flash'],
+      ['siliconflow', 'Pro/deepseek-ai/DeepSeek-V4.1-Flash'],
+      ['deepseek', 'deepseek-v4.1-flash'],
+    ])('%s/%s resolves to the V4 thinking profile', (provider, model) => {
+      const profile = getModelCapabilities(provider, model);
+      expect(profile.id).toBe('deepseek-v4');
+      expect(profile.protocol).toBe('deepseek-v4-thinking');
+    });
+
+    test('zhongkeyu deepseek-v4.1-flash can switch thinking off and withholds temperature otherwise', () => {
+      const profile = getModelCapabilities('zhongkeyu', 'deepseek-v4.1-flash');
+      expect(buildThinkingRequest(profile, 'off')).toEqual({ thinking: { type: 'disabled' } });
+      expect(isTemperatureSupported(profile, 'off')).toBe(true);
+      expect(buildThinkingRequest(profile, 'default')).toEqual({});
+      expect(isTemperatureSupported(profile, 'default')).toBe(false);
+      expect(buildThinkingRequest(profile, 'max')).toEqual({
+        thinking: { type: 'enabled' },
+        reasoning_effort: 'max',
+      });
+    });
+
+    test.each([
+      // Not a version separator: v41/v40 are not V4.x ids.
+      ['zhongkeyu', 'deepseek-v41-flash'],
+      ['zhongkeyu', 'deepseek-v40-flash'],
+      // Other DeepSeek families and look-alike tiers.
+      ['zhongkeyu', 'deepseek-v4.1-prover'],
+      ['zhongkeyu', 'deepseek-v4.1-flashy'],
+      ['zhongkeyu', 'deepseek-v3.1-flash'],
+      ['zhongkeyu', 'deepseek-v5.1-flash'],
+      ['zhongkeyu', 'deepseek-r1'],
+      ['openrouter', 'deepseek/deepseek-chat-v3.1'],
+      // Vendor prefix alone is not a model match.
+      ['zhongkeyu', 'deepseek-ai/qwen3-flash'],
+      ['zhongkeyu', 'mydeepseek-v4.1-flash'],
+    ])('%s/%s stays off the V4 profile', (provider, model) => {
+      expect(getModelCapabilities(provider, model).id).not.toBe('deepseek-v4');
+    });
+
+    test('first-party non-DeepSeek providers never receive the V4 profile', () => {
+      expect(getModelCapabilities('openai', 'deepseek-v4.1-flash').id).toBe('openai-legacy');
+      expect(getModelCapabilities('ollama', 'deepseek-v4.1-flash').id).toBe('generic');
+      expect(getModelCapabilities('glm', 'deepseek-v4.1-flash').id).toBe('generic');
+    });
+  });
+
   test('legacy DeepSeek models have no thinking dial', () => {
     const chat = getModelCapabilities('deepseek', 'deepseek-chat');
     expect(chat.id).toBe('deepseek-legacy-chat');

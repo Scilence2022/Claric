@@ -10,6 +10,16 @@
  */
 
 const { computeDiff, diff_sentenceMode, sliceSearchPieces, applySentenceDiffStrategy, applyBlockReplaceStrategy } = require('../src/lib/word-diff/index.js');
+const { tokenizeToSentences } = require('../src/lib/word-diff/sentence-diff.js');
+
+describe('tokenizeToSentences', () => {
+  test.each(['\n', '\r', '\r\n', '\v', '\f'])('keeps headings, blank lines and repeated sentences separate across %j', (boundary) => {
+    const sentences = [`3.1 Summary${boundary}`, boundary, 'First result.  ', `Next result.${boundary}`, 'First result.'];
+    const text = sentences.join('');
+    expect(tokenizeToSentences(text)).toEqual(sentences);
+    expect(tokenizeToSentences(text).join('')).toBe(text);
+  });
+});
 
 describe('diff_sentenceMode', () => {
   test('repeated sentences keep their positions (one DELETE for the repeat)', () => {
@@ -127,6 +137,26 @@ function makeSentenceWordMock(sentenceTexts) {
 }
 
 describe('applySentenceDiffStrategy', () => {
+  test.each([
+    ['Keep one. Drop two. ', 'Keep three. '],
+    ['Keep one. Dr', 'op two. ', 'Keep three. '],
+  ])('refuses a native sentence map with different boundaries before writing: %j', async (...sentences) => {
+    const { whole, context, ops } = makeSentenceWordMock(sentences);
+    await expect(applySentenceDiffStrategy(context, whole,
+      'Keep one. Drop two. Keep three. ', 'Keep one. New two. Keep three. ', jest.fn()))
+      .rejects.toMatchObject({ name: 'RevisionSafetyError', message: expect.stringContaining('no text was written') });
+    expect(ops).toEqual([]);
+    expect(context.document.changeTrackingMode).toBe('Off');
+  });
+
+  test('normalizes native carriage returns before comparing sentence positions', async () => {
+    const { whole, context, ops } = makeSentenceWordMock(['Heading\r', 'Old result. ', 'Keep this.']);
+    const result = await applySentenceDiffStrategy(context, whole,
+      'Heading\nOld result. Keep this.', 'Heading\nNew result. Keep this.', jest.fn());
+    expect(result.strategy).toBe('sentence');
+    expect(ops).toEqual(['delete:s1', 'insert:s0:After:New result. ']);
+  });
+
   test('text without sentence boundaries (CJK-style) delegates to block replace', async () => {
     // The reported bug: sentence mode on boundary-free text degenerated to
     // delete-whole + insert-before-the-deleted-range, whose insertion hosts

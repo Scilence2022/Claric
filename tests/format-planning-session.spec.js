@@ -1,6 +1,6 @@
 const { planFormatWithRendering } = require('../src/taskpane/format-planning-session.js');
 const { WORD_RENDER_TOOL_SPECS } = require('../src/taskpane/word-render-tools.js');
-const { WORD_SCREEN_TOOL_SPEC } = require('../src/taskpane/word-screen-capture.js');
+const { WORD_SCREEN_REQUEST_TOOL_SPEC, WORD_SCREEN_TOOL_SPEC } = require('../src/taskpane/word-screen-capture.js');
 const call = (tool, args = {}) => JSON.stringify({ tool, args });
 function renderer() {
     const status = { inspectedPages: [], unavailable: null };
@@ -88,4 +88,18 @@ test('unmatched native targets are rejected before staging and the model receive
         .map((message) => { try { return JSON.parse(message.content); } catch { return {}; } });
     expect(observations.find((observation) => observation.result?.targets)?.result.targets)
         .toEqual({ verifiedParagraphs: 12, excludedParagraphs: 3 });
+});
+
+test('the model is told it may ask once for the live Word window only when the prompt is offered', async () => {
+    const prompts = [];
+    for (const tools of [WORD_RENDER_TOOL_SPECS, [WORD_SCREEN_TOOL_SPEC, WORD_SCREEN_REQUEST_TOOL_SPEC, ...WORD_RENDER_TOOL_SPECS]]) {
+        const render = { ...renderer(), tools };
+        render.status = () => ({ inspectedPages: [], unavailable: 'No visual input' });
+        const replies = [call('propose_format_ops', { ops: [{ font: { bold: false } }] }), call('finish', { summary: 'Ready' })];
+        const send = jest.fn(async () => replies.shift());
+        await planFormatWithRendering({ prompt: 'format', scopeText: 'heading', renderer: render, send });
+        prompts.push(send.mock.calls[0][0][0].content);
+    }
+    expect(prompts[0]).not.toContain('request_word_screen_share');
+    expect(prompts[1]).toContain('request_word_screen_share asks the user once');
 });

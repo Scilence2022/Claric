@@ -22,7 +22,7 @@
  * @module char-diff
  */
 
-import DiffMatchPatch from '../vendor/diff-match-patch.js';
+import { diffUnicodeScalars } from '../text-edit-plan.js';
 import { tryRevisionDiff } from './revision-diff.js';
 import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges } from '../word-revisions.js';
 
@@ -48,10 +48,7 @@ export function hasCjk(text) {
  * @returns {Array<[number, string]>} diff-match-patch ops ([[-1|0|1, text], ...])
  */
 export function computeCharEdits(originalText, newText) {
-    const dmp = new DiffMatchPatch();
-    const diffs = dmp.diff_main(originalText || '', newText || '');
-    dmp.diff_cleanupMerge(diffs);
-    return /** @type {Array<[number, string]>} */ (diffs);
+    return /** @type {Array<[number, string]>} */ (diffUnicodeScalars(originalText, newText));
 }
 
 /** Safety cap: more ops than this means the texts diverged too much for

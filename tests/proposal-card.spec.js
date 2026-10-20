@@ -118,6 +118,20 @@ describe('createProposalCard', () => {
     expect(diffs[0].querySelector('ins').textContent).toBe('new');
   });
 
+  test('each change can be expanded independently without changing its selection', () => {
+    const card = makeCard({ items: makeItems() });
+    const rows = [...card.el.querySelectorAll('.proposal-card-change')];
+    expect(rows.every((row) => row.tagName === 'DETAILS' && !row.open)).toBe(true);
+    rows[0].querySelector('summary').click();
+    expect(rows.map((row) => row.open)).toEqual([true, false, false]);
+    const box = rows[0].querySelector('input');
+    box.click();
+    expect(box.checked).toBe(false);
+    expect(rows[0].open).toBe(true);
+    rows[0].querySelector('summary').click();
+    expect(rows[0].open).toBe(false);
+  });
+
   test('image items render a two-up before/after visual diff instead of the text diff', () => {
     const card = makeCard({
       items: [{
@@ -233,6 +247,10 @@ describe('createProposalCard', () => {
     expect(rows[0].querySelector('.proposal-card-change-status').textContent).toBe('error');
     expect(rows[0].classList.contains('proposal-card-change-error')).toBe(true);
     expect(rows[1].querySelector('.proposal-card-change-status').textContent).toBe('skipped');
+    expect(rows[0].querySelector('input').checked).toBe(false);
+    expect(rows[1].querySelector('input').checked).toBe(false);
+    expect(rows[0].classList.contains('proposal-card-change-done')).toBe(false);
+    expect(rows[1].classList.contains('proposal-card-change-done')).toBe(false);
   });
 
   test('finished failures and no-op sections never inflate the applied count', () => {
@@ -242,7 +260,9 @@ describe('createProposalCard', () => {
     card.markItemApplied('c', { applied: false, noChange: true });
     card.markApplied();
     expect(card.el.querySelector('.proposal-card-status').textContent)
-      .toBe('Applied 1 of 3 change(s) as tracked changes.');
+      .toContain('1 of 3 change(s) verified as applied');
+    expect(card.el.classList.contains('proposal-applied')).toBe(false);
+    expect(card.el.classList.contains('proposal-warning')).toBe(true);
   });
 
   test('partial and uncertain writes have distinct tags and cannot be replayed on resume', async () => {
@@ -257,7 +277,7 @@ describe('createProposalCard', () => {
     await card.applyAll();
     expect(onApply).toHaveBeenCalledWith(['c'], expect.anything());
     expect(card.el.querySelector('.proposal-card-status').textContent)
-      .toBe('Applied 0 of 3 change(s) as tracked changes.');
+      .toContain('0 of 3 change(s) verified as applied');
   });
 
   test('repeated progress reports do not add duplicate tags or change an uncertain verdict', () => {
@@ -269,7 +289,27 @@ describe('createProposalCard', () => {
     expect(row.querySelector('.proposal-card-change-status').textContent).toBe('partial / unverified');
     card.markApplied();
     expect(card.el.querySelector('.proposal-card-status').textContent)
-      .toBe('Applied 0 of 3 change(s) as tracked changes.');
+      .toContain('0 of 3 change(s) verified as applied');
+  });
+
+  test.each([{}, { applied: false }])('a progress event without verified success is never shown as applied: %j', (status) => {
+    const card = makeCard({ items: makeItems() });
+    card.markItemApplied('a', status);
+    const row = card.el.querySelector('.proposal-card-change');
+    expect(row.querySelector('.proposal-card-change-status').textContent).toBe('not applied');
+    expect(row.querySelector('input').checked).toBe(false);
+    expect(row.classList.contains('proposal-card-change-done')).toBe(false);
+    card.markApplied();
+    expect(card.el.dataset.outcome).toBe('warning');
+  });
+
+  test('a no-change result cannot produce an applied verdict', () => {
+    const card = makeCard({ items: makeItems() });
+    card.markItemApplied('a', { noChange: true, applied: false });
+    card.markApplied();
+    expect(card.el.dataset.outcome).toBe('warning');
+    expect(card.el.classList.contains('proposal-applied')).toBe(false);
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain('Nothing applied');
   });
 
   test('setPaused re-enables Apply as "Continue applying"', () => {

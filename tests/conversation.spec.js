@@ -842,6 +842,24 @@ describe('createConversation.submit', () => {
     expect(input.setProcessing).toHaveBeenLastCalledWith(false);
   });
 
+  test.each([false, true])('selection failures allow retry only before a possible write, mutationAttempted=%s', async (mutationAttempted) => {
+    const view = makeView();
+    const failure = Object.assign(new Error('Native read-back differs from the proposal'), { mutationAttempted });
+    const actions = makeActions({ applySelectionAmendment: jest.fn(async () => { throw failure; }) });
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => 'some selected text',
+    });
+    await conv.submit('make it formal');
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    await card.applyAll();
+    expect(card.el.querySelector('.btn-primary').disabled).toBe(mutationAttempted);
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain(failure.message);
+    expect(card.el.classList.contains('proposal-applied')).toBe(false);
+    await card.applyAll();
+    expect(actions.applySelectionAmendment).toHaveBeenCalledTimes(mutationAttempted ? 1 : 2);
+  });
+
   test('chained instruction + selection tries the table tool loop first', async () => {
     const appState = makeAppState();
     const view = makeView();
@@ -1470,6 +1488,20 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion.mock.calls[0][1].question).toBe('what does this clause mean?');
     expect(actions.answerQuestion.mock.calls[0][1].selectionText).toBe('the selected clause');
     // Must not run the selection-edit pipeline for a question
+    expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
+  });
+
+  test('wording questions pass the submit-time paragraph snapshot without proposing edits', async () => {
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(), actions,
+      getSelectionContent: async () => ({ text: 'use', images: [], paragraphContext: 'Declaration of generative AI use' }),
+    });
+    await conv.submit('use or usage?');
+    expect(actions.answerQuestion).toHaveBeenCalledWith(
+      expect.objectContaining({ selectionParagraphContext: 'Declaration of generative AI use' }),
+      expect.objectContaining({ question: 'use or usage?', selectionText: 'use' }),
+    );
     expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
   });
 
@@ -2106,6 +2138,23 @@ describe('createConversation.submit', () => {
     expect(actions.answerQuestion).toHaveBeenCalledTimes(1);
   });
 
+  test('a selected-text draft may include table cells and still blocks table preparation until Apply', async () => {
+    const view = makeView();
+    const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'selected', type: 'edit', scope: 'selection', instruction: '润色所选文本' },
+      { taskId: 'tables', type: 'table_management', scope: 'document', instruction: '所有表格改为三线格' },
+    ] })), prepareTableToolEdit: jest.fn(async () => ({ noOps: true, answer: 'Tables already satisfy the request.' })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'before' });
+    await conv.submit('润色所选文本，所有表格改为三线格');
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
+    expect(actions.readDocumentTableRegions).not.toHaveBeenCalled();
+    await view._msg.attachProposal.mock.calls[0][0].applyAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(actions.readDocumentTableRegions).toHaveBeenCalledTimes(1);
+    expect(actions.prepareTableToolEdit).toHaveBeenCalledTimes(1);
+  });
+
   test('verified unchanged body results do not re-inject full document chunks into later tasks', async () => {
     const view = makeView();
     const actions = makeActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
@@ -2556,6 +2605,28 @@ describe('createConversation.submit', () => {
       .toContain('already match the document');
   });
 
+  test('a mix of successful and failed sections cannot settle the document proposal as applied', async () => {
+    const view = makeView();
+    const staged = {
+      staged: true,
+      results: [{ status: 'fulfilled', amendment: 'new text', chunk: { id: 'c0', text: 'old text' } }],
+      chunks: [{ id: 'c0', paragraphs: [{ text: 'old text' }] }],
+      apply: jest.fn(async () => ({ amendmentsApplied: 1, commentsInserted: 0,
+        failedChunkIds: ['c1'], errors: ['Chunk c1: original content changed'] })),
+      discard: jest.fn(), failedCount: 0, cancelledCount: 0,
+    };
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions: makeActions({ runDocumentSkill: jest.fn(async () => staged) }), getSelectionText: async () => '',
+    });
+    await conv.submit('please polish the whole document');
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    await card.applyAll();
+    expect(card.el.classList.contains('proposal-applied')).toBe(false);
+    expect(card.el.classList.contains('proposal-warning')).toBe(true);
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain('some sections failed');
+  });
+
   test.each([
     { amendmentsApplied: 0, partialChunkIds: ['c0'], uncertainChunkIds: [], appliedParagraphs: 2,
       expected: 'Partially applied: 2 paragraph edit(s) were verified.' },
@@ -2677,8 +2748,9 @@ describe('createConversation.submit', () => {
     cardEl.querySelector('.btn-primary').click();
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(cardEl.classList.contains('proposal-applied')).toBe(true);
-    expect(view._msg.setStatus).toHaveBeenCalledWith(expect.stringContaining('1 section(s) skipped'));
+    expect(cardEl.classList.contains('proposal-applied')).toBe(false);
+    expect(cardEl.classList.contains('proposal-warning')).toBe(true);
+    expect(cardEl.querySelector('.proposal-card-status').textContent).toContain('some sections failed or were skipped');
   });
 
   test('format card warns when no formatting targets matched', async () => {
