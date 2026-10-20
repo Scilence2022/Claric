@@ -9,7 +9,8 @@
  *   descending row order
  * - Platform split for row ops: desktop runs them tracked, Word for the web
  *   runs them untracked with a warning
- * - Stale-table guards (selection left the table, row count drifted)
+ * - Stale-table guards (selection left the table, row count drifted, a
+ *   patched cell or row changed since staging)
  */
 
 // --- Mock the strategy/LLM layer (module-level side-effect free imports) ---
@@ -145,7 +146,7 @@ function makeMergedPrepareContext() {
  * Word.run mock for the apply phase. Records the order of cell/row writes and
  * every changeTrackingMode assignment.
  */
-function makeApplyContext({ tableRowCount = 3 } = {}) {
+function makeApplyContext({ tableRowCount = 3, currentValues = TABLE_VALUES } = {}) {
   const calls = [];
   const trackingModes = [];
 
@@ -159,7 +160,7 @@ function makeApplyContext({ tableRowCount = 3 } = {}) {
     };
     for (let c = 0; c < 2; c++) {
       const paraRange = {
-        text: TABLE_VALUES[r][c],
+        text: currentValues[r][c],
         load: jest.fn(),
         insertText: jest.fn(() => calls.push(`cellText:${r + 1},${c + 1}`)),
       };
@@ -183,7 +184,7 @@ function makeApplyContext({ tableRowCount = 3 } = {}) {
   const table = {
     isNullObject: false,
     rowCount: tableRowCount,
-    values: TABLE_VALUES,
+    values: currentValues,
     isUniform: true,
     load: jest.fn(),
     getCell: jest.fn((r, c) => cells[`${r},${c}`]),
@@ -568,6 +569,37 @@ describe('applySelectionAmendment (table route)', () => {
     setWordRun(context);
     await expect(applySelectionAmendment(makeDeps('PC'), proposal))
       .rejects.toThrow(/Table changed/);
+  });
+
+  test('refuses to overwrite a cell edited since staging', async () => {
+    // The patch targets R2C1, drafted as 'old a'; the user has since typed
+    // over it. Writing the patch would silently discard the user's edit.
+    const edited = [
+      ['Header A', 'Header B'],
+      ['user edit', 'b'],
+      ['c', 'd'],
+    ];
+    const { context, calls } = makeApplyContext({ currentValues: edited });
+    setWordRun(context);
+    await expect(applySelectionAmendment(makeDeps('PC'), proposal))
+      .rejects.toThrow(/changed since this proposal was drafted \(R2C1\)/);
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test('refuses to delete a row edited since staging', async () => {
+    // Only row 3 (the row op's target) changed; the cell patch is still fresh.
+    const edited = [
+      ['Header A', 'Header B'],
+      ['old a', 'b'],
+      ['c', 'user edit'],
+    ];
+    const { context, calls } = makeApplyContext({ currentValues: edited });
+    setWordRun(context);
+    await expect(applySelectionAmendment(makeDeps('PC'), proposal))
+      .rejects.toThrow(/changed since this proposal was drafted \(row 3\)/);
+    expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
   });
 
   test('merged table applies anchor-cell edits without the old uniform guard', async () => {
