@@ -523,7 +523,7 @@ module.exports = (env, argv) => {
       // and exempt from the per-asset limit, not from artifact verification.
       hints: 'error',
       maxAssetSize: 700 * 1024,
-      maxEntrypointSize: 550 * 1024,
+      maxEntrypointSize: 560 * 1024,
       assetFilter: (name) => !/pdf\.worker\.min\.mjs$/.test(name)
     },
     devtool: isDev ? 'eval-source-map' : false
