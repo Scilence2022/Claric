@@ -59,6 +59,16 @@ describe('buildConversationHistory', () => {
     expect(content).not.toContain('NEVER_INCLUDE');
   });
 
+  test('retains completed document checks without body text and drops stale summaries on failure or cancellation', () => {
+    const completionSummary = 'Document review completed. Inserted 2 comments in Word.';
+    const records = [assistant('', { completionSummary }), assistant('', { completionSummary, error: 'offline' }),
+      assistant('', { completionSummary, status: 'Cancelled.' })];
+    const history = buildConversationHistory(records);
+    expect(history[0].content).toContain(`Task summary: ${completionSummary}`);
+    expect(history[1].content).not.toContain(completionSummary);
+    expect(history[2].content).not.toContain(completionSummary);
+  });
+
   test('retains attachment names and unavailable-byte warning, never file payloads', () => {
     const records = freeze([{ ...user('Read this'), attachments: [null, { name: 'report.pdf', kind: 'pdf',
       text: 'ORIGINAL_CONTENT', dataUrl: 'data:image/png;base64,SECRET', size: 500 }] }]);

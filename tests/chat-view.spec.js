@@ -153,6 +153,29 @@ describe('current-session tracking', () => {
     expect(session.messages[0].text).toContain('Error: boom');
   });
 
+  test('completion summaries are hidden while running and late updates persist without entering a new chat', () => {
+    const msg = createAssistantMessage();
+    msg.setCompletionSummary('Document review incomplete.');
+    expect(msg.el.querySelector('.msg-completion').hidden).toBe(true);
+    msg.finalizeForHistory();
+    expect(msg.el.querySelector('.msg-completion').hidden).toBe(false);
+    msg.setCompletionSummary('Document review completed.');
+    expect(getCurrentSession().messages[0].completionSummary).toBe('Document review completed.');
+    expect(msg.el.querySelector('.msg-completion').textContent).toContain('Document review completed.');
+    clearSessionMessages();
+    msg.setCompletionSummary('Old run settled.');
+    expect(getCurrentSession().messages).toEqual([]);
+  });
+
+  test('legacy saved document checks gain a summary, while unfinished statuses stay hidden', () => {
+    renderHistory([{ role: 'assistant', status: 'Done: 0 amendment(s), 16 comment(s) across 16 section(s).' },
+      { role: 'assistant', status: 'Processing document (check-doc)...' }]);
+    const summaries = document.querySelectorAll('.msg-completion');
+    expect(summaries[0].hidden).toBe(false);
+    expect(summaries[0].textContent).toContain('16 comment(s) across 16 section(s).');
+    expect(summaries[1].hidden).toBe(true);
+  });
+
   test('finalizeForHistory captures worklog and model collapse summaries', () => {
     const msg = createAssistantMessage();
     msg.appendLogLine('first step');

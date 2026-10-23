@@ -110,6 +110,14 @@ describe('resolveSkill', () => {
     expect(result.args).toBe('');
   });
 
+  test('accepts the underscore spelling of built-ins without shadowing exact custom commands', () => {
+    expect(resolveSkill('/CHECK_DOC focus on numbering', BUILTIN_SKILLS)).toEqual({
+      skill: BUILTIN_SKILLS[0], args: 'focus on numbering',
+    });
+    const custom = { slash: '/check_doc', name: 'custom-check' };
+    expect(resolveSkill('/check_doc', [...BUILTIN_SKILLS, custom]).skill).toBe(custom);
+  });
+
   test('parses a newly added slash command with arguments', () => {
     const result = resolveSkill('/translate into French', BUILTIN_SKILLS);
     expect(result.skill.name).toBe('translate');
