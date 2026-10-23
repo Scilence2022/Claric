@@ -41,6 +41,7 @@ function makeAppState(overrides = {}) {
 function makeView() {
   const msg = {
     setStatus: jest.fn(),
+    setCompletionSummary: jest.fn(),
     setText: jest.fn(),
     appendText: jest.fn(),
     appendLogLine: jest.fn(),
@@ -3548,6 +3549,78 @@ describe('conversation history snapshots', () => {
   }
 
   afterEach(() => { chatView.clearChat(); });
+
+  test.each(['/check-doc', '/check_doc', '/flag-issues', '/check-consistency', '/check-clarity'])(
+    '%s renders a review summary without proposals and preserves it through storage and reload', async (command) => {
+      const { saveSession, loadSession } = require('../src/taskpane/sessions.js');
+      const chunk = { id: 'c0', paragraphs: [{ text: 'Section 1. Definitions' }] };
+      const actions = makeActions({ runDocumentSkill: jest.fn(async () => ({
+        results: [{ status: 'fulfilled', comment: 'Fix the reference to Section 9.', chunk }],
+        applicationResult: { amendmentsApplied: 0, commentsInserted: 1 }, chunks: [chunk], cancelled: false,
+      })) });
+      const { conv } = setup(actions);
+      await conv.submit(command);
+      expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
+      const summary = document.querySelector('.msg-completion');
+      expect(summary.hidden).toBe(false);
+      expect(summary.querySelector('strong').textContent).toBe('Task summary');
+      expect(summary.textContent).toContain('Reviewed 1 of 1 section(s).');
+      expect(summary.textContent).toContain('Inserted 1 comment(s) in Word');
+      expect(summary.textContent).toContain('Fix the reference to Section 9.');
+      expect(document.querySelector('.proposal-card')).toBeNull();
+      const messages = chatView.getCurrentSession().messages;
+      expect(messages[1].completionSummary).toContain('Document review completed.');
+      expect(buildConversationHistory(messages)[1].content).toContain('Task summary: Document review completed.');
+      const saved = saveSession(messages);
+      chatView.setCurrentSession(loadSession(saved.id));
+      expect(document.querySelector('.msg-completion').textContent).toBe(summary.textContent);
+      expect(document.querySelector('.msg-completion').hidden).toBe(false);
+    },
+  );
+
+  test('a partial document check shows incomplete coverage and comment application failures', async () => {
+    const actions = makeActions({ runDocumentSkill: jest.fn(async () => ({
+      results: [{ status: 'fulfilled', comment: 'Fix numbering.' }, { status: 'rejected', error: 'backend unavailable' }],
+      applicationResult: { amendmentsApplied: 0, commentsInserted: 0, errors: ['Comment insertion failed'] },
+      chunks: [{ id: 'c0', paragraphs: [] }, { id: 'c1', paragraphs: [] }], cancelled: false,
+    })) });
+    const { conv } = setup(actions);
+    await conv.submit('/check-doc');
+    const summary = document.querySelector('.msg-completion').textContent;
+    expect(summary).toContain('Document review incomplete. Reviewed 1 of 2');
+    expect(summary).toContain('1 section(s) failed during processing.');
+    expect(summary).toContain('Some results could not be applied.');
+    expect(summary).not.toContain('review completed');
+    expect(document.querySelector('.msg-status').textContent).not.toContain('Done:');
+  });
+
+  test('cancelling a document check retains counts returned after cancellation', async () => {
+    let finish;
+    const actions = makeActions({ runDocumentSkill: jest.fn(() => new Promise((resolve) => { finish = resolve; })) });
+    const { conv } = setup(actions);
+    const running = conv.submit('/check-doc');
+    await Promise.resolve();
+    expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
+    conv.cancel();
+    finish({ results: [{ status: 'fulfilled' }, { status: 'cancelled' }],
+      applicationResult: { amendmentsApplied: 0, commentsInserted: 1 },
+      chunks: [{ id: 'c0' }, { id: 'c1' }], cancelled: true });
+    await running;
+    const summary = document.querySelector('.msg-completion').textContent;
+    expect(summary).toContain('Document review cancelled. Reviewed 1 of 2');
+    expect(summary).toContain('Inserted 1 comment(s)');
+    chatView.setCurrentSession(chatView.getCurrentSession());
+    expect(document.querySelector('.msg-completion').textContent).toBe(summary);
+  });
+
+  test('a rejected document check exposes an error summary without proposals', async () => {
+    const { conv } = setup(makeActions({ runDocumentSkill: jest.fn(async () => { throw new Error('backend offline'); }) }));
+    await conv.submit('/check-doc');
+    const summary = document.querySelector('.msg-completion');
+    expect(summary.hidden).toBe(false);
+    expect(summary.textContent).toContain('error: Document processing failed: backend offline');
+    expect(summary.textContent).not.toContain('review completed');
+  });
 
   test('uses real same-session records on successive turns without duplicating the latest request', async () => {
     const { conv, actions } = setup();

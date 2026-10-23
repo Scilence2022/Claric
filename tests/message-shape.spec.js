@@ -28,6 +28,7 @@ describe('normalizeMessage', () => {
         expect(m.text).toBe('');
         expect(m.status).toBe('');
         expect(m.error).toBeNull();
+        expect(m.completionSummary).toBe('');
         expect(m.worklog).toBeNull();
         expect(m.model).toBeNull();
         expect(m.citations).toEqual([]);
@@ -57,12 +58,18 @@ describe('normalizeMessage', () => {
             id: 'm-1', role: 'assistant', text: 'answer', status: 'Done', error: null,
             worklog: { count: 2, durationMs: 1500 },
             model: { sections: 1 },
+            completionSummary: 'Document review completed. Inserted 1 comment.',
             citations: [{ label: 'Clause 1', searchText: 'Clause 1 term' }],
             proposals: [{ title: 'T', state: 'applied' }],
             attachments: [{ name: 'a.txt', kind: 'text', size: 5 }],
             ts: '2026-01-01T00:00:00.000Z',
         });
         expect(normalizeMessage(once)).toEqual(once);
+    });
+
+    test('bounds completion summaries and ignores malformed values', () => {
+        expect(normalizeMessage({ completionSummary: 'x'.repeat(5000) }).completionSummary).toHaveLength(2000);
+        expect(normalizeMessage({ completionSummary: { text: 'bad' } }).completionSummary).toBe('');
     });
 
     test("sessions.js's save leg is the same normalizer", () => {

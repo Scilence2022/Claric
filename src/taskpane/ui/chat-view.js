@@ -587,6 +587,7 @@ export function renderStaticProposalCard(p) {
  * @returns {{
  *   el: HTMLElement,
  *   setStatus: function(string),
+ *   setCompletionSummary: function(string),
  *   setText: function(string),
  *   appendText: function(string),
  *   appendLogLine: function(string),
@@ -689,6 +690,7 @@ export function createAssistantMessage() {
     let modelCollapsed = false;
     let lastStatus = '';
     let lastError = null;
+    let completionSummary = '';
     const trackedProposals = [];
     /** Citation pills added this turn — snapshotted by finalizeForHistory. */
     const trackedCitations = [];
@@ -708,7 +710,7 @@ export function createAssistantMessage() {
     }
 
     function renderCompletion() {
-        _renderCompletionSummary(completionEl, { proposals: trackedProposals, status: lastStatus, error: lastError });
+        _renderCompletionSummary(completionEl, { proposals: trackedProposals, completionSummary, status: lastStatus, error: lastError });
     }
 
     /**
@@ -722,6 +724,7 @@ export function createAssistantMessage() {
         finalizedRecord.text = streamed || '';
         finalizedRecord.status = lastStatus || '';
         finalizedRecord.error = lastError;
+        finalizedRecord.completionSummary = completionSummary;
         finalizedRecord.citations = trackedCitations.slice();
         finalizedRecord.proposals = trackedProposals.map(_proposalRecordFromMeta);
         finalizedRecord.ts = new Date().toISOString();
@@ -803,6 +806,11 @@ export function createAssistantMessage() {
             lastStatus = text || '';
             statusEl.style.display = text ? '' : 'none';
             statusEl.textContent = text;
+            if (finalized) _syncFinalizedProposals();
+            _scrollToBottom();
+        },
+        setCompletionSummary(text) {
+            completionSummary = typeof text === 'string' ? text.slice(0, 2000) : '';
             if (finalized) _syncFinalizedProposals();
             _scrollToBottom();
         },
@@ -988,6 +996,7 @@ export function createAssistantMessage() {
                 text: streamed || '',
                 status: lastStatus || '',
                 error: lastError,
+                completionSummary,
                 worklog: logLineCount > 0
                     ? { count: logLineCount, durationMs: Math.max(0, Date.now() - logStartTime) }
                     : null,
