@@ -25,6 +25,9 @@ module.exports = [
       // Local scratch directory for manuscript drafting (untracked). Not
       // part of the add-in codebase; ignore for both git and lint.
       'manuscript/',
+      // Agent worktrees live inside the repo (untracked, each with its own
+      // dist/ and node_modules/). Not part of the add-in codebase.
+      '.claude/',
     ],
   },
   js.configs.recommended,

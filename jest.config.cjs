@@ -16,6 +16,12 @@ module.exports = {
   },
   moduleFileExtensions: ['js'],
   testMatch: ['**/tests/**/*.spec.js'],
+  // Agent worktrees live inside the repo (.claude/worktrees/, each a full
+  // copy of the codebase). Never run their specs from the root checkout.
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    '<rootDir>/.claude/'
+  ],
   collectCoverageFrom: [
     'src/**/*.js'
   ],
