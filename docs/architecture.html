@@ -6,46 +6,47 @@
 <title>Claric &mdash; Technical Architecture</title>
 <meta name="description" content="A technical tour of Claric's Word document pipeline, reviewable proposals, task planning, model routing, visual inspection, and tracked-change diff engine.">
 <link rel="canonical" href="https://scilence2022.github.io/Claric/architecture.html">
+<meta name="theme-color" content="#f6f5ef">
 <link rel="icon" type="image/png" href="assets/icon-64.png">
 <style>
   :root {
-    /* ── Warm Gray palette (dark) ── */
-    --bg: #1a1a1a;
-    --bg-alt: #262626;
-    --fg: #d4d4d4;
-    --fg-muted: #a3a3a3;
-    --heading: #fafafa;
-    --accent: #60a5fa;
-    --accent-dark: #3b82f6;
-    --accent-light: #1e3a5f;
-    --accent2: #a78bfa;
-    --accent2-light: #2e1f5e;
-    --accent3: #22d3ee;
-    --code-bg: #262626;
-    --code-fg: #f472b6;
-    --border: #404040;
-    --card-bg: #262626;
-    --card-shadow: 0 2px 6px rgba(0,0,0,0.25), 0 1px 3px rgba(0,0,0,0.18);
-    --card-shadow-hover: 0 12px 28px rgba(0,0,0,0.35), 0 4px 12px rgba(0,0,0,0.2);
-    --pre-bg: #111111;
-    --pre-fg: #d4d4d4;
-    --gradient-start: #3b82f6;
-    --gradient-end: #8b5cf6;
-    --hero-bg: #111111;
-    --hero-fg: #fafafa;
-    --nav-bg: rgba(26,26,26,0.85);
-    --table-header: #262626;
-    --table-stripe: #1f1f1f;
-    --blockquote-bg: #1f2937;
-    --blockquote-border: #60a5fa;
-    --tag-bg: rgba(59,130,246,0.15);
-    --tag-fg: #93c5fd;
-    --success: #4ade80;
-    --success-light: rgba(74,222,128,0.12);
-    --error: #f87171;
-    --error-light: rgba(248,113,113,0.12);
-    --warning: #fbbf24;
-    --info: #60a5fa;
+    --bg: #f6f5ef;
+    --bg-alt: #edf1e9;
+    --fg: #35443b;
+    --fg-muted: #657269;
+    --heading: #17271f;
+    --accent: #0d654b;
+    --accent-dark: #084333;
+    --accent-light: #e0ede3;
+    --accent2: #7653a6;
+    --accent2-light: #eee7f5;
+    --accent3: #168a96;
+    --code-bg: #e9eee7;
+    --code-fg: #9b4536;
+    --border: #d7ddd3;
+    --card-bg: #fffef9;
+    --card-shadow: 0 1px 2px rgba(23,39,31,0.04), 0 10px 30px rgba(23,39,31,0.04);
+    --card-shadow-hover: 0 2px 4px rgba(23,39,31,0.05), 0 20px 45px rgba(23,39,31,0.09);
+    --pre-bg: #17271f;
+    --pre-fg: #e9f1e9;
+    --gradient-start: #0d654b;
+    --gradient-end: #8aa768;
+    --hero-bg: #17271f;
+    --hero-fg: #f8f7f1;
+    --nav-bg: rgba(246,245,239,0.9);
+    --table-header: #e9eee6;
+    --table-stripe: #f3f4ee;
+    --blockquote-bg: #e4eee5;
+    --blockquote-border: #0d654b;
+    --tag-bg: rgba(220,235,181,0.1);
+    --tag-fg: #dcebb5;
+    --success: #237a4b;
+    --success-light: rgba(35,122,75,0.12);
+    --error: #b44a42;
+    --error-light: rgba(180,74,66,0.1);
+    --warning: #a66a07;
+    --info: #0d654b;
+    --display: "Iowan Old Style", "Palatino Linotype", "Noto Serif SC", "Songti SC", Georgia, serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { scroll-behavior: smooth; }
@@ -97,8 +98,10 @@
     gap: 1rem;
   }
   .nav-brand {
-    font-weight: 700;
-    font-size: 0.95rem;
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.05rem;
+    letter-spacing: -.015em;
     color: var(--heading);
     text-decoration: none;
     display: flex;
@@ -117,6 +120,7 @@
     font-weight: 500;
     color: var(--fg-muted);
     text-decoration: none;
+    white-space: nowrap;
     padding: 0.3rem 0.55rem;
     border-radius: 6px;
     transition: color 0.15s, background 0.15s;
@@ -190,30 +194,36 @@
 
   .hero-logo {
     display: block;
-    margin: 0 auto;
-    border-radius: 10px;
-    box-shadow: 0 8px 24px rgba(16, 163, 127, 0.25);
+    width: 72px;
+    height: 72px;
+    margin: 0 0 1.5rem;
+    border-radius: 16px;
+    box-shadow: 0 12px 32px rgba(13,101,75,0.3);
   }
-  /* Tracked Caps title */
   .hero-text h1 {
-    font-size: 3.2rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    line-height: 1.1;
-    margin-bottom: 1rem;
-    color: #fafafa;
+    font-family: var(--display);
+    font-size: 3.7rem;
+    font-weight: 500;
+    letter-spacing: -0.04em;
+    line-height: 1.02;
+    margin-bottom: 1.25rem;
+    color: #f8f7f1;
   }
   .hero-text h1 .title-caps {
-    font-weight: 400;
-    font-size: 2.7rem;
+    display: block;
+    margin-top: .4rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-weight: 500;
+    font-size: .85rem;
     text-transform: uppercase;
-    letter-spacing: 0.15em;
-    color: #d4d4d4;
+    letter-spacing: 0.16em;
+    color: #b9c8bd;
   }
   .hero-text .subtitle {
-    font-size: 1.1rem;
-    color: #a3a3a3;
-    line-height: 1.6;
+    max-width: 38rem;
+    font-size: 1rem;
+    color: #c4d0c7;
+    line-height: 1.75;
     margin-bottom: 1.5rem;
   }
   .hero-tags {
@@ -222,13 +232,13 @@
     flex-wrap: wrap;
   }
   .hero-tag {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     font-weight: 600;
-    padding: 0.28rem 0.7rem;
+    padding: 0.3rem 0.7rem;
     border-radius: 50px;
-    background: rgba(59,130,246,0.15);
-    color: #bfdbfe;
-    border: 1px solid rgba(59,130,246,0.25);
+    background: var(--tag-bg);
+    color: var(--tag-fg);
+    border: 1px solid rgba(220,235,181,0.22);
   }
   .hero-visual {
     display: flex;
@@ -269,21 +279,22 @@
     color: var(--accent);
     margin-bottom: 0.5rem;
   }
-  /* ── Typography scale (1.25 Major Third) ── */
   h2 {
-    font-size: 1.95rem;
-    font-weight: 700;
+    font-family: var(--display);
+    font-size: 2.25rem;
+    font-weight: 500;
     color: var(--heading);
     margin-bottom: 1rem;
-    letter-spacing: -0.02em;
-    line-height: 1.2;
+    letter-spacing: -0.03em;
+    line-height: 1.12;
   }
   h3 {
+    font-family: var(--display);
     font-size: 1.4rem;
-    font-weight: 600;
+    font-weight: 500;
     color: var(--heading);
     margin: 2rem 0 0.75rem;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
   }
   p { margin: 0.6rem 0; }
   a { color: var(--accent); text-decoration: none; }
@@ -591,6 +602,13 @@
       top: 5rem;
       width: 12rem;
       z-index: 50;
+      padding: .75rem .5rem;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(255,254,249,0.94);
+      box-shadow: var(--card-shadow);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
     }
     .sidebar-toc a {
       display: block;
@@ -617,8 +635,10 @@
   /* ── Responsive ── */
   @media (max-width: 768px) {
     .hero-inner { grid-template-columns: 1fr; text-align: center; }
-    .hero-text h1 { font-size: 2.2rem; }
-    .hero-text h1 .title-caps { font-size: 1.9rem; }
+    .hero-logo { margin-inline: auto; }
+    .hero-text h1 { font-size: 2.75rem; }
+    .hero-text h1 .title-caps { font-size: .75rem; }
+    .hero-text .subtitle { margin-inline: auto; }
     .hero-tags { justify-content: center; }
     .hero-visual { display: none; }
     .section { padding: 1.25rem; }
@@ -680,7 +700,7 @@
         <rect width="128" height="128" rx="30" fill="#10a37f"/>
         <path d="M 89.1 25.4 A 46 46 0 1 0 89.1 102.6 L 77.6 85.0 A 25 25 0 1 1 77.6 43.0 Z" fill="#fff"/>
       </svg>
-      Claric — review-first AI editing for Word
+      Claric / Architecture
     </a>
     <ul class="nav-links">
       <li><a href="#problem" data-section="problem">Problem</a></li>
@@ -709,9 +729,9 @@
   <div class="hero-blob hero-blob-2"></div>
   <div class="hero-blob hero-blob-3"></div>
   <div class="hero-inner">
-    <img class="hero-logo" src="assets/icon-128.png" alt="Claric" width="96" height="96" />
     <div class="hero-text">
-      <h1>Claric <span class="title-caps">for Word</span></h1>
+      <img class="hero-logo" src="assets/icon-128.png" alt="" width="72" height="72" />
+      <h1>Inside Claric.<span class="title-caps">Technical architecture</span></h1>
       <p class="subtitle">AI-powered Microsoft Word add-in that turns natural-language instructions into native tracked changes. A chat UI routes each request to the right pipeline&mdash;redlining, formatting, tables, comments, illustrations, append, summary, or Q&amp;A&mdash;and stages every mutation as a reviewable proposal card. A structure-aware, revision-safe diff strategy bridges the gap between Word's object model and LLM text processing.</p>
       <div class="hero-tags">
         <span class="hero-tag">Office.js</span>

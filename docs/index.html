@@ -17,7 +17,7 @@
   <meta property="og:locale" content="en_US">
   <meta property="og:locale:alternate" content="zh_CN">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#f6f5ef">
   <link rel="canonical" href="https://scilence2022.github.io/Claric/">
   <link rel="alternate" hreflang="en" href="https://scilence2022.github.io/Claric/?lang=en">
   <link rel="alternate" hreflang="zh-CN" href="https://scilence2022.github.io/Claric/?lang=zh">
@@ -31,12 +31,13 @@
   <a class="skip-link" href="#main"><span data-lang="en">Skip to content</span><span data-lang="zh">跳转到正文</span></a>
   <header class="site-header">
     <div class="wrap nav-inner">
-      <a class="brand" href="#main" aria-label="Claric"><img src="assets/icon-64.png" alt="" width="28" height="28">Claric</a>
+      <a class="brand" href="#main" aria-label="Claric"><img src="assets/icon-64.png" alt="" width="30" height="30">Claric</a>
       <nav aria-label="Main navigation" data-aria-en="Main navigation" data-aria-zh="主导航">
         <a href="#how"><span data-lang="en">Workflow</span><span data-lang="zh">工作流</span></a>
         <a href="#gallery"><span data-lang="en">Product</span><span data-lang="zh">产品</span></a>
         <a href="#start"><span data-lang="en">Install</span><span data-lang="zh">安装</span></a>
         <a href="#models"><span data-lang="en">Models</span><span data-lang="zh">模型</span></a>
+        <a class="nav-github" href="https://github.com/Scilence2022/Claric">GitHub <span aria-hidden="true">↗</span></a>
       </nav>
       <button id="langToggle" type="button" class="language-toggle" aria-label="Switch to Chinese" lang="zh-CN" hidden>中文</button>
     </div>
@@ -44,15 +45,20 @@
 
   <main id="main">
     <section class="hero" aria-labelledby="hero-title">
-      <div class="wrap">
+      <div class="wrap hero-layout">
         <div class="hero-copy">
           <p class="eyebrow"><span data-lang="en">Open-source Microsoft Word add-in</span><span data-lang="zh">开源 Microsoft Word 加载项</span></p>
-          <h1 id="hero-title">Claric</h1>
-          <p class="hero-summary"><span data-lang="en">AI editing inside Word.<br>Review the proposal. Keep the final say.</span><span data-lang="zh">在 Word 里用 AI 编辑。<br>先审阅提案，再决定如何修改。</span></p>
+          <h1 id="hero-title"><span data-lang="en">AI editing in Word.<br><em>Every change, your call.</em></span><span data-lang="zh">在 Word 里用 AI 编辑。<br><em>每次修改，由你定夺。</em></span></h1>
+          <p class="hero-summary"><span data-lang="en">Review thoughtful proposals, apply native tracked changes, and keep your choice of local or cloud models.</span><span data-lang="zh">审阅 AI 修改提案，应用 Word 原生修订，并自由选择本地或云端模型。</span></p>
           <div class="hero-actions">
             <a class="button-link" href="#start"><span data-lang="en">Install Claric</span><span data-lang="zh">安装 Claric</span><span aria-hidden="true"> →</span></a>
             <a href="https://github.com/Scilence2022/Claric"><span data-lang="en">View source</span><span data-lang="zh">查看源码</span><span aria-hidden="true"> ↗</span></a>
           </div>
+          <ul class="hero-points">
+            <li><span data-lang="en">Review-first by default</span><span data-lang="zh">默认先审阅，再应用</span></li>
+            <li><span data-lang="en">English and Chinese workflows</span><span data-lang="zh">支持中英文工作流</span></li>
+            <li><span data-lang="en">Your model, your endpoint</span><span data-lang="zh">模型与端点由你选择</span></li>
+          </ul>
         </div>
         <figure class="hero-stage">
           <a class="image-link" href="assets/screenshots/tracked-changes.png" target="_blank" rel="noopener" aria-label="Open original tracked changes screenshot in a new tab" data-aria-en="Open original tracked changes screenshot in a new tab" data-aria-zh="在新标签页打开修订截图原图">
@@ -60,6 +66,14 @@
           </a>
           <figcaption><span data-lang="en">Text edits, in Word's own revision view.</span><span data-lang="zh">文字修改，呈现在 Word 自己的修订视图中。</span> <a href="assets/screenshots/tracked-changes.png" target="_blank" rel="noopener"><span data-lang="en">Open original ↗</span><span data-lang="zh">打开原图 ↗</span></a></figcaption>
         </figure>
+      </div>
+    </section>
+
+    <section class="proof-bar" aria-label="Product principles" data-aria-en="Product principles" data-aria-zh="产品原则">
+      <div class="wrap proof-inner">
+        <div class="proof-item"><strong><span data-lang="en">Native by design</span><span data-lang="zh">原生修订</span></strong><span data-lang="en">Text edits stay visible in Word's review workflow.</span><span data-lang="zh">文字修改保留在 Word 的审阅流程中。</span></div>
+        <div class="proof-item"><strong><span data-lang="en">Model agnostic</span><span data-lang="zh">模型自由</span></strong><span data-lang="en">Connect local, hosted, or OpenAI-compatible providers.</span><span data-lang="zh">连接本地、云端或 OpenAI 兼容服务商。</span></div>
+        <div class="proof-item"><strong><span data-lang="en">Open and inspectable</span><span data-lang="zh">开放可查</span></strong><span data-lang="en">MIT-licensed source, with Docker and npm self-hosting.</span><span data-lang="zh">MIT 开源，支持 Docker 与 npm 自托管。</span></div>
       </div>
     </section>
 

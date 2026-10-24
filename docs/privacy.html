@@ -6,38 +6,48 @@
 <title>Claric — Privacy Policy</title>
 <meta name="description" content="How Claric handles document content, conversation history, optional window sharing, model credentials, and local settings.">
 <link rel="canonical" href="https://scilence2022.github.io/Claric/privacy.html">
+<meta name="theme-color" content="#f6f5ef">
 <link rel="icon" type="image/png" href="assets/icon-64.png">
 <style>
   :root {
-    --bg: #1a1a1a; --bg-alt: #262626; --fg: #d4d4d4; --muted: #a3a3a3;
-    --heading: #fafafa; --accent: #60a5fa; --border: #404040;
+    --bg: #f6f5ef; --bg-alt: #fffef9; --fg: #35443b; --muted: #657269;
+    --heading: #17271f; --accent: #0d654b; --border: #d7ddd3;
+    --display: "Iowan Old Style", "Palatino Linotype", "Noto Serif SC", "Songti SC", Georgia, serif;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    line-height: 1.7; font-size: 16px;
+    line-height: 1.75; font-size: 16px;
   }
-  main { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
-  h1 { color: var(--heading); font-size: 2rem; margin: 0 0 4px; }
-  h2 { color: var(--heading); font-size: 1.25rem; margin-top: 2.2em; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
-  .meta { color: var(--muted); font-size: .9rem; margin-bottom: 2em; }
+  main { max-width: 820px; margin: 0 auto; padding: 40px 24px 96px; }
+  h1 { color: var(--heading); font-family: var(--display); font-size: clamp(2.8rem, 7vw, 4.5rem); font-weight: 500; letter-spacing: -.04em; line-height: 1.05; margin: 0 0 16px; }
+  h2 { color: var(--heading); font-family: var(--display); font-size: 1.45rem; font-weight: 500; letter-spacing: -.015em; margin: 2.3em 0 .65em; border-top: 1px solid var(--border); padding-top: 1.1em; }
+  .meta { color: var(--muted); font-size: .82rem; margin-bottom: 2em; }
+  .meta span { display: inline-block; }
+  h1 + .meta + p { padding: 1.4rem 1.5rem; border: 1px solid var(--border); border-radius: 16px; background: var(--bg-alt); color: var(--heading); }
   a { color: var(--accent); overflow-wrap: anywhere; }
   a:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
   strong { color: var(--heading); }
   ul { padding-left: 1.4em; }
-  li { margin: .35em 0; }
-  .card { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin: 1.5em 0; }
-  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; color: inherit; text-decoration: none; width: fit-content; }
-  .brand img { width: 40px; height: 40px; border-radius: 8px; }
-  .brand span { font-weight: 700; color: var(--heading); font-size: 1.1rem; }
+  li { margin: .45em 0; }
+  .card { background: var(--bg-alt); border: 1px solid var(--border); border-radius: 16px; padding: 20px 24px; margin: 1.5em 0; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 56px; color: inherit; text-decoration: none; width: fit-content; }
+  .brand img { width: 34px; height: 34px; border-radius: 8px; }
+  .brand span { font-family: var(--display); font-weight: 600; color: var(--heading); font-size: 1.45rem; letter-spacing: -.02em; }
+  @media (max-width: 600px) {
+    main { padding: 28px 20px 72px; }
+    .brand { margin-bottom: 40px; }
+    h1 { font-size: 3rem; }
+    h1 + .meta + p { padding: 1.2rem; }
+  }
 </style>
 </head>
 <body>
 <main>
   <a class="brand" href="index.html" aria-label="Back to the Claric home page"><img src="assets/icon-64.png" alt="" width="40" height="40"><span>Claric</span></a>
   <h1>Privacy Policy</h1>
-  <p class="meta">Effective date: 2026-08-29 · Last revised: 2026-10-24 · Applies to Claric 1.0.0 and later</p>
+  <p class="meta"><span>Effective date: 2026-08-29</span> · <span>Last revised: 2026-10-24</span> · <span>Applies to Claric 1.0.0 and later</span></p>
 
   <p>Claric is an AI editing assistant for Microsoft Word. This policy explains
   exactly what data moves, where it goes, and what stays on your machine. The
