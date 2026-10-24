@@ -4,10 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claric &mdash; Technical Architecture</title>
+<meta name="description" content="A technical tour of Claric's Word document pipeline, reviewable proposals, task planning, model routing, visual inspection, and tracked-change diff engine.">
+<link rel="canonical" href="https://scilence2022.github.io/Claric/architecture.html">
 <link rel="icon" type="image/png" href="assets/icon-64.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
     /* ── Warm Gray palette (dark) ── */
@@ -51,26 +50,30 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { scroll-behavior: smooth; }
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--fg);
     line-height: 1.7;
     font-size: 16px;
   }
+  a:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+  .skip-link { position: fixed; top: .5rem; left: 1rem; z-index: 200; padding: .6rem 1rem; background: var(--heading); color: var(--bg); transform: translateY(-200%); }
+  .skip-link:focus { transform: translateY(0); }
 
   /* ── Scroll animations ── */
-  .reveal {
+  .reveal { opacity: 1; }
+  .reveal-enabled .reveal {
     opacity: 0;
     transform: translateY(24px);
     transition: opacity 0.5s ease, transform 0.5s ease;
   }
-  .reveal.visible {
+  .reveal-enabled .reveal.visible {
     opacity: 1;
     transform: translateY(0);
   }
   @media (prefers-reduced-motion: reduce) {
-    .reveal { opacity: 1; transform: none; transition: none; }
-    .reveal.visible { transition: none; }
+    html { scroll-behavior: auto; }
+    .reveal-enabled .reveal { opacity: 1; transform: none; transition: none; }
     .hero-blob { animation: none !important; }
   }
 
@@ -288,12 +291,13 @@
 
   /* ── Code (rose/pink -- distinct from links) ── */
   code {
-    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
     font-size: 0.84em;
     background: var(--code-bg);
     padding: 0.15em 0.4em;
     border-radius: 5px;
     color: var(--code-fg);
+    overflow-wrap: anywhere;
   }
   pre {
     background: var(--pre-bg);
@@ -307,7 +311,7 @@
     border: 1px solid rgba(255,255,255,0.06);
     position: relative;
   }
-  pre code { background: none; padding: 0; color: inherit; }
+  pre code { background: none; padding: 0; color: inherit; overflow-wrap: normal; }
   .code-label {
     display: inline-block;
     font-size: 0.72rem;
@@ -537,12 +541,14 @@
     align-items: center;
     justify-content: center;
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
-    transition: opacity 0.25s, transform 0.25s, color 0.15s;
+    transition: opacity 0.25s, transform 0.25s, color 0.15s, visibility 0.25s;
     z-index: 50;
   }
   .back-to-top.visible {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
   }
   .back-to-top:hover {
@@ -617,7 +623,10 @@
     .hero-visual { display: none; }
     .section { padding: 1.25rem; }
     .section:hover { transform: none; }
-    .nav-links { display: none; }
+    .nav-inner { flex-wrap: wrap; gap: .4rem; }
+    .nav-brand { width: 100%; }
+    .nav-links { flex-wrap: nowrap; overflow-x: auto; width: 100%; padding-bottom: .25rem; scrollbar-width: thin; }
+    .nav-links a { display: block; flex-shrink: 0; padding: .5rem .55rem; }
     .pipeline-steps { flex-direction: column; }
     .pipeline-step::after { display: none; }
     h2 { font-size: 1.5rem; }
@@ -642,6 +651,7 @@
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 
 <!-- ── Sidebar TOC (wide screens) ── -->
 <nav class="sidebar-toc" aria-label="Table of contents">
@@ -663,14 +673,14 @@
 </nav>
 
 <!-- ── Navigation ── -->
-<nav class="nav">
+<nav class="nav" aria-label="Architecture navigation">
   <div class="nav-inner">
-    <a href="#" class="nav-brand">
+    <a href="index.html" class="nav-brand" aria-label="Back to the Claric home page">
       <svg viewBox="0 0 128 128" width="20" height="20" aria-hidden="true">
         <rect width="128" height="128" rx="30" fill="#10a37f"/>
         <path d="M 89.1 25.4 A 46 46 0 1 0 89.1 102.6 L 77.6 85.0 A 25 25 0 1 1 77.6 43.0 Z" fill="#fff"/>
       </svg>
-      Claric — your redlining scribe for Word
+      Claric — review-first AI editing for Word
     </a>
     <ul class="nav-links">
       <li><a href="#problem" data-section="problem">Problem</a></li>
@@ -702,12 +712,12 @@
     <img class="hero-logo" src="assets/icon-128.png" alt="Claric" width="96" height="96" />
     <div class="hero-text">
       <h1>Claric <span class="title-caps">for Word</span></h1>
-      <p class="subtitle">AI-powered Microsoft Word add-in that turns natural-language instructions into native tracked changes. A chat UI routes each request to the right pipeline&mdash;redlining, formatting, illustration, append, summary, or Q&amp;A&mdash;and stages every mutation as a reviewable proposal card. A structure-aware diff strategy bridges the gap between Word's object model and LLM text processing.</p>
+      <p class="subtitle">AI-powered Microsoft Word add-in that turns natural-language instructions into native tracked changes. A chat UI routes each request to the right pipeline&mdash;redlining, formatting, tables, comments, illustrations, append, summary, or Q&amp;A&mdash;and stages every mutation as a reviewable proposal card. A structure-aware, revision-safe diff strategy bridges the gap between Word's object model and LLM text processing.</p>
       <div class="hero-tags">
         <span class="hero-tag">Office.js</span>
         <span class="hero-tag">Tracked Changes</span>
-        <span class="hero-tag">OpenAI-compatible LLMs</span>
-        <span class="hero-tag">vLLM / Ollama / DeepSeek / GLM / Kimi / MiniMax / 中科大模型</span>
+        <span class="hero-tag">Local, hosted &amp; custom models</span>
+        <span class="hero-tag">MCP + visual inspection</span>
         <span class="hero-tag">OOXML</span>
       </div>
     </div>
@@ -751,7 +761,7 @@
   </div>
 </header>
 
-<main class="content">
+<main class="content" id="main">
 
   <!-- 1. The Problem -->
   <section class="section reveal" id="problem">
@@ -790,9 +800,9 @@
     <h2>System Overview</h2>
 
     <div class="diagram-container">
-      <svg viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+      <svg viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, sans-serif">
         <rect x="10" y="10" width="780" height="400" rx="16" fill="none" stroke="var(--border)" stroke-width="1.5" stroke-dasharray="6 3"/>
-        <text x="30" y="38" font-size="13" font-weight="600" fill="var(--fg-muted)">Microsoft Word (WebView2 / Office.js Runtime)</text>
+        <text x="30" y="38" font-size="13" font-weight="600" fill="var(--fg-muted)">Microsoft Word (Office.js webview: WebView2 / WKWebView / browser)</text>
         <rect x="40" y="60" width="160" height="90" rx="10" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="120" y="95" text-anchor="middle" font-size="13" font-weight="600" fill="var(--heading)">Taskpane UI</text>
         <text x="120" y="115" text-anchor="middle" font-size="11" fill="var(--fg-muted)">taskpane.js</text>
@@ -824,7 +834,7 @@
         <text x="382" y="283" text-anchor="middle" font-size="10" fill="var(--fg-muted)">ChunkResult[]</text>
         <line x1="190" y1="270" x2="215" y2="270" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
         <line x1="315" y1="270" x2="340" y2="270" stroke="var(--accent2)" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
-        <text x="80" y="328" font-size="10" fill="var(--fg-muted)">doc-parser</text>
+        <text x="80" y="328" font-size="10" fill="var(--fg-muted)">document-parser.js</text>
         <text x="200" y="328" font-size="10" fill="var(--fg-muted)">Context Extractor</text>
         <text x="335" y="328" font-size="10" fill="var(--fg-muted)">Reassembler</text>
         <text x="335" y="345" font-size="9" fill="var(--accent)">bookmark &rarr; changes</text>
@@ -837,7 +847,7 @@
     </div>
     <p class="caption">Figure 1: High-level system architecture. The IR pipeline sits between the Word API and the LLM backends.</p>
 
-    <p>The add-in runs as an Office.js taskpane inside Word's WebView2 container. Any OpenAI-compatible <code>/chat/completions</code> backend can be plugged in via provider presets: local vLLM and Ollama instances, plus hosted DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax (international and China sites), and 中科大模型 (zhongkeyu.com, a New API gateway relaying many upstream models behind one OpenAI-compatible <code>/v1</code> surface). The webpack dev server and the production container proxy each provider under a same-origin path (<code>/vllm</code>, <code>/ollama</code>, <code>/deepseek</code>, <code>/glm</code>, <code>/kimi</code>, <code>/minimax</code>, <code>/minimax-cn</code>, <code>/zhongkeyu</code>), so the browser sandbox never hits CORS or mixed-content issues and API keys go only to the configured endpoint.</p>
+    <p>The add-in runs as an Office.js taskpane in Word's host webview. Chat presets include Ollama, vLLM, OpenAI, Claude (using the Anthropic Messages API), DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax international/CN, 中科大模型， OpenRouter, SiliconFlow, and Custom OpenAI-compatible endpoints. Webpack/Docker deployments default to same-origin proxy paths, including <code>/openai</code>, <code>/claude</code>, <code>/openrouter</code>, and <code>/siliconflow</code>. On GitHub Pages, CORS-capable cloud presets default to direct absolute HTTPS endpoints; OpenAI and local-model presets still need an appropriate proxy or relay, and Custom endpoint CORS remains endpoint-dependent.</p>
   </section>
 
   <!-- 3. Intermediate Representation -->
@@ -847,7 +857,7 @@
     <p>The IR is the central data structure of the system. It consists of three layers, each progressively further from the Word object model and closer to LLM-compatible text.</p>
 
     <h3>3.1 Layer 1: DocumentModel (Parsed Paragraphs)</h3>
-    <p>The document parser (<code>document-parser.js</code>) traverses the active Word document via Office.js and produces a <code>DocumentModel</code>&mdash;an array of <code>ParsedParagraph</code> objects:</p>
+    <p>The document parser (<code>document-parser.js</code>) traverses the active Word document via Office.js and produces a <code>DocumentModel</code> object containing a <code>paragraphs</code> array of non-empty <code>ParsedParagraph</code> objects and a <code>totalTokens</code> estimate:</p>
 
     <div class="code-label">ParsedParagraph &mdash; the atom of the IR</div>
     <pre><code>{
@@ -860,17 +870,10 @@
   listString: "(a)",      // Bullet/number prefix
   listLevel: 1,           // Nesting depth
   inTable: false,
-  tokenEstimate: 47       // ceil(chars / 4)
+  tokenEstimate: 47       // CJK ≈1 token/char; other chars ceil(chars / 4)
 }</code></pre>
 
-    <p>This is the foundational IR. Every downstream module operates on paragraph index references back to this model. The parser uses a <strong>batched load pattern</strong> with four sequential <code>context.sync()</code> calls to minimize Office.js round-trips:</p>
-
-    <ol>
-      <li>Load paragraph collection items</li>
-      <li>Load text, style, styleBuiltIn, isListItem for all paragraphs</li>
-      <li>Load listItem details (level, listString) for list paragraphs</li>
-      <li>Load parentTableOrNullObject for table membership detection</li>
-    </ol>
+    <p>The parser first loads the paragraph collection, then reads at most <strong>24 paragraphs per sync</strong>. Each bounded batch loads text/style/list flags, revision-aware OOXML, and table membership together; a final sync loads list-item details when needed. A failed batch reports its paragraph range instead of queuing a full-document OOXML export in one sync.</p>
 
     <h3>Heading detection fallback chain</h3>
     <p>Legal documents frequently use custom styles rather than Word's built-in Heading1&ndash;Heading9. The parser applies a three-tier fallback to classify headings:</p>
@@ -902,12 +905,12 @@
   overlapBefore: "...prior context..."  // Tail of previous chunk
 }</code></pre>
 
-    <blockquote><strong>Design decision:</strong> Chunks reference paragraph objects from the DocumentModel rather than copying text. This means the chunk's <code>startIndex</code> / <code>endIndex</code> remain valid pointers into the Word document's paragraph collection throughout the pipeline. These indices are used later by the reassembler to create bookmarks on exact paragraph ranges.</blockquote>
+    <blockquote><strong>Design decision:</strong> Chunks retain their original paragraph indices to establish initial bookmarks; these indices are not assumed to remain valid after concurrent document changes. Bookmark creation verifies boundary paragraph text, and Apply re-anchors against staged text and revision fingerprints. Missing boundaries, drift, or lost contiguity stops the run or chunk rather than editing the wrong paragraphs.</blockquote>
 
     <p>The chunking algorithm enforces three structural constraints:</p>
     <ol>
       <li><strong>Heading boundaries.</strong> H1/H2 headings are primary split points. A chunk always starts at a heading boundary when possible, so the LLM sees complete logical sections.</li>
-      <li><strong>Table atomicity.</strong> Consecutive <code>inTable=true</code> paragraphs are accumulated as an indivisible unit. Tables are never split mid-way through.</li>
+      <li><strong>Table exclusion and barriers.</strong> Paragraphs with <code>inTable=true</code> are excluded from amendment chunks. A table closes the current chunk and acts as a barrier that trailing-chunk merging cannot cross, so no bookmark range spans a table. Table content is edited through selection or document table-management tools.</li>
       <li><strong>Token budget.</strong> Each chunk targets a maximum of 12,000 tokens (configurable). When no heading boundary exists, the chunker falls back to paragraph-boundary splitting. A minimum threshold (500 tokens) prevents tiny fragments from becoming their own chunks&mdash;trailing runts are merged into the previous chunk.</li>
     </ol>
 
@@ -975,7 +978,7 @@
     <p>The orchestrator (<code>orchestrator.js</code>) implements a worker-pool concurrency pattern. N workers (default 4) pull from a shared index, each processing one chunk at a time:</p>
 
     <div class="diagram-container">
-      <svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+      <svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, sans-serif">
         <rect x="230" y="15" width="260" height="65" rx="10" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="360" y="36" text-anchor="middle" font-size="12" font-weight="600" fill="var(--heading)">Chunk Queue</text>
         <rect x="252" y="44" width="28" height="24" rx="5" fill="var(--accent)" opacity="0.15" stroke="var(--accent)" stroke-width="0.8"/>
@@ -1046,6 +1049,7 @@
     <p>Each worker composes a message array per chunk:</p>
     <ul>
       <li><strong>System message:</strong> User's context prompt template + filtered document context prefix (definitions, abbreviations, outline)</li>
+      <li><strong>Conversation history:</strong> A per-submission snapshot of earlier same-session user/assistant turns, inserted after trusted system messages and before the current chunk request.</li>
       <li><strong>User message:</strong> Active amendment/comment prompt template with <code>{selection}</code> replaced by the chunk text (with overlap markers)</li>
     </ul>
     <p>An <code>AbortController</code> signal threads through every worker, enabling instant cancellation. The controller avoids <code>AbortSignal.any()</code> (unsupported in Office's WebView2 runtime), manually wiring external abort signals to local controllers.</p>
@@ -1093,7 +1097,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     <p>The central algorithm of reassembly is <code>_alignParagraphs</code>, which maps LLM output paragraphs back to original document paragraphs. It uses a two-phase approach:</p>
 
     <div class="diagram-container">
-      <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+      <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, sans-serif">
         <text x="20" y="24" font-size="13" font-weight="700" fill="var(--accent)">Phase 1: LCS on exact (trimmed) text matches</text>
         <text x="20" y="55" font-size="11" font-weight="600" fill="var(--fg-muted)">Original:</text>
         <rect x="100" y="40" width="44" height="28" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1.5"/>
@@ -1165,7 +1169,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     </div>
     <p class="caption">Figure 3: Two-phase paragraph alignment. LCS finds exact anchors; greedy matching fills gaps with a 0.4 similarity threshold.</p>
 
-    <p>The similarity function uses word-level set overlap: <code>|shared words| / max(|words_a|, |words_b|)</code>. A threshold of 0.4 captures paragraphs where the LLM has substantively rewritten content while avoiding false matches between unrelated paragraphs.</p>
+    <p>Non-CJK paragraphs use <code>|shared words| / max(|words_a|, |words_b|)</code>; CJK paragraphs use a multiset character-bigram Dice coefficient. Both use the 0.4 alignment threshold to match substantive rewrites while avoiding unrelated paragraphs.</p>
     <p>The alignment produces an operation sequence: <strong>keep</strong> (paragraph pair, possibly with text edits), <strong>delete</strong> (original paragraph removed), <strong>insert</strong> (new paragraph added).</p>
 
     <h3>7.3 Applying Changes in Reverse Document Order</h3>
@@ -1173,7 +1177,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
 
     <p>For each alignment operation:</p>
     <ul>
-      <li><strong>keep with text difference:</strong> Applies word-level diff within the single paragraph using the token-map strategy of the vendored word-diff layer (<code>src/lib/word-diff/</code>). At paragraph scope, this preserves character-level formatting (bold, italic, font, color) while generating tracked changes. Falls back to full text replacement if the word-level diff fails.</li>
+      <li><strong>keep with text difference:</strong> Applies character diff for CJK, sentence diff when forced, or token-map diff otherwise. Revision-bearing and native-target ranges first use <code>revision-diff.js</code>, which verifies current visible text, revision baselines, candidate ranges, and final read-back while preserving earlier hidden revisions. Unsafe revision or structural cases fail closed. Full-paragraph replacement is available only after a pre-write failure on a pristine paragraph; multi-paragraph sections never fall back to a whole-range rewrite.</li>
       <li><strong>delete:</strong> Calls <code>paragraph.delete()</code>, which generates a tracked deletion in Word.</li>
       <li><strong>insert:</strong> Calls <code>anchorParagraph.insertParagraph(text, 'After')</code>, which generates a tracked insertion.</li>
     </ul>
@@ -1188,20 +1192,21 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   <section class="section reveal" id="diff">
     <div class="section-number">Section 8</div>
     <h2>The Diff Engine</h2>
-    <p>Word-level tracked changes are produced by the word-diff layer in <code>src/lib/word-diff/</code> (vendored from the Apache-2.0 <code>office-word-diff</code> project), which implements a cascading strategy:</p>
+    <p>Tracked text edits use <code>src/lib/word-diff/</code>: Apache-2.0 strategies vendored from <code>office-word-diff</code>, plus Claric's revision-aware and CJK safeguards. Revision-aware verification runs before the legacy cascade; pristine ranges can then use token, character, sentence, and constrained block-replacement strategies.</p>
 
     <div class="table-wrap">
     <table>
       <thead><tr><th>Strategy</th><th>Mechanism</th><th>Preserves</th><th>Scope</th></tr></thead>
       <tbody>
-        <tr><td>Token Map</td><td>Splits paragraph into <code>Word.Range</code> objects via <code>getTextRanges([" "])</code>, maps each word to its range, applies insertions/deletions per-word</td><td>Character-level formatting (bold, italic, font, color)</td><td>Single paragraph</td></tr>
+        <tr><td>Revision-aware diff</td><td>Verifies visible text, revision baselines, candidate ranges, and final read-back; fails closed on unsafe revision or structural boundaries</td><td>Earlier hidden revisions and native paragraph targets</td><td>Revision-bearing and native-target ranges</td></tr>
+        <tr><td>Token Map</td><td>Computes tokens client-side, then locates deleted tokens and insertion anchors in one batched search pass with occurrence indices that simulate Word's greedy substring matching</td><td>Character-level formatting (bold, italic, font, color)</td><td>Single paragraph</td></tr>
         <tr><td>Sentence Diff</td><td>Tokenizes by sentence boundaries, computes diff, applies at sentence granularity</td><td>Paragraph structure</td><td>Single paragraph (fallback)</td></tr>
-        <tr><td>Block Replace</td><td>Full <code>range.insertText(text, 'Replace')</code></td><td>Nothing (last resort)</td><td>Full range</td></tr>
+        <tr><td>Block Replace</td><td>Constrained text replacement after a pre-write failure on a pristine paragraph; never a multi-paragraph whole-range rewrite</td><td>Paragraph scope only</td><td>Last resort</td></tr>
       </tbody>
     </table>
     </div>
 
-    <p>The Token Map strategy (<code>word-diff/token-map.js</code>) maintains a token map: an array of <code>{ text, range: Word.Range }</code> objects. This allows the diff engine to map individual word changes to their exact <code>Word.Range</code> in the document, producing surgical tracked changes without touching surrounding formatting.</p>
+    <p>The Token Map strategy (<code>src/lib/word-diff/token-map.js</code>) coalesces adjacent deletions before tracked writes and verifies the resulting text, avoiding a host round-trip per diff op without touching surrounding formatting.</p>
   </section>
 
   <!-- 9. Prompt System -->
@@ -1264,6 +1269,8 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     <div class="section-number">Section 11</div>
     <h2>Chat UI &amp; Turn Routing</h2>
     <p>The taskpane is a chat interface: every user message becomes a <strong>turn</strong>, and a pure routing function (<code>routeTurn</code> in <code>conversation.js</code>) decides which pipeline handles it. Routing never guesses silently&mdash;document mutations always end in a staged proposal card.</p>
+    <p><strong>Conversation continuity:</strong> Every model-producing pipeline receives a per-submission snapshot of same-session history, including Q&amp;A, planning, edits, comments, tables, images, MCP loops, chunk runs, and retries. Proposal state is represented truthfully, while failed/cancelled partial output is excluded. Settings → General → Chat history budget controls the total context allowance (default 128,000 estimated tokens, clamped to 1,000–2,000,000); trimming is CJK-aware, drops oldest whole turns first, truncates rather than drops the newest oversized turn, and is logged.</p>
+    <p><strong>MCP approval boundary:</strong> The <code>/mcp</code> loop treats tool results as observations, never direct Word writes. Resource reads and tools whose servers declare <code>annotations.readOnlyHint: true</code> run directly. Every other tool call waits for Allow once, Allow for this run, or Deny; without an approver it is refused, and decisions are logged. This covers side effects outside Word even though MCP results cannot themselves mutate the document.</p>
 
     <div class="pipeline-steps">
       <div class="pipeline-step">
@@ -1295,18 +1302,20 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
       <tbody>
         <tr><td>Edit</td><td>&ldquo;polish this document&rdquo; / &ldquo;润色全文&rdquo;</td><td>Selection edit, or whole-document chunked amendment</td></tr>
         <tr><td>Format</td><td>&ldquo;center all headings&rdquo; / &ldquo;加粗这段&rdquo;</td><td>Format ops (selection scope when one exists)</td></tr>
-        <tr><td>Cleanup</td><td>&ldquo;delete empty paragraphs&rdquo; / &ldquo;删除多余的空段落&rdquo;</td><td>Deterministic Word.js scan + tracked deletion (no LLM)</td></tr>
+        <tr><td>Cleanup</td><td>&ldquo;delete empty paragraphs&rdquo; / &ldquo;删除多余的空段落&rdquo;</td><td>Deterministic Word.js scan + tracked deletion (no LLM), at document scope or within an eligible text selection; formatting proposals can also include verified blank-paragraph cleanup</td></tr>
         <tr><td>Insert</td><td>&ldquo;add an article title&rdquo; / &ldquo;增加文章标题&rdquo;</td><td>Format pipeline, insert op at document scope</td></tr>
         <tr><td>Append</td><td>&ldquo;continue writing&rdquo; / &ldquo;续写&rdquo;</td><td>Draft content, stage append-to-end proposal</td></tr>
-        <tr><td>Illustration</td><td>&ldquo;design and insert an illustration&rdquo; / &ldquo;设计插图并插入&rdquo;</td><td>SVG illustration pipeline</td></tr>
-        <tr><td>Question</td><td>&ldquo;what does clause 4 say?&rdquo; / &ldquo;为什么&hellip;&rdquo;</td><td>Document Q&amp;A, streamed in chat (question leads always win)</td></tr>
+        <tr><td>Illustration</td><td>&ldquo;design and insert an illustration&rdquo; / &ldquo;设计插图并插入&rdquo;</td><td>Independent raster image generation with sanitized SVG fallback</td></tr>
+        <tr><td>Question</td><td>&ldquo;what does clause 4 say?&rdquo; / &ldquo;为什么&hellip;&rdquo;</td><td>Document Q&amp;A, streamed in chat; a question followed by a separate action is routed to compound planning</td></tr>
       </tbody>
     </table>
     </div>
 
+    <p><strong>Scoped document amendments:</strong> Instructions such as “rewrite only the Abstract” are analyzed by <code>edit-scope.js</code>. Unambiguous heading or labelled-paragraph targets are resolved to native paragraph indices, and model edits outside those targets are reverted before staging; retries reuse the same resolved scope. If a named target is positional, missing, or ambiguous, the run retains all sections and the proposal warns that every section may change rather than silently claiming confinement.</p>
+
     <h3>The task planner</h3>
-    <p>Instructions that span two or more intent families (&ldquo;增加标题，然后全文润色修改&rdquo;) route to an LLM <strong>task planner</strong> (<code>task-planner.js</code>). The planner decomposes the request into at most 6 ordered tasks drawn from six types&mdash;<code>insert</code>, <code>format</code>, <code>edit</code>, <code>append</code>, <code>illustration</code>, <code>qa</code>&mdash;each with a self-contained instruction. The tasks execute in user-stated order, one proposal card per pipeline, so a title insertion and a full-text polish can be reviewed and applied independently.</p>
-    <p>The planner doubles as a <strong>classifier of last resort</strong>: an instruction that hits no intent regex and isn't a question (&ldquo;帮我把这个故事写得更好&rdquo;) is sent to the planner to pick the right pipeline instead of falling through to Q&amp;A. If planning fails, routing degrades gracefully to single-intent matching or Q&amp;A.</p>
+    <p>Instructions that span two or more intent families (&ldquo;增加标题，然后全文润色修改&rdquo;) route to an LLM <strong>task planner</strong> (<code>task-planner.js</code>). The planner decomposes a request into at most six tasks drawn from eleven capabilities: <code>comment_management</code>, <code>document_edit</code>, <code>insert</code>, <code>format</code>, <code>edit</code>, <code>append</code>, <code>table</code>, <code>illustration</code>, <code>image_management</code>, <code>table_management</code>, and <code>qa</code>. Tasks carry scope, stable IDs, dependencies, and resource metadata. The runtime validates the dependency graph; independent read-only work and disjoint body/table drafts can proceed in one pass, while overlapping writes and explicit dependencies wait for the preceding proposal to be applied and then resume against current Word state.</p>
+    <p>Planning uses a requirements/tasks/unsupported contract, an independent semantic coverage review, and one bounded repair attempt. An unapproved or incomplete plan never falls back to executing a subset: if no valid approved plan remains, no tasks run and the planning failure is reported.</p>
 
     <h3>Live feedback</h3>
     <ul>
@@ -1321,7 +1330,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   <section class="section reveal" id="proposals">
     <div class="section-number">Section 12</div>
     <h2>Staged Proposals &amp; Per-Change Review</h2>
-    <p>Every document mutation&mdash;selection edits, document-scope amendments, format ops, appends, illustrations&mdash;is staged as a proposal card. Nothing is written to the document until the user clicks <strong>Apply as tracked changes</strong>; <strong>Reject</strong> discards the stage and cleans up bookmarks.</p>
+    <p>Every document mutation&mdash;selection edits, document-scope amendments, format ops, appends, illustrations&mdash;is staged as a proposal card. By default, nothing is written until the user clicks <strong>Apply</strong>; <strong>Reject</strong> discards the stage and cleans up bookmarks. When the user enables Auto-apply with tracked changes enabled, pending cards are still staged first, then applied sequentially when the turn finalizes. Cancellation, failure, warning, or an unverified/paused write stops further automatic writes.</p>
 
     <div class="feature-grid">
       <div class="feature-card">
@@ -1362,7 +1371,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     </div>
 
     <h3>Re-anchoring staged ranges</h3>
-    <p>A document-scope proposal may be staged long before it is applied&mdash;and other cards (e.g. an inserted title) can shift the document in between. Before applying, the reassembler <strong>re-anchors</strong> each chunk's bookmarked range: it compares the range's current paragraph texts with the staged originals and narrows the range to the contiguous window that still holds the staged content. If contiguity is lost, the chunk is skipped with a recorded error&mdash;never silently applied to drifted paragraphs.</p>
+    <p>A document-scope proposal may be staged long before it is applied&mdash;and other cards (e.g. an inserted title) can shift the document in between. Before applying, the reassembler <strong>re-anchors</strong> each chunk's bookmarked range: it compares current paragraph texts and revision/formatting fingerprints with the staged baselines and narrows the range to the contiguous window that still holds the staged content. If contiguity is lost, the chunk is skipped with a recorded error&mdash;never silently applied to drifted paragraphs.</p>
 
     <blockquote><strong>No-change filtering:</strong> chunks whose LLM output is identical to the original (an echo) are filtered out before staging, and the reassembler double-checks at apply time. An empty result discards the proposal with &ldquo;The model proposed no changes&rdquo; instead of a hollow card.</blockquote>
   </section>
@@ -1371,18 +1380,23 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   <section class="section reveal" id="format">
     <div class="section-number">Section 13</div>
     <h2>Formatting &amp; Insert Ops</h2>
-    <p>Formatting instructions are planned by the LLM into a JSON op array, parsed against a strict allowlist (<code>format-ops.js</code>), staged as a proposal card with one checkbox per op, and applied through Word.js font/paragraph APIs as tracked <em>Formatted</em> revisions. Existing text is never rewritten&mdash;an instruction that only asks for rewrites yields an empty op array by contract.</p>
+    <p>Formatting instructions are planned by the LLM into a JSON op array, parsed against a strict allowlist (<code>format-ops.js</code>), staged as a proposal card with one checkbox per op, and applied through Word.js using the configured tracking mode. Existing text is never rewritten&mdash;an instruction that only asks for rewrites yields an empty op array by contract.</p>
 
-    <div class="code-label">Format op schema (allowlisted)</div>
+    <div class="code-label">Format op schema (selected allowlisted fields; one target selector per op)</div>
     <pre><code>{
-  match: "substring to locate",   // &le;255 chars; or paragraphStyle, or whole scope
+  match: "substring to locate",   // or paragraphStyle, paragraphRole: "body",
+                                  // paragraphIds: ["native-id", ...], or whole scope
   font: { bold, italic, underline, highlightColor, color: "#RRGGBB",
-          size, name, strikeThrough, superscript, subscript, allCaps, smallCaps },
+          size, name, strikeThrough, doubleStrikeThrough, superscript,
+          subscript, allCaps, smallCaps },
   paragraph: { styleBuiltIn, style, alignment, lineSpacing,
-               spaceBefore, spaceAfter, leftIndent, rightIndent, firstLineIndent },
-  insert: { text: "&le;2000 chars", position: "start" | "end" }
+               spaceBefore, spaceAfter, leftIndent, rightIndent, firstLineIndent,
+               listType: "bullet" | "number" | "none", listLevel: 0 },
+  insert: { text: "&le;2000 chars", position: "start" | "end" },
+  cleanup: { emptyParagraphs: true }
 }</code></pre>
 
+    <p><strong>Visual evidence:</strong> Formatting and focused document-edit sessions can use three read-only tools. <code>read_word_screen</code> reads a fresh frame only from a Word window explicitly shared by the user; <code>list_rendered_pages</code> exports Word's native PDF and returns page metadata/text; <code>read_rendered_pages</code> returns images of one to three rendered pages. Only returned screenshots/page images count as visual inspection. PDF evidence shows live print layout—not selection UI or an unapplied proposal—and visual context never widens edit scope. Host and vision limitations are reported explicitly.</p>
     <p><strong>Insert ops</strong> cover short structural elements. &ldquo;增加文章标题&rdquo; makes the LLM compose a title from the document, position it at the start, and style it with the built-in <code>Title</code> style&mdash;applied as tracked insertions, reviewable like any other change.</p>
   </section>
 
@@ -1390,36 +1404,36 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
   <section class="section reveal" id="illustration">
     <div class="section-number">Section 14</div>
     <h2>The Illustration Pipeline</h2>
-    <p>&ldquo;设计插图并插入&rdquo; asks the LLM for one self-contained SVG illustrating the document, then walks it through a safety and conversion gauntlet before it reaches the page:</p>
+    <p>When image generation is enabled, the illustration pipeline uses an independently configured provider: OpenAI Images, Zhipu CogView, MiniMax Images, 中科云 Images, OpenRouter Images, SiliconFlow Images, or a Custom OpenAI-compatible endpoint. Base64, data-URL, and hosted-URL responses are normalized to raster bytes and staged directly. If generation is disabled or fails—or vector output is requested—the chat LLM produces a sanitized SVG, which follows the conversion pipeline below.</p>
 
     <div class="pipeline-steps">
       <div class="pipeline-step">
         <div class="step-icon">1</div>
-        <h4>Design</h4>
-        <p>LLM returns one SVG</p>
+        <h4>Generate</h4>
+        <p>Image provider or SVG fallback</p>
       </div>
       <div class="pipeline-step">
         <div class="step-icon">2</div>
-        <h4>Sanitize</h4>
-        <p>DOMPurify SVG profile</p>
+        <h4>Validate</h4>
+        <p>Normalize image / sanitize SVG</p>
       </div>
       <div class="pipeline-step">
         <div class="step-icon">3</div>
-        <h4>Rasterize</h4>
-        <p>Offscreen canvas &rarr; PNG</p>
+        <h4>Prepare</h4>
+        <p>Raster bytes / SVG &rarr; PNG</p>
       </div>
       <div class="pipeline-step">
         <div class="step-icon">4</div>
         <h4>Insert</h4>
-        <p>Centered inline picture</p>
+        <p>Preview, then tracked image</p>
       </div>
     </div>
 
     <ul>
-      <li>The prompt contract forbids scripts, event handlers, and <code>foreignObject</code>; <code>sanitizeSvg()</code> enforces it with DOMPurify's SVG + SVG-filters profiles, and parsing is capped at 256KB.</li>
-      <li>Dimensions come from the SVG's <code>viewBox</code> (1200&times;800 default) so the raster is always well-formed; the offscreen canvas renders at 1600px wide.</li>
-      <li>Word's <code>insertInlinePictureFromBase64</code> rejects SVG, so the illustration is inserted as a PNG, centered, scaled to at most 450pt wide, with a best-effort alt-text description&mdash;tracked as a revision when track changes is on.</li>
-      <li>A position heuristic reads the instruction: 光标/此处/cursor &rarr; inline at the caret (anchored when Apply is clicked), header/题图/头图 &rarr; document start, otherwise document end. The proposal card shows an image preview before anything is inserted.</li>
+      <li>The SVG fallback's prompt contract forbids scripts, event handlers, and <code>foreignObject</code>; <code>sanitizeSvg()</code> enforces it with DOMPurify's SVG + SVG-filters profiles, and parsing is capped at 256KB.</li>
+      <li>For the SVG fallback, dimensions come from the <code>viewBox</code> (1200&times;800 default) so the raster is always well-formed; the offscreen canvas renders at 1600px wide.</li>
+      <li>Provider-generated raster bytes are inserted directly in their returned format; only the SVG fallback is rasterized to PNG. Start/end insertions are centered inline pictures, and all writes use the configured tracking mode.</li>
+      <li>A position heuristic reads the instruction: 光标/此处/cursor &rarr; inline at a caret bookmark captured with an OOXML baseline during preparation and revalidated at Apply; header/题图/头图 &rarr; document start, otherwise document end. The proposal card shows an image preview before anything is inserted.</li>
     </ul>
   </section>
 
@@ -1429,19 +1443,19 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
     <h2>Data Flow Summary</h2>
 
     <div class="diagram-container">
-      <svg viewBox="0 0 800 560" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+      <svg viewBox="0 0 800 560" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, sans-serif">
         <rect x="250" y="10" width="200" height="44" rx="22" fill="var(--accent)" opacity="0.9"/>
         <text x="350" y="37" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Word Document</text>
         <line x1="350" y1="54" x2="350" y2="80" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
         <rect x="100" y="80" width="560" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent)" stroke-width="1.5"/>
         <rect x="120" y="90" width="150" height="30" rx="6" fill="var(--accent-light)" stroke="var(--accent)" stroke-width="1"/>
         <text x="195" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent)">document-parser</text>
-        <text x="120" y="138" font-size="10" fill="var(--fg-muted)">Office.js API (4 sync batches)</text>
+        <text x="120" y="138" font-size="10" fill="var(--fg-muted)">Office.js API (24-paragraph read batches)</text>
         <text x="380" y="110" font-size="10" fill="var(--fg)">Word paragraphs &rarr; ParsedParagraph[]</text>
         <line x1="350" y1="150" x2="350" y2="176" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
         <rect x="100" y="176" width="560" height="70" rx="12" fill="var(--bg-alt)" stroke="var(--accent2)" stroke-width="1.5"/>
         <rect x="120" y="186" width="150" height="30" rx="6" fill="var(--accent2-light)" stroke="var(--accent2)" stroke-width="1"/>
-        <text x="195" y="206" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">context-extract</text>
+        <text x="195" y="206" text-anchor="middle" font-size="11" font-weight="600" fill="var(--accent2)">context-extractor.js</text>
         <text x="120" y="234" font-size="10" fill="var(--fg-muted)">Regex patterns on paragraph text</text>
         <text x="380" y="206" font-size="10" fill="var(--fg)">ParsedParagraph[] &rarr; DocumentContext</text>
         <line x1="350" y1="246" x2="350" y2="272" stroke="var(--accent)" stroke-width="2" marker-end="url(#aD)"/>
@@ -1468,7 +1482,7 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
         </defs>
       </svg>
     </div>
-    <p class="caption">Figure 4: Complete data flow through the IR pipeline. Since the chat UI, all results land in a staged proposal card first&mdash;tracked changes are written only when the user applies the card (see Section 12).</p>
+    <p class="caption">Figure 4: Complete data flow through the IR pipeline. Since the chat UI, all results land in a staged proposal card first&mdash;tracked changes are written after manual Apply, or after turn finalization when the user has explicitly enabled Auto-apply (see Section 12).</p>
   </section>
 
 </main>
@@ -1476,66 +1490,78 @@ fullRange.insertBookmark("_wdp" + hex(timestamp) + hex(index) + random)</code></
 <!-- ── Footer ── -->
 <footer class="footer">
   <p><strong>Claric</strong> &mdash; MIT License</p>
-  <p>Diff engine: vendored word-diff layer based on <a href="https://github.com/yuch85/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; LLM backends: any OpenAI-compatible endpoint &mdash; vLLM, Ollama, DeepSeek, Zhipu GLM, Moonshot Kimi, MiniMax, 中科大模型</p>
-  <p style="margin-top: 0.75rem;"><a href="https://github.com/Scilence2022/Claric">View on GitHub</a></p>
+  <p>Diff engine: vendored word-diff layer based on <a href="https://github.com/yuch85/office-word-diff">office-word-diff</a> (Apache 2.0) &middot; Chat backends include local and hosted providers, OpenAI-compatible gateways, and Claude &middot; Image providers are configured independently</p>
+  <p style="margin-top: 0.75rem;"><a href="index.html">Claric home</a> &middot; <a href="privacy.html">Privacy</a> &middot; <a href="https://github.com/Scilence2022/Claric">View on GitHub</a></p>
 </footer>
 
 <!-- ── Back to top ── -->
-<button class="back-to-top" id="backToTop" aria-label="Back to top" onclick="window.scrollTo({top:0})">
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+<button class="back-to-top" id="backToTop" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <polyline points="18 15 12 9 6 15"/>
   </svg>
 </button>
 
 <script>
-// ── Scroll-triggered reveal animations ──
-const obs = new IntersectionObserver((entries) => {
-  entries.forEach((e, i) => {
-    if (e.isIntersecting) {
-      // Stagger children slightly
-      e.target.style.transitionDelay = '0.05s';
-      e.target.classList.add('visible');
-      obs.unobserve(e.target);
-    }
-  });
-}, { threshold: 0.08 });
-document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
-
-// ── Back to top visibility ──
-const btn = document.getElementById('backToTop');
-window.addEventListener('scroll', () => {
-  btn.classList.toggle('visible', window.scrollY > 600);
-}, { passive: true });
-
-// ── Scroll-spy for nav + sidebar ──
+const revealElements = document.querySelectorAll('.reveal');
 const sections = document.querySelectorAll('.section[id]');
 const navLinks = document.querySelectorAll('.nav-links a[data-section], .sidebar-toc a[data-section]');
-const spyObs = new IntersectionObserver((entries) => {
-  entries.forEach(e => {
-    if (e.isIntersecting) {
-      const id = e.target.id;
-      navLinks.forEach(a => {
-        a.classList.toggle('active', a.dataset.section === id);
-      });
-    }
-  });
-}, { rootMargin: '-20% 0px -70% 0px' });
-sections.forEach(s => spyObs.observe(s));
-
-// ── Copy buttons on code blocks ──
-document.querySelectorAll('pre').forEach(pre => {
-  const btn = document.createElement('button');
-  btn.className = 'copy-btn';
-  btn.textContent = 'Copy';
-  btn.addEventListener('click', () => {
-    const code = pre.querySelector('code');
-    navigator.clipboard.writeText(code ? code.textContent : pre.textContent).then(() => {
-      btn.textContent = 'Copied!';
-      btn.classList.add('copied');
-      setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+if (typeof window.IntersectionObserver === 'function') {
+  document.documentElement.classList.add('reveal-enabled');
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add('visible');
+      obs.unobserve(entry.target);
     });
+  }, { threshold: 0.08 });
+  revealElements.forEach(element => obs.observe(element));
+
+  const spyObs = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      navLinks.forEach(link => {
+        const active = link.dataset.section === entry.target.id;
+        link.classList.toggle('active', active);
+        if (active) link.setAttribute('aria-current', 'location');
+        else link.removeAttribute('aria-current');
+      });
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+  sections.forEach(section => spyObs.observe(section));
+}
+
+const backToTop = document.getElementById('backToTop');
+window.addEventListener('scroll', () => {
+  backToTop.classList.toggle('visible', window.scrollY > 600);
+}, { passive: true });
+backToTop.addEventListener('click', () => window.scrollTo({ top: 0 }));
+
+document.querySelectorAll('pre').forEach(pre => {
+  const copyButton = document.createElement('button');
+  copyButton.className = 'copy-btn';
+  copyButton.type = 'button';
+  copyButton.textContent = 'Copy';
+  copyButton.addEventListener('click', async () => {
+    const code = pre.querySelector('code') || pre;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(code.textContent);
+      copyButton.textContent = 'Copied!';
+      copyButton.classList.add('copied');
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      copyButton.textContent = 'Selected — press Ctrl/Cmd+C';
+    }
+    setTimeout(() => {
+      copyButton.textContent = 'Copy';
+      copyButton.classList.remove('copied');
+    }, 2500);
   });
-  pre.appendChild(btn);
+  pre.appendChild(copyButton);
 });
 </script>
 

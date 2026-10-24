@@ -36,9 +36,8 @@
       toggle.setAttribute('aria-label', language === 'zh' ? 'Switch to English' : '切换为中文');
       toggle.dataset.langTarget = language === 'zh' ? 'en' : 'zh';
     }
-    document.title = language === 'zh'
-      ? 'Claric | Microsoft Word 中先审阅、再应用的 AI 编辑'
-      : 'Claric | Review-first AI editing for Microsoft Word';
+    const localizedTitle = language === 'zh' ? root.dataset.titleZh : root.dataset.titleEn;
+    if (localizedTitle) document.title = localizedTitle;
   }
 
   applyLanguage(initialLanguage());
@@ -82,7 +81,9 @@
 
   function platformFromHash() {
     const panel = panels.find(candidate => `#${candidate.id}` === window.location.hash);
-    if (panel) selectPlatform(panel.dataset.installPanel);
+    if (!panel) return null;
+    selectPlatform(panel.dataset.installPanel);
+    return panel.dataset.installPanel;
   }
 
   tablist.setAttribute('role', 'tablist');
@@ -105,8 +106,8 @@
     panel.setAttribute('aria-labelledby', `tab-${panel.dataset.installPanel}`);
     panel.tabIndex = 0;
   });
-  selectPlatform('macos');
-  platformFromHash();
+  const isWindows = /Windows/i.test(window.navigator.userAgentData?.platform || window.navigator.userAgent);
+  if (!platformFromHash()) selectPlatform(isWindows ? 'windows' : 'macos');
   window.addEventListener('hashchange', platformFromHash);
   panels[0].parentElement.dataset.enhanced = 'true';
   tablist.hidden = false;
