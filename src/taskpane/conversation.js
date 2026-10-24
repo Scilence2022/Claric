@@ -36,6 +36,7 @@ import { runToolLoop } from '../lib/tool-loop.js';
 import { buildToolLoopSystemPrompt, TOOL_LOOP_LIMITS } from '../lib/tool-registry.js';
 import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
+import { buildDocumentCompletionSummary } from './ui/completion-summary.js';
 import { confirmMcpToolCall } from './ui/dialog.js';
 import { describeFormatOp } from '../lib/format-ops.js';
 import { requestsEmptyParagraphCleanup } from '../lib/empty-paragraphs.js';
@@ -993,13 +994,20 @@ export function createConversation(deps) {
                 ...(whitespaceOnly ? { whitespaceOnly: true } : {}),
             });
             msg.hideProgress();
-            if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
+            if (!turnDeps.isCurrentSession()) return;
+            if (!outcome.staged && outcome.applicationResult) {
+                msg.setCompletionSummary(buildDocumentCompletionSummary({
+                    ...outcome, cancelled: outcome.cancelled || myController.signal.aborted,
+                }));
+            }
+            if (myController.signal.aborted) {
                 msg.setStatus('Cancelled — already-applied changes remain in the document.');
                 return;
             }
 
             if (whitespaceOnly && outcome.status === 'no_op' && outcome.satisfied === true) {
                 msg.setStatus(outcome.summary);
+                msg.setCompletionSummary(outcome.summary);
                 return { status: 'no_op', satisfied: true, summary: outcome.summary };
             }
 
@@ -1007,14 +1015,11 @@ export function createConversation(deps) {
                 return await stageDocumentProposal(outcome, msg, turnDeps, { whitespaceOnly });
             }
 
-            const { applicationResult, chunks, cancelled } = outcome;
+            const { chunks, cancelled } = outcome;
             if (cancelled) {
                 msg.setStatus('Cancelled — already-applied changes remain in the document.');
             } else {
-                msg.setStatus(
-                    `Done: ${applicationResult.amendmentsApplied} amendment(s), ` +
-                    `${applicationResult.commentsInserted} comment(s) across ${chunks.length} section(s).`
-                );
+                msg.setStatus('');
                 msg.addCitationPills(chunks.map(chunkCitation), (searchText) => {
                     actions.revealTextSnippet(turnDeps, searchText);
                 });

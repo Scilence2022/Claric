@@ -295,7 +295,8 @@ export function listSkills(promptManager) {
 
 /**
  * Parses a chat input of the form "/name rest of the text..." into a skill
- * plus its argument string. Matching is on the exact slash token.
+ * plus its argument string. Exact slash tokens take priority; built-ins also
+ * accept underscores in place of hyphens (e.g. /check_doc).
  *
  * @param {string} input - Raw chat input
  * @param {Array<object>} skills - Skill list (from listSkills)
@@ -311,7 +312,8 @@ export function resolveSkill(input, skills) {
     const token = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).toLowerCase();
     const args = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim();
 
-    const skill = (skills || []).find((s) => s.slash.toLowerCase() === token);
+    const skill = (skills || []).find((s) => s.slash.toLowerCase() === token)
+        || (skills || []).find((s) => BUILTIN_SKILLS.includes(s) && s.slash === token.replace(/_/g, '-'));
     if (!skill) return null;
     return { skill, args };
 }

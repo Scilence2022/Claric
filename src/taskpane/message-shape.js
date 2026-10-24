@@ -47,7 +47,7 @@ export const normalizeAttachments = attachmentMeta;
  *
  * @param {object} m - Live or stored message (non-objects yield defaults)
  * @returns {{id: string, role: 'user'|'assistant', text: string, status: string,
- *   error: string|null, worklog: {count: number, durationMs: number}|null,
+ *   error: string|null, completionSummary: string, worklog: {count: number, durationMs: number}|null,
  *   model: {sections: number}|null, citations: Array<object>,
  *   proposals: Array<object>, attachments: Array<object>, ts: string}}
  */
@@ -59,6 +59,7 @@ export function normalizeMessage(m) {
         text: typeof safe.text === 'string' ? safe.text : '',
         status: typeof safe.status === 'string' ? safe.status : '',
         error: typeof safe.error === 'string' ? safe.error : null,
+        completionSummary: typeof safe.completionSummary === 'string' ? safe.completionSummary.slice(0, 2000) : '',
         worklog: safe.worklog && typeof safe.worklog === 'object'
             ? { count: Number(safe.worklog.count) || 0, durationMs: Number(safe.worklog.durationMs) || 0 }
             : null,

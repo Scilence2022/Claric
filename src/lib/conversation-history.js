@@ -182,6 +182,9 @@ export function buildConversationHistory(records, { log, config } = {}) {
             if (cancelled) parts.push('Turn cancelled; incomplete assistant output omitted.');
             if (record.error) parts.push(`Turn failed: ${detail(record.error) || 'error'}. Incomplete assistant output omitted.`);
             if (status.trim()) parts.push(`Status: ${detail(status)}`);
+            if (!record.error && !cancelled && typeof record.completionSummary === 'string' && record.completionSummary.trim()) {
+                parts.push(`Task summary: ${detail(record.completionSummary)}`);
+            }
             for (const proposal of take(record.proposals, MAX_PROPOSALS)) {
                 if (!proposal || typeof proposal !== 'object') continue;
                 const states = {
