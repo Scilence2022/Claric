@@ -1,9 +1,92 @@
 /** @jest-environment jsdom */
 import { revisionTextState, queueRevisionRead, resolveRevisionRead, normalizeRevisionText,
-    verifyMutationText, MutationSafetyError, hostSupportsTrackedChanges } from '../src/lib/word-revisions.js';
+    verifyMutationText, MutationSafetyError, hostSupportsTrackedChanges, projectNativeText } from '../src/lib/word-revisions.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const wrap = (xml) => `<w:document xmlns:w="${W}"><w:body>${xml}</w:body></w:document>`;
+
+const refCode = ' REF _Ref533004983 \\h  \\* MERGEFORMAT ';
+const refXml = '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    + `<w:r><w:instrText>${refCode}</w:instrText><w:fldChar w:fldCharType="separate"/><w:t>Table 4</w:t>`
+    + '<w:fldChar w:fldCharType="end"/></w:r>';
+
+// Minimal text-bearing XML from the supplied NIST SOP 14 DOCX. Native streams
+// are reconstructed using Word's controls and one boundary padding space in
+// each REF instruction to exercise the logged +42 length difference. These
+// are regression inputs, not captured getReviewedText responses.
+test.each(require('./fixtures/nist-native-text.json'))('NIST SOP 14 chunk $chunk reconciles its reported native mismatch', (fixture) => {
+    const state = revisionTextState(fixture.xml, { paragraph: true });
+    const legacyText = state.text.replace('°C, for each run', 'C, for each run');
+    expect(legacyText.length).toBe(fixture.legacyLength);
+    expect(fixture.nativeText.length).toBe(fixture.nativeLength);
+    let mismatch = 0;
+    while (legacyText[mismatch] === fixture.nativeText[mismatch]) mismatch++;
+    expect(mismatch).toBe(fixture.firstMismatch);
+    expect(state.text).toBe(fixture.expectedText);
+    const projection = projectNativeText(state, fixture.nativeText);
+    expect(projection.text).toBe(fixture.expectedText);
+    expect(projection.offsets[fixture.nativeText.length]).toBe(state.text.length);
+});
+
+test.each([false, true])('native REF text projects exact field codes to visible offsets, raw=%s', (raw) => {
+    const state = revisionTextState(wrap('<w:p><w:r><w:t>See </w:t></w:r>' + refXml + '<w:r><w:t> after.</w:t></w:r></w:p>'));
+    const field = raw ? '\u0013' + refCode + '\u0014Table 4\u0015' : 'Table 4';
+    const projection = projectNativeText(state, 'See ' + field + ' after.');
+    expect(projection.text).toBe('See Table 4 after.');
+    expect(projection.offsets[4 + field.length + 1]).toBe('See Table 4 '.length);
+    expect(state.protectedSpans).toEqual([{ start: 4, end: 11 }]);
+    if (raw) {
+        const padded = 'See ' + field.replace('\u0014', ' \u0014') + ' after.';
+        expect(projectNativeText(state, padded).text).toBe(state.text);
+        expect(projectNativeText(state, padded).offsets[padded.length]).toBe(state.text.length);
+        expect(projectNativeText(state, 'See ' + field.replace('533004983', '533004984') + ' after.')).toBeNull();
+        expect(projectNativeText(state, 'See ' + field.replace('Table 4', 'Table 5') + ' after.')).toBeNull();
+        expect(projectNativeText(state, 'See ' + field.replace('\u0014', '') + ' after.')).toBeNull();
+    }
+});
+
+test('native symbol placeholders require XML evidence and do not rewrite literal parentheses', () => {
+    const state = revisionTextState(wrap('<w:p><w:r><w:t>(20 </w:t><w:sym w:font="Symbol" w:char="F0B0"/><w:t>C) </w:t>'
+        + '<w:sym w:font="Symbol" w:char="F061"/><w:t> / </w:t><w:sym w:font="Symbol" w:char="F072"/></w:r></w:p>'));
+    expect(state.text).toBe('(20 °C) α / ρ');
+    expect(projectNativeText(state, '(20 (C) ( / (').text).toBe(state.text);
+    expect(projectNativeText(state, '(20 °C) α / ρ').text).toBe(state.text);
+    expect(projectNativeText(state, '(20 \uF0B0C) \uF061 / \uF072').text).toBe(state.text);
+    expect(projectNativeText(state, '(20 ?C) ( / (')).toBeNull();
+    expect(projectNativeText(state, '[20 (C) ( / (')).toBeNull();
+    expect(state.protectedSpans).toEqual([{ start: 4, end: 5 }, { start: 8, end: 9 }, { start: 12, end: 13 }]);
+});
+
+test('nonbreaking hyphen controls are normalized without collapsing ordinary hyphens or spaces', () => {
+    const state = revisionTextState(wrap('<w:p><w:r><w:t>For pour</w:t><w:noBreakHyphen/><w:t>type: 10 s.</w:t></w:r></w:p>'));
+    expect(projectNativeText(state, 'For pour\u001Etype: 10 s.').text).toBe(state.text);
+    expect(projectNativeText(state, 'For pour-type: 10 s.')).toBeNull();
+    expect(projectNativeText(state, 'For pour\u001Etype: 10 s.')).toBeNull();
+});
+
+test('read-back reconciles raw fields using fresh XML and rejects changed visible results', async () => {
+    const range = { getReviewedText: () => ({ value: 'See \u0013' + refCode + '\u0014Table 4\u0015 after.' }),
+        getOoxml: () => ({ value: wrap('<w:p><w:r><w:t>See </w:t></w:r>' + refXml + '<w:r><w:t> after.</w:t></w:r></w:p>') }) };
+    const context = { sync: async () => {} };
+    await expect(verifyMutationText(context, range, 'See Table 4 after.', { paragraph: true })).resolves.toBeUndefined();
+    await expect(verifyMutationText(context, range, 'See Table 5 after.', { paragraph: true })).rejects.toThrow(/differs/);
+    range.getOoxml = () => ({ value: wrap('<w:p><w:r><w:t>See Table 4 after.</w:t></w:r></w:p>') });
+    await expect(verifyMutationText(context, range, 'See Table 4 after.', { paragraph: true })).rejects.toThrow(/differs/);
+});
+
+test.each(['(', '\uF0B0', '°'])('symbol read-back validates fresh glyph XML as well as native text: %s', async (native) => {
+    let slot = 'F0B0';
+    const range = { getReviewedText: () => ({ value: '20 ' + native + 'C' }),
+        getOoxml: () => ({ value: wrap(`<w:p><w:r><w:t>20 </w:t><w:sym w:font="Symbol" w:char="${slot}"/><w:t>C</w:t></w:r></w:p>`) }) };
+    const context = { sync: async () => {} };
+    await expect(verifyMutationText(context, range, '20 °C', { paragraph: true })).resolves.toBeUndefined();
+    if (native !== '°') {
+        // A different glyph has the same native '(' placeholder. Only the
+        // post-write XML can distinguish it from the expected degree sign.
+        slot = 'F061';
+        await expect(verifyMutationText(context, range, '20 °C', { paragraph: true })).rejects.toThrow(/differs/);
+    }
+});
 
 test('complex EndNote-style fields and nested links expose immutable visible spans without field codes', () => {
     const xml = wrap('<w:p><w:r><w:t>Before </w:t><w:fldChar w:fldCharType="begin"/></w:r>'

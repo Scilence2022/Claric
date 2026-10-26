@@ -74,6 +74,14 @@ describe('extractFinalTextFromOoxml', () => {
         expect(extractFinalTextFromOoxml(ooxml)).toBe('visible body text');
     });
 
+    test('retains scientific Symbol-font glyphs in both paragraph and range extraction', () => {
+        const xml = wrapPackage('<w:p><w:r><w:t>20 </w:t><w:sym w:font="Symbol" w:char="F0B0"/>'
+            + '<w:t>C; </w:t><w:sym w:font="Symbol" w:char="F061"/><w:t>, </w:t>'
+            + '<w:sym w:font="Symbol" w:char="F072"/></w:r></w:p>');
+        expect(extractFinalTextFromOoxml(xml)).toBe('20 °C; α, ρ');
+        expect(extractTopLevelParagraphTexts(xml)).toEqual(['20 °C; α, ρ']);
+    });
+
     test('accepts a bare range fragment without the pkg wrapper', () => {
         const ooxml = `<w:p xmlns:w="${W}"><w:del><w:r><w:delText>gone</w:delText></w:r></w:del>`
             + '<w:r><w:t>kept</w:t></w:r></w:p>';

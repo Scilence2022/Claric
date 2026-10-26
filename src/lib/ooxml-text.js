@@ -23,6 +23,22 @@ const HIDDEN_CONTAINERS = new Set(['del', 'moveFrom']);
 /** Field instructions (TOC etc.) — Word.js text excludes them; so do we. */
 const SKIP_ELEMENTS = new Set(['instrText', 'proofErr']);
 
+/** Legacy Symbol-font slots used by scientific Word documents. Unknown
+ * fonts/slots retain their original code point rather than losing a character.
+ * The OOXML node itself remains immutable during prose amendments. */
+export function symbolText(element) {
+    const font = element.getAttributeNS(W_NS, 'font') || element.getAttribute('w:font') || '';
+    const hex = element.getAttributeNS(W_NS, 'char') || element.getAttribute('w:char') || '';
+    if (!/^[0-9a-f]{4}$/i.test(hex)) return '\uFFFC';
+    const code = parseInt(hex, 16);
+    if (font.toLowerCase() === 'symbol') {
+        const slot = code >= 0xF000 && code <= 0xF0FF ? code - 0xF000 : code;
+        const scientific = { 0x61: 'α', 0x72: 'ρ', 0xB0: '°' };
+        if (scientific[slot]) return scientific[slot];
+    }
+    return String.fromCharCode(code);
+}
+
 /**
  * Recursively collects visible text of one element in document order.
  *
@@ -40,6 +56,7 @@ function visibleText(node) {
         if (name === 'tab') { text += '\t'; continue; }
         if (name === 'br' || name === 'cr') { text += '\n'; continue; }
         if (name === 'noBreakHyphen') { text += '‑'; continue; }
+        if (name === 'sym') { text += symbolText(element); continue; }
         text += visibleText(element);
     }
     return text;

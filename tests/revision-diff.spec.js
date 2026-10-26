@@ -13,10 +13,10 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
 /** Word searches the physical text, including deleted runs. Writes retain
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
-    stickyContent = false, revisedPadding = false } = {}) {
+    stickyContent = false, revisedPadding = false, nativeControls = false } = {}) {
     let sequence = 0;
-    const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false }) =>
-        Array.from(text).map((text) => ({ text, type, id, field })));
+    const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false, symbol = null }) =>
+        Array.from(text).map((text) => ({ text, type, id, field, symbol })));
     const ranges = [];
     const writes = [];
     const bookmarks = new Map();
@@ -28,7 +28,9 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             else groups.at(-1).push(atom);
         }
         const content = groups.map((group) => `<w:p xmlns:w="${W}">` + group.map((atom) => {
-        const run = `<w:r><w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
+        const run = atom.symbol ? `<w:r><w:sym w:font="Symbol" w:char="${atom.symbol}"/></w:r>`
+            : atom.text === '‑' && nativeControls ? '<w:r><w:noBreakHyphen/></w:r>'
+                : `<w:r><w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
         const visible = atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
         return atom.field ? `<w:fldSimple w:instr="HYPERLINK example">${visible}</w:fldSimple>` : visible;
         }).join('') + '</w:p>').join('');
@@ -48,7 +50,10 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             get text() { return atoms.slice(span.start, span.end).map((a) => a.text).join(''); },
             getOoxml: jest.fn(() => { xmlReads++; return { value: xml(atoms.slice(span.start, span.end)) }; }),
             ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value:
-                atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => atom.text).join('').replace(/\n/g, '\r') })) } : {}),
+                atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => {
+                    const text = nativeControls && atom.symbol ? '(' : atom.text;
+                    return nativeControls && atom.field ? '\u0013HYPERLINK example\u0014' + text + '\u0015' : text;
+                }).join('').replace(/\n/g, '\r').replace(/‑/g, nativeControls ? '\u001E' : '‑') })) } : {}),
             getRange: (location) => location === 'Start' ? makeRange(span.start, span.start)
                 : location === 'End' ? makeRange(span.end, span.end) : range,
             expandTo: (other) => makeRange(Math.min(span.start, other._span.start), Math.max(span.end, other._span.end)),
@@ -178,6 +183,50 @@ test.each([false, true])('native field results survive surrounding prose edits, 
 test('a pristine native field mutation fails before any write, including before surrounding edits', async () => {
     const w = world([{ text: 'An old ' }, { text: '(Example 2025)', field: true }, { text: ' result.' }], { nativeReviewed: true });
     await expect(applyCharDiffStrategy(w.context, w.scope, w.state().text, 'A new (Example 2026) result.', jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toThrow(/native field result/);
+    expect(w.writes).toHaveLength(0);
+});
+
+test.each([false, true])('raw native field codes preserve surrounding edit offsets and existing revisions: %s', async (revised) => {
+    const w = world([{ text: 'result before. ', type: revised ? 'ins' : 'plain' },
+        { text: 'Table 4', field: true }, { text: ' result after. result after.' }],
+    { nativeReviewed: true, nativeControls: true });
+    const before = w.state().text;
+    const after = 'result before. Table 4 result after. revised result after.';
+    await tryRevisionDiff(w.context, w.scope, before, after, jest.fn(),
+        { paragraph: true, nativeTargets: true, preflightOnly: true });
+    expect(w.writes).toHaveLength(0);
+    await applyTokenMapStrategy(w.context, w.scope, before, after, jest.fn(),
+        { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe(after);
+    expect(w.atoms.filter((atom) => atom.field).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test('whole-document reassembly preserves Symbol glyphs and nonbreaking hyphens across polish rounds', async () => {
+    const w = world([{ text: 'For pour‑type (20 ' }, { text: '°', symbol: 'F0B0' },
+        { text: 'C), allow an additional 10 s. See ' }, { text: 'Table 4', field: true }, { text: ' for details.' }],
+    { nativeReviewed: true, nativeControls: true, padding: true, revisedPadding: true });
+    for (const after of [
+        'For pour‑type (20 °C), allow an additional 10 s. See Table 4 for more details.',
+        'For pour‑type (20 °C), allow an additional 10 s. See Table 4 for further details.',
+    ]) {
+        const parsed = await parseDocument();
+        expect(parsed.paragraphs[0].text).toContain('(20 °C)');
+        w.bookmarks.set('section', w.scope);
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment: after,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'section']]), { log: jest.fn() });
+        expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [], uncertainChunkIds: [] });
+        expect((await parseDocument()).paragraphs[0].text).toBe(after);
+    }
+    expect(w.atoms.filter((atom) => atom.symbol || atom.field).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test.each(['Temperature is 20 C.', 'Temperature is 20 (C.'])('symbol deletion or replacement is rejected before any surrounding edit: %s', async (after) => {
+    const w = world([{ text: 'Temperature is 20 ' }, { text: '°', symbol: 'F0B0' }, { text: 'C.' }],
+        { nativeReviewed: true, nativeControls: true });
+    await expect(applyCharDiffStrategy(w.context, w.scope, w.state().text, after, jest.fn(),
         { paragraph: true, nativeTargets: true })).rejects.toThrow(/native field result/);
     expect(w.writes).toHaveLength(0);
 });
