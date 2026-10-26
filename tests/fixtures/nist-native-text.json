@@ -1,0 +1,38 @@
+[
+  {
+    "chunk": 19,
+    "legacyLength": 224,
+    "nativeLength": 224,
+    "firstMismatch": 8,
+    "xml": "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:r><w:t>For pour</w:t></w:r><w:r><w:noBreakHyphen/></w:r><w:r><w:t>type containers:</w:t></w:r><w:r><w:t xml:space=\"preserve\"> </w:t></w:r><w:r><w:t xml:space=\"preserve\">pour contents by gradually tilting container to an 85º angle, so that virtually all </w:t></w:r><w:r><w:t xml:space=\"preserve\">liquid </w:t></w:r><w:r><w:t>is delivered in 30 s</w:t></w:r><w:r><w:t xml:space=\"preserve\">. </w:t></w:r><w:r><w:t xml:space=\"preserve\">Allow to drain for an additional 10 s, then touch off any drops adhering to the lip. </w:t></w:r></w:p>",
+    "nativeText": "For pour\u001etype containers: pour contents by gradually tilting container to an 85º angle, so that virtually all liquid is delivered in 30 s. Allow to drain for an additional 10 s, then touch off any drops adhering to the lip. ",
+    "expectedText": "For pour‑type containers: pour contents by gradually tilting container to an 85º angle, so that virtually all liquid is delivered in 30 s. Allow to drain for an additional 10 s, then touch off any drops adhering to the lip. "
+  },
+  {
+    "chunk": 11,
+    "legacyLength": 147,
+    "nativeLength": 189,
+    "firstMismatch": 81,
+    "xml": "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:r><w:t xml:space=\"preserve\">Example components to be considered for </w:t></w:r><w:r><w:t>an u</w:t></w:r><w:r><w:t xml:space=\"preserve\">ncertainty </w:t></w:r><w:r><w:t>b</w:t></w:r><w:r><w:t xml:space=\"preserve\">udget </w:t></w:r><w:r><w:t>t</w:t></w:r><w:r><w:t>able</w:t></w:r><w:r><w:t xml:space=\"preserve\"> are shown in </w:t></w:r><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText xml:space=\"preserve\"> REF _Ref533004983 \\h </w:instrText></w:r><w:r><w:instrText xml:space=\"preserve\"> \\* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r><w:r><w:t xml:space=\"preserve\">Table </w:t></w:r><w:r><w:t>4</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r><w:r><w:t xml:space=\"preserve\">. </w:t></w:r><w:r><w:t xml:space=\"preserve\">Multiple values may need to be considered in some cases. </w:t></w:r></w:p>",
+    "nativeText": "Example components to be considered for an uncertainty budget table are shown in \u0013 REF _Ref533004983 \\h  \\* MERGEFORMAT  \u0014Table 4\u0015. Multiple values may need to be considered in some cases. ",
+    "expectedText": "Example components to be considered for an uncertainty budget table are shown in Table 4. Multiple values may need to be considered in some cases. "
+  },
+  {
+    "chunk": 10,
+    "legacyLength": 402,
+    "nativeLength": 444,
+    "firstMismatch": 239,
+    "xml": "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:r><w:t xml:space=\"preserve\">The limits of expanded uncertainty, </w:t></w:r><w:r><w:t>U</w:t></w:r><w:r><w:t xml:space=\"preserve\">, include estimates of the standard uncertainty of the mass standards used, </w:t></w:r><w:r><w:t>u</w:t></w:r><w:r><w:t>s</w:t></w:r><w:r><w:t>, plus the measurement</w:t></w:r><w:r><w:t xml:space=\"preserve\"> process repeatability</w:t></w:r><w:r><w:t xml:space=\"preserve\">, </w:t></w:r><w:r><w:t>s</w:t></w:r><w:r><w:t>p</w:t></w:r><w:r><w:t xml:space=\"preserve\">, </w:t></w:r><w:r><w:t xml:space=\"preserve\">and the additional items noted </w:t></w:r><w:r><w:t xml:space=\"preserve\">below and </w:t></w:r><w:r><w:t>in the uncertainty budget</w:t></w:r><w:r><w:t xml:space=\"preserve\"> table</w:t></w:r><w:r><w:t xml:space=\"preserve\">, </w:t></w:r><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText xml:space=\"preserve\"> REF _Ref533004983 \\h  \\* MERGEFORMAT </w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r><w:r><w:t xml:space=\"preserve\">Table </w:t></w:r><w:r><w:t>4</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r><w:r><w:t xml:space=\"preserve\">, </w:t></w:r><w:r><w:t xml:space=\"preserve\">at </w:t></w:r><w:r><w:t xml:space=\"preserve\">approximately a </w:t></w:r><w:r><w:t>95 percent level of confidence</w:t></w:r><w:r><w:t xml:space=\"preserve\">. </w:t></w:r><w:r><w:t xml:space=\"preserve\">See </w:t></w:r><w:r><w:t xml:space=\"preserve\">NISTIR 6969, </w:t></w:r><w:r><w:t xml:space=\"preserve\">SOP 29 for the complete standard operating procedure for calculating the uncertainty. </w:t></w:r></w:p>",
+    "nativeText": "The limits of expanded uncertainty, U, include estimates of the standard uncertainty of the mass standards used, us, plus the measurement process repeatability, sp, and the additional items noted below and in the uncertainty budget table, \u0013 REF _Ref533004983 \\h  \\* MERGEFORMAT  \u0014Table 4\u0015, at approximately a 95 percent level of confidence. See NISTIR 6969, SOP 29 for the complete standard operating procedure for calculating the uncertainty. ",
+    "expectedText": "The limits of expanded uncertainty, U, include estimates of the standard uncertainty of the mass standards used, us, plus the measurement process repeatability, sp, and the additional items noted below and in the uncertainty budget table, Table 4, at approximately a 95 percent level of confidence. See NISTIR 6969, SOP 29 for the complete standard operating procedure for calculating the uncertainty. "
+  },
+  {
+    "chunk": 8,
+    "legacyLength": 112,
+    "nativeLength": 113,
+    "firstMismatch": 74,
+    "xml": "<w:p xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:r><w:t>Glassware is typically calibrated to 20 °C</w:t></w:r><w:r><w:t xml:space=\"preserve\">. </w:t></w:r><w:r><w:t xml:space=\"preserve\">Compute </w:t></w:r><w:r><w:t>V</w:t></w:r><w:r><w:t>20</w:t></w:r><w:r><w:t xml:space=\"preserve\">, the volume at 20 </w:t></w:r><w:r><w:sym w:font=\"Symbol\" w:char=\"F0B0\"/></w:r><w:r><w:t>C, for each run, using the expression:</w:t></w:r></w:p>",
+    "nativeText": "Glassware is typically calibrated to 20 °C. Compute V20, the volume at 20 (C, for each run, using the expression:",
+    "expectedText": "Glassware is typically calibrated to 20 °C. Compute V20, the volume at 20 °C, for each run, using the expression:"
+  }
+]

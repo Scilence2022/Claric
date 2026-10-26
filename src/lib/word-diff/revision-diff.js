@@ -2,7 +2,7 @@
 import { textEditHunks, touchesProtectedSpan } from '../text-edit-plan.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState, normalizeRevisionText,
     RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, hostSupportsTrackedChanges,
-    normalizeWordText, textMismatchDetail, queueCurrentTextRead, wordErrorDetail } from '../word-revisions.js';
+    normalizeWordText, textMismatchDetail, queueCurrentTextRead, wordErrorDetail, projectNativeText } from '../word-revisions.js';
 
 const MAX_TARGETS = 256;
 const MAX_CANDIDATES = 1024;
@@ -63,7 +63,7 @@ function planEdits(state, after) {
     return { hunks, targets };
 }
 
-async function locate(context, scope, targets, options, allowSplit = true) {
+async function locate(context, scope, targets, options, allowSplit = true, nativeProjection = null) {
     const searches = new Map();
     for (const { text } of targets) {
         if (searches.has(text)) continue;
@@ -105,8 +105,13 @@ async function locate(context, scope, targets, options, allowSplit = true) {
                 throw new RevisionSafetyError('The current-view search target is unreadable. Generate a fresh proposal.');
             }
             if (candidate.currentContent && normalizeWordText(candidate.currentContent.value) !== candidate.text) continue;
+            const prefix = candidate.currentPrefix && normalizeWordText(candidate.currentPrefix.value);
+            // Word includes REF instructions and legacy symbol placeholders
+            // in native prefixes. Their raw lengths are not visible offsets.
+            // Match the prefix to the independently verified whole stream.
+            if (nativeProjection && prefix !== null && !nativeProjection.native.startsWith(prefix)) continue;
             const offset = candidate.currentPrefix
-                ? normalizeWordText(candidate.currentPrefix.value).length
+                ? nativeProjection ? nativeProjection.offsets[prefix.length] : prefix.length
                 : revisionTextState(candidate.prefix.value, options).text.length;
             const key = JSON.stringify([offset, candidate.text]);
             if (!needed.has(key)) continue;
@@ -140,7 +145,7 @@ async function locate(context, scope, targets, options, allowSplit = true) {
         const last = { start: target.start + target.text.length - lastText.length, text: lastText, range: null };
         return { target, first, last };
     });
-    await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false);
+    await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false, nativeProjection);
     for (let start = 0; start < endpoints.length; start += READ_BATCH_SIZE) {
       const unions = endpoints.slice(start, start + READ_BATCH_SIZE).map(({ target, first, last }) => {
           target.range = first.range.expandTo(last.range);
@@ -180,7 +185,9 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         if (read.currentText && typeof read.currentText.value !== 'string') {
             throw new RevisionSafetyError('Native current text is unreadable before writing. Draft a new proposal.');
         }
-        if (read.currentText && comparable(read.currentText.value) !== comparable(state.text)) {
+        const nativeProjection = read.currentText && projectNativeText(state,
+            read.currentText.value, { trimEnd: !options.paragraph });
+        if (read.currentText && !nativeProjection) {
             throw new RevisionSafetyError(`Native text and XML disagree before writing (${textMismatchDetail(comparable(state.text), comparable(read.currentText.value))}). Draft a new proposal.`);
         }
         if (!state.hasRevisions && !options.nativeTargets) return null;
@@ -193,7 +200,7 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         if (!hunks.length) return { strategy: 'revision', insertions: 0, deletions: 0, replacements: 0 };
         const ownsTracking = options.trackChanges !== false;
         if (ownsTracking && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
-        await locate(context, range, targets, options);
+        await locate(context, range, targets, options, true, nativeProjection);
         if (ownsTracking) context.document.load('changeTrackingMode');
         const baseline = queueRevisionRead(range, options);
         await context.sync();

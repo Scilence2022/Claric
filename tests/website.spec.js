@@ -28,7 +28,8 @@ describe('public website delivery contract', () => {
             expect(document.getElementById(id)).not.toBeNull();
         }
         expect(document.querySelectorAll('h1')).toHaveLength(1);
-        expect(document.querySelector('h1').textContent).toBe('Claric');
+        expect(document.querySelector('h1 [data-lang="en"]:not([hidden])').textContent)
+            .toBe('AI editing in Word.Every change, your call.');
         for (const link of document.querySelectorAll('a[href^="#"]')) {
             expect(document.getElementById(link.hash.slice(1))).not.toBeNull();
         }

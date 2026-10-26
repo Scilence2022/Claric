@@ -1,5 +1,5 @@
 /** Current text and revision boundaries, without accepting/rejecting Word revisions. */
-import { documentPartRoot } from './ooxml-text.js';
+import { documentPartRoot, symbolText } from './ooxml-text.js';
 import { rangeStructureFingerprint } from './ooxml-fingerprint.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -28,8 +28,56 @@ export class MutationSafetyError extends RevisionSafetyError {
     }
 }
 
-export const normalizeWordText = (text) => String(text || '').replace(/\r\n|\r/g, '\n').replaceAll('\v', '\n').replaceAll('\f', '\n');
+export const normalizeWordText = (text) => String(text || '').replace(/\r\n|\r/g, '\n').replaceAll('\v', '\n').replaceAll('\f', '\n').replaceAll('\u001E', '‑');
 export const normalizeRevisionText = (text) => normalizeWordText(text).replace(/\n$/, '');
+export const hasNativeFieldCodes = (text) => ['\u0013', '\u0014', '\u0015'].some((code) => text.includes(code));
+
+/** Reconcile Word's text stream with XML evidence, retaining a map from native
+ * prefix lengths to visible offsets. Field instructions are matched, never
+ * blindly stripped; a '(' is a symbol placeholder only at an actual w:sym.
+ * Returns null on any unexplained difference, including ordinary whitespace. */
+export function projectNativeText(state, value, { trimEnd = false } = {}) {
+    const native = trimEnd ? normalizeRevisionText(value) : normalizeWordText(value);
+    const includeCodes = hasNativeFieldCodes(native);
+    const offsets = [0];
+    let position = 0;
+    let text = '';
+    const tokens = [];
+    for (const token of state.nativeTokens || [{ text: state.text }]) {
+        const previous = tokens[tokens.length - 1];
+        if (token.code !== undefined && previous?.code !== undefined) previous.code += token.code;
+        else tokens.push({ ...token });
+    }
+    if (trimEnd) {
+        let last = tokens.length - 1;
+        while (last >= 0 && !tokens[last].text) last--;
+        if (last >= 0) tokens[last] = { ...tokens[last], text: tokens[last].text.replace(/\n$/, '') };
+    }
+    for (const token of tokens) {
+        const visible = normalizeWordText(token.text);
+        const choices = token.code !== undefined
+            ? [includeCodes ? normalizeWordText(token.code) : '']
+            : [visible, ...(token.alternatives || [])];
+        let matched = choices.find((choice) => native.startsWith(choice, position));
+        if (matched === undefined && token.code?.startsWith('\u0013') && token.code.endsWith('\u0014')
+            && !hasNativeFieldCodes(token.code.slice(1, -1)) && native[position] === '\u0013') {
+            const end = native.indexOf('\u0014', position + 1);
+            const instruction = native.slice(position + 1, end);
+            // Boundary padding in a serialized instruction is not visible
+            // text. Keep its internal spacing and quoted arguments exact.
+            const unpad = (code) => code.replace(/^ +| +$/g, '');
+            if (end >= 0 && !hasNativeFieldCodes(instruction)
+                && unpad(instruction) === unpad(token.code.slice(1, -1))) matched = native.slice(position, end + 1);
+        }
+        if (matched === undefined) return null;
+        for (let i = 1; i <= matched.length; i++) {
+            offsets[position + i] = text.length + Math.min(i, visible.length);
+        }
+        position += matched.length;
+        text += visible;
+    }
+    return position === native.length ? { text, native, offsets } : null;
+}
 
 /** Report the mismatch precisely without logging document excerpts. */
 export function textMismatchDetail(wanted, actual) {
@@ -58,8 +106,8 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         const paragraphs = Array.from(body.children).filter((node) => node.namespaceURI === W && node.localName === 'p');
         if (paragraphs.length === 2 && (emptyExportParagraph(paragraphs[1])
             || (typeof currentText === 'string' && emptyExportParagraph(paragraphs[1], true)
-                && revisionTextState(new XMLSerializer().serializeToString(paragraphs[0])).text
-                    === normalizeWordText(currentText)))) body = paragraphs[0];
+                && projectNativeText(revisionTextState(new XMLSerializer().serializeToString(paragraphs[0])),
+                    currentText)))) body = paragraphs[0];
     }
     const elements = [body, ...Array.from(body.getElementsByTagName('*'))];
     if (!elements.some((element) => element.namespaceURI === W)) {
@@ -72,11 +120,13 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     let paragraphCount = 0;
     let text = '';
     const segments = [];
+    const nativeTokens = [];
     const protectedSpans = [];
     const fields = [];
     let boundary = true;
     function append(value) {
         if (!value) return;
+        nativeTokens.push({ text: value });
         const previous = segments[segments.length - 1];
         if (!boundary && previous) previous.text += value;
         else segments.push({ start: text.length, text: value });
@@ -105,6 +155,8 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         if (name === 'delText') { hasHiddenContent = true; boundary = true; return; }
         if (name === 'fldChar') {
             const type = element.getAttributeNS(W, 'fldCharType') || element.getAttribute('w:fldCharType');
+            const code = { begin: '\u0013', separate: '\u0014', end: '\u0015' }[type];
+            if (code) nativeTokens.push({ text: '', code });
             boundary = true;
             if (type === 'begin') fields.push(text.length);
             else if (type === 'separate' && !fields.length) fields.push(0);
@@ -113,21 +165,40 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         }
         if (name === 'fldSimple') {
             const start = text.length;
+            const instruction = element.getAttributeNS(W, 'instr') || element.getAttribute('w:instr') || '';
+            nativeTokens.push({ text: '', code: '\u0013' + instruction + '\u0014' });
             boundary = true;
             for (const child of Array.from(element.children)) walk(child);
+            nativeTokens.push({ text: '', code: '\u0015' });
             protectedSpans.push({ start, end: text.length });
             boundary = true;
             return;
         }
-        if (['pPr', 'rPr', 'instrText', 'proofErr', 'drawing', 'object', 'pict'].includes(name)) return;
+        if (name === 'instrText') {
+            nativeTokens.push({ text: '', code: element.textContent || '' });
+            return;
+        }
+        if (['pPr', 'rPr', 'proofErr', 'drawing', 'object', 'pict'].includes(name)) return;
         if (name === 'p') {
-            if (paragraphCount++) { text += '\n'; boundary = true; }
+            if (paragraphCount++) { text += '\n'; nativeTokens.push({ text: '\n' }); boundary = true; }
         }
         if (name === 'ins' || name === 'moveTo') boundary = true;
         if (name === 't') append(element.textContent || '');
         else if (name === 'tab') append('\t');
         else if (name === 'br' || name === 'cr') append('\n');
         else if (name === 'noBreakHyphen') append('‑');
+        else if (name === 'sym') {
+            const start = text.length;
+            boundary = true;
+            append(symbolText(element));
+            // Word's legacy chSymbol is U+0028. Other hosts return the glyph
+            // or its font-specific private-use slot.
+            const code = element.getAttributeNS(W, 'char') || element.getAttribute('w:char') || '';
+            nativeTokens[nativeTokens.length - 1].alternatives = ['(',
+                ...(/^[0-9a-f]{4}$/i.test(code) ? [String.fromCharCode(parseInt(code, 16))] : [])];
+            protectedSpans.push({ start, end: text.length });
+            boundary = true;
+        }
         else for (const child of Array.from(element.children)) walk(child);
         if (name === 'ins' || name === 'moveTo') boundary = true;
     }
@@ -135,7 +206,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     if (body.namespaceURI === W) walk(body);
     else for (const child of Array.from(body.children)) walk(child);
     for (const start of fields) protectedSpans.push({ start, end: text.length });
-    return { text, segments, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
+    return { text, segments, nativeTokens, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
         protectedSpans, fieldOnlyProtection: protectedStructure && !nonFieldProtection,
         fingerprint: rangeStructureFingerprint(body.localName === 'p' && body !== root
             ? new XMLSerializer().serializeToString(body) : ooxml) };
