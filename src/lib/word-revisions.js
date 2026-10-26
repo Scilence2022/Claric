@@ -99,6 +99,27 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     const root = documentPartRoot(ooxml);
     if (!root) throw new RevisionSafetyError('Word revision XML is unreadable. Generate a fresh proposal.');
     let body = root.getElementsByTagNameNS(W, 'body')[0] || root;
+    // Word can export a whole generated TOC when asked for one of its
+    // paragraphs. Resolve only a uniquely proven native paragraph, rather
+    // than sending the neighbouring entries to the model repeatedly.
+    if (paragraph && typeof currentText === 'string') {
+        const toc = Array.from(body.getElementsByTagNameNS(W, 'sdt')).find((node) =>
+            Array.from(node.getElementsByTagNameNS(W, 'docPartGallery')).some((gallery) =>
+                gallery.getAttributeNS(W, 'val') === 'Table of Contents'));
+        const entries = Array.from((toc || body).getElementsByTagNameNS(W, 'p'));
+        const tocEntries = entries.filter((entry) => Array.from(entry.getElementsByTagNameNS(W, 'pStyle'))
+            .some((style) => /^TOC[1-9]$/i.test(style.getAttributeNS(W, 'val') || '')));
+        if (toc || tocEntries.length > 1) {
+            if (entries.length > 1) {
+                const matches = entries.filter((entry) => projectNativeText(
+                    revisionTextState(new XMLSerializer().serializeToString(entry)), currentText));
+                if (matches.length !== 1) {
+                    throw new RevisionSafetyError('Cannot isolate one native paragraph from the exported table of contents. Read a smaller selection.');
+                }
+                body = matches[0];
+            }
+        }
+    }
     // Word can append an empty export paragraph to a paragraph's OOXML.
     // Only a known single-paragraph scope permits dropping this boundary;
     // arbitrary ranges must retain their genuine blank paragraphs.
@@ -206,6 +227,13 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     if (body.namespaceURI === W) walk(body);
     else for (const child of Array.from(body.children)) walk(child);
     for (const start of fields) protectedSpans.push({ start, end: text.length });
+    // TOC titles and page numbers are generated field results, including
+    // entries whose paragraph export omits the outer multi-paragraph field.
+    const scopeParagraph = body.localName === 'p' ? body
+        : paragraphCount === 1 ? body.getElementsByTagNameNS(W, 'p')[0] : null;
+    const tocStyle = scopeParagraph && Array.from(scopeParagraph.getElementsByTagNameNS(W, 'pStyle'))
+        .some((style) => /^TOC[1-9]$/i.test(style.getAttributeNS(W, 'val') || ''));
+    if (tocStyle) protectedSpans.push({ start: 0, end: text.length });
     return { text, segments, nativeTokens, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
         protectedSpans, fieldOnlyProtection: protectedStructure && !nonFieldProtection,
         fingerprint: rangeStructureFingerprint(body.localName === 'p' && body !== root
@@ -225,9 +253,9 @@ function emptyExportParagraph(paragraph, allowEmptyRevisionMarkers = false) {
 /** Queue alongside existing loads, then resolve after the caller's sync. */
 export function queueRevisionRead(range, options = {}) {
     if (typeof range.getOoxml !== 'function') return null;
-    const xml = range.getOoxml();
-    const currentText = queueCurrentTextRead(options.paragraph && typeof range.getRange === 'function'
-        ? range.getRange('Content') : range);
+    const content = options.paragraph && typeof range.getRange === 'function' ? range.getRange('Content') : range;
+    const xml = typeof content.getOoxml === 'function' ? content.getOoxml() : range.getOoxml();
+    const currentText = queueCurrentTextRead(content);
     // Preserve the ClientResult value contract while pairing independent
     // evidence that a revised, empty export paragraph is not native content.
     return currentText ? { get value() { return xml.value; }, currentText } : xml;

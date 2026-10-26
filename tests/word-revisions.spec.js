@@ -1,9 +1,61 @@
 /** @jest-environment jsdom */
 import { revisionTextState, queueRevisionRead, resolveRevisionRead, normalizeRevisionText,
     verifyMutationText, MutationSafetyError, hostSupportsTrackedChanges, projectNativeText } from '../src/lib/word-revisions.js';
+import { parseDocument } from '../src/lib/document-parser.js';
+import { checkChunkAmendment } from '../src/lib/amendment-guard.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const wrap = (xml) => `<w:document xmlns:w="${W}"><w:body>${xml}</w:body></w:document>`;
+
+// Text-bearing TOC structure from report-subspecialty-training.docx. The
+// original contains one generated TOC with 13 entries and no manual breaks.
+const tefToc = require('fs').readFileSync(require('path').join(__dirname, 'fixtures/tef-generated-toc.xml'), 'utf8');
+test('expanded TOC exports resolve each native paragraph once without inventing manual breaks', () => {
+    const doc = new DOMParser().parseFromString(tefToc, 'text/xml');
+    const entries = Array.from(doc.getElementsByTagNameNS(W, 'p'));
+    const texts = entries.map((entry) => revisionTextState(new XMLSerializer().serializeToString(entry)).text);
+    expect(texts).toHaveLength(13);
+    const resolved = texts.map((text) => revisionTextState(wrap(tefToc), { paragraph: true, currentText: text }));
+    expect(resolved.map((state) => state.text)).toEqual(texts);
+    expect(resolved.every((state) => state.paragraphCount === 1 && !state.text.includes('\n'))).toBe(true);
+    expect(resolved.every((state) => state.protectedSpans.some(({ start, end }) => start === 0 && end === state.text.length))).toBe(true);
+    expect(resolved[1].text).toBe('Executive Summary\t3');
+    expect(() => revisionTextState(wrap(tefToc), { paragraph: true, currentText: 'Unknown entry' })).toThrow(/isolate/);
+    expect(revisionTextState(wrap(tefToc)).paragraphCount).toBe(13);
+});
+
+test('paragraph reads export and review the same Content range rather than the Paragraph proxy', () => {
+    const content = { getOoxml: jest.fn(() => ({ value: wrap('<w:p><w:r><w:t>One entry</w:t></w:r></w:p>') })),
+        getReviewedText: jest.fn(() => ({ value: 'One entry' })) };
+    const paragraph = { getOoxml: jest.fn(() => ({ value: wrap(tefToc) })), getRange: jest.fn(() => content) };
+    const read = queueRevisionRead(paragraph, { paragraph: true });
+    expect(resolveRevisionRead(paragraph, read, { paragraph: true }).text).toBe('One entry');
+    expect(paragraph.getOoxml).not.toHaveBeenCalled();
+    expect(paragraph.getRange).toHaveBeenCalledWith('Content');
+    expect(content.getReviewedText).toHaveBeenCalledTimes(1);
+});
+
+test('a mixed section with 25 paragraphs preserves one TOC and accepts surrounding prose edits', async () => {
+    const entries = Array.from(new DOMParser().parseFromString(tefToc, 'text/xml').getElementsByTagNameNS(W, 'p'));
+    const texts = ['TEF Thematic Report', ...entries.map((entry) => revisionTextState(new XMLSerializer().serializeToString(entry)).text),
+        ...Array.from({ length: 11 }, (_, i) => `Report introduction paragraph ${i + 1}.`)];
+    const items = texts.map((text, index) => {
+        const xml = index > 0 && index <= 13 ? wrap(tefToc) : wrap(`<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`);
+        return { text, style: 'Normal', styleBuiltIn: 'Normal', isListItem: false, load: jest.fn(), untrack: jest.fn(),
+            parentTableOrNullObject: { isNullObject: true, load: jest.fn() }, getOoxml: () => ({ value: xml }),
+            getRange: () => ({ getOoxml: () => ({ value: xml }), getReviewedText: () => ({ value: text }) }) };
+    });
+    global.Word = { run: async (callback) => callback({ document: { body: { paragraphs: { items, load: jest.fn() } } }, sync: async () => {} }) };
+    try {
+        const parsed = await parseDocument();
+        expect(parsed.paragraphs.map((p) => p.text)).toEqual(texts);
+        expect(parsed.paragraphs).toHaveLength(25);
+        const output = texts.join('\n').replace('Report introduction paragraph 1.', 'Revised introduction paragraph 1.');
+        expect(checkChunkAmendment({ paragraphs: parsed.paragraphs }, output).valid).toBe(true);
+        const invalid = texts.join('\n').replace('Executive Summary\t3', 'Executive Summary\t4');
+        expect(checkChunkAmendment({ paragraphs: parsed.paragraphs }, invalid).valid).toBe(false);
+    } finally { delete global.Word; }
+});
 
 const refCode = ' REF _Ref533004983 \\h  \\* MERGEFORMAT ';
 const refXml = '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
