@@ -182,6 +182,31 @@ describe('createProposalCard', () => {
     const card = makeCard({ items: makeItems(), onLocate });
     card.el.querySelectorAll('.proposal-card-locate')[1].click();
     expect(onLocate).toHaveBeenCalledWith('old text two');
+    expect(onLocate).toHaveBeenCalledTimes(1);
+  });
+
+  test('clicking a proposal label locates that item without changing its selection checkbox', () => {
+    const onLocate = jest.fn();
+    const card = makeCard({ items: makeItems(), onLocate });
+    const rows = card.el.querySelectorAll('.proposal-card-change');
+    rows[1].querySelector('.proposal-card-change-label').click();
+    expect(onLocate).toHaveBeenCalledWith('old text two');
+    expect(rows[1].querySelector('input').checked).toBe(true);
+    rows[0].querySelector('input').click();
+    expect(rows[0].querySelector('input').checked).toBe(false);
+    expect(onLocate).toHaveBeenCalledTimes(1);
+  });
+
+  test('applied proposal navigation uses the amended text from both the row and locate button', () => {
+    const onLocate = jest.fn();
+    const items = makeItems();
+    items[1].after = '\nUpdated wording.\nAnother paragraph.';
+    const card = makeCard({ items, onLocate });
+    card.markItemApplied('b', { applied: true });
+    const row = card.el.querySelectorAll('.proposal-card-change')[1];
+    row.querySelector('.proposal-card-change-label').click();
+    row.querySelector('.proposal-card-locate').click();
+    expect(onLocate.mock.calls).toEqual([['Updated wording.'], ['Updated wording.']]);
   });
 
   test('apply forwards only the checked ids', async () => {

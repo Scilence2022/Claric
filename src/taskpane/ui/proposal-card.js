@@ -396,6 +396,15 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             rowHead.appendChild(text);
             changeEntries.push({ id: item.id, box, row, rowHead });
             if (item.searchText && onLocate) {
+                const locateItem = () => {
+                    // Auto-applied proposals may no longer contain the source
+                    // wording. Locate their current text when it is available.
+                    const currentText = row.dataset.outcome === 'applied' && typeof item.after === 'string'
+                        ? item.after.split(/[\r\n\v\f]+/).find((line) => line.trim())?.trim() : null;
+                    return onLocate(currentText || item.searchText);
+                };
+                rowHead.title = 'Show in document';
+                rowHead.addEventListener('click', locateItem);
                 const locate = document.createElement('button');
                 locate.type = 'button';
                 locate.className = 'proposal-card-locate';
@@ -403,7 +412,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
                 locate.textContent = '§';
                 locate.addEventListener('click', (event) => {
                     event.stopPropagation();
-                    onLocate(item.searchText);
+                    locateItem();
                 });
                 rowHead.appendChild(locate);
             }
