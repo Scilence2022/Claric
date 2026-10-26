@@ -36,6 +36,33 @@ test('paragraph reads keep expanded XML on the Paragraph proxy and scope it usin
     expect(content.getReviewedText).toHaveBeenCalledTimes(1);
 });
 
+test('expanded reviewed TOC text uses the pristine native paragraph to select one entry', () => {
+    const reviewed = revisionTextState(wrap(tefToc)).text;
+    const range = { text: 'Executive Summary\t3' };
+    const state = resolveRevisionRead(range, { value: wrap(tefToc), currentText: { value: reviewed } }, { paragraph: true });
+    expect(state.text).toBe(range.text);
+    expect(state.paragraphCount).toBe(1);
+    expect(state.protectedSpans).toContainEqual({ start: 0, end: range.text.length });
+});
+
+test.each(['Unmatched native TOC entry', ''])('unresolved generated fields remain readable and immutable: %s', (text) => {
+    const read = { value: wrap(tefToc), currentText: { value: revisionTextState(wrap(tefToc)).text } };
+    const state = resolveRevisionRead({ text }, read, { paragraph: true });
+    expect(state).toMatchObject({ text, paragraphCount: 1, protectedStructure: true, fieldOnlyProtection: false,
+        protectedSpans: [{ start: 0, end: text.length }] });
+    if (text) {
+        expect(checkChunkAmendment({ paragraphs: [{ ...state }] }, 'Changed native TOC entry').valid).toBe(false);
+    }
+});
+
+test('revision-blind paragraph text never selects an entry with unresolved revisions', () => {
+    const revised = tefToc.replace('<w:t>Executive Summary</w:t>', '<w:del><w:r><w:delText>Old title</w:delText></w:r></w:del><w:t>Executive Summary</w:t>');
+    const state = resolveRevisionRead({ text: 'Executive Summary\t3' },
+        { value: wrap(revised), currentText: { value: 'Expanded native field text' } }, { paragraph: true });
+    expect(state).toMatchObject({ text: 'Executive Summary\t3', hasRevisions: true, protectedStructure: true,
+        fieldOnlyProtection: false, segments: [] });
+});
+
 test('Mac Content XML failures cannot poison the first paragraph read batch', async () => {
     let unsupportedExportQueued = false;
     const contents = [];
@@ -60,7 +87,7 @@ test('Mac Content XML failures cannot poison the first paragraph read batch', as
     } finally { delete global.Word; }
 });
 
-test('a mixed section with 25 paragraphs preserves one TOC and accepts surrounding prose edits', async () => {
+test.each([false, true])('a mixed section preserves one TOC and accepts surrounding prose edits, expanded reviewed text=%s', async (expandedReviewed) => {
     const entries = Array.from(new DOMParser().parseFromString(tefToc, 'text/xml').getElementsByTagNameNS(W, 'p'));
     const texts = ['TEF Thematic Report', ...entries.map((entry) => revisionTextState(new XMLSerializer().serializeToString(entry)).text),
         ...Array.from({ length: 11 }, (_, i) => `Report introduction paragraph ${i + 1}.`)];
@@ -68,7 +95,8 @@ test('a mixed section with 25 paragraphs preserves one TOC and accepts surroundi
         const xml = index > 0 && index <= 13 ? wrap(tefToc) : wrap(`<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`);
         return { text, style: 'Normal', styleBuiltIn: 'Normal', isListItem: false, load: jest.fn(), untrack: jest.fn(),
             parentTableOrNullObject: { isNullObject: true, load: jest.fn() }, getOoxml: () => ({ value: xml }),
-            getRange: () => ({ getOoxml: () => ({ value: xml }), getReviewedText: () => ({ value: text }) }) };
+            getRange: () => ({ getOoxml: () => ({ value: xml }),
+                getReviewedText: () => ({ value: expandedReviewed && index > 0 && index <= 13 ? revisionTextState(wrap(tefToc)).text : text }) }) };
     });
     global.Word = { run: async (callback) => callback({ document: { body: { paragraphs: { items, load: jest.fn() } } }, sync: async () => {} }) };
     try {
