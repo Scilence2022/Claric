@@ -95,14 +95,14 @@ export function wordErrorDetail(error) {
 }
 
 /** Visible islands never span an insertion boundary or an earlier deletion. */
-export function revisionTextState(ooxml, { paragraph = false, currentText = null } = {}) {
+export function revisionTextState(ooxml, { paragraph = false, currentText = null, paragraphText = null } = {}) {
     const root = documentPartRoot(ooxml);
     if (!root) throw new RevisionSafetyError('Word revision XML is unreadable. Generate a fresh proposal.');
     let body = root.getElementsByTagNameNS(W, 'body')[0] || root;
     // Word can export a whole generated TOC when asked for one of its
     // paragraphs. Resolve only a uniquely proven native paragraph, rather
     // than sending the neighbouring entries to the model repeatedly.
-    if (paragraph && typeof currentText === 'string') {
+    if (paragraph && (typeof currentText === 'string' || typeof paragraphText === 'string')) {
         const toc = Array.from(body.getElementsByTagNameNS(W, 'sdt')).find((node) =>
             Array.from(node.getElementsByTagNameNS(W, 'docPartGallery')).some((gallery) =>
                 gallery.getAttributeNS(W, 'val') === 'Table of Contents'));
@@ -111,9 +111,29 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
             .some((style) => /^TOC[1-9]$/i.test(style.getAttributeNS(W, 'val') || '')));
         if (toc || tocEntries.length > 1) {
             if (entries.length > 1) {
-                const matches = entries.filter((entry) => projectNativeText(
-                    revisionTextState(new XMLSerializer().serializeToString(entry)), currentText));
+                const states = entries.map((entry) => revisionTextState(new XMLSerializer().serializeToString(entry)));
+                let matches = entries.filter((_entry, i) => typeof currentText === 'string'
+                    && projectNativeText(states[i], currentText));
+                // Reviewed text can expand to the entire TOC too. Paragraph.text
+                // still identifies a pristine entry, but is revision-blind, so
+                // it must never resolve an entry containing tracked changes.
+                if (matches.length !== 1 && typeof paragraphText === 'string') {
+                    matches = entries.filter((_entry, i) => !states[i].hasRevisions && !states[i].hasHiddenContent
+                        && projectNativeText(states[i], paragraphText));
+                }
                 if (matches.length !== 1) {
+                    if (typeof paragraphText === 'string') {
+                        // An unresolvable generated field is readable document
+                        // data, not permission to mutate it. Keep the native
+                        // paragraph once and protect its entire text. Do not
+                        // let this field abort review of the surrounding prose.
+                        const text = normalizeWordText(paragraphText);
+                        return { text, segments: [], nativeTokens: [{ text }], paragraphCount: 1,
+                            hasRevisions: states.some((state) => state.hasRevisions), hasHiddenContent: true,
+                            protectedStructure: true, fieldOnlyProtection: false,
+                            protectedSpans: [{ start: 0, end: text.length }],
+                            fingerprint: JSON.stringify([rangeStructureFingerprint(ooxml), text]) };
+                    }
                     throw new RevisionSafetyError('Cannot isolate one native paragraph from the exported table of contents. Read a smaller selection.');
                 }
                 body = matches[0];
@@ -266,7 +286,13 @@ export function queueRevisionRead(range, options = {}) {
 }
 
 export function resolveRevisionRead(range, read, options = {}) {
-    return read ? revisionTextState(read.value, { ...options, currentText: read.currentText?.value }) : { text: range.text || '', hasRevisions: false,
+    let paragraphText = null;
+    // Parser/re-anchoring callers already load text. Search ranges may not;
+    // never turn an optional scoping hint into a PropertyNotLoaded failure.
+    if (options.paragraph) {
+        try { if (typeof range.text === 'string') paragraphText = range.text; } catch { /* not loaded */ }
+    }
+    return read ? revisionTextState(read.value, { ...options, paragraphText, currentText: read.currentText?.value }) : { text: range.text || '', hasRevisions: false,
         fingerprint: null, protectedStructure: false };
 }
 
