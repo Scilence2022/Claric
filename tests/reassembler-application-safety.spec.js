@@ -129,9 +129,7 @@ test('native content mismatch in the first paragraph prevents writes to the tail
   expect(result).toMatchObject({ amendmentsApplied: 0, appliedParagraphs: 0,
     appliedChunkIds: [], attemptedChunkIds: ['section'], failedChunkIds: ['section'],
     partialChunkIds: [], uncertainChunkIds: [] });
-  // Content is now read during re-anchoring, so drift is caught before
-  // reaching the paragraph preflight. No tail paragraph may be written.
-  expect(result.errors[0]).toMatch(/original content no longer matches the staged range/);
+  expect(result.errors[0]).toMatch(/Paragraph 1: native content differs/);
   expect(applyTokenMapStrategy).not.toHaveBeenCalled();
   expect(document.states.map((state) => state.text)).toEqual(storedTexts);
   expect(document.contentRanges.every((range) => !range.insertText.mock.calls.length)).toBe(true);
@@ -368,7 +366,7 @@ test('a multi-paragraph section never falls back to a whole-range rewrite that w
 
   expect(result).toMatchObject({ amendmentsApplied: 0, appliedParagraphs: 0, appliedChunkIds: [],
     failedChunkIds: ['section'], partialChunkIds: [], uncertainChunkIds: [] });
-  expect(result.errors[0]).toMatch(/re-anchor check failed \(GeneralException\)/);
+  expect(result.errors[0]).toMatch(/GeneralException.*multi-paragraph section cannot fall back/);
   expect(applyTokenMapStrategy).not.toHaveBeenCalled();
   expect(applySentenceDiffStrategy).not.toHaveBeenCalled();
   expect(document.range.insertText).not.toHaveBeenCalled();

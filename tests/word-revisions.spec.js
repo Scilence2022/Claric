@@ -24,15 +24,40 @@ test('expanded TOC exports resolve each native paragraph once without inventing 
     expect(revisionTextState(wrap(tefToc)).paragraphCount).toBe(13);
 });
 
-test('paragraph reads export and review the same Content range rather than the Paragraph proxy', () => {
-    const content = { getOoxml: jest.fn(() => ({ value: wrap('<w:p><w:r><w:t>One entry</w:t></w:r></w:p>') })),
-        getReviewedText: jest.fn(() => ({ value: 'One entry' })) };
+test('paragraph reads keep expanded XML on the Paragraph proxy and scope it using native Content text', () => {
+    const content = { getOoxml: jest.fn(() => { throw new Error('GeneralException'); }),
+        getReviewedText: jest.fn(() => ({ value: 'Executive Summary\t3' })) };
     const paragraph = { getOoxml: jest.fn(() => ({ value: wrap(tefToc) })), getRange: jest.fn(() => content) };
     const read = queueRevisionRead(paragraph, { paragraph: true });
-    expect(resolveRevisionRead(paragraph, read, { paragraph: true }).text).toBe('One entry');
-    expect(paragraph.getOoxml).not.toHaveBeenCalled();
+    expect(resolveRevisionRead(paragraph, read, { paragraph: true }).text).toBe('Executive Summary\t3');
+    expect(paragraph.getOoxml).toHaveBeenCalledTimes(1);
+    expect(content.getOoxml).not.toHaveBeenCalled();
     expect(paragraph.getRange).toHaveBeenCalledWith('Content');
     expect(content.getReviewedText).toHaveBeenCalledTimes(1);
+});
+
+test('Mac Content XML failures cannot poison the first paragraph read batch', async () => {
+    let unsupportedExportQueued = false;
+    const contents = [];
+    const items = Array.from({ length: 25 }, (_, index) => {
+        const text = index < 24 ? '' : 'Report introduction.';
+        const xml = wrap(`<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`);
+        const content = { getOoxml: jest.fn(() => {
+            unsupportedExportQueued = true;
+            return { value: xml };
+        }), getReviewedText: () => ({ value: text }) };
+        contents.push(content);
+        return { text, style: 'Normal', styleBuiltIn: 'Normal', isListItem: false,
+            load: jest.fn(), untrack: jest.fn(), parentTableOrNullObject: { isNullObject: true, load: jest.fn() },
+            getOoxml: () => ({ value: xml }), getRange: () => content };
+    });
+    global.Word = { run: async (callback) => callback({ document: { body: { paragraphs: { items, load: jest.fn() } } },
+        sync: async () => { if (unsupportedExportQueued) throw new Error('GeneralException'); } }) };
+    try {
+        const parsed = await parseDocument();
+        expect(parsed.paragraphs.map((p) => p.text)).toEqual(['Report introduction.']);
+        expect(contents.every((content) => !content.getOoxml.mock.calls.length)).toBe(true);
+    } finally { delete global.Word; }
 });
 
 test('a mixed section with 25 paragraphs preserves one TOC and accepts surrounding prose edits', async () => {
