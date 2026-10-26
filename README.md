@@ -237,6 +237,15 @@ processing; inspect any writes that already completed.
 Built-in skills include `/copy-edit`, `/check-doc`, `/flag-issues`,
 `/summarize-contract`, `/industry-overview`, and `/storylining`.
 
+`/check-doc` requires exact source quotes for candidate issues and verifies them
+against relevant evidence from the complete parsed body before posting comments.
+Abbreviations are extracted only from supported adjacent names, rather than
+arbitrary surrounding text. Existing references, quotations, generated fields
+and selected external question lists are protected from unsupported corrections.
+Uncertain candidates are withheld and counted separately in the task summary.
+This adds a verification request for sections with eligible candidates; external
+questionnaires and footnote/endnote stories are outside the evidence index.
+
 ### Staged Proposals & Per-Change Review
 
 Proposals provide a diff preview, per-change selection, and source-location

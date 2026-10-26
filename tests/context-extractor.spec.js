@@ -193,7 +193,7 @@ describe('extractContext - abbreviations', () => {
     const docModel = makeDocModel([
       makePara({
         index: 0,
-        text: 'Something (A) is not an abbreviation but (AB) is.',
+        text: 'Something (A) is not an abbreviation but Alpha Beta (AB) is.',
         tokenEstimate: 12,
       }),
     ]);
@@ -397,5 +397,37 @@ describe('formatContextPrefix', () => {
     };
     const result = formatContextPrefix(emptyContext, 'Some chunk text');
     expect(result).toBe('');
+  });
+});
+
+
+describe('abbreviation source evidence regressions', () => {
+  test('extracts adjacent medical expansions without manufacturing a glossary', () => {
+    const paragraphs = [
+      makePara({ index: 0, text: 'The focus of this thematic report is Subspecialty Training including Gynaecology Oncology (GO), Maternal and Fetal Medicine (MFM), Reproductive Medicine and Surgery (RM) and Urogynaecology (UG).' }),
+      makePara({ index: 1, text: 'This range from 4% (GO) to 44% (URO).' }),
+    ];
+    const context = extractContext({ paragraphs });
+    expect(context.abbreviations.map(({ abbreviation, expansion }) => [abbreviation, expansion])).toEqual([
+      ['GO', 'Gynaecology Oncology'], ['MFM', 'Maternal and Fetal Medicine'],
+      ['RM', 'Reproductive Medicine and Surgery'], ['UG', 'Urogynaecology'],
+    ]);
+    expect(context.paragraphs).toBe(paragraphs);
+    expect(formatContextPrefix(context, 'URO')).not.toContain('44%');
+  });
+
+  test('bare mentions cannot hide a later definition or use unrelated earlier initials', () => {
+    const context = extractContext({ paragraphs: [
+      makePara({ index: 0, text: 'Some unrelated report (ABC) or Alpha Beautiful Cat followed by unrelated prose (ABC).' }),
+      makePara({ index: 1, text: 'Acme Business Corporation (ABC).' }),
+      makePara({ index: 2, text: 'Non-Disclosure Agreement (NDA).' }),
+      makePara({ index: 3, text: 'SEC: Securities and Exchange Commission' }),
+      makePara({ index: 4, text: 'URO: 44% of trainees answered this question.' }),
+    ] });
+    expect(context.abbreviations).toEqual([
+      { abbreviation: 'ABC', expansion: 'Acme Business Corporation', paragraphIndex: 1 },
+      { abbreviation: 'NDA', expansion: 'Non-Disclosure Agreement', paragraphIndex: 2 },
+      { abbreviation: 'SEC', expansion: 'Securities and Exchange Commission', paragraphIndex: 3 },
+    ]);
   });
 });

@@ -61,6 +61,13 @@ export function buildDocumentCompletionSummary({ results = [], chunks = [], appl
     const outcome = stopped ? 'cancelled' : incomplete ? 'incomplete' : 'completed';
     const parts = [`Document review ${outcome}. Reviewed ${reviewed} of ${chunks.length} section(s).`,
         `Inserted ${applicationResult.commentsInserted || 0} comment(s) in Word; applied ${applicationResult.amendmentsApplied || 0} amendment(s).`];
+    const evidenceReviews = results.filter((result) => result.status === 'fulfilled' && result.review);
+    if (evidenceReviews.length) {
+        const confirmed = evidenceReviews.reduce((sum, result) => sum + result.review.confirmedCount, 0);
+        const withheld = evidenceReviews.reduce((sum, result) => sum + result.review.withheldCount, 0);
+        parts.push(`Evidence checks confirmed ${confirmed} issue(s).`);
+        if (withheld) parts.push(`${withheld} candidate issue(s) were withheld as unsupported or uncertain; they are not correction requests.`);
+    }
     if (failed) parts.push(`${failed} section(s) failed during processing.`);
     if (errors.length || applicationResult.failedChunkIds?.length) parts.push('Some results could not be applied. See the activity log for details.');
     if (stopped) parts.push('Any comments and changes already applied remain in the document.');

@@ -117,3 +117,19 @@ describe('targeted edit scope', () => {
     expect(staged.results.every((r) => r.amendment)).toBe(true);
   });
 });
+
+test('document review policy and full source context survive repeated failed-chunk retries', async () => {
+  const failed = { status: 'rejected', chunk: chunks[0], chunkId: chunks[0].id, error: 'Verification unavailable.' };
+  processChunksParallel.mockResolvedValue([failed]);
+  const staged = await runDocumentSkill(deps(), { category: 'comment', promptTemplate: 'Review.',
+    reviewPolicy: 'document-consistency', gateApply: true });
+  const firstRetry = await staged.retryFailed();
+  await firstRetry.retryFailed();
+  expect(processChunksParallel).toHaveBeenCalledTimes(3);
+  const originalContext = processChunksParallel.mock.calls[0][1].documentContext;
+  for (const [, options] of processChunksParallel.mock.calls) {
+    expect(options.reviewPolicy).toBe('document-consistency');
+    expect(options.documentContext).toBe(originalContext);
+  }
+  expect(applyChunkResults).not.toHaveBeenCalled();
+});

@@ -34,16 +34,16 @@ export const BUILTIN_SKILLS = Object.freeze([
     Object.freeze({
         name: 'check-doc',
         slash: '/check-doc',
-        description: 'Check the whole document for inconsistent defined terms, broken cross-references, and numbering gaps',
+        description: 'Check the whole document for evidence-backed spelling, grammar, terminology, reference and numbering issues',
         category: 'comment',
         scope: 'document',
+        reviewPolicy: 'document-consistency',
         defaultTemplate:
-            'Review the following document section as a meticulous contract proofreader. Identify ONLY these issue types:\n' +
-            '1. Defined terms used inconsistently (e.g. a term is defined with one capitalization or wording but used differently elsewhere).\n' +
-            '2. Broken or stale cross-references (references to sections, clauses, schedules, or exhibits that do not exist or are mislabeled).\n' +
-            '3. Numbering gaps or sequence errors (e.g. 1.1, 1.2, 1.4 with 1.3 missing; letters out of order).\n\n' +
-            'If you find issues, write a concise comment listing each issue with the exact quoted text and the suggested fix. ' +
-            'If the section is clean, reply with exactly: NO ISSUES FOUND.\n\n{selection}',
+            'Review the following document section for objective spelling and grammar errors, inconsistent terms, ' +
+            'broken references and demonstrable numbering errors. Assess it in the context of the complete document. ' +
+            'Report only defects supported by exact source evidence and a specific justified correction. ' +
+            'Style preferences, repeated citations, selected question lists and definitions located in another section are not errors. ' +
+            'Follow the structured evidence output policy.\n\n{selection}',
     }),
     Object.freeze({
         name: 'copy-edit',
