@@ -253,8 +253,12 @@ function emptyExportParagraph(paragraph, allowEmptyRevisionMarkers = false) {
 /** Queue alongside existing loads, then resolve after the caller's sync. */
 export function queueRevisionRead(range, options = {}) {
     if (typeof range.getOoxml !== 'function') return null;
+    // Keep XML exports on the caller's proxy. On Mac, exporting Content
+    // ranges of blank/anchored paragraphs can fail at sync with a generic
+    // host error. Native text still needs Content to exclude the paragraph
+    // mark; expanded TOC XML is scoped using that independent text below.
+    const xml = range.getOoxml();
     const content = options.paragraph && typeof range.getRange === 'function' ? range.getRange('Content') : range;
-    const xml = typeof content.getOoxml === 'function' ? content.getOoxml() : range.getOoxml();
     const currentText = queueCurrentTextRead(content);
     // Preserve the ClientResult value contract while pairing independent
     // evidence that a revised, empty export paragraph is not native content.
