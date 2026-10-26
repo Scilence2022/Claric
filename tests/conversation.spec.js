@@ -1728,6 +1728,7 @@ describe('createConversation.submit', () => {
 
     expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
     expect(actions.runDocumentSkill.mock.calls[0][1].category).toBe('comment');
+    expect(actions.runDocumentSkill.mock.calls[0][1].reviewPolicy).toBe('document-consistency');
     expect(view._msg.addCitationPills).toHaveBeenCalledTimes(1);
     const pills = view._msg.addCitationPills.mock.calls[0][0];
     expect(pills[0].label).toBe('Section 1. Definitions and Interpretation');

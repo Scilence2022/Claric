@@ -3049,6 +3049,7 @@ export async function fireSelectionComment(deps, { promptTemplate, signal } = {}
  * @param {string} args.category - 'amendment' | 'comment'
  * @param {string} args.promptTemplate - Explicit template for the pipeline
  * @param {string} [args.commentInstructions] - Merged-mode comment instructions
+ * @param {string|null} [args.reviewPolicy] - Built-in evidence checks, retained on retries
  * @param {function} [args.onProgress] - Progress callback from the orchestrator
  * @param {function} [args.onChunkToken] - Live per-chunk token callback
  *   (chunkInfo, kind, token); kind is 'content' or 'reasoning'
@@ -3058,7 +3059,7 @@ export async function fireSelectionComment(deps, { promptTemplate, signal } = {}
  * @returns {Promise<{ results: Array, applicationResult?: object, chunks: Array, cancelled?: boolean,
  *   staged?: boolean, apply?: Function, discard?: Function, failedCount?: number, cancelledCount?: number }>}
  */
-export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', onProgress, onChunkToken, gateApply = false, whitespaceOnly = false, signal: signalArg } = {}) {
+export async function runDocumentSkill(deps, { category, promptTemplate, commentInstructions = '', reviewPolicy = null, onProgress, onChunkToken, gateApply = false, whitespaceOnly = false, signal: signalArg } = {}) {
     const { appState, log, logWithRetry, conversationHistory = [] } = deps;
     // Honor the caller's signal; fall back to the shared processing slot for
     // legacy callers that rely on it having been set before invocation.
@@ -3108,6 +3109,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         concurrency,
         timeoutMs: 300000,
         commentInstructions,
+        reviewPolicy,
         conversationHistory,
     });
 
@@ -3228,7 +3230,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         }
         return retryFailedChunks(deps, {
             failedResults: failedChunks, bookmarkMap, backendConfig, promptShim, onProgress, setBusy,
-            documentContext, commentInstructions, concurrency, onChunkToken, conversationHistory, scopeTargets,
+            documentContext, commentInstructions, reviewPolicy, concurrency, onChunkToken, conversationHistory, scopeTargets,
         });
     };
 
@@ -3277,7 +3279,7 @@ const retryLifecycles = new WeakMap();
 
 export async function retryFailedChunks(deps, {
     failedResults, bookmarkMap, backendConfig, promptShim, onProgress,
-    documentContext = null, commentInstructions = '', concurrency = 4,
+    documentContext = null, commentInstructions = '', reviewPolicy = null, concurrency = 4,
     conversationHistory = deps.conversationHistory,
     onChunkToken, setBusy = () => {}, lifecycle, scopeTargets = null,
 } = {}) {
@@ -3309,7 +3311,7 @@ export async function retryFailedChunks(deps, {
         const results = await processChunksParallel(chunks, {
             config: backendConfig, promptManager: promptShim, documentContext,
             log, onProgress, onChunkToken, signal: myController.signal,
-            concurrency, timeoutMs: 300000, commentInstructions, conversationHistory,
+            concurrency, timeoutMs: 300000, commentInstructions, reviewPolicy, conversationHistory,
         });
         const whitespaceChunkIds = new Set(failedResults.filter((result) => result.whitespaceOnly).map((result) => result.chunkId));
         if (whitespaceChunkIds.size) {
@@ -3380,7 +3382,7 @@ export async function retryFailedChunks(deps, {
             },
             retryFailed: (opts = {}) => retryFailedChunks(deps, {
                 failedResults, bookmarkMap, backendConfig, promptShim, onProgress,
-                documentContext, commentInstructions, concurrency, onChunkToken, ...opts, lifecycle: state,
+                documentContext, commentInstructions, reviewPolicy, concurrency, onChunkToken, ...opts, lifecycle: state,
                 conversationHistory,
             }),
         };

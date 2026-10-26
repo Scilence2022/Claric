@@ -97,3 +97,15 @@ describe('document completion summaries', () => {
         expect(text.length).toBeLessThan(600);
     });
 });
+
+test('document evidence summary separates confirmed issues from withheld claims', () => {
+  const { buildDocumentCompletionSummary } = require('../src/taskpane/ui/completion-summary.js');
+  const summary = buildDocumentCompletionSummary({
+    results: [{ status: 'fulfilled', comment: 'A verified misspelling.', review: { confirmedCount: 1, withheldCount: 4 } },
+      { status: 'fulfilled', comment: null, review: { confirmedCount: 0, withheldCount: 2 } }],
+    chunks: [{}, {}], applicationResult: { commentsInserted: 1 },
+  });
+  expect(summary).toContain('confirmed 1 issue(s)');
+  expect(summary).toContain('6 candidate issue(s) were withheld');
+  expect(summary).toContain('they are not correction requests');
+});

@@ -34,6 +34,9 @@ import { withModelRetry } from './model-retry.js';
 const loadAmendmentGuard = (options) => loadLazyModule('amendment-guard',
   () => import(/* webpackChunkName: "amendment-guard" */ './amendment-guard.js'), { label: 'amendment safeguards', ...options });
 
+const loadDocumentReview = (options) => loadLazyModule('document-review',
+  () => import(/* webpackChunkName: "document-review" */ './document-review.js'), { label: 'document review evidence checks', ...options });
+
 /**
  * @typedef {import('./document-chunker.js').DocumentChunk} DocumentChunk
  * @typedef {import('./context-extractor.js').DocumentContext} DocumentContext
@@ -50,6 +53,7 @@ const loadAmendmentGuard = (options) => loadLazyModule('amendment-guard',
  * @property {string|null} reasoning - Model chain-of-thought when streamed
  * @property {{metaReply: boolean, reason: string}|null} guard - Set when the reply was
  *   discarded as chat rather than document text (amendment is then null)
+ * @property {{confirmedCount: number, withheldCount: number}} [review] - Evidence review counts
  * @property {DocumentChunk} chunk - Reference to original chunk
  */
 
@@ -192,6 +196,7 @@ FORMAT YOUR RESPONSE WITH THESE EXACT DELIMITERS:
  * @param {number} [options.concurrency=4] - Max parallel LLM calls
  * @param {number} [options.timeoutMs=30000] - Per-chunk LLM timeout
  * @param {string} [options.commentInstructions=''] - Comment instructions for merged mode
+ * @param {string|null} [options.reviewPolicy=null] - Built-in evidence review policy (comment mode only)
  * @param {function} [options.onChunkToken] - When provided, chunks are sent with
  *   streaming enabled and this callback fires as (chunkInfo, kind, token) for
  *   each delta; chunkInfo is { id, index }, kind is 'content' or 'reasoning'
@@ -212,6 +217,7 @@ export async function processChunksParallel(chunks, options) {
     concurrency = 4,
     timeoutMs = 30000,
     commentInstructions = '',
+    reviewPolicy = null,
     onChunkToken,
     sendMessagesFn = defaultSendMessages,
     sendMessagesStreamFn = defaultSendMessagesStream,
@@ -224,6 +230,11 @@ export async function processChunksParallel(chunks, options) {
   }
 
   const mode = promptManager.getActiveMode();
+  const review = reviewPolicy ? await loadDocumentReview({ signal }) : null;
+  if (review && (reviewPolicy !== review.DOCUMENT_REVIEW_POLICY || mode !== 'comment')) {
+    throw new Error('Unsupported document review policy or mode.');
+  }
+  const reviewIndex = review ? review.buildReviewIndex(documentContext) : null;
   // The user's instruction, used to tell requested text from model chat.
   const instructionText = promptManager.getActivePrompt('amendment')?.template || '';
   const { classifyChunkReply, checkChunkAmendment } = mode === 'comment'
@@ -269,6 +280,7 @@ export async function processChunksParallel(chunks, options) {
       error: data.error || null,
       reasoning: data.reasoning || null,
       guard: data.guard || null,
+      ...(data.review ? { review: data.review } : {}),
       chunk,
     };
   }
@@ -300,7 +312,7 @@ export async function processChunksParallel(chunks, options) {
       }
 
       // Compose messages for this chunk
-      const messages = withConversationHistory(_composeChunkMessages(
+      let messages = withConversationHistory(_composeChunkMessages(
         chunk,
         documentContext,
         promptManager,
@@ -308,6 +320,8 @@ export async function processChunksParallel(chunks, options) {
         commentInstructions,
         formatContextPrefixFn
       ), options.conversationHistory);
+
+      if (review) messages = review.reviewDraftMessages(messages, chunk, reviewIndex);
 
       // Send to LLM. When the caller wants live tokens (chat UI model
       // activity view), use the streaming transport; otherwise the plain
@@ -317,6 +331,7 @@ export async function processChunksParallel(chunks, options) {
       let amendment = null;
       let comment = null;
       let guard = null;
+      let reviewResult = null;
       const requestLog = (message, type) => log(`Chunk ${chunk.id}: ${message}`, type);
       // Check -> repair -> recheck happens before staging; no Word writes or
       // automatic replay of native edits can occur in this loop.
@@ -396,6 +411,42 @@ export async function processChunksParallel(chunks, options) {
           comment = restoreProtocolMarkers(comment);
         }
 
+        if (review) {
+          let candidates;
+          try {
+            candidates = review.parseReviewCandidates(comment);
+          } catch (error) {
+            if (attempt) throw error;
+            requestLog('Review output did not match the evidence schema; requesting one repair.', 'warning');
+            messages.push({ role: 'user', content: 'Return the structured findings JSON required by the system policy. '
+              + 'Use exact source quotes and supplied paragraph IDs. Do not invent evidence. The previous response was invalid JSON or schema.' });
+            continue;
+          }
+          const screened = review.screenReviewCandidates(candidates, chunk, reviewIndex);
+          comment = null;
+          let verified = { confirmedCount: 0, withheldCount: 0 };
+          if (screened.kept.length) {
+            const verificationMessages = review.reviewVerificationMessages(screened.kept, reviewIndex);
+            let verification;
+            if (typeof onChunkToken === 'function') {
+              const info = { id: `${chunk.id}-verify`, index: chunkIndex };
+              const streamed = await sendMessagesStreamFn(config, verificationMessages, {
+                onContent: (t) => onChunkToken(info, 'content', t),
+                onReasoning: (t) => onChunkToken(info, 'reasoning', t),
+              }, requestLog, signal, timeoutMs);
+              verification = streamed.content;
+            } else {
+              verification = await sendMessagesFn(config, verificationMessages, requestLog, signal, timeoutMs);
+            }
+            if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+            verified = review.finalizeReview(verification, screened.kept);
+            comment = verified.confirmedCount ? verified.comment : null;
+          }
+          reviewResult = { confirmedCount: verified.confirmedCount, withheldCount: screened.withheld.length + verified.withheldCount };
+          requestLog(`Evidence review: ${verified.confirmedCount} confirmed, ${screened.withheld.length + verified.withheldCount} withheld.`, 'info');
+          break;
+        }
+
         // A chat reply about the chunk ("the section was not included in the
         // text provided") is not the chunk's amended text. It is long enough to
         // pass the reassembler's truncation guard and would be aligned as
@@ -431,7 +482,7 @@ export async function processChunksParallel(chunks, options) {
 
       completed++;
       chunkTimings.push(Date.now() - chunkStart);
-      results[chunkIndex] = makeResult(chunkIndex, chunk, 'fulfilled', { amendment, comment, reasoning: reasoningText, guard });
+      results[chunkIndex] = makeResult(chunkIndex, chunk, 'fulfilled', { amendment, comment, reasoning: reasoningText, guard, review: reviewResult });
     } catch (error) {
       if (error.name === 'AbortError') {
         cancelled++;

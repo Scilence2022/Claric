@@ -18,6 +18,7 @@ import { defangProtocolMarkers } from './response-parser.js';
  * @property {Array<{term: string, definition: string, paragraphIndex: number}>} definitions
  * @property {Array<{abbreviation: string, expansion: string, paragraphIndex: number}>} abbreviations
  * @property {Array<{level: number, text: string, paragraphIndex: number}>} outline
+ * @property {Array<object>} [paragraphs] Complete source paragraphs for cross-chunk review
  */
 
 /**
@@ -114,18 +115,23 @@ export function extractContext(docModel) {
     while ((abbrMatch = ABBREVIATION_PATTERN.exec(text)) !== null) {
       const abbreviation = abbrMatch[1];
       if (!seenAbbreviations.has(abbreviation)) {
-        seenAbbreviations.add(abbreviation);
-
-        // Try to find the expansion: text before the abbreviation in the same paragraph
         const beforeAbbr = text.substring(0, abbrMatch.index).trim();
-        // Heuristic: take the last few capitalized words before the parenthetical
         const expansion = extractExpansion(beforeAbbr, abbreviation);
-
-        abbreviations.push({
-          abbreviation,
-          expansion: expansion || beforeAbbr.substring(Math.max(0, beforeAbbr.length - 100)),
-          paragraphIndex: para.index,
-        });
+        // A bare parenthetical occurrence is not a definition. In particular,
+        // never label an arbitrary preceding sentence fragment as an expansion,
+        // or let an early use hide a later genuine declaration.
+        if (expansion) {
+          seenAbbreviations.add(abbreviation);
+          abbreviations.push({ abbreviation, expansion, paragraphIndex: para.index });
+        }
+      }
+    }
+    const glossary = text.match(/^\s*([A-Z]{2,})\s*[:–—-]\s+(.+?)\s*$/);
+    if (glossary && !seenAbbreviations.has(glossary[1])) {
+      const expansion = extractExpansion(glossary[2], glossary[1]);
+      if (expansion === glossary[2]) {
+        seenAbbreviations.add(glossary[1]);
+        abbreviations.push({ abbreviation: glossary[1], expansion, paragraphIndex: para.index });
       }
     }
 
@@ -139,7 +145,7 @@ export function extractContext(docModel) {
     }
   }
 
-  return { definitions, abbreviations, outline };
+  return { definitions, abbreviations, outline, paragraphs: docModel.paragraphs };
 }
 
 /**
@@ -151,27 +157,31 @@ export function extractContext(docModel) {
  * @returns {string|null} The expansion if found, null otherwise
  */
 function extractExpansion(beforeText, abbreviation) {
-  // Split into words and look backwards for matching initials
   const words = beforeText.split(/\s+/);
-  const abbrLen = abbreviation.length;
-
-  if (words.length < abbrLen) return null;
-
-  // Try taking the last N words where N = abbreviation length
-  const candidateWords = words.slice(-abbrLen);
-  const initials = candidateWords.map((w) => w.charAt(0).toUpperCase()).join('');
-
-  if (initials === abbreviation) {
-    return candidateWords.join(' ');
-  }
-
-  // Broader search: scan backwards through words
-  for (let start = words.length - abbrLen; start >= 0; start--) {
-    const segment = words.slice(start, start + abbrLen);
-    const segInitials = segment.map((w) => w.charAt(0).toUpperCase()).join('');
-    if (segInitials === abbreviation) {
-      return segment.join(' ');
+  const connectors = new Set(['and', 'of', 'the', 'for', 'in', 'on', 'to', 'de']);
+  for (let count = 1; count <= Math.min(words.length, 12); count++) {
+    const candidate = words.slice(-count);
+    if (connectors.has(candidate[0]) || connectors.has(candidate.at(-1))) continue;
+    if (!candidate.every((word) => connectors.has(word) || /^[A-Z][a-zA-Z’'\u2010-\u2011-]*$/.test(word))) continue;
+    const significant = candidate.filter((word) => !connectors.has(word)).flatMap((word) => word.split(/[-\u2010\u2011]/));
+    const initials = significant.map((word) => word[0]).join('');
+    if (initials === abbreviation) return candidate.join(' ');
+    // Single-word scientific names can use internal letters (Urogynaecology,
+    // UG). Require the first letter and every abbreviation letter in order.
+    if (candidate.length === 1 && candidate[0].length > abbreviation.length) {
+      let offset = 0;
+      const upper = candidate[0].toUpperCase();
+      if (upper[0] === abbreviation[0] && Array.from(abbreviation).every((letter) => {
+        const found = upper.indexOf(letter, offset);
+        offset = found + 1;
+        return found >= 0;
+      })) return candidate[0];
     }
+    // RM explicitly names Reproductive Medicine and Surgery: a joined suffix
+    // need not contribute another initial, but it must belong to the same name.
+    const joined = candidate.indexOf('and');
+    if (joined > 0 && candidate.length === joined + 2
+        && candidate.slice(0, joined).map((word) => word[0]).join('') === abbreviation) return candidate.join(' ');
   }
 
   return null;

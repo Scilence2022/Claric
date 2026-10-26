@@ -986,6 +986,7 @@ export function createConversation(deps) {
             const outcome = await actions.runDocumentSkill(turnDeps, {
                 category: skill.category,
                 promptTemplate: withArgs(skill.defaultTemplate, args),
+                ...(skill.reviewPolicy ? { reviewPolicy: skill.reviewPolicy } : {}),
                 commentInstructions,
                 signal: myController.signal,
                 onProgress: (p) => msg.showProgress(p),
