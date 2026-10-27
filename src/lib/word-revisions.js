@@ -100,7 +100,7 @@ export function wordErrorDetail(error) {
 }
 
 /** Visible islands never span an insertion boundary or an earlier deletion. */
-export function revisionTextState(ooxml, { paragraph = false, currentText = null, paragraphText = null } = {}) {
+export function revisionTextState(ooxml, { paragraph = false, currentText = null, paragraphText = null, singleParagraphContent = false } = {}) {
     const root = documentPartRoot(ooxml);
     if (!root) throw new RevisionSafetyError('Word revision XML is unreadable. Generate a fresh proposal.');
     let body = root.getElementsByTagNameNS(W, 'body')[0] || root;
@@ -150,7 +150,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     // arbitrary ranges must retain their genuine blank paragraphs.
     if (paragraph && body.namespaceURI === W && body.localName === 'body') {
         const paragraphs = Array.from(body.children).filter((node) => node.namespaceURI === W && node.localName === 'p');
-        if (paragraphs.length === 2 && (emptyExportParagraph(paragraphs[1])
+        if (paragraphs.length === 2 && (emptyExportParagraph(paragraphs[1], singleParagraphContent)
             || (typeof currentText === 'string' && emptyExportParagraph(paragraphs[1], true)
                 && projectNativeText(revisionTextState(new XMLSerializer().serializeToString(paragraphs[0])),
                     currentText)))) body = paragraphs[0];
@@ -170,6 +170,9 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     const protectedSpans = [];
     const fields = [];
     const linkedTargets = [];
+    const inlineObjects = [];
+    const rememberInline = (element) => inlineObjects.push(rangeStructureFingerprint(
+        `<w:p xmlns:w="${W}">${new XMLSerializer().serializeToString(element)}</w:p>`));
     // Word's reviewed text may serialize a w:hyperlink as a HYPERLINK field.
     // Resolve only this document's relationship part, never a guessed URL or
     // a same-ID relationship belonging to an image/header/other part.
@@ -206,6 +209,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     }
     function walk(element) {
         if (element.namespaceURI === MATH_NS && ['oMath', 'oMathPara'].includes(element.localName)) {
+            rememberInline(element);
             const math = mathTextState(element);
             const start = text.length;
             boundary = true;
@@ -227,6 +231,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         }
         if (name === 'delText') { hasHiddenContent = true; boundary = true; return; }
         if (name === 'hyperlink') {
+            rememberInline(element);
             const id = element.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
             const anchor = element.getAttributeNS(W, 'anchor');
             const target = links.get(id);
@@ -244,6 +249,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
             return;
         }
         if (name === 'fldChar') {
+            rememberInline(element);
             const type = element.getAttributeNS(W, 'fldCharType') || element.getAttribute('w:fldCharType');
             const code = { begin: '\u0013', separate: '\u0014', end: '\u0015' }[type];
             if (code) nativeTokens.push({ text: '', code });
@@ -254,6 +260,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
             return;
         }
         if (name === 'fldSimple') {
+            rememberInline(element);
             const start = text.length;
             const instruction = element.getAttributeNS(W, 'instr') || element.getAttribute('w:instr') || '';
             nativeTokens.push({ text: '', code: '\u0013' + instruction + '\u0014' });
@@ -265,6 +272,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
             return;
         }
         if (name === 'instrText') {
+            rememberInline(element);
             nativeTokens.push({ text: '', code: element.textContent || '' });
             return;
         }
@@ -278,6 +286,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         else if (name === 'br' || name === 'cr') append('\n');
         else if (name === 'noBreakHyphen') append('‑');
         else if (name === 'sym') {
+            rememberInline(element);
             const start = text.length;
             boundary = true;
             append(symbolText(element));
@@ -306,6 +315,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     const structure = rangeStructureFingerprint(body.localName === 'p' && body !== root
         ? new XMLSerializer().serializeToString(body) : ooxml);
     return { text, segments, nativeTokens, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
+        inlineFingerprint: inlineObjects.length ? JSON.stringify([inlineObjects, linkedTargets]) : null,
         protectedSpans, fieldOnlyProtection: protectedStructure && !nonFieldProtection,
         fingerprint: structure && linkedTargets.length ? JSON.stringify([structure, linkedTargets]) : structure };
 }
