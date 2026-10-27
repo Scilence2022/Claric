@@ -44,7 +44,7 @@ beforeEach(() => {
     for (const [name, content] of Object.entries(assets)) write(`dist/${name}`, content);
     write('package.json', JSON.stringify({ version: '1.2.3' }));
     write('scripts/verify-build.cjs', fs.readFileSync(path.resolve(__dirname, '../scripts/verify-build.cjs')));
-    info = { appVersion: '1.2.3', builtAt: '2026-09-05T06:00:00.123Z', hash: fixtureHash(), mode: 'production' };
+    info = { appVersion: '1.2.3', builtAt: '2026-09-05T06:00:00.123Z', hash: fixtureHash(), mode: 'production', runtimeHash: 'a'.repeat(20) };
     saveInfo();
 });
 
@@ -66,6 +66,7 @@ describe('build verifier without a pre-existing dist', () => {
         ['null', null], ['array', []], ['missing field', { hash: 'a'.repeat(12) }],
         ['unknown field', { extra: true }], ['numeric hash', { hash: 123 }],
         ['uppercase hash', { hash: 'A'.repeat(12) }], ['short hash', { hash: 'abc' }],
+        ['invalid runtime hash', { runtimeHash: 'bad' }], ['missing runtime hash', { runtimeHash: undefined }],
         ['development mode', { mode: 'development' }], ['numeric version', { appVersion: 123 }],
         ['wrong version', { appVersion: '2.0.0' }], ['invalid date', { builtAt: 'not-a-date' }],
         ['calendar overflow', { builtAt: '2026-02-30T06:00:00Z' }],
@@ -185,6 +186,7 @@ describe('webpack build-info emitter', () => {
         const compiler = { hooks: { done: { tap: (name, callback) => { callbacks[name] = callback; } } } };
         config.plugins[config.plugins.length - 1].apply(compiler);
         callbacks['claric-build-info']({
+            hash: 'd'.repeat(20),
             hasErrors: () => errors,
             compilation: {
                 options: { mode }, outputOptions: { path: distDir },
@@ -198,7 +200,10 @@ describe('webpack build-info emitter', () => {
         const config = emit({ windows });
         const emitted = JSON.parse(fs.readFileSync(path.join(distDir, 'build-info.json'), 'utf8'));
         expect(emitted.hash).toBe(fixtureHash());
+        expect(emitted.runtimeHash).toBe('d'.repeat(20));
         expect(config.output.clean).toBe(true);
+        expect(config.plugins[0].userOptions.hash).toBe(true);
+        expect(config.plugins[1].userOptions.hash).toBe(true);
         write('package.json', JSON.stringify({ version: emitted.appVersion }));
         expect(verifyBuild({ rootDir })).toEqual(emitted);
     });
