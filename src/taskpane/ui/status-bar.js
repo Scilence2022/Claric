@@ -9,6 +9,8 @@
  * @module ui/status-bar
  */
 
+import { copyGeneratedText } from './clipboard.js';
+
 /** Drawer DOM entries kept before the oldest are dropped. */
 const MAX_LOG_ENTRIES = 200;
 // Keep the full session text for export while limiting expensive DOM nodes.
@@ -211,9 +213,10 @@ export function initStatusBar({ getConfig = () => ({}) } = {}) {
         const status = document.getElementById('logCopyStatus');
         button.disabled = true;
         try {
-            const { copyText } = await import('./clipboard.js');
-            const { redactContext } = await import('../context-export.js');
-            await copyText(redactContext(getActivityLogText() || 'No activity logs.', getConfig()));
+            await copyGeneratedText(async () => {
+                const { redactContext } = await import('../context-export.js');
+                return redactContext(getActivityLogText() || 'No activity logs.', getConfig());
+            });
             if (status) status.textContent = 'All activity logs copied.';
         } catch (error) {
             if (status) status.textContent = error.message;

@@ -71,6 +71,6 @@ test('clipboard denial falls back to copy command and restores focus', async () 
     expect(document.activeElement).toBe(button);
     expect(document.querySelector('textarea')).toBeNull();
     document.execCommand.mockReturnValue(false);
-    await expect(copyText('full report')).rejects.toThrow(/Clipboard unavailable/);
+    await expect(copyText('full report')).rejects.toThrow(/clipboard access is unavailable/);
     expect(document.querySelector('textarea')).toBeNull();
 });

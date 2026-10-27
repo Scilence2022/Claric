@@ -26,6 +26,7 @@ import { reapOrphanChunkBookmarks } from '../lib/reassembler.js';
 import * as chatView from './ui/chat-view.js';
 import { renderWelcomeChips, selectWelcomeSkills } from './ui/welcome.js';
 import { initInputBar } from './ui/input-bar.js';
+import { initContextCopy } from './ui/context-copy.js';
 import { initAboutView } from './ui/about-view.js';
 import { initScreenSharingView } from './ui/screen-sharing-view.js';
 import { createSettingsLoader } from './settings-loader.js';
@@ -60,22 +61,14 @@ async function initialize() {
     const exportConfig = () => ({ ...appState.config,
         pairingToken: document.getElementById('crossDocumentToken')?.value || '' });
     initStatusBar({ getConfig: exportConfig });
-    document.getElementById('copyContextBtn')?.addEventListener('click', async (event) => {
-        const button = event.currentTarget;
-        const status = document.getElementById('contextCopyStatus');
-        button.disabled = true;
-        status.textContent = 'Collecting context…';
-        try {
-            const { copyContext } = await loadLazyModule('context-export', () => import(/* webpackChunkName: "context-export" */ './context-export.js'));
-            const text = (id) => document.getElementById(id)?.textContent || '';
-            await copyContext({ state: { ...appState, config: exportConfig() }, session: chatView.getCurrentSession(),
-                chatText: text('chatMessages'), logs: getActivityLogText(), draft: document.getElementById('chatInput').value,
-                attachments: text('attachmentChips'), metadata: { version: text('aboutVersion'), build: text('aboutBuild'),
-                    builtAt: text('aboutBuiltAt'), wordApi: text('aboutWordApi') } });
-            status.textContent = 'All context copied.';
-        } catch (error) { status.textContent = `Could not copy context: ${error.message}`; }
-        finally { button.disabled = false; }
-    });
+    initContextCopy({ getReport: async () => {
+        const { buildContextReport } = await loadLazyModule('context-export', () => import(/* webpackChunkName: "context-export" */ './context-export.js'));
+        const text = (id) => document.getElementById(id)?.textContent || '';
+        return buildContextReport({ state: { ...appState, config: exportConfig() }, session: chatView.getCurrentSession(),
+            chatText: text('chatMessages'), logs: getActivityLogText(), draft: document.getElementById('chatInput').value,
+            attachments: text('attachmentChips'), metadata: { version: text('aboutVersion'), build: text('aboutBuild'),
+                builtAt: text('aboutBuiltAt'), wordApi: text('aboutWordApi') } });
+    } });
 
     // Chat view
     chatView.initChatView();
