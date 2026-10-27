@@ -38,6 +38,29 @@ test('equation preservation is enforced before a chunk amendment reaches Word', 
     expect(checkChunkAmendment(chunk, 'A revised result.').valid).toBe(false);
 });
 
+test('Mac reviewed structured math maps exact prose positions without normalizing surrounding punctuation', () => {
+    const sub = `<m:sSub><m:e>${run('y')}</m:e><m:sub>${run('j')}</m:sub></m:sSub>`;
+    const nary = '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr>'
+        + `<m:sub>${run('j≥1')}</m:sub><m:sup>${run('​')}</m:sup><m:e>${power}</m:e></m:nary>`;
+    const xml = paragraph(sub + run("-'") + nary, 'A plain-text - before ', ' after the sum.');
+    const state = revisionTextState(xml);
+    const native = 'A plain-text - before ,𝑦-𝑗.−′,𝑗≥1-​-,𝑥-2.. after the sum.';
+    const projection = projectNativeText(state, native);
+    expect(projection.text).toBe(state.text);
+    expect(projection.offsets[native.indexOf(' after')]).toBe(state.text.indexOf(' after'));
+    expect(projection.offsets[native.length]).toBe(state.text.length);
+    for (const bad of [native.replace('plain-text', 'plain−text'), native.replace('𝑗.', '𝑙.'),
+        native.replace(',𝑥-2.', ',𝑥-3.'), native.replace(' after', ' after'), native.replace('−′', '-\'')]) {
+        expect(projectNativeText(state, bad)).toBeNull();
+    }
+});
+
+test('reviewed math does not infer punctuation for uncaptured constructs', () => {
+    const node = new DOMParser().parseFromString(equation(`<m:unknown><m:e>${run('x')}</m:e></m:unknown>`), 'text/xml').documentElement;
+    expect(mathTextState(node, true).nativeText).toBeNull();
+    expect(mathTextState(new DOMParser().parseFromString('<other/>', 'text/xml').documentElement, true).nativeText).toBeNull();
+});
+
 test.each([
     ['kΣh', '', '𝑘𝛴ℎ'], ['Alpha', '<m:nor/>', 'Alpha'],
     ['ABCxyz', '<m:sty m:val="p"/>', 'ABCxyz'], ['F', '<m:scr m:val="script"/><m:sty m:val="p"/>', 'ℱ'],

@@ -40,6 +40,26 @@ test('source text resembling the placeholder protocol stays literal', () => {
     expect(protectedText.restore(protectedText.chunk.paragraphs[0].text)).toBe(source.text);
 });
 
+test('framed native paragraphs preserve headings, blank paragraphs and manual breaks', () => {
+    const source = { paragraphs: [{ text: 'A short heading' }, { text: '' }, paragraph('Use 𝑥.\nKeep this line.', ['𝑥'])] };
+    const protectedText = protectChunkText(source, { frameParagraphs: true });
+    const masked = protectedText.chunk.paragraphs.map((p) => p.text).join('\n\n');
+    expect(protectedText.restore(masked.replace('Use ', 'Consider '))).toBe('A short heading\n\nConsider 𝑥.\nKeep this line.');
+    for (const bad of [masked.replace('A short heading', ''), masked.replace('⟦CLARIC_PARAGRAPH_1⟧', ''),
+        masked.replace('⟦/CLARIC_PARAGRAPH_1⟧', ''), masked.replace('Use ', 'Use\n'),
+        masked + '\nExtra text', 'Preamble\n' + masked,
+        masked.replace('Use ', '⟦CLARIC_PARAGRAPH_99⟧Use ')]) {
+        expect(() => protectedText.restore(bad)).toThrow();
+    }
+});
+
+test('paragraph marker collision in source text selects a different protocol prefix', () => {
+    const source = paragraph('⟦CLARIC_PARAGRAPH_1⟧ is literal beside 𝑥.', ['𝑥']);
+    const protectedText = protectChunkText({ paragraphs: [source] }, { frameParagraphs: true });
+    expect(protectedText.chunk.paragraphs[0].text).toContain('CLARIC_PARAGRAPHX_1');
+    expect(protectedText.restore(protectedText.chunk.paragraphs[0].text)).toBe(source.text);
+});
+
 test('native objects anchor the diff even when surrounding prose repeats their characters', () => {
     const before = 'x old wording x final wording';
     const spans = [{ start: 14, end: 15 }];

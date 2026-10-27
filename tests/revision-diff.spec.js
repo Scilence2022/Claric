@@ -13,7 +13,8 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
 /** Word searches the physical text, including deleted runs. Writes retain
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
-    stickyContent = false, revisedPadding = false, nativeControls = false, reviewedTransform = (text) => text } = {}) {
+    stickyContent = false, revisedPadding = false, nativeControls = false, rejectEmptyOoxml = false,
+    reviewedTransform = (text) => text } = {}) {
     let sequence = 0;
     const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false, symbol = null, math = null }) =>
         Array.from(text).map((text, index) => ({ text, type, id, field, symbol, math, mathStart: index === 0 })));
@@ -49,7 +50,12 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             isNullObject: false, load: jest.fn(), parentTableOrNullObject: table, parentTableCellOrNullObject: cell,
             inlinePictures: collection([]),
             get text() { return atoms.slice(span.start, span.end).map((a) => a.text).join(''); },
-            getOoxml: jest.fn(() => { xmlReads++; return { value: xml(atoms.slice(span.start, span.end)) }; }),
+            getOoxml: jest.fn(() => {
+                if (rejectEmptyOoxml && span.start === span.end) {
+                    throw Object.assign(new Error('GeneralException'), { code: 'GeneralException', debugInfo: { errorLocation: 'Range.getOoxml' } });
+                }
+                xmlReads++; return { value: xml(atoms.slice(span.start, span.end)) };
+            }),
             ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value: reviewedTransform(
                 atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => {
                     if (atom.math) return atom.mathStart ? atom.math.native : '';
@@ -132,7 +138,7 @@ native: ',𝑗𝑥' };
 
 test('two tracked polish rounds verify all surrounding prose when whole-paragraph reviewed math cannot be projected', async () => {
     const w = world([{ text: 'Older text', type: 'del' }, { text: 'The old ' }, { text: '𝑥_(𝑗)', math: opaqueMath },
-        { text: ' result. Keep the result.' }], { nativeReviewed: true, padding: true, revisedPadding: true });
+        { text: ' result. Keep the result.' }], { nativeReviewed: true, padding: true, revisedPadding: true, rejectEmptyOoxml: true });
     for (const after of ['The revised 𝑥_(𝑗) result. Keep the result.', 'The final 𝑥_(𝑗) result. Keep this result.']) {
         const before = w.state().text;
         await tryRevisionDiff(w.context, w.scope, before, after, jest.fn(), { paragraph: true, nativeTargets: true, preflightOnly: true });
@@ -141,6 +147,29 @@ test('two tracked polish rounds verify all surrounding prose when whole-paragrap
     }
     expect(w.atoms.filter((a) => a.math).every((a) => a.type === 'plain')).toBe(true);
     expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test('Mac reviewed equation punctuation locates prose without exporting collapsed position prefixes', async () => {
+    const math = { ...opaqueMath, native: ',𝑥-𝑗.' };
+    const w = world([{ text: 'Earlier text. ', type: 'del' }, { text: 'The old ' }, { text: '𝑥_(𝑗)', math },
+        { text: ' result. Keep this result.' }],
+    { nativeReviewed: true, padding: true, revisedPadding: true, rejectEmptyOoxml: true });
+    const log = jest.fn();
+    await tryRevisionDiff(w.context, w.scope, w.state().text, 'The revised 𝑥_(𝑗) result. Keep this result.', log,
+        { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe('The revised 𝑥_(𝑗) result. Keep this result.');
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), expect.anything());
+    expect(w.atoms.filter((a) => a.math).every((a) => a.type === 'plain')).toBe(true);
+});
+
+test('a Word preflight read failure identifies its stage and never attempts a write', async () => {
+    const w = world([{ text: 'The old result.' }], { nativeReviewed: true });
+    const error = Object.assign(new Error('GeneralException'), { code: 'GeneralException',
+        debugInfo: { errorLocation: 'Range.getReviewedText' } });
+    w.context.sync.mockResolvedValueOnce().mockResolvedValueOnce().mockRejectedValueOnce(error);
+    await expect(tryRevisionDiff(w.context, w.scope, 'The old result.', 'The revised result.', jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toThrow(/current-view search ranges.*Range.getReviewedText/);
+    expect(w.writes).toHaveLength(0);
 });
 
 test('unverifiable unchanged prose blocks the native-object path before the first write', async () => {
