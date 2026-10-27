@@ -391,8 +391,12 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           progress.mutationAttempted = true;
           progress.pendingVerification = true;
           progress.stage = `paragraph ${op.origIdx + 1}: read-back`;
+          // Preflight proved the prose against native ranges and protected
+          // these inline objects. Preserve that evidence for the outer check;
+          // raw reviewed text alone may use a different equation serializer.
           await verifyMutationText(context, paraRange, targetText,
-            { paragraph: true, verificationParagraph: paraItems[op.origIdx] });
+            { paragraph: true, verificationParagraph: paraItems[op.origIdx],
+              verifiedInlineFingerprint: contentStates.get(op.origIdx)?.inlineFingerprint });
           progress.pendingVerification = false;
           progress.appliedParagraphs++;
         }

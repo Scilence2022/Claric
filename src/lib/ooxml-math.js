@@ -22,7 +22,7 @@ function attribute(node, name, fallback = '') {
 }
 function property(node, name) { return Array.from(node?.children || []).find((child) => child.localName === name); }
 
-function runText(node) {
+function runText(node, reviewed = false) {
     const properties = property(node, 'rPr');
     const plain = property(properties, 'nor');
     const style = attribute(property(properties, 'sty'), 'val', 'i');
@@ -40,7 +40,11 @@ function runText(node) {
             const greekStart = { b: 0x1d6a8, i: 0x1d6e2, bi: 0x1d71c }[style];
             const digitStart = { b: 0x1d7ce, 'double-struck': 0x1d7d8, 'sans-serif': 0x1d7e2,
                 'sans-serif-b': 0x1d7ec, monospace: 0x1d7f6 }[key];
-            if (index >= 0 && start) text += holes[start + index] || String.fromCodePoint(start + index);
+            // Mac reviewed text uses the letterlike ell for an OMML script l.
+            // Keep the canonical glyph and literal text unchanged; this is
+            // an alternative only where the run's math properties prove it.
+            if (reviewed && key === 'script' && char === 'l') text += 'ℓ';
+            else if (index >= 0 && start) text += holes[start + index] || String.fromCodePoint(start + index);
             else if (greekIndex >= 0 && script === 'roman' && greekStart) text += String.fromCodePoint(greekStart + greekIndex);
             else if (digitStart && /[0-9]/.test(char)) text += String.fromCodePoint(digitStart + Number(char));
             else text += char === '*' ? '∗' : char;
@@ -58,7 +62,7 @@ export function mathTextState(node, reviewed = false) {
     const name = node.localName;
     if (name === 'r') {
         const text = runText(node);
-        return { text, nativeText: reviewed ? text.replaceAll('-', '−').replaceAll("'", '′') : text };
+        return { text, nativeText: reviewed ? runText(node, true).replaceAll('-', '−').replaceAll("'", '′') : text };
     }
     const children = Array.from(node.children).filter((child) => !child.localName.endsWith('Pr'));
     const parts = children.map((child) => mathTextState(child, reviewed));
