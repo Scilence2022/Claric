@@ -32,7 +32,8 @@ function world(specs = [{}, { text: '6 Discussion' }, { picture: true, text: '' 
             }
             return `<w:p xmlns:w="${W}" xmlns:wp="${WP}" xmlns:wp14="${WP14}">`
                 + `<w:pPr><w:pStyle w:val="${escapeXml(state.styleBuiltIn)}"/>${state.directAlignment ? `<w:jc w:val="${state.alignment}"/>` : ''}</w:pPr>`
-                + textRuns + (state.picture ? `<w:r><w:drawing><wp:inline wp14:anchorId="${state.pictureId}"/></w:drawing></w:r>` : '') + '</w:p>';
+                + textRuns + (state.picture ? `<w:r><w:drawing><wp:inline wp14:anchorId="${state.pictureId}"/></w:drawing></w:r>` : '')
+                + (state.extraXml || '') + '</w:p>';
         };
         const search = jest.fn((match) => {
             const matchedFont = {};
@@ -40,7 +41,9 @@ function world(specs = [{}, { text: '6 Discussion' }, { picture: true, text: '' 
                 get: () => state.characterFormat?.bold || false,
                 set: (value) => { writes.push({ index, property: 'bold', value, match }); state.characterFormat = { match, bold: value }; },
             });
-            return { load: jest.fn(), items: state.text.includes(match) ? [{ text: match, font: matchedFont }] : [] };
+            const partFont = (part) => ({ set italic(value) { writes.push({ index, property: 'italic', value, match: `${part}@${match}` }); } });
+            const searchPart = jest.fn((part) => ({ load: jest.fn(), items: match.includes(part) ? [{ text: part, font: partFont(part) }] : [] }));
+            return { load: jest.fn(), items: state.text.includes(match) ? [{ text: match, font: matchedFont, search: searchPart }] : [] };
         });
         searches.push(search);
         const paragraph = {
@@ -169,6 +172,27 @@ test('body-only substring font operation searches only eligible paragraph Conten
     expect(w.paragraphs[0].getOoxml().value).toContain('<w:rPr><w:b/></w:rPr>');
     expect(w.states[1].characterFormat).toBeUndefined();
     expect(w.states[2].characterFormat).toBeUndefined();
+});
+
+test('submatch italicizes only the requested part of each hit, including in a paragraph with an equation', async () => {
+    const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+    const w = world([{ text: 'Information capacity of unordered k-mer sets', style: 'Title', styleBuiltIn: 'Title',
+        extraXml: `<m:oMath xmlns:m="${M}"/>` }, {}]);
+    sendPrompt.mockResolvedValue('[{"match":"k-mer","submatch":"k","font":{"italic":true}}]');
+    const proposal = await prepareFormatProposal(w.deps, { instruction: '修改所有“k-mer”的k为斜体', scope: 'document' });
+    expect(proposal.anchor.targetPlan).toMatchObject({ mode: 'strict' });
+    expect(proposal.anchor.targetPlan.entries[0].ids).toEqual(['p1']);
+    expect(await applyFormatProposal(w.deps, proposal)).toMatchObject({ applied: true, appliedRanges: 1, partial: false });
+    expect(w.writes).toEqual([{ index: 0, property: 'italic', value: true, match: 'k@k-mer' }]);
+    expect(w.searches[1]).not.toHaveBeenCalled();
+});
+
+test('an absent match explains why no paragraph matched so the planner can correct it', async () => {
+    const w = world([{ text: 'Sets of 𝑘-mers are compared.' }]);
+    sendPrompt.mockResolvedValue('[{"match":"k-mer","font":{"italic":true}}]');
+    await expect(prepareFormatProposal(w.deps, { instruction: 'italicize k in k-mer', scope: 'document' }))
+        .rejects.toThrow(/"k-mer" does not occur in the native paragraph text/);
+    expect(w.writes).toEqual([]);
 });
 
 test('a modified valid operation signature cannot bypass the preflight proposal contract', async () => {

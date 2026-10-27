@@ -102,6 +102,27 @@ test('structurally verified ambiguous text remains available for explicit generi
     expect(resolve([bibliography], { paragraphRole: 'body' }).targets).toEqual([]);
 });
 
+test('font-only exact text reaches in-scope paragraphs with equations, but paragraph payloads stay verified-only', () => {
+    const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+    const text = 'Information capacity of unordered k-mer sets';
+    const math = paragraph({ text, ooxml: xml(text, '', `<m:oMath xmlns:m="${M}"><m:r><m:t>L</m:t></m:r></m:oMath>`) });
+    const disagree = paragraph({ text, ooxml: xml('different') });
+    const outside = paragraph({ text, withinScope: false });
+    const unreadable = paragraph({ text: undefined });
+    expect(math).toMatchObject({ role: 'protected', verified: true, inScope: true });
+    expect(disagree).toMatchObject({ verified: false, inScope: true });
+    expect(outside.inScope).toBe(false);
+    expect(unreadable.inScope).toBe(false);
+    const op = { match: 'k-mer', submatch: 'k', font: { italic: true } };
+    for (const item of [math, disagree]) {
+        expect(resolve([item], op).targets).toEqual([item]);
+        expect(resolve([item], { match: 'k-mer', paragraph: { alignment: 'centered' } }).targets).toEqual([]);
+        expect(resolve([item], op, { bodyOnly: true }).targets).toEqual([]);
+        expect(resolve([item], { paragraphIds: ['p1'], font: { italic: true } }).targets).toEqual([]);
+    }
+    for (const item of [outside, unreadable]) expect(resolve([item], op).targets).toEqual([]);
+});
+
 test('native title/caption/heading styles are preserved even if their text reads like prose', () => {
     for (const [styleBuiltIn, role] of [['Title', 'title'], ['Caption', 'caption'], ['Heading1', 'heading']]) {
         const item = paragraph({ styleBuiltIn });

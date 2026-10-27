@@ -38,11 +38,14 @@ export function describeFormatParagraph({ index, text, style, styleBuiltIn, ooxm
     if (!Number.isInteger(index) || index < 0) throw new Error('Formatting paragraph index must be a non-negative integer.');
     const descriptor = { id: `p${index + 1}`, index, text: typeof text === 'string' ? text : '',
         style: typeof style === 'string' ? style : '', styleBuiltIn: typeof styleBuiltIn === 'string' ? styleBuiltIn : '',
-        role: 'unknown', reason: 'Paragraph evidence is incomplete.', eligible: false, verified: false };
+        role: 'unknown', reason: 'Paragraph evidence is incomplete.', eligible: false, verified: false, inScope: false };
     const result = (role, reason, verified = descriptor.verified) => ({ ...descriptor, role, reason, verified,
         eligible: verified && role === 'body' });
     if (withinScope !== true) return result('protected', 'Paragraph is not fully inside the captured scope.');
     if (typeof text !== 'string') return result('unknown', 'Native paragraph text is unreadable.');
+    // Exact-text character formatting needs only readable, fully in-scope
+    // native text; equations, links and fields stay untouched around a hit.
+    descriptor.inScope = true;
     const paragraph = singleParagraph(ooxml);
     if (!paragraph) return result('unknown', 'XML does not identify one readable paragraph.');
     if (typeof inTable !== 'boolean') return result('unknown', 'Native table membership is unreadable.');
@@ -116,11 +119,14 @@ export function resolveFormatParagraphs(inventory, op, { bodyOnly = false } = {}
         }
         ids = new Set(op.paragraphIds);
     }
+    // A font-only exact-text op writes only Word search hits, never the
+    // paragraph's structure, so structural verification is not required.
+    const textOnly = typeof op.match === 'string' && !op.paragraph && !op.insert && !bodyOnly;
     const targets = [];
     const exclusions = [];
     for (const paragraph of inventory) {
         let reason;
-        if (!paragraph.verified || paragraph.role === 'protected') reason = paragraph.reason;
+        if (textOnly ? paragraph.inScope !== true : !paragraph.verified || paragraph.role === 'protected') reason = paragraph.reason;
         else if ((bodyOnly || op.paragraphRole === 'body') && (!paragraph.eligible || paragraph.role !== 'body')) reason = paragraph.reason;
         else if (ids && !ids.has(paragraph.id)) reason = 'Not selected by paragraph ID.';
         else if (op.paragraphStyle && key(paragraph.styleBuiltIn) !== key(op.paragraphStyle)) reason = 'Native built-in style does not match.';
