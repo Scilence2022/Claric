@@ -37,9 +37,11 @@ export async function verifyMutationText(context, range, expected, options = {},
     let actual = comparable(current ? current.value : resolveRevisionRead(target, read, options).text);
     const wanted = comparable(expected);
     if (current && actual !== wanted && (hasNativeFieldCodes(current.value)
-        || /[(\uF000-\uF0FF\r\n\uD835]/.test(current.value))) {
+        || /[(\uF000-\uF0FF\r\n\uD835]/.test(current.value) || /\uD835/.test(wanted))) {
         // Fields, symbols and structured equations need fresh XML evidence. Never
         // use the pre-write projection to bless changed field results/glyphs.
+        // A supplementary math glyph can serialize as a BMP letterlike symbol,
+        // so inspect the expected text as well as Word's native representation.
         const xml = queueRevisionRead(target, options);
         if (xml) {
             await context.sync();

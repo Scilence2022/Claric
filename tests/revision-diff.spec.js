@@ -782,6 +782,48 @@ test('whole-document reassembly aligns final text and verifies the staged revisi
     expect(stale.errors[0]).toMatch(/no longer matches/);
 });
 
+test.each([false, true].flatMap((lineDiffEnabled) => [
+    { lineDiffEnabled, label: 'opaque equation', text: '𝑥_(𝑗)', math: opaqueMath },
+    { lineDiffEnabled, label: 'script l', text: '𝓁', math: {
+        xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r>'
+            + '<m:rPr><m:scr m:val="script"/><m:sty m:val="p"/></m:rPr><m:t>l</m:t></m:r></m:oMath>', native: 'ℓ',
+    } },
+]))('whole-document read-back retains $label across two polish rounds, sentence mode=$lineDiffEnabled', async ({ lineDiffEnabled, text, math }) => {
+    const w = world([{ text: 'The old ' }, { text, math }, { text: ' result. Keep the result.' }],
+        { nativeReviewed: true, padding: true, revisedPadding: true, rejectEmptyOoxml: true });
+    for (const amendment of [`The revised ${text} result. Keep the result.`, `The final ${text} result. Keep this result.`]) {
+        const parsed = await parseDocument();
+        w.bookmarks.set('chunk', w.scope);
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]),
+        { trackChangesEnabled: true, lineDiffEnabled, log: jest.fn() });
+        expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [] });
+        expect(w.state().text).toBe(amendment);
+    }
+    expect(w.atoms.filter((atom) => atom.math).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.writes.length).toBeGreaterThan(0);
+    expect(w.writes.every((write) => write.mode === 'TrackAll')).toBe(true);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test.each(['prose', 'equation'])('whole-document final read-back still rejects changed %s after the strategy verifies its write', async (change) => {
+    const math = { ...opaqueMath };
+    const w = world([{ text: 'The old ' }, { text: '𝑥_(𝑗)', math }, { text: ' result.' }], { nativeReviewed: true });
+    const parsed = await parseDocument();
+    w.bookmarks.set('chunk', w.scope);
+    const log = jest.fn((message) => {
+        // This log occurs after the strategy's own successful read-back.
+        if (!message.startsWith('Verified edits against native text')) return;
+        if (change === 'prose') w.atoms.find((atom) => atom.text === 'T').text = 'X';
+        else math.xml = math.xml.replace('<m:sSub>', '<m:sSub><m:sSubPr><m:ctrlPr/></m:sSubPr>');
+    });
+    const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment: 'The revised 𝑥_(𝑗) result.',
+        chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]), { log });
+    expect(w.writes.length).toBeGreaterThan(0);
+    expect(applied.amendmentsApplied).toBe(0);
+    expect(applied.errors[0]).toMatch(/read-back differs.*paragraph 1: read-back/);
+});
+
 test('a substantial second-round rewrite stays inside the existing paragraph', async () => {
     const w = world([{ text: 'Earlier explanation.', type: 'del', id: 'history' },
         { text: 'The current draft describes one approach.', type: 'ins' }]);

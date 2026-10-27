@@ -103,6 +103,50 @@ test('read-back validates structured equations against fresh XML', async () => {
     await expect(verifyMutationText(context, range, 'An old 𝑥^(2) result.', { paragraph: true })).rejects.toThrow(/read-back differs/);
 });
 
+const scriptL = run('l', '<m:scr m:val="script"/><m:sty m:val="p"/>');
+
+test('Mac reviewed script l projects only inside the evidenced equation, with exact following prose offsets', () => {
+    const xml = paragraph(scriptL, 'A literal 𝓁 and ', '-unit limit.');
+    const state = revisionTextState(xml);
+    expect(state.text).toBe('A literal 𝓁 and 𝓁-unit limit.');
+    const native = 'A literal 𝓁 and ℓ-unit limit.';
+    const projection = projectNativeText(state, native);
+    expect(projection?.text).toBe(state.text);
+    expect(projection?.offsets[native.indexOf('-unit')]).toBe(state.text.indexOf('-unit'));
+    expect(projection?.offsets[native.length]).toBe(state.text.length);
+    expect(projectNativeText(state, state.text)?.text).toBe(state.text);
+    for (const bad of [native.replace('literal 𝓁', 'literal ℓ'), native.replace('ℓ-unit', 'l-unit'),
+        native.replace('limit.', 'limits.'), native.replace(' and ', ' and ')]) {
+        expect(projectNativeText(state, bad)).toBeNull();
+    }
+    const nested = revisionTextState(paragraph(`<m:sSup><m:e>${run('2')}</m:e><m:sup>${scriptL}</m:sup></m:sSup>`));
+    expect(projectNativeText(nested, 'An old ,2-ℓ. result.')?.text).toBe('An old 2^(𝓁) result.');
+});
+
+test.each([
+    run('l'), run('l', '<m:scr m:val="script"/><m:sty m:val="b"/>'),
+    run('𝓁', '<m:nor/>'), run('𝓁', '<m:sty m:val="p"/>'),
+])('script l aliases do not apply to other math styles or literal glyphs: %s', (math) => {
+    expect(projectNativeText(revisionTextState(paragraph(math)), 'An old ℓ result.')).toBeNull();
+});
+
+test('script l read-back fetches fresh XML even when the native text contains no supplementary math glyph', async () => {
+    let xml = paragraph(scriptL, 'A revised ', '-unit limit.');
+    let native = 'A revised ℓ-unit limit.';
+    const range = { getReviewedText: () => ({ value: native }), getOoxml: jest.fn(() => ({ value: xml })) };
+    const context = { sync: async () => {} };
+    const expected = 'A revised 𝓁-unit limit.';
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).resolves.toBeUndefined();
+    expect(range.getOoxml).toHaveBeenCalled();
+    native = 'A revised ℓ-unit limits.';
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
+    native = 'A revised ℓ-unit limit.';
+    xml = paragraph(run('l'), 'A revised ', '-unit limit.');
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
+    xml = `<w:p xmlns:w="${W}"><w:r><w:t>${expected}</w:t></w:r></w:p>`;
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
+});
+
 const target = 'https://example.org/data';
 const hyperlinkPackage = (relationship = target) => `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">`
     + `<pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="${W}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p>`
