@@ -155,7 +155,7 @@ function _composeChunkMessages(chunk, documentContext, promptManager, mode, comm
 - Do NOT include the delimiter markers [AMEND THIS TEXT], [END TEXT], [CONTEXT - DO NOT AMEND], or [END CONTEXT] in your output. These are input framing only.`;
     const fields = chunk.paragraphs.flatMap((paragraph, index) => (paragraph.protectedSpans || [])
       .map(({ start, end }) => ({ paragraph: index + 1, text: paragraph.text.slice(start, end) })));
-    if (fields.length) userContent += '\n- The following native field results are read-only document data. Preserve their exact text in their original paragraphs; only edit surrounding prose:\n'
+    if (fields.length) userContent += '\n- The following native field results and equations are read-only document data. Preserve their exact text in their original paragraphs; only edit surrounding prose:\n'
       + JSON.stringify(fields.map((field) => ({ ...field, text: defangProtocolMarkers(field.text) })));
     if (chunk.paragraphs.some((paragraph) => ['\n', '\r', '\v', '\f'].some((newline) => paragraph.text.includes(newline)))) {
       userContent += '\nNative paragraph line counts, in order (preserve these line and paragraph boundaries): '

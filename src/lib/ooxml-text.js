@@ -15,6 +15,8 @@
  * @module ooxml-text
  */
 
+import { MATH_NS, mathTextState } from './ooxml-math.js';
+
 const PKG_NS = 'http://schemas.microsoft.com/office/2006/xmlPackage';
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
@@ -51,6 +53,10 @@ function visibleText(node) {
         if (child.nodeType !== 1) continue;
         const element = /** @type {Element} */ (child);
         const name = element.localName;
+        if (element.namespaceURI === MATH_NS && ['oMath', 'oMathPara'].includes(name)) {
+            text += mathTextState(element).text;
+            continue;
+        }
         if (HIDDEN_CONTAINERS.has(name) || SKIP_ELEMENTS.has(name)) continue;
         if (name === 't') { text += element.textContent || ''; continue; }
         if (name === 'tab') { text += '\t'; continue; }

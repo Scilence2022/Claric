@@ -1,6 +1,7 @@
 /** Current text and revision boundaries, without accepting/rejecting Word revisions. */
 import { documentPartRoot, symbolText } from './ooxml-text.js';
 import { rangeStructureFingerprint } from './ooxml-fingerprint.js';
+import { MATH_NS, mathTextState } from './ooxml-math.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const REVISIONS = new Set(['ins', 'del', 'delText', 'moveFrom', 'moveTo', 'rPrChange', 'pPrChange',
@@ -40,12 +41,13 @@ export function projectNativeText(state, value, { trimEnd = false } = {}) {
     const native = trimEnd ? normalizeRevisionText(value) : normalizeWordText(value);
     const includeCodes = hasNativeFieldCodes(native);
     const offsets = [0];
+    const linkCodes = [];
     let position = 0;
     let text = '';
     const tokens = [];
     for (const token of state.nativeTokens || [{ text: state.text }]) {
         const previous = tokens[tokens.length - 1];
-        if (token.code !== undefined && previous?.code !== undefined) previous.code += token.code;
+        if (token.code !== undefined && previous?.code !== undefined && !token.optional && !previous.optional) previous.code += token.code;
         else tokens.push({ ...token });
     }
     if (trimEnd) {
@@ -55,21 +57,24 @@ export function projectNativeText(state, value, { trimEnd = false } = {}) {
     }
     for (const token of tokens) {
         const visible = normalizeWordText(token.text);
-        const choices = token.code !== undefined
-            ? [includeCodes ? normalizeWordText(token.code) : '']
+        const codes = token.code === undefined ? [] : [token.code, ...(token.codeAlternatives || [])];
+        const choices = token.linkEnd ? [linkCodes.pop() ? normalizeWordText(token.code) : ''] : token.code !== undefined
+            ? includeCodes ? codes.map(normalizeWordText) : ['']
             : [visible, ...(token.alternatives || [])];
         let matched = choices.find((choice) => native.startsWith(choice, position));
-        if (matched === undefined && token.code?.startsWith('\u0013') && token.code.endsWith('\u0014')
-            && !hasNativeFieldCodes(token.code.slice(1, -1)) && native[position] === '\u0013') {
+        if (matched === undefined && native[position] === '\u0013' && codes.some((code) => code.startsWith('\u0013')
+            && code.endsWith('\u0014') && !hasNativeFieldCodes(code.slice(1, -1)))) {
             const end = native.indexOf('\u0014', position + 1);
             const instruction = native.slice(position + 1, end);
             // Boundary padding in a serialized instruction is not visible
             // text. Keep its internal spacing and quoted arguments exact.
             const unpad = (code) => code.replace(/^ +| +$/g, '');
             if (end >= 0 && !hasNativeFieldCodes(instruction)
-                && unpad(instruction) === unpad(token.code.slice(1, -1))) matched = native.slice(position, end + 1);
+                && codes.some((code) => unpad(instruction) === unpad(code.slice(1, -1)))) matched = native.slice(position, end + 1);
         }
+        if (matched === undefined && token.optional && !token.linkEnd && native[position] !== '\u0013') matched = '';
         if (matched === undefined) return null;
+        if (token.linkStart) linkCodes.push(Boolean(matched));
         for (let i = 1; i <= matched.length; i++) {
             offsets[position + i] = text.length + Math.min(i, visible.length);
         }
@@ -164,6 +169,20 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     const nativeTokens = [];
     const protectedSpans = [];
     const fields = [];
+    const linkedTargets = [];
+    // Word's reviewed text may serialize a w:hyperlink as a HYPERLINK field.
+    // Resolve only this document's relationship part, never a guessed URL or
+    // a same-ID relationship belonging to an image/header/other part.
+    const packageNS = 'http://schemas.microsoft.com/office/2006/xmlPackage';
+    const relationshipNS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+    const links = new Map();
+    const relationshipPart = Array.from(root.ownerDocument.getElementsByTagNameNS(packageNS, 'part'))
+        .find((part) => part.getAttributeNS(packageNS, 'name') === '/word/_rels/document.xml.rels');
+    for (const relation of Array.from(relationshipPart?.getElementsByTagNameNS(relationshipNS, 'Relationship') || [])) {
+        if (relation.getAttribute('Type')?.endsWith('/hyperlink') && relation.getAttribute('TargetMode') === 'External') {
+            links.set(relation.getAttribute('Id'), relation.getAttribute('Target'));
+        }
+    }
     let boundary = true;
     function append(value) {
         if (!value) return;
@@ -186,6 +205,19 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         }
     }
     function walk(element) {
+        if (element.namespaceURI === MATH_NS && ['oMath', 'oMathPara'].includes(element.localName)) {
+            const math = mathTextState(element);
+            const start = text.length;
+            boundary = true;
+            // An equation is an immutable island, never an editable text run.
+            text += math.text;
+            nativeTokens.push({ text: math.text, alternatives: math.nativeText === null ? [] : [math.nativeText] });
+            protectedSpans.push({ start, end: text.length });
+            protectedStructure = true;
+            if (math.nativeText === null) nonFieldProtection = true;
+            boundary = true;
+            return;
+        }
         if (element.namespaceURI !== W) return;
         const name = element.localName;
         if (name === 'del' || name === 'moveFrom') {
@@ -194,6 +226,23 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
             return;
         }
         if (name === 'delText') { hasHiddenContent = true; boundary = true; return; }
+        if (name === 'hyperlink') {
+            const id = element.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+            const anchor = element.getAttributeNS(W, 'anchor');
+            const target = links.get(id);
+            linkedTargets.push([id || '', anchor || '', target || '']);
+            const instruction = target ? ` HYPERLINK "${target}"${anchor ? ` \\l "${anchor}"` : ''} `
+                : anchor ? ` HYPERLINK \\l "${anchor}" ` : null;
+            const start = text.length;
+            boundary = true;
+            if (instruction) nativeTokens.push({ text: '', code: '\u0013' + instruction + '\u0014',
+                codeAlternatives: ['\u0013' + instruction.trimEnd() + ' \\h \u0014'], optional: true, linkStart: true });
+            for (const child of Array.from(element.children)) walk(child);
+            if (instruction) nativeTokens.push({ text: '', code: '\u0015', optional: true, linkEnd: true });
+            protectedSpans.push({ start, end: text.length });
+            boundary = true;
+            return;
+        }
         if (name === 'fldChar') {
             const type = element.getAttributeNS(W, 'fldCharType') || element.getAttribute('w:fldCharType');
             const code = { begin: '\u0013', separate: '\u0014', end: '\u0015' }[type];
@@ -254,10 +303,11 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
     const tocStyle = scopeParagraph && Array.from(scopeParagraph.getElementsByTagNameNS(W, 'pStyle'))
         .some((style) => /^TOC[1-9]$/i.test(style.getAttributeNS(W, 'val') || ''));
     if (tocStyle) protectedSpans.push({ start: 0, end: text.length });
+    const structure = rangeStructureFingerprint(body.localName === 'p' && body !== root
+        ? new XMLSerializer().serializeToString(body) : ooxml);
     return { text, segments, nativeTokens, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
         protectedSpans, fieldOnlyProtection: protectedStructure && !nonFieldProtection,
-        fingerprint: rangeStructureFingerprint(body.localName === 'p' && body !== root
-            ? new XMLSerializer().serializeToString(body) : ooxml) };
+        fingerprint: structure && linkedTargets.length ? JSON.stringify([structure, linkedTargets]) : structure };
 }
 
 function emptyExportParagraph(paragraph, allowEmptyRevisionMarkers = false) {

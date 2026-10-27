@@ -22,7 +22,7 @@
  */
 
 import DiffMatchPatch from './diff-wordmode.js';
-import { tryRevisionDiff } from './revision-diff.js';
+import { tryRevisionDiff } from './revision-diff-loader.js';
 import { applyBlockReplaceStrategy } from './block-replace.js';
 import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges, normalizeWordText } from '../word-revisions.js';
 

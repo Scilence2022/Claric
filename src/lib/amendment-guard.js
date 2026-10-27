@@ -228,11 +228,11 @@ export function checkChunkAmendment(chunk, amendment) {
       if (paragraph.hasRevisions || paragraph.inTable) {
         issues.push(`Paragraph ${op.origIdx + 1} cannot be deleted or replaced structurally (${paragraph.inTable ? 'table content' : 'unresolved revisions'}). Preserve it and edit its text in place.`);
       }
-      if (paragraph.protectedSpans?.length) issues.push(`Paragraph ${op.origIdx + 1} contains native fields. Keep this paragraph and its field results intact.`);
+      if (paragraph.protectedSpans?.length) issues.push(`Paragraph ${op.origIdx + 1} contains native fields or equations. Keep this paragraph and its protected content intact.`);
     } else if (op.type === 'keep' && paragraphs[op.origIdx].protectedSpans?.length
         && textEditHunks(original[op.origIdx], amended[op.newIdx])
           .some((hunk) => touchesProtectedSpan(hunk, paragraphs[op.origIdx].protectedSpans))) {
-      issues.push(`Paragraph ${op.origIdx + 1} changes a native field result. Preserve its exact citation, bibliography or link text and edit surrounding prose only.`);
+      issues.push(`Paragraph ${op.origIdx + 1} changes a native field result or equation. Preserve its exact formula, citation, bibliography or link text and edit surrounding prose only.`);
     } else if (op.type === 'insert' && amended[op.newIdx].trim() && paragraphs[Math.max(0, anchor)]?.inTable) {
       issues.push(`Cannot insert a prose paragraph inside table content near paragraph ${Math.max(0, anchor) + 1}. Preserve the table paragraph structure.`);
     }

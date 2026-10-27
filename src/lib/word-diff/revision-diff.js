@@ -15,7 +15,7 @@ function planEdits(state, after) {
             throw new RevisionSafetyError('Cannot change paragraph or tab boundaries with unresolved revisions.');
         }
         if (touchesProtectedSpan(hunk, state.protectedSpans)) {
-            throw new RevisionSafetyError('The proposed text changes a native field result. Preserve citations, bibliography fields and links; edit surrounding prose only.');
+            throw new RevisionSafetyError('The proposed text changes a native field result or equation. Preserve formulas, citations, bibliography fields and links; edit surrounding prose only.');
         }
     }
     const targets = [];
@@ -190,8 +190,8 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         if (read.currentText && !nativeProjection) {
             throw new RevisionSafetyError(`Native text and XML disagree before writing (${textMismatchDetail(comparable(state.text), comparable(read.currentText.value))}). Draft a new proposal.`);
         }
-        if (!state.hasRevisions && !options.nativeTargets) return null;
-        if (!state.fingerprint || (state.protectedStructure && !(options.nativeTargets && state.fieldOnlyProtection))) {
+        if (!state.hasRevisions && !options.nativeTargets && !state.protectedSpans.length) return null;
+        if (!state.fingerprint || (state.protectedStructure && !state.fieldOnlyProtection)) {
             throw new RevisionSafetyError('Structural revisions or protected objects prevent this edit.');
         }
         state.text = comparable(state.text);

@@ -31,7 +31,7 @@
  */
 
 import DiffMatchPatch from './diff-wordmode.js';
-import { tryRevisionDiff } from './revision-diff.js';
+import { tryRevisionDiff } from './revision-diff-loader.js';
 import { applySentenceDiffStrategy } from './sentence-diff.js';
 import { _occurrenceIndex, applyCharDiffStrategy } from './char-diff.js';
 import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges } from '../word-revisions.js';

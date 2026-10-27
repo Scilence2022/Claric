@@ -15,8 +15,8 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
     stickyContent = false, revisedPadding = false, nativeControls = false } = {}) {
     let sequence = 0;
-    const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false, symbol = null }) =>
-        Array.from(text).map((text) => ({ text, type, id, field, symbol })));
+    const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false, symbol = null, math = null }) =>
+        Array.from(text).map((text, index) => ({ text, type, id, field, symbol, math, mathStart: index === 0 })));
     const ranges = [];
     const writes = [];
     const bookmarks = new Map();
@@ -28,6 +28,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             else groups.at(-1).push(atom);
         }
         const content = groups.map((group) => `<w:p xmlns:w="${W}">` + group.map((atom) => {
+        if (atom.math) return atom.mathStart ? atom.math.xml : '';
         const run = atom.symbol ? `<w:r><w:sym w:font="Symbol" w:char="${atom.symbol}"/></w:r>`
             : atom.text === '‑' && nativeControls ? '<w:r><w:noBreakHyphen/></w:r>'
                 : `<w:r><w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
@@ -51,6 +52,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             getOoxml: jest.fn(() => { xmlReads++; return { value: xml(atoms.slice(span.start, span.end)) }; }),
             ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value:
                 atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => {
+                    if (atom.math) return atom.mathStart ? atom.math.native : '';
                     const text = nativeControls && atom.symbol ? '(' : atom.text;
                     return nativeControls && atom.field ? '\u0013HYPERLINK example\u0014' + text + '\u0015' : text;
                 }).join('').replace(/\n/g, '\r').replace(/‑/g, nativeControls ? '\u001E' : '‑') })) } : {}),
@@ -221,6 +223,37 @@ test('whole-document reassembly preserves Symbol glyphs and nonbreaking hyphens 
     }
     expect(w.atoms.filter((atom) => atom.symbol || atom.field).every((atom) => atom.type === 'plain')).toBe(true);
     expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test('two polish rounds edit prose around an intact equation, raw hyperlink fields and earlier revisions', async () => {
+    const math = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+        + '<m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath>',
+    native: '\r𝑥\r2\r' };
+    const w = world([{ text: 'Earlier result. ', type: 'del', id: 'history' }, { text: 'The old ' },
+        { text: '𝑥^(2)', math }, { text: ' result refers to ' }, { text: 'dataset', field: true }, { text: ' for details.' }],
+    { nativeReviewed: true, nativeControls: true, padding: true, revisedPadding: true });
+    for (const after of ['The revised 𝑥^(2) result refers to dataset for more details.',
+        'The final 𝑥^(2) result refers to dataset for further details.']) {
+        const parsed = await parseDocument();
+        expect(parsed.paragraphs[0].text).toContain('𝑥^(2)');
+        expect(parsed.paragraphs[0].text).not.toContain('\n');
+        w.bookmarks.set('section', w.scope);
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment: after,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'section']]), { log: jest.fn() });
+        expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [], uncertainChunkIds: [] });
+        expect((await parseDocument()).paragraphs[0].text).toBe(after);
+    }
+    expect(w.atoms.filter((atom) => atom.math || atom.field).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.atoms.filter((atom) => atom.id === 'history').map((atom) => atom.text).join('')).toBe('Earlier result. ');
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test('an equation mutation fails paragraph preflight before surrounding prose is written', async () => {
+    const math = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>k</m:t></m:r></m:oMath>', native: '𝑘' };
+    const w = world([{ text: 'The old ' }, { text: '𝑘', math }, { text: ' result.' }], { nativeReviewed: true });
+    await expect(applyTokenMapStrategy(w.context, w.scope, w.state().text, 'The new q result.', jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toThrow(/equation/);
+    expect(w.writes).toHaveLength(0);
 });
 
 test.each(['Temperature is 20 C.', 'Temperature is 20 (C.'])('symbol deletion or replacement is rejected before any surrounding edit: %s', async (after) => {
