@@ -15,7 +15,9 @@ const holes = { 0x1d455: 'ℎ', 0x1d49d: 'ℬ', 0x1d4a0: 'ℰ', 0x1d4a1: 'ℱ',
     0x1d4a3: 'ℋ', 0x1d4a4: 'ℐ', 0x1d4a7: 'ℒ', 0x1d4a8: 'ℳ', 0x1d4ad: 'ℛ',
     0x1d4ba: 'ℯ', 0x1d4bc: 'ℊ', 0x1d4c4: 'ℴ', 0x1d506: 'ℭ', 0x1d50b: 'ℌ',
     0x1d50c: 'ℑ', 0x1d515: 'ℜ', 0x1d51d: 'ℨ', 0x1d53a: 'ℂ', 0x1d53f: 'ℍ',
-    0x1d545: 'ℕ', 0x1d547: 'ℙ', 0x1d548: 'ℚ', 0x1d549: 'ℝ', 0x1d551: 'ℤ' };
+    0x1d545: 'ℕ', 0x1d547: 'ℙ', 0x1d548: 'ℚ', 0x1d549: 'ℝ', 0x1d551: 'ℤ',
+    // Not a Unicode hole, but Word's text for a script l is U+2113.
+    0x1d4c1: 'ℓ' };
 
 function attribute(node, name, fallback = '') {
     return node?.getAttributeNS(MATH_NS, name) ?? fallback;

@@ -30,6 +30,17 @@ test('native math argument CRs project to one protected inline equation rather t
     expect(projectNativeText(state, native.replace('\r𝑥\r', '𝑥\r'))).toBeNull();
 });
 
+test('a script l reads as Word\'s U+2113, so native text and post-write read-back agree', async () => {
+    const ell = run('l', '<m:scr m:val="script"/><m:sty m:val="p"/>');
+    const state = revisionTextState(paragraph(ell, 'With an ', '-bit index.'));
+    expect(state.text).toBe('With an ℓ-bit index.');
+    expect(projectNativeText(state, 'With an ℓ-bit index.')?.text).toBe(state.text);
+    expect(readMath(run('l', '<m:scr m:val="script"/>')).text).toBe('ℓ');
+    expect(readMath(run('l', '<m:scr m:val="script"/><m:sty m:val="b"/>')).text).toBe('𝓵');
+    const target = { getReviewedText: () => ({ value: 'With an ℓ-bit index.' }), getOoxml: () => ({ value: paragraph(ell, 'With an ', '-bit index.') }) };
+    await expect(verifyMutationText({ sync: async () => {} }, target, state.text, { paragraph: true })).resolves.toBeUndefined();
+});
+
 test('equation preservation is enforced before a chunk amendment reaches Word', () => {
     const state = revisionTextState(paragraph());
     const chunk = { paragraphs: [state] };
