@@ -129,7 +129,7 @@ test('native placeholders survive polish and repair without asking the model to 
     const source = messages.find((m) => m.role === 'user').content.split('[AMEND THIS TEXT]\n')[1].split('\n[END TEXT]')[0];
     expect(source).not.toContain('𝑥');
     const candidate = source.replace('old', 'revised');
-    return send.mock.calls.length === 1 ? candidate.replace(/⟦[^⟧]+⟧/, '𝒙') : candidate;
+    return send.mock.calls.length === 1 ? candidate.replace(/⟦CLARIC_NATIVE_[^⟧]+⟧/, '𝒙') : candidate;
   });
   const results = await processChunksParallel([chunk], { config: {}, promptManager: mockPromptManager(),
     documentContext: null, sendMessagesFn: send, log });
@@ -137,6 +137,22 @@ test('native placeholders survive polish and repair without asking the model to 
   expect(send).toHaveBeenCalledTimes(2);
   expect(send.mock.calls[1][1].find((m) => m.role === 'user').content).toContain('CLARIC_NATIVE');
   expect(send.mock.calls[1][1].at(-1).content).toContain('preserve each native placeholder');
+});
+
+test('native paragraph framing repairs an omitted heading and keeps markers out of the amendment', async () => {
+  const chunk = mockChunk('native-heading', '', 0, 1);
+  chunk.paragraphs = [{ text: '4.2 A short heading' },
+    { text: 'An old 𝑥 result remains clear.', protectedSpans: [{ start: 7, end: 9 }] }];
+  const send = jest.fn(async (_config, messages) => {
+    const source = messages.find((m) => m.role === 'user').content.split('[AMEND THIS TEXT]\n')[1].split('\n[END TEXT]')[0];
+    const candidate = source.replace('An old', 'The revised');
+    return send.mock.calls.length === 1 ? candidate.split('\n').slice(1).join('\n') : candidate;
+  });
+  const results = await processChunksParallel([chunk], { config: {}, promptManager: mockPromptManager(),
+    documentContext: null, sendMessagesFn: send, log });
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[1][1].at(-1).content).toContain('Paragraph 1');
+  expect(results[0]).toMatchObject({ status: 'fulfilled', amendment: '4.2 A short heading\nThe revised 𝑥 result remains clear.' });
 });
 
 // --- Test Suites ---

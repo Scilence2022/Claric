@@ -80,6 +80,9 @@ export function projectNativeText(state, value, { trimEnd = false } = {}) {
         }
         position += matched.length;
         text += visible;
+        // A native equation can be shorter than its canonical expression.
+        // Its ending boundary is still the start of the following prose.
+        offsets[position] = text.length;
     }
     return position === native.length ? { text, native, offsets } : null;
 }
@@ -215,7 +218,8 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
             boundary = true;
             // An equation is an immutable island, never an editable text run.
             text += math.text;
-            nativeTokens.push({ text: math.text, alternatives: math.nativeText === null ? [] : [math.nativeText] });
+            nativeTokens.push({ text: math.text,
+                alternatives: [math.nativeText, mathTextState(element, true).nativeText].filter((value) => value !== null) });
             protectedSpans.push({ start, end: text.length });
             protectedStructure = true;
             if (math.nativeText === null) nonFieldProtection = true;

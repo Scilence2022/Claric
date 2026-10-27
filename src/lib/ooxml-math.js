@@ -50,23 +50,25 @@ function runText(node) {
 }
 
 /** Canonical text retains the equation's operators; nativeText matches the
- * host's linear text exactly, including nested argument boundary controls. */
-export function mathTextState(node) {
+ * host's linear text exactly, including nested argument boundary controls.
+ * reviewed=true selects Mac getReviewedText's punctuation-delimited format,
+ * only for structures confirmed by captured native/XML pairs. */
+export function mathTextState(node, reviewed = false) {
     if (node.namespaceURI !== MATH_NS) return { text: '', nativeText: null };
     const name = node.localName;
     if (name === 'r') {
         const text = runText(node);
-        return { text, nativeText: text };
+        return { text, nativeText: reviewed ? text.replaceAll('-', '−').replaceAll("'", '′') : text };
     }
     const children = Array.from(node.children).filter((child) => !child.localName.endsWith('Pr'));
-    const parts = children.map(mathTextState);
+    const parts = children.map((child) => mathTextState(child, reviewed));
     const text = parts.map((part) => part.text).join('');
     const nativeText = parts.every((part) => part.nativeText !== null)
         ? parts.map((part) => part.nativeText).join('') : null;
     if (['oMath', 'oMathPara', 'e', 'sub', 'sup', 'num', 'den', 'lim'].includes(name)) return { text, nativeText };
     const argument = (key) => parts[children.findIndex((child) => child.localName === key)]?.text || '';
     const structured = parts.every((part) => part.nativeText !== null)
-        ? '\n' + parts.map((part) => part.nativeText).join('\n') + '\n' : null;
+        ? (reviewed ? ',' : '\n') + parts.map((part) => part.nativeText).join(reviewed ? '-' : '\n') + (reviewed ? '.' : '\n') : null;
     if (['sSub', 'sSup', 'sSubSup'].includes(name)) {
         return { text: argument('e') + (name !== 'sSup' ? `_(${argument('sub')})` : '')
             + (name !== 'sSub' ? `^(${argument('sup')})` : ''), nativeText: structured };
@@ -74,21 +76,21 @@ export function mathTextState(node) {
     if (name === 'f') {
         const type = attribute(property(property(node, 'fPr'), 'type'), 'val', 'bar');
         return { text: type === 'noBar' ? `binom(${argument('num')},${argument('den')})`
-            : `(${argument('num')})/(${argument('den')})`, nativeText: type === 'bar' ? structured
+            : `(${argument('num')})/(${argument('den')})`, nativeText: reviewed ? null : type === 'bar' ? structured
                 : type === 'noBar' && structured !== null ? '\n' + structured : null };
     }
     if (name === 'd') {
         const props = property(node, 'dPr');
         return { text: attribute(property(props, 'begChr'), 'val', '(')
             + parts.map((part) => part.text).join(attribute(property(props, 'sepChr'), 'val', '|'))
-            + attribute(property(props, 'endChr'), 'val', ')'), nativeText: structured };
+            + attribute(property(props, 'endChr'), 'val', ')'), nativeText: reviewed ? null : structured };
     }
     if (name === 'nary') return { text: attribute(property(property(node, 'naryPr'), 'chr'), 'val', '∫')
         + `_(${argument('sub')})^(${argument('sup')})(${argument('e')})`,
-        nativeText: nativeText === null ? null : '\n' + parts.slice(0, 2).map((part) => part.nativeText).join('\n')
+        nativeText: reviewed ? structured : nativeText === null ? null : '\n' + parts.slice(0, 2).map((part) => part.nativeText).join('\n')
             + (parts[2]?.nativeText || '') + '\n' };
     if (name === 'limLow' || name === 'limUpp') return { text: argument('e')
-        + (name === 'limLow' ? '_' : '^') + `(${argument('lim')})`, nativeText: structured };
+        + (name === 'limLow' ? '_' : '^') + `(${argument('lim')})`, nativeText: reviewed ? null : structured };
     // Keep unknown content readable, but do not authorize writes by assuming
     // its argument order or its Word text representation.
     return { text: text || '\uFFFC', nativeText: null };

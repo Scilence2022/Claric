@@ -9,6 +9,13 @@ const MAX_TARGETS = 256;
 const MAX_CANDIDATES = 1024;
 const READ_BATCH_SIZE = 24;
 
+async function syncLocationRead(context, stage) {
+    try { await context.sync(); }
+    catch (error) {
+        throw new RevisionSafetyError(`Could not read ${stage} (${wordErrorDetail(error)}). No text was written.`);
+    }
+}
+
 function planEdits(state, after) {
     const hunks = textEditHunks(state.text, after, state.protectedSpans).map((hunk) => ({ ...hunk, targets: [], anchor: null, location: null }));
     for (const hunk of hunks) {
@@ -73,7 +80,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
         matches.load('items');
         searches.set(text, matches);
     }
-    if (searches.size) await context.sync();
+    if (searches.size) await syncLocationRead(context, 'native search results');
     const candidates = [];
     for (const [text, matches] of searches) {
         for (const range of matches.items) candidates.push({ text, range });
@@ -90,13 +97,29 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
             // indistinguishable from a genuine paragraph-start fragment in
             // a multi-paragraph prefix. Current-view native text retains
             // the exact range boundary without that export padding.
-            const currentPrefix = xmlBaseline === null ? queueCurrentTextRead(prefix) : null;
+            const currentPrefix = queueCurrentTextRead(prefix);
             const currentContent = queueCurrentTextRead(candidate.range);
-            return { ...candidate, currentPrefix, currentContent,
+            return { ...candidate, currentPrefix, currentContent, prefixRange: prefix,
                 xml: currentContent ? null : queueRevisionRead(candidate.range, { paragraph: true }),
                 prefix: currentPrefix ? null : prefix.getOoxml() };
         });
-        await context.sync();
+        await syncLocationRead(context, 'current-view search ranges');
+        if (xmlBaseline !== null) {
+            // A collapsed paragraph-start range has a proven empty native
+            // prefix. Mac Word can throw GeneralException when exporting
+            // that empty range; never request its OOXML.
+            for (const candidate of batch) {
+                if (candidate.currentPrefix && typeof candidate.currentPrefix.value !== 'string') {
+                    throw new RevisionSafetyError('The current-view revision prefix is unreadable. Generate a fresh proposal.');
+                }
+                if (candidate.currentPrefix && normalizeWordText(candidate.currentPrefix.value)) {
+                    candidate.prefix = candidate.prefixRange.getOoxml();
+                }
+            }
+            if (batch.some((candidate) => candidate.currentPrefix && candidate.prefix)) {
+                await syncLocationRead(context, 'nonempty XML position prefixes');
+            }
+        }
         const selected = [];
         for (const candidate of batch) {
             if (candidate.currentPrefix && typeof candidate.currentPrefix.value !== 'string') {
@@ -114,12 +137,14 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
             // in native prefixes. Their raw lengths are not visible offsets.
             // Match the prefix to the independently verified whole stream.
             if (nativeProjection && prefix !== null && !nativeProjection.native.startsWith(prefix)) continue;
-            const prefixState = candidate.currentPrefix ? null : revisionTextState(candidate.prefix.value,
-                xmlBaseline === null ? options : { ...options, singleParagraphContent: true });
+            const prefixState = xmlBaseline !== null && candidate.currentPrefix && !prefix
+                ? { text: '', paragraphCount: 1 }
+                : candidate.currentPrefix && xmlBaseline === null ? null : revisionTextState(candidate.prefix.value,
+                    xmlBaseline === null ? options : { ...options, singleParagraphContent: true });
             if (xmlBaseline !== null && prefixState.paragraphCount !== 1) continue;
             const prefixText = prefixState?.text;
             if (xmlBaseline !== null && !xmlBaseline.startsWith(prefixText)) continue;
-            const offset = candidate.currentPrefix
+            const offset = candidate.currentPrefix && xmlBaseline === null
                 ? nativeProjection ? nativeProjection.offsets[prefix.length] : prefix.length
                 : prefixText.length;
             const key = JSON.stringify([offset, candidate.text]);
@@ -129,7 +154,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
         // Full OOXML exports are expensive in macOS Word. Read only the
         // candidates at requested native offsets, rather than every repeated
         // character match and every prefix in the paragraph.
-        if (selected.some((candidate) => candidate.currentContent)) await context.sync();
+        if (selected.some((candidate) => candidate.currentContent)) await syncLocationRead(context, 'verified prose target XML');
         for (const candidate of selected) {
             const content = resolveRevisionRead(candidate.range, candidate.xml, { paragraph: true });
             if (content.hasHiddenContent || (content.protectedStructure && !(options.nativeTargets && content.fieldOnlyProtection))
@@ -160,7 +185,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
           target.range = first.range.expandTo(last.range);
           return { target, xml: queueRevisionRead(target.range, { paragraph: true }) };
       });
-      await context.sync();
+      await syncLocationRead(context, 'combined prose target XML');
       for (const { target, xml } of unions) {
         const content = resolveRevisionRead(target.range, xml, { paragraph: true });
         if ((xml?.currentText && normalizeWordText(xml.currentText.value) !== target.text)
