@@ -32,14 +32,14 @@
                 <button id="filesBtn" class="icon-btn" data-tooltip="Files" aria-label="Files" aria-haspopup="dialog" aria-controls="filesOverlay">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V4h6l2 3h10v13H3z"/></svg>
                 </button>
-                <button id="logBtn" class="icon-btn" data-tooltip="Activity log" aria-label="Activity log">
+                <button id="shareWordViewBtn" type="button" class="icon-btn" data-tooltip="Share Word window" aria-label="Share Word window" aria-pressed="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M9 10h6M12 7v6"/></svg>
+                </button>
+                <button id="logBtn" class="icon-btn header-utilities-start" data-tooltip="Activity log" aria-label="Activity log">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>
                 </button>
                 <button id="settingsBtn" class="icon-btn" data-tooltip="Settings" aria-label="Settings">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                </button>
-                <button id="shareWordViewBtn" type="button" class="icon-btn" data-tooltip="Share Word window" aria-label="Share Word window" aria-pressed="false">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M9 10h6M12 7v6"/></svg>
                 </button>
                 <button id="infoBtn" class="icon-btn" data-tooltip="About" aria-label="About" aria-haspopup="dialog" aria-controls="aboutPanel">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
@@ -98,9 +98,11 @@
         <aside id="logDrawer" class="log-drawer-floating" hidden aria-label="Activity log">
             <div class="log-drawer-bar">
                 <span class="log-drawer-title">Activity log</span>
-                <button id="logDrawerCloseBtn" class="icon-btn" title="Close" aria-label="Close activity log">&times;</button>
+                <button id="copyLogsBtn" type="button" class="btn-link">Copy all</button>
                 <button id="clearLogsBtn" class="btn-link">Clear</button>
+                <button id="logDrawerCloseBtn" class="icon-btn" title="Close" aria-label="Close activity log">&times;</button>
             </div>
+            <span id="logCopyStatus" class="help-text copy-status" role="status"></span>
             <div id="logs" class="logs-container" role="log" aria-live="polite"></div>
         </aside>
 
@@ -154,7 +156,10 @@
                     <dt>Word platform</dt><dd id="aboutPlatform"></dd>
                     <dt>Word API</dt><dd id="aboutWordApi"></dd>
                 </dl>
+                <p class="help-text">Copy all context includes document text, chat, proposals, selection, input, settings and logs. API keys are removed.</p>
+                <p id="contextCopyStatus" class="help-text" role="status"></p>
                 <div class="modal-actions">
+                    <button id="copyContextBtn" type="button" class="btn">Copy all context</button>
                     <button id="aboutCloseBtn" type="button" class="btn btn-primary">Close</button>
                 </div>
             </section>
