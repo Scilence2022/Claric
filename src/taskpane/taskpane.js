@@ -235,6 +235,7 @@ async function initialize() {
         // WordApi 1.3 covers table creation (Body/Range.insertTable, table
         // style/headerRowCount); table turns degrade gracefully without it.
         appState.supportsTables = Office.context.requirements.isSetSupported('WordApi', '1.3');
+        addLog(`Page layout API (WordApiDesktop 1.3): ${Office.context.requirements.isSetSupported('WordApiDesktop', '1.3') ? 'available' : 'unavailable'}`, 'info');
     }
     if (!appState.supportsComments) {
         addLog('Comment features unavailable (requires Word API 1.4)', 'info');

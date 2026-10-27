@@ -7,6 +7,12 @@
 const { buildPlanPrompt, buildPlanReviewPrompt, parsePlan, parseCapabilityPlan, parsePlanReview, inspectPlanReview } = require('../src/lib/task-planner.js');
 
 describe('parsePlan', () => {
+  test('native page layout is executable in both planner and independent review', () => {
+    expect(parsePlan('[{"type":"page_layout","scope":"document","instruction":"去掉文档中的行号"}]'))
+      .toEqual([{ type: 'page_layout', scope: 'document', instruction: '去掉文档中的行号' }]);
+    expect(buildPlanPrompt('去掉文档中的行号', true)).toContain('Do not route these to format or mark them unsupported');
+    expect(buildPlanReviewPrompt('x', {}, {})).toContain('WordApiDesktop 1.3');
+  });
   test('parses a bare JSON task array', () => {
     const tasks = parsePlan('[{"type":"insert","instruction":"增加标题"},{"type":"edit","instruction":"深度润色"}]');
     expect(tasks).toEqual([
@@ -129,7 +135,7 @@ describe('buildPlanPrompt', () => {
     // corresponding compound sub-tasks misrouted.
     const p = buildPlanPrompt('x', false);
     const contract = p.slice(p.indexOf('OUTPUT CONTRACT'));
-    expect(contract).toContain('document_edit|insert|format|edit|append|table|illustration|image_management|table_management|qa');
+    expect(contract).toContain('document_edit|insert|format|page_layout|edit|append|table|illustration|image_management|table_management|qa');
     // And no type known to the parser is missing from the enum.
     for (const type of [
       'insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa',

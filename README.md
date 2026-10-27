@@ -234,6 +234,22 @@ and object operations can have a broader scope. Compound requests can be
 split into ordered tasks with separate proposals. Cancel stops ongoing
 processing; inspect any writes that already completed.
 
+Section/page layout is available on Word for Mac and Windows hosts exposing
+[WordApiDesktop 1.3](https://learn.microsoft.com/en-us/javascript/api/requirement-sets/word/word-api-desktop-1.3-requirement-set).
+For example, ask “去掉文档中的行号”, “Set A4 landscape with 2 cm margins”,
+or “Make the current section two columns”. Supported settings include line
+numbering and restart rules, margins, paper size and orientation, columns and
+column gaps, gutter/mirror margins, header/footer distances, first/odd/even
+header-footer options, vertical alignment, document grids, booklet layout,
+and the start/direction of existing sections. A layout review request reads
+the native settings as evidence. Layout defaults to the whole document;
+an explicit selection or current-section request affects entire containing
+sections. Proposals show before/after values per section, check for stale
+content/settings before Apply, and read back the result. Word may not track
+these layout changes. Unsupported hosts report the missing API before
+layout drafting or writing. Creating/deleting sections, editing header/footer
+content and inserting page numbers are outside this capability.
+
 Built-in skills include `/copy-edit`, `/check-doc`, `/flag-issues`,
 `/summarize-contract`, `/industry-overview`, and `/storylining`.
 

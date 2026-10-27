@@ -3467,12 +3467,14 @@ describe('turn lifecycle guards', () => {
 
   test.each(['cancel', 'newChat'])('cleans an unattached late format proposal after %s', async (action) => {
     let resolve;
+    let started;
+    const preparing = new Promise((done) => { started = done; });
     const proposal = { anchor: { bookmark: '_late' }, ops: [{ font: { bold: true } }] };
-    const actions = makeActions({ prepareFormatProposal: jest.fn(() => new Promise((done) => { resolve = done; })), discardFormatProposal: jest.fn() });
+    const actions = makeActions({ prepareFormatProposal: jest.fn(() => new Promise((done) => { resolve = done; started(); })), discardFormatProposal: jest.fn() });
     const view = makeView();
     const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), actions, log: jest.fn(), getSelectionText: async () => '' });
     const running = conv.submit('bold the document');
-    await Promise.resolve();
+    await preparing;
     conv[action]();
     resolve(proposal);
     await running;
@@ -3841,5 +3843,102 @@ describe('conversation history snapshots', () => {
       connect.mockRestore();
       run.mockRestore();
     }
+  });
+});
+
+describe('native section/page layout', () => {
+  test.each([
+    ['去掉文档中的行号', 'document'], ['Remove line numbering', 'document'],
+    ['Set page margins to 2 cm', 'document'], ['将纸张改为A4', 'document'],
+    ['将当前节改为双栏', 'selection'], ['关闭选区中的行号', 'selection'],
+    ['Remove line numbers in the selected sections of the document', 'selection'],
+    ['去掉文档中所选部分的行号', 'selection'],
+  ])('routes %s independently of an incidental text selection', (instruction, scope) => {
+    for (const hasSelection of [false, true]) {
+      expect(routeTurn(instruction, { hasSelection, skills: BUILTIN_SKILLS }))
+        .toEqual({ type: TURN_TYPE.PAGE_LAYOUT, instruction, scope });
+    }
+  });
+
+  test('layout and text-formatting requests compose without dropping either capability', () => {
+    for (const instruction of ['去掉行号并润色全文', 'Remove line numbering and bold the heading']) {
+      expect(routeTurn(instruction, { hasSelection: true, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.COMPOUND);
+    }
+    expect(routeTurn('如何移除行号？', { skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.DOC_QA);
+    expect(routeTurn('不要改变行号，只润色全文', { skills: BUILTIN_SKILLS }).type).not.toBe(TURN_TYPE.PAGE_LAYOUT);
+  });
+
+  function layoutActions(overrides = {}) {
+    return makeActions({
+      preparePageLayoutProposal: jest.fn(async () => ({ ops: [
+        { sectionId: 's1', patch: { lineNumbering: { isActive: false } }, label: 'Section 1: Line numbers On → Off' },
+        { sectionId: 's2', patch: { lineNumbering: { isActive: false } }, label: 'Section 2: Line numbers On → Off' },
+      ], notice: 'Whole sections; Word may not track layout changes.' })),
+      discardPageLayoutProposal: jest.fn(async () => {}),
+      applyPageLayoutProposal: jest.fn(async () => ({ verified: true, verifiedSections: 1 })),
+      readPageLayout: jest.fn(async () => [{ id: 's1', lineNumbering: { isActive: true }, pageSetup: { leftMargin: 72 } }]),
+      ...overrides,
+    });
+  }
+
+  test('stages a reviewable layout card without tracked-write gating or premature writes', async () => {
+    const view = makeView(), actions = layoutActions();
+    const conv = createConversation({ appState: makeAppState({ supportsTrackedChanges: false }),
+      view, input: makeInput(), log: jest.fn(), actions, getSelectionText: async () => 'Incidental selected text' });
+    await conv.submit('去掉文档中的行号');
+    expect(actions.preparePageLayoutProposal).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'document' }));
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(actions.applyPageLayoutProposal).not.toHaveBeenCalled();
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    expect(card.el.textContent).toContain('Whole sections');
+    expect(card.el.querySelector('.btn-primary').textContent).toBe('Apply page layout');
+    const checks = card.el.querySelectorAll('input[type="checkbox"]');
+    checks[1].checked = false;
+    checks[1].dispatchEvent(new Event('change', { bubbles: true }));
+    card.el.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(actions.applyPageLayoutProposal).toHaveBeenCalledTimes(1);
+    expect(actions.applyPageLayoutProposal.mock.calls[0][1].ops).toHaveLength(1);
+    expect(card.el.textContent).toContain('1 section(s) verified');
+  });
+
+  test('read-only layout questions receive native settings without creating a write proposal', async () => {
+    const view = makeView(), actions = layoutActions();
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions });
+    await conv.submit('当前页边距是多少？');
+    expect(actions.readPageLayout).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'document' }));
+    expect(actions.answerQuestion.mock.calls[0][1].question).toContain('"leftMargin":72');
+    expect(actions.preparePageLayoutProposal).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+  });
+
+  test('no-op layout requests and native support errors are reported without a card', async () => {
+    for (const outcome of [{ ops: [], alreadySatisfied: true }, new Error('Requires WordApiDesktop 1.3')]) {
+      const view = makeView(), actions = layoutActions({ preparePageLayoutProposal: jest.fn(async () => {
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      }) });
+      const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions });
+      await conv.submit('Remove line numbers');
+      expect(view._msg.attachProposal).not.toHaveBeenCalled();
+      expect(actions.applyPageLayoutProposal).not.toHaveBeenCalled();
+      if (outcome instanceof Error) expect(view._msg.markError).toHaveBeenCalledWith('Requires WordApiDesktop 1.3');
+      else expect(view._msg.setStatus).toHaveBeenCalledWith('The requested page layout is already satisfied.');
+    }
+  });
+
+  test('compound layout tasks retain document scope and unlock dependent formatting after verified Apply', async () => {
+    const view = makeView(), actions = layoutActions({ planDocumentTasks: jest.fn(async () => ({ tasks: [
+      { taskId: 'layout', type: 'page_layout', instruction: '去掉文档中的行号' },
+      { taskId: 'font', type: 'format', instruction: 'Bold the heading', dependsOn: ['layout'] },
+    ] })) });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Incidental selection' });
+    await conv.submit('去掉文档中的行号并加粗标题');
+    expect(actions.preparePageLayoutProposal).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'document' }));
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    view._msg.attachProposal.mock.calls[0][0].el.querySelector('.btn-primary').click();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
   });
 });

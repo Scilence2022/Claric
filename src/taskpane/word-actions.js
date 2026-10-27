@@ -57,7 +57,7 @@ import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
-import { loadTaskPlanner, loadFormatActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation, loadTablePatch } from './task-module-loader.js';
+import { loadTaskPlanner, loadFormatActions, loadPageLayoutActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation, loadTablePatch } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
@@ -2666,6 +2666,26 @@ function checkOperationSignal(signal) {
 export async function prepareFormatProposal(deps, args = {}) {
     const actions = await loadFormatActions({ signal: args.signal });
     return actions.prepareFormatProposal({ ...deps, sendActionRequest: _sendActionRequest }, args);
+}
+
+export async function preparePageLayoutProposal(deps, args = {}) {
+    const actions = await loadPageLayoutActions({ signal: args.signal });
+    return actions.preparePageLayoutProposal({ ...deps, sendActionRequest: _sendActionRequest }, args);
+}
+
+export async function readPageLayout(deps, args = {}) {
+    const actions = await loadPageLayoutActions({ signal: args.signal });
+    return actions.readPageLayout(deps, args);
+}
+
+export async function discardPageLayoutProposal(deps, proposal) {
+    const actions = await loadPageLayoutActions();
+    return actions.discardPageLayoutProposal(deps, proposal);
+}
+
+export async function applyPageLayoutProposal(deps, proposal, options = {}) {
+    const actions = await loadPageLayoutActions({ signal: options.signal });
+    return actions.applyPageLayoutProposal(deps, proposal, options);
 }
 
 export async function discardFormatProposal(deps, proposal) {

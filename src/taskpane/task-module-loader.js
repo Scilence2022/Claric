@@ -10,6 +10,10 @@ export const loadFormatPlanning = (options) => loadLazyModule('visual-format',
     () => import(/* webpackChunkName: "visual-format" */ './format-planning-session.js'), { label: 'formatting tools', ...options });
 export const loadFormatActions = (options) => loadLazyModule('format-actions',
     () => import(/* webpackChunkName: "format-actions" */ './word-format-actions.js'), { label: 'native formatting tools', ...options });
+export const loadPageLayoutActions = (options) => loadLazyModule('page-layout-actions',
+    () => import(/* webpackChunkName: "page-layout-actions" */ './page-layout-actions.js'), { label: 'native page layout tools', ...options });
+export const loadFormatProposalStage = (options) => loadLazyModule('format-proposals',
+    () => import(/* webpackChunkName: "format-proposals" */ './format-proposal-stage.js'), { label: 'format and layout proposals', ...options });
 export const loadTaskPlanner = (options) => loadLazyModule('task-planner',
     () => import(/* webpackChunkName: "task-planner" */ '../lib/task-planner.js'), { label: 'task planner', ...options });
 export const loadTaskGraph = (options) => loadLazyModule('task-graph',
@@ -40,5 +44,7 @@ export async function preloadTaskModules(tasks, options = {}) {
         if (options.visualFormatting ?? canReadWordVisuals()) loads.push(loadFormatPlanning(options));
     }
     if (types.has('comment_management')) loads.push(loadCommentActions(options));
+    if (types.has('page_layout')) loads.push(loadPageLayoutActions(options));
+    if (types.has('page_layout') || types.has('format') || types.has('insert')) loads.push(loadFormatProposalStage(options));
     await Promise.all(loads);
 }

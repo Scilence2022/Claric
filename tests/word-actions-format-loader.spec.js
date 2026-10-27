@@ -1,9 +1,35 @@
-jest.mock('../src/taskpane/task-module-loader.js', () => ({ loadFormatActions: jest.fn() }));
-const { loadFormatActions } = require('../src/taskpane/task-module-loader.js');
-const { prepareFormatProposal, applyFormatProposal, discardFormatProposal } = require('../src/taskpane/word-actions.js');
+jest.mock('../src/taskpane/task-module-loader.js', () => ({ loadFormatActions: jest.fn(), loadPageLayoutActions: jest.fn() }));
+const { loadFormatActions, loadPageLayoutActions } = require('../src/taskpane/task-module-loader.js');
+const { prepareFormatProposal, applyFormatProposal, discardFormatProposal, preparePageLayoutProposal,
+    applyPageLayoutProposal, discardPageLayoutProposal, readPageLayout } = require('../src/taskpane/word-actions.js');
 
 beforeEach(() => { jest.clearAllMocks(); global.Word = { run: jest.fn() }; });
 afterEach(() => { delete global.Word; });
+
+test('page layout wrappers forward cancellation and invoke each native action only once', async () => {
+    const native = Object.fromEntries(['preparePageLayoutProposal', 'applyPageLayoutProposal', 'discardPageLayoutProposal', 'readPageLayout']
+        .map((name) => [name, jest.fn(async () => name)]));
+    loadPageLayoutActions.mockResolvedValue(native);
+    const deps = {}, signal = new AbortController().signal;
+    const args = { instruction: 'Remove line numbers', scope: 'document', signal }, proposal = { ops: [] };
+    expect(await preparePageLayoutProposal(deps, args)).toBe('preparePageLayoutProposal');
+    expect(native.preparePageLayoutProposal).toHaveBeenCalledWith(expect.objectContaining({ sendActionRequest: expect.any(Function) }), args);
+    await readPageLayout(deps, { scope: 'selection', signal });
+    expect(native.readPageLayout).toHaveBeenCalledWith(deps, { scope: 'selection', signal });
+    await applyPageLayoutProposal(deps, proposal, { signal });
+    expect(native.applyPageLayoutProposal).toHaveBeenCalledWith(deps, proposal, { signal });
+    await discardPageLayoutProposal(deps, proposal);
+    expect(native.discardPageLayoutProposal).toHaveBeenCalledWith(deps, proposal);
+    for (const action of Object.values(native)) expect(action).toHaveBeenCalledTimes(1);
+});
+
+test('layout download failure never reads or writes Word', async () => {
+    const failure = new Error('Layout module unavailable');
+    loadPageLayoutActions.mockRejectedValue(failure);
+    await expect(preparePageLayoutProposal({}, {})).rejects.toBe(failure);
+    await expect(applyPageLayoutProposal({}, {})).rejects.toBe(failure);
+    expect(Word.run).not.toHaveBeenCalled();
+});
 
 test('failed formatting download cannot capture a bookmark or run a native action', async () => {
     const failure = new Error('Formatting tools unavailable');
