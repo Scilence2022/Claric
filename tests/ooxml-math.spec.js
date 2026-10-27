@@ -156,7 +156,7 @@ const hyperlinkPackage = (relationship = target) => `<pkg:package xmlns:pkg="htt
     + `<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${relationship}" TargetMode="External"/>`
     + '</Relationships></pkg:xmlData></pkg:part></pkg:package>';
 
-test.each(['', ' \\h'])('native hyperlink field codes require a matching document relationship, switch=%s', (switches) => {
+test.each(['', ' \\h', ' \\h\u0001'])('native hyperlink field codes require a matching document relationship, switch=%s', (switches) => {
     const state = revisionTextState(hyperlinkPackage());
     const native = `See \u0013HYPERLINK "${target}"${switches}\u0014dataset\u0015 here.`;
     expect(projectNativeText(state, native).text).toBe('See dataset here.');
@@ -169,4 +169,24 @@ test.each(['', ' \\h'])('native hyperlink field codes require a matching documen
     expect(revisionTextState(hyperlinkPackage('https://example.net/data')).fingerprint).not.toBe(state.fingerprint);
     const unrelated = revisionTextState(hyperlinkPackage().replace('/word/_rels/document.xml.rels', '/word/_rels/header1.xml.rels'));
     expect(projectNativeText(unrelated, native)).toBeNull();
+});
+
+test('Mac hyperlink control read-back requires fresh relationship and result evidence', async () => {
+    let xml = hyperlinkPackage();
+    let native = `See \u0013HYPERLINK "${target}" \\h\u0001\u0014dataset\u0015 here.`;
+    const range = { getReviewedText: () => ({ value: native }), getOoxml: () => ({ value: xml }) };
+    const context = { sync: async () => {} };
+    const expected = 'See dataset here.';
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).resolves.toBeUndefined();
+    xml = hyperlinkPackage('https://example.net/changed');
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
+    xml = hyperlinkPackage();
+    for (const changed of [native.replace('dataset', 'changed'), native.replace(' here.', ' elsewhere.'),
+        native.replace('\\h\u0001', '\\h\u0002'), native.replace('\\h\u0001', '\\x\u0001'),
+        native.replace('\\h\u0001', '\\h\u0001\u0001'), native.replace('dataset', 'data\u0001set')]) {
+        const state = revisionTextState(xml);
+        expect(projectNativeText(state, changed)).toBeNull();
+    }
+    native = native.replace('dataset', 'changed');
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
 });

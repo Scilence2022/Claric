@@ -245,7 +245,11 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
             const start = text.length;
             boundary = true;
             if (instruction) nativeTokens.push({ text: '', code: '\u0013' + instruction + '\u0014',
-                codeAlternatives: ['\u0013' + instruction.trimEnd() + ' \\h \u0014'], optional: true, linkStart: true });
+                // Mac reviewed text can put U+0001 immediately after \\h.
+                // Match only this captured HYPERLINK form with the exact XML
+                // target/anchor; never strip controls from arbitrary fields.
+                codeAlternatives: ['\u0013' + instruction.trimEnd() + ' \\h \u0014',
+                    '\u0013' + instruction.trimEnd() + ' \\h\u0001\u0014'], optional: true, linkStart: true });
             for (const child of Array.from(element.children)) walk(child);
             if (instruction) nativeTokens.push({ text: '', code: '\u0015', optional: true, linkEnd: true });
             protectedSpans.push({ start, end: text.length });
