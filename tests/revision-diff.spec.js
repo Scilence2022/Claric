@@ -14,7 +14,8 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
     stickyContent = false, revisedPadding = false, nativeControls = false, rejectEmptyOoxml = false,
-    mathAbsorbsInsertBefore = false, reviewedTransform = (text) => text } = {}) {
+    mathAbsorbsInsertBefore = false, reviewedTransform = (text) => text, reviewedLinkExpansion = false,
+    ooxmlHook = (_span, xml) => xml } = {}) {
     let sequence = 0;
     // link: a Mac-style HYPERLINK field. Its reviewed text carries raw field
     // codes, a prefix ending inside its result exports the whole hyperlink,
@@ -24,6 +25,14 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             link, linkStart: !!link && index === 0, linkEnd: !!link && index === all.length - 1 })));
     const ranges = [];
     const writes = [];
+    // Mac-style expansion of a range that ends inside a link it starts
+    // before: the export covers the rest of that link.
+    const linkEnd = (start, end) => {
+        const open = end > 0 && atoms[end - 1].link && atoms[end]?.id === atoms[end - 1].id
+            && atoms.slice(start, end).some((atom) => atom.linkStart && atom.id === atoms[end - 1].id);
+        while (open && end < atoms.length && atoms[end].id === atoms[end - 1].id) end++;
+        return end;
+    };
     const bookmarks = new Map();
     let xmlReads = 0;
     const xml = (slice) => {
@@ -62,14 +71,11 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                 if (rejectEmptyOoxml && span.start === span.end) {
                     throw Object.assign(new Error('GeneralException'), { code: 'GeneralException', debugInfo: { errorLocation: 'Range.getOoxml' } });
                 }
-                let end = span.end;
-                const open = end > 0 && atoms[end - 1].link && atoms[end]?.id === atoms[end - 1].id
-                    && atoms.slice(span.start, end).some((atom) => atom.linkStart && atom.id === atoms[end - 1].id);
-                while (open && end < atoms.length && atoms[end].id === atoms[end - 1].id) end++;
-                xmlReads++; return { value: xml(atoms.slice(span.start, end)) };
+                xmlReads++; return { value: ooxmlHook(span, xml(atoms.slice(span.start, linkEnd(span.start, span.end)))) };
             }),
             ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value: reviewedTransform(
-                atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => {
+                atoms.slice(span.start, reviewedLinkExpansion ? linkEnd(span.start, span.end) : span.end)
+                    .filter((atom) => atom.type !== 'del').map((atom) => {
                     if (atom.math) return atom.mathStart ? atom.math.native : '';
                     if (atom.link) return (atom.linkStart ? `\u0013HYPERLINK \\l "L${atom.id}" \\h\u0001\u0014` : '')
                         + atom.text + (atom.linkEnd ? '\u0015' : '');
@@ -357,6 +363,26 @@ test.each([['raw field codes', (text) => text], ['no begin code', (text) => text
     expect(w.writes).toHaveLength(0);
     await tryRevisionDiff(w.context, w.scope, before, after, log, { paragraph: true, nativeTargets: true });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
+    expect(w.state().text).toBe(after);
+    expect(w.atoms.filter((atom) => atom.link).every((atom) => atom.type === 'plain')).toBe(true);
+});
+
+test('a period after a DOI link is resolved by its suffix when Mac expands link prefixes and exports the paragraph mark', async () => {
+    let markExport = true;
+    const w = world([{ text: 'P.\u00a0L. Antkowiak and R.\u00a0N. Grass. Nature Communications, 2020. ' },
+        { text: 'doi:10.1038/s41467-020-19148-3', link: 'https://doi.org/10.1038/s41467-020-19148-3' }, { text: '.' }], {
+        nativeReviewed: true, reviewedLinkExpansion: true,
+        // A range that reaches the paragraph end, other than Content itself,
+        // exports the paragraph mark with its section properties.
+        ooxmlHook: (span, xml) => markExport && !span.scope && span.start === 0 && span.end === w.atoms.length
+            ? `<w:document xmlns:w="${W}"><w:body>${xml}<w:p><w:pPr><w:sectPr/></w:pPr></w:p></w:body></w:document>` : xml,
+    });
+    const before = w.state().text;
+    const after = before.replaceAll('\u00a0', ' ');
+    await tryRevisionDiff(w.context, w.scope, before, after, jest.fn(), { paragraph: true, nativeTargets: true, preflightOnly: true });
+    expect(w.writes).toHaveLength(0);
+    markExport = false;
+    await tryRevisionDiff(w.context, w.scope, before, after, jest.fn(), { paragraph: true, nativeTargets: true });
     expect(w.state().text).toBe(after);
     expect(w.atoms.filter((atom) => atom.link).every((atom) => atom.type === 'plain')).toBe(true);
 });
@@ -713,7 +739,7 @@ test('ambiguous physical search matches and excessive matching are bounded befor
         const matches = search(text);
         return { ...matches, items: [...matches.items, ...matches.items] };
     });
-    await expect(tryRevisionDiff(w.context, w.scope, 'new', 'now')).rejects.toThrow(/Ambiguous/);
+    await expect(tryRevisionDiff(w.context, w.scope, 'new', 'now')).rejects.toThrow(/Ambiguous visible revision target \(".+" at \d+\)/);
     w.scope.search.mockImplementation((text) => {
         const matches = search(text);
         return { ...matches, items: Array(1025).fill(matches.items[0]) };

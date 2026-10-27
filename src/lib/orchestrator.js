@@ -454,7 +454,7 @@ export async function processChunksParallel(chunks, options) {
         let restorationError = null;
         if (amendment && protectedText?.entries.length) {
           try { amendment = protectedText.restore(amendment); }
-          catch (error) { restorationError = error.message; }
+          catch (error) { restorationError = error.issues || [error.message]; }
         }
 
         // A chat reply about the chunk ("the section was not included in the
@@ -472,7 +472,7 @@ export async function processChunksParallel(chunks, options) {
           }
         }
 
-        const check = restorationError ? { valid: false, issues: [restorationError] }
+        const check = restorationError ? { valid: false, issues: restorationError }
           : amendment && checkChunkAmendment ? checkChunkAmendment(chunk, amendment, { preserveNbsp }) : null;
         if (!check) break;
         if (check.valid) {

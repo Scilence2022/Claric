@@ -102,7 +102,7 @@ function planEdits(state, after) {
     return { hunks, targets };
 }
 
-async function locate(context, scope, targets, options, allowSplit = true, nativeProjection = null, xmlBaseline = null) {
+async function locate(context, scope, targets, options, allowSplit = true, nativeProjection = null, xmlBaseline = null, baseline = null) {
     const searches = new Map();
     for (const { text } of targets) {
         if (searches.has(text)) continue;
@@ -200,7 +200,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
             verified.set(key, candidate.range);
         }
     }
-    if (duplicates.size) await resolveDuplicates(context, scope, duplicates, verified, options, nativeProjection, xmlBaseline);
+    if (duplicates.size) await resolveDuplicates(context, scope, duplicates, verified, options, nativeProjection, xmlBaseline, baseline);
     for (const target of targets) {
         target.range = verified.get(JSON.stringify([target.start, target.text]));
     }
@@ -216,7 +216,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
         const last = { start: target.start + target.text.length - lastText.length, text: lastText, range: null };
         return { target, first, last };
     });
-    await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false, nativeProjection, xmlBaseline);
+    await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false, nativeProjection, xmlBaseline, baseline);
     for (let start = 0; start < endpoints.length; start += READ_BATCH_SIZE) {
       const unions = endpoints.slice(start, start + READ_BATCH_SIZE).map(({ target, first, last }) => {
           target.range = first.range.expandTo(last.range);
@@ -234,29 +234,47 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
     }
 }
 
-/** Two native ranges proved the same start offset. Keep only a candidate
- * whose end boundary also maps to the expected final-view offset. */
-async function resolveDuplicates(context, scope, duplicates, verified, options, nativeProjection, xmlBaseline) {
+/** Two native ranges proved the same start offset. Mac Word can export a
+ * prefix ending inside a link as the whole link, so a match inside the link
+ * gets the offset of the prose after it. Keep only the candidate whose
+ * remaining text, from its end to the end of the scope, is the expected
+ * final-view suffix: distinct positions cannot share a suffix length. Hosts
+ * without current-view text fall back to the start-to-end boundary. */
+async function resolveDuplicates(context, scope, duplicates, verified, options, nativeProjection, xmlBaseline, baseline) {
     const reads = [];
     for (const [key, candidates] of duplicates) {
         const [offset, text] = JSON.parse(key);
         for (const candidate of candidates) {
-            const through = scope.getRange(Word.RangeLocation.start).expandTo(candidate.range.getRange(Word.RangeLocation.end));
-            const current = xmlBaseline === null ? queueCurrentTextRead(through) : null;
-            reads.push({ key, end: offset + text.length, candidate, current, xml: current ? null : through.getOoxml() });
+            const rest = candidate.range.getRange(Word.RangeLocation.end).expandTo(scope.getRange(Word.RangeLocation.end));
+            const after = baseline === null ? null : queueCurrentTextRead(rest);
+            const through = after ? null : scope.getRange(Word.RangeLocation.start).expandTo(candidate.range.getRange(Word.RangeLocation.end));
+            reads.push({ key, end: offset + text.length, candidate, rest, after, restXml: null, xml: through?.getOoxml() || null });
         }
     }
     if (reads.length > MAX_CANDIDATES) throw new RevisionSafetyError('Too many ambiguous revision matches. Use a smaller selection.');
     await syncLocationRead(context, 'ambiguous target boundaries');
+    const expectedRest = (end) => baseline.slice(end);
+    // A nonempty suffix outside the native projection needs its XML. Never
+    // export a collapsed range: Mac Word can throw for an empty OOXML range.
+    for (const read of reads) {
+        if (!read.after || typeof read.after.value !== 'string' || nativeProjection) continue;
+        if (normalizeWordText(read.after.value)) read.restXml = read.rest.getOoxml();
+    }
+    if (reads.some((read) => read.restXml)) await syncLocationRead(context, 'ambiguous target suffixes');
     const accepted = new Map();
-    for (const { key, end, candidate, current, xml } of reads) {
+    for (const { key, end, candidate, after, restXml, xml } of reads) {
         let valid;
-        if (current) {
-            if (typeof current.value !== 'string') continue;
-            const native = normalizeWordText(current.value);
-            valid = !endsInsideNativeField(native) && (nativeProjection
-                ? nativeProjection.native.startsWith(native) && nativeProjection.offsets[native.length] === end
-                : native.length === end);
+        if (after) {
+            if (typeof after.value !== 'string') continue;
+            const native = normalizeWordText(after.value);
+            if (nativeProjection) {
+                const from = nativeProjection.native.length - native.length;
+                valid = from >= 0 && nativeProjection.native.endsWith(native) && nativeProjection.offsets[from] === end;
+            } else if (!native) valid = end === baseline.length;
+            else {
+                const state = revisionTextState(restXml.value, { ...options, singleParagraphContent: true });
+                valid = (!options.paragraph || state.paragraphCount === 1) && state.text === expectedRest(end);
+            }
         } else {
             const state = revisionTextState(xml.value, xmlBaseline === null ? options : { ...options, singleParagraphContent: true });
             valid = xmlBaseline === null ? state.text.length === end
@@ -265,7 +283,10 @@ async function resolveDuplicates(context, scope, duplicates, verified, options, 
         if (valid) accepted.set(key, accepted.has(key) ? null : candidate.range);
     }
     for (const key of duplicates.keys()) {
-        if (!accepted.get(key)) throw new RevisionSafetyError('Ambiguous visible revision target. Generate a fresh proposal.');
+        if (!accepted.get(key)) {
+            const [offset, text] = JSON.parse(key);
+            throw new RevisionSafetyError(`Ambiguous visible revision target (${JSON.stringify(text.slice(0, 40))} at ${offset}). Generate a fresh proposal.`);
+        }
         verified.set(key, accepted.get(key));
     }
 }
@@ -339,9 +360,9 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         const ownsTracking = options.trackChanges !== false;
         if (ownsTracking && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
         if (xmlPositions) {
-            await locate(context, range, [...proseProofTargets(state), ...targets], options, true, null, state.text);
+            await locate(context, range, [...proseProofTargets(state), ...targets], options, true, null, state.text, state.text);
             log('Verified all editable prose against native ranges and OOXML positions; native objects remain protected.', 'info');
-        } else await locate(context, range, targets, options, true, nativeProjection);
+        } else await locate(context, range, targets, options, true, nativeProjection, null, state.text);
         if (ownsTracking) context.document.load('changeTrackingMode');
         const baseline = queueRevisionRead(range, readOptions);
         await context.sync();

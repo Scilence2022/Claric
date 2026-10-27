@@ -26,6 +26,24 @@ test('native placeholders cannot be removed, duplicated, reordered, renamed or m
     }
 });
 
+test('a repeated placeholder is reported for every paragraph at once, naming the tokens to fix', () => {
+    const source = { paragraphs: [paragraph('Polish depends on 𝐿.', ['𝐿']),
+        paragraph('Otherwise 𝛬 lies in 𝜌 modulo 𝑔, the gcd.', ['𝛬', '𝜌', '𝑔'])] };
+    const protectedText = protectChunkText(source, { frameParagraphs: true });
+    const [l, lambda, rho, g] = protectedText.entries.map((e) => e.token);
+    const reply = protectedText.chunk.paragraphs.map((p) => p.text).join('\n')
+        .replace(`on ${l}.`, `on ${l}, fixed by ${l}.`)
+        .replace(`${g}, the gcd.`, `${g}, where ${g} is the gcd, and ${lambda} holds.`)
+        .replace(`in ${rho}`, 'in a class');
+    let error;
+    try { protectedText.restore(reply); } catch (caught) { error = caught; }
+    expect(error.issues).toEqual([
+        `Paragraph 1: preserve each native placeholder exactly once and in order; ${l} appears more than once (a native object cannot be copied, so refer back to it in words).`,
+        `Paragraph 2: preserve each native placeholder exactly once and in order; ${lambda}, ${g} appear more than once (a native object cannot be copied, so refer back to it in words); missing ${rho}.`,
+    ]);
+    expect(protectedText.instructions).toContain('A placeholder cannot be repeated');
+});
+
 test('identical equations get distinct IDs and native manual line breaks stay inside their paragraph', () => {
     const protectedText = protectChunkText({ paragraphs: [paragraph('First 𝑥.\nSecond 𝑦.', ['𝑥', '𝑦']), paragraph('Third 𝑥.', ['𝑥'])] });
     expect(new Set(protectedText.entries.map((e) => e.token)).size).toBe(3);
