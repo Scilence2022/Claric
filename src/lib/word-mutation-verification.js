@@ -25,8 +25,8 @@ export async function verifyMutationText(context, range, expected, options = {},
     let actual = comparable(current ? current.value : resolveRevisionRead(target, read, options).text);
     const wanted = comparable(expected);
     if (current && actual !== wanted && (hasNativeFieldCodes(current.value)
-        || /[(\uF000-\uF0FF]/.test(current.value))) {
-        // Raw fields/symbols need fresh XML evidence after the write. Never
+        || /[(\uF000-\uF0FF\r\n\uD835]/.test(current.value))) {
+        // Fields, symbols and structured equations need fresh XML evidence. Never
         // use the pre-write projection to bless changed field results/glyphs.
         const xml = queueRevisionRead(target, options);
         if (xml) {

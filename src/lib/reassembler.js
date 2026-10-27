@@ -23,7 +23,7 @@ import { alignParagraphs, amendmentParagraphTexts } from './paragraph-alignment.
 import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, verifyMutationText, hostSupportsTrackedChanges,
   normalizeWordText, wordErrorDetail } from './word-revisions.js';
 import { validateWhitespaceCleanup } from './whitespace-cleanup.js';
-import { tryRevisionDiff } from './word-diff/revision-diff.js';
+import { tryRevisionDiff } from './word-diff/revision-diff-loader.js';
 
 /**
  * Thrown when an LLM amendment fails the content-length sanity check (the

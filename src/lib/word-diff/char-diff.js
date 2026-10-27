@@ -23,7 +23,7 @@
  */
 
 import { diffUnicodeScalars } from '../text-edit-plan.js';
-import { tryRevisionDiff } from './revision-diff.js';
+import { tryRevisionDiff } from './revision-diff-loader.js';
 import { RevisionSafetyError, MutationSafetyError, verifyMutationText, enableTrackedWrites, hostSupportsTrackedChanges } from '../word-revisions.js';
 
 /** Matches CJK ideographs, hiragana/katakana, and hangul. */
