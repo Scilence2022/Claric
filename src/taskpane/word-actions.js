@@ -59,6 +59,7 @@ import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
 import { loadTaskPlanner, loadFormatActions, loadPageLayoutActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation, loadTablePatch } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
+import { preserveNonBreakingSpaces, requestsNbspChange } from '../lib/nbsp-preservation.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
     const messages = typeof prompt === 'string' ? [{ role: 'user', content: prompt }] : prompt;
@@ -1099,14 +1100,16 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
 
     const rawResponse = await _sendActionRequest(deps, backendConfig, messages, { onToken, onReasoning, signal });
     log(`LLM response received [${backendConfig.model}]`, 'success');
+    // Unchanged source text keeps its non-breaking spaces unless asked otherwise.
+    const keepNbsp = (text) => requestsNbspChange(promptTemplate) ? text : preserveNonBreakingSpaces(plainSelectionText, text);
 
     if (!merged) {
         // The selection may contain a defanged protocol marker that the model
         // echoed. Strip transport artifacts while it is still inert, then
         // restore the visible document text before staging the proposal.
-        const amendedText = restoreProtocolMarkers(
+        const amendedText = keepNbsp(restoreProtocolMarkers(
             stripChunkDelimiters(stripMarkdown(rawResponse, log), log)
-        );
+        ));
         return {
             selectionText: plainSelectionText,
             revisionFingerprint,
@@ -1143,7 +1146,7 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
     }
 
     const amendedText = parsed.amendment
-        ? restoreProtocolMarkers(stripChunkDelimiters(stripMarkdown(parsed.amendment, log), log))
+        ? keepNbsp(restoreProtocolMarkers(stripChunkDelimiters(stripMarkdown(parsed.amendment, log), log)))
         : null;
     const commentText = parsed.comment
         ? restoreProtocolMarkers(stripChunkDelimiters(parsed.comment, log))

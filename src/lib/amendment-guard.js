@@ -30,7 +30,9 @@
 
 import { alignParagraphs, amendmentParagraphTexts, paragraphSimilarity, SIMILARITY_THRESHOLD } from './paragraph-alignment.js';
 import { textEditHunks, touchesProtectedSpan } from './text-edit-plan.js';
+import { preserveNonBreakingSpaces } from './nbsp-preservation.js';
 export { protectChunkText } from './protected-chunk-text.js';
+export { requestsNbspChange } from './nbsp-preservation.js';
 
 /**
  * @typedef {Object} ReplyVerdict
@@ -207,7 +209,7 @@ export function amendedLines(text) {
 }
 
 /** Check the same paragraph constraints used by the writer before staging a preview. */
-export function checkChunkAmendment(chunk, amendment) {
+export function checkChunkAmendment(chunk, amendment, { preserveNbsp = false } = {}) {
   const paragraphs = (chunk.paragraphs || []).filter((p) => String(p.text || '').trim());
   const original = paragraphs.map((p) => String(p.text));
   let amended;
@@ -222,6 +224,11 @@ export function checkChunkAmendment(chunk, amendment) {
   const alignment = original.length === amended.length && paragraphs.some((p) => p.hasRevisions || p.protectedSpans?.length)
     ? original.map((_text, index) => ({ type: 'keep', origIdx: index, newIdx: index }))
     : alignParagraphs(original, amended);
+  if (preserveNbsp) {
+    for (const op of alignment) {
+      if (op.type === 'keep') amended[op.newIdx] = preserveNonBreakingSpaces(original[op.origIdx], amended[op.newIdx]);
+    }
+  }
   let anchor = -1;
   for (const op of alignment) {
     if (op.type === 'delete') {
