@@ -163,6 +163,8 @@ body {
     justify-content: flex-end;
     gap: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
+    /* Reserve space for Word's system information button in the top-right corner. */
+    padding-right: calc(var(--spacing-md) + 28px);
     border-bottom: 1px solid var(--border-color);
     background: var(--primary-bg);
     flex: 0 0 auto;
