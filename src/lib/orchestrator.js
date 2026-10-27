@@ -237,8 +237,9 @@ export async function processChunksParallel(chunks, options) {
   const reviewIndex = review ? review.buildReviewIndex(documentContext) : null;
   // The user's instruction, used to tell requested text from model chat.
   const instructionText = promptManager.getActivePrompt('amendment')?.template || '';
-  const { classifyChunkReply, checkChunkAmendment, protectChunkText } = mode === 'comment'
+  const { classifyChunkReply, checkChunkAmendment, protectChunkText, requestsNbspChange } = mode === 'comment'
     ? { classifyChunkReply: null, checkChunkAmendment: null, protectChunkText: null } : await loadAmendmentGuard({ signal });
+  const preserveNbsp = !requestsNbspChange?.(instructionText);
   const results = new Array(chunks.length);
   let nextIndex = 0;
   let completed = 0;
@@ -472,7 +473,7 @@ export async function processChunksParallel(chunks, options) {
         }
 
         const check = restorationError ? { valid: false, issues: [restorationError] }
-          : amendment && checkChunkAmendment ? checkChunkAmendment(chunk, amendment) : null;
+          : amendment && checkChunkAmendment ? checkChunkAmendment(chunk, amendment, { preserveNbsp }) : null;
         if (!check) break;
         if (check.valid) {
           amendment = check.amendment;

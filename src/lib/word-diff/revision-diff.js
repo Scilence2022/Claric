@@ -9,6 +9,18 @@ const MAX_TARGETS = 256;
 const MAX_CANDIDATES = 1024;
 const READ_BATCH_SIZE = 24;
 
+/** A native prefix ending inside a field result or instruction. Editable
+ * targets never lie inside a field; Mac Word can still export such a prefix
+ * as the whole field, giving it the offset of the prose after the field. */
+function endsInsideNativeField(text) {
+    let depth = 0;
+    for (const char of text) {
+        if (char === '\u0013') depth++;
+        else if (char === '\u0015') depth = Math.max(0, depth - 1);
+    }
+    return depth > 0;
+}
+
 async function syncLocationRead(context, stage) {
     try { await context.sync(); }
     catch (error) {
@@ -42,6 +54,25 @@ function planEdits(state, after) {
             if (prior && prior !== '\n' && prior !== '\t' && !protectedAt(hunk.start - prior.length)) {
                 hunk.anchor = target(hunk.start - prior.length, prior);
                 hunk.location = Word.InsertLocation.after;
+            } else if (prior && protectedAt(hunk.start - prior.length) && next && next !== '\n' && next !== '\t'
+                && !protectedAt(hunk.start)) {
+                // Text inserted before a character inherits the preceding
+                // character's run; Mac Word then places it inside the
+                // equation or link that ends here. Keep the write in prose:
+                // slide an insertion that begins with the next character past
+                // it, otherwise replace that character together with the text.
+                const anchor = target(hunk.start, next);
+                if (Array.from(hunk.text)[0] === next) {
+                    hunk.text = hunk.text.slice(next.length) + next;
+                    hunk.start += next.length;
+                    hunk.end = hunk.start;
+                    hunk.anchor = anchor;
+                    hunk.location = Word.InsertLocation.after;
+                } else {
+                    hunk.text += next;
+                    hunk.end = hunk.start + next.length;
+                    hunk.targets.push(anchor);
+                }
             } else if (next && next !== '\n' && next !== '\t' && !protectedAt(hunk.start)) {
                 hunk.anchor = target(hunk.start, next);
                 hunk.location = Word.InsertLocation.before;
@@ -87,6 +118,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
     }
     if (candidates.length > MAX_CANDIDATES) throw new RevisionSafetyError('Too many ambiguous revision matches. Use a smaller selection.');
     const verified = new Map();
+    const duplicates = new Map();
     const needed = new Set(targets.map((target) => JSON.stringify([target.start, target.text])));
     // Verify both content and final-view position. Nth raw search matches
     // are unsafe when old deletions contain the same word as visible text.
@@ -133,6 +165,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
             }
             if (candidate.currentContent && normalizeWordText(candidate.currentContent.value) !== candidate.text) continue;
             const prefix = candidate.currentPrefix && normalizeWordText(candidate.currentPrefix.value);
+            if (prefix && endsInsideNativeField(prefix)) continue;
             // Word includes REF instructions and legacy symbol placeholders
             // in native prefixes. Their raw lengths are not visible offsets.
             // Match the prefix to the independently verified whole stream.
@@ -160,10 +193,14 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
             if (content.hasHiddenContent || (content.protectedStructure && !(options.nativeTargets && content.fieldOnlyProtection))
                 || content.protectedSpans.some(({ start, end }) => end > start) || content.text !== candidate.text) continue;
             const key = candidate.key;
-            if (verified.has(key)) throw new RevisionSafetyError('Ambiguous visible revision target. Generate a fresh proposal.');
+            if (verified.has(key)) {
+                duplicates.set(key, [...(duplicates.get(key) || [{ ...candidate, range: verified.get(key) }]), candidate]);
+                continue;
+            }
             verified.set(key, candidate.range);
         }
     }
+    if (duplicates.size) await resolveDuplicates(context, scope, duplicates, verified, options, nativeProjection, xmlBaseline);
     for (const target of targets) {
         target.range = verified.get(JSON.stringify([target.start, target.text]));
     }
@@ -194,6 +231,42 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
             throw new RevisionSafetyError('Located text crosses a revision boundary. Generate a fresh proposal.');
         }
       }
+    }
+}
+
+/** Two native ranges proved the same start offset. Keep only a candidate
+ * whose end boundary also maps to the expected final-view offset. */
+async function resolveDuplicates(context, scope, duplicates, verified, options, nativeProjection, xmlBaseline) {
+    const reads = [];
+    for (const [key, candidates] of duplicates) {
+        const [offset, text] = JSON.parse(key);
+        for (const candidate of candidates) {
+            const through = scope.getRange(Word.RangeLocation.start).expandTo(candidate.range.getRange(Word.RangeLocation.end));
+            const current = xmlBaseline === null ? queueCurrentTextRead(through) : null;
+            reads.push({ key, end: offset + text.length, candidate, current, xml: current ? null : through.getOoxml() });
+        }
+    }
+    if (reads.length > MAX_CANDIDATES) throw new RevisionSafetyError('Too many ambiguous revision matches. Use a smaller selection.');
+    await syncLocationRead(context, 'ambiguous target boundaries');
+    const accepted = new Map();
+    for (const { key, end, candidate, current, xml } of reads) {
+        let valid;
+        if (current) {
+            if (typeof current.value !== 'string') continue;
+            const native = normalizeWordText(current.value);
+            valid = !endsInsideNativeField(native) && (nativeProjection
+                ? nativeProjection.native.startsWith(native) && nativeProjection.offsets[native.length] === end
+                : native.length === end);
+        } else {
+            const state = revisionTextState(xml.value, xmlBaseline === null ? options : { ...options, singleParagraphContent: true });
+            valid = xmlBaseline === null ? state.text.length === end
+                : state.paragraphCount === 1 && state.text === xmlBaseline.slice(0, end);
+        }
+        if (valid) accepted.set(key, accepted.has(key) ? null : candidate.range);
+    }
+    for (const key of duplicates.keys()) {
+        if (!accepted.get(key)) throw new RevisionSafetyError('Ambiguous visible revision target. Generate a fresh proposal.');
+        verified.set(key, accepted.get(key));
     }
 }
 

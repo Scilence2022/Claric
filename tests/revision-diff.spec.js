@@ -14,10 +14,14 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
     stickyContent = false, revisedPadding = false, nativeControls = false, rejectEmptyOoxml = false,
-    reviewedTransform = (text) => text } = {}) {
+    mathAbsorbsInsertBefore = false, reviewedTransform = (text) => text } = {}) {
     let sequence = 0;
-    const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false, symbol = null, math = null }) =>
-        Array.from(text).map((text, index) => ({ text, type, id, field, symbol, math, mathStart: index === 0 })));
+    // link: a Mac-style HYPERLINK field. Its reviewed text carries raw field
+    // codes, a prefix ending inside its result exports the whole hyperlink,
+    // and a range starting inside its result exports bare styled runs.
+    const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false, symbol = null, math = null, link = null }) =>
+        Array.from(text).map((text, index, all) => ({ text, type, id, field, symbol, math, mathStart: index === 0,
+            link, linkStart: !!link && index === 0, linkEnd: !!link && index === all.length - 1 })));
     const ranges = [];
     const writes = [];
     const bookmarks = new Map();
@@ -28,13 +32,17 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             if (nativeParagraphs && atom.text === '\n') groups.push([]);
             else groups.at(-1).push(atom);
         }
-        const content = groups.map((group) => `<w:p xmlns:w="${W}">` + group.map((atom) => {
+        const content = groups.map((group) => `<w:p xmlns:w="${W}">` + group.map((atom, index) => {
         if (atom.math) return atom.mathStart ? atom.math.xml : '';
+        const style = atom.link ? '<w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr>' : '';
         const run = atom.symbol ? `<w:r><w:sym w:font="Symbol" w:char="${atom.symbol}"/></w:r>`
             : atom.text === '‑' && nativeControls ? '<w:r><w:noBreakHyphen/></w:r>'
-                : `<w:r><w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
+                : `<w:r>${style}<w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
         const visible = atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
-        return atom.field ? `<w:fldSimple w:instr="HYPERLINK example">${visible}</w:fldSimple>` : visible;
+        const linked = (atom.linkStart ? `<w:hyperlink w:anchor="L${atom.id}">` : '') + visible
+            + (atom.link && group.some((other, i) => i <= index && other.linkStart && other.id === atom.id)
+                && (atom.linkEnd || index === group.length - 1) ? '</w:hyperlink>' : '');
+        return atom.field ? `<w:fldSimple w:instr="HYPERLINK example">${visible}</w:fldSimple>` : linked;
         }).join('') + '</w:p>').join('');
         const end = revisedPadding && slice.some((atom) => atom.type !== 'plain')
             ? '<w:p><w:pPr><w:rPr><w:ins w:id="999"/></w:rPr></w:pPr></w:p>' : '<w:p/>';
@@ -54,11 +62,17 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                 if (rejectEmptyOoxml && span.start === span.end) {
                     throw Object.assign(new Error('GeneralException'), { code: 'GeneralException', debugInfo: { errorLocation: 'Range.getOoxml' } });
                 }
-                xmlReads++; return { value: xml(atoms.slice(span.start, span.end)) };
+                let end = span.end;
+                const open = end > 0 && atoms[end - 1].link && atoms[end]?.id === atoms[end - 1].id
+                    && atoms.slice(span.start, end).some((atom) => atom.linkStart && atom.id === atoms[end - 1].id);
+                while (open && end < atoms.length && atoms[end].id === atoms[end - 1].id) end++;
+                xmlReads++; return { value: xml(atoms.slice(span.start, end)) };
             }),
             ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value: reviewedTransform(
                 atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => {
                     if (atom.math) return atom.mathStart ? atom.math.native : '';
+                    if (atom.link) return (atom.linkStart ? `\u0013HYPERLINK \\l "L${atom.id}" \\h\u0001\u0014` : '')
+                        + atom.text + (atom.linkEnd ? '\u0015' : '');
                     const text = nativeControls && atom.symbol ? '(' : atom.text;
                     return nativeControls && atom.field ? '\u0013HYPERLINK example\u0014' + text + '\u0015' : text;
                 }).join('').replace(/\n/g, '\r').replace(/‑/g, nativeControls ? '\u001E' : '‑')) })) } : {}),
@@ -96,7 +110,11 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                 writes.push({ type: 'insert', text, location, start: span.start, end: span.end, mode: document.changeTrackingMode });
                 if (location === 'Replace') range.delete();
                 const at = location === 'Before' ? span.start : span.end;
-                const added = Array.from(text).map((text) => ({ text, type: 'ins', id: ++sequence }));
+                // Mac Word gives text inserted at an equation's end boundary
+                // the preceding math-zone formatting.
+                const zone = mathAbsorbsInsertBefore && location === 'Before' ? atoms[at - 1]?.math : null;
+                const added = Array.from(text).map((text) => ({ text, type: 'ins', id: ++sequence,
+                    ...(zone ? { math: zone, mathStart: false } : {}) }));
                 atoms.splice(at, 0, ...added);
                 for (const live of ranges) {
                     if (live.start >= at && live !== span && !live.scope) live.start += added.length;
@@ -309,6 +327,38 @@ test('two polish rounds edit prose around an intact equation, raw hyperlink fiel
     expect(w.atoms.filter((atom) => atom.math || atom.field).every((atom) => atom.type === 'plain')).toBe(true);
     expect(w.atoms.filter((atom) => atom.id === 'history').map((atom) => atom.text).join('')).toBe('Earlier result. ');
     expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+const kMath = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>k</m:t></m:r></m:oMath>', native: '𝑘' };
+
+test.each([['only when 𝑘 is near 20.', 'After'], ['only when 𝑘, near 20.', 'Replace']])(
+    'Mac Word insertions directly after an equation stay in prose: %s', async (tail, location) => {
+        const w = world([{ text: 'A random sequence is unique only when ' }, { text: '𝑘', math: kMath }, { text: ' near 20.' }],
+            { nativeReviewed: true, mathAbsorbsInsertBefore: true });
+        const after = `A random sequence is unique ${tail}`;
+        await tryRevisionDiff(w.context, w.scope, w.state().text, after, jest.fn(), { paragraph: true, nativeTargets: true, preflightOnly: true });
+        await tryRevisionDiff(w.context, w.scope, w.state().text, after, jest.fn(), { paragraph: true, nativeTargets: true });
+        expect(w.state().text).toBe(after);
+        expect(w.writes.filter((write) => write.type === 'insert').map((write) => write.location)).toEqual([location]);
+        expect(w.atoms.filter((atom) => atom.math).every((atom) => atom.type === 'plain')).toBe(true);
+    });
+
+// Without a field begin in the reviewed prefix, only the end boundary proves
+// which period follows the link.
+test.each([['raw field codes', (text) => text], ['no begin code', (text) => text.split('\u0013').map((part, i) => i ? part.slice(part.indexOf('\u0014') + 1) : part).join('')]])(
+    'a reference period directly after a Mac hyperlink field is not confused with periods inside the link: %s', async (_name, reviewedTransform) => {
+    const w = world([{ text: 'P.\u00a0L. Antkowiak and R.\u00a0N. Grass. Nature Communications, 2020. ' },
+        { text: 'doi:10.1038/s41467-020-19148-3', link: 'https://doi.org/10.1038/s41467-020-19148-3' }, { text: '.' }],
+    { nativeReviewed: true, reviewedTransform });
+    const before = w.state().text;
+    const after = before.replaceAll('\u00a0', ' ');
+    const log = jest.fn();
+    await tryRevisionDiff(w.context, w.scope, before, after, log, { paragraph: true, nativeTargets: true, preflightOnly: true });
+    expect(w.writes).toHaveLength(0);
+    await tryRevisionDiff(w.context, w.scope, before, after, log, { paragraph: true, nativeTargets: true });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
+    expect(w.state().text).toBe(after);
+    expect(w.atoms.filter((atom) => atom.link).every((atom) => atom.type === 'plain')).toBe(true);
 });
 
 test('an equation mutation fails paragraph preflight before surrounding prose is written', async () => {
