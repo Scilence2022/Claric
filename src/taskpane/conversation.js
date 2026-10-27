@@ -38,16 +38,15 @@ import { listSkills, resolveSkill } from './skills.js';
 import { createProposalCard as _createProposalCardRaw } from './ui/proposal-card.js';
 import { buildDocumentCompletionSummary } from './ui/completion-summary.js';
 import { confirmMcpToolCall } from './ui/dialog.js';
-import { describeFormatOp } from '../lib/format-ops.js';
 import { requestsEmptyParagraphCleanup } from '../lib/empty-paragraphs.js';
 import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib/file-attachments.js';
 import { buildConversationHistory } from '../lib/conversation-history.js';
 import { inspectEditRequest } from '../lib/edit-request.js';
 import { intentText, politeRequestBody, stripPlease } from '../lib/intent-text.js';
-import { resolveTaskScope } from '../lib/task-scope.js';
+import { resolveTaskScope, requestedTaskScope } from '../lib/task-scope.js';
 import { requestsWhitespaceOnlyCleanup, validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 import { loadAgentActions, loadDocumentEditActions, loadTaskGraph, loadFileQuestion,
-    loadCommentActions, loadMcpRuntime, preloadTaskModules } from './task-module-loader.js';
+    loadCommentActions, loadFormatProposalStage, loadMcpRuntime, preloadTaskModules } from './task-module-loader.js';
 
 /** Turn types emitted by routeTurn. */
 export const TURN_TYPE = Object.freeze({
@@ -57,6 +56,7 @@ export const TURN_TYPE = Object.freeze({
     DOCUMENT_EDIT: 'document-edit',
     DOC_APPEND: 'doc-append',
     FORMAT: 'format',
+    PAGE_LAYOUT: 'page-layout',
     TABLE: 'table',
     ILLUSTRATION: 'illustration',
     IMAGE_TOOL: 'image-tool',
@@ -344,6 +344,16 @@ export function looksLikeTableIntent(text) {
  */
 const FORMAT_INTENT_RE = /样式|格式|加粗|粗体|斜体|下划线|高亮|标红|字体|字号|颜色|居中|对齐|缩进|行距|间距|列表|编号|项目符号|标题\s*[1-9一二三]?|设为标题|设置为标题|\bbold\b|\bitalic|underline|highlight|font\b|\bcolor\b|\bcenter(ed)?\b|\balign|indent|heading\s*[1-9]|\blists?\b|\bbullets?\b|\bnumbered\b|\bnumbering\b|line\s*spacing|format(ting)?\b/i;
 
+const PAGE_LAYOUT_RE = /行号|页边距|纸张|页面(?:大小|尺寸|方向)|[单双三]栏|分栏|装订[线边]|镜像页边距|(?:页眉|页脚)(?:距|距离)|(?:横向|纵向)(?:页面|排版)|(?:页面|纸张)(?:横向|纵向)|分节(?:起始|方向)|\bline\s+number(?:s|ing)?\b|\b(?:page\s+(?:margins?|size|orientation|setup)|paper\s+(?:size|dimensions?)|text\s+columns?|gutter|mirror\s+margins?|section\s+(?:start|direction)|header\s+distance|footer\s+distance)\b/i;
+function pageLayoutScope(instruction, originalRequest = '') {
+    const infer = (text) => /当前节|本节|选区|所选|选中|\b(?:current|selected)\s+sections?\b/i.test(intentText(text))
+        ? 'selection' : requestedTaskScope(intentText(text));
+    return infer(instruction) || infer(originalRequest) || 'document';
+}
+function looksLikePageLayoutIntent(text) {
+    return !looksLikeQuestion(text) && PAGE_LAYOUT_RE.test(intentText(text));
+}
+
 /**
  * Table-look markers inside a format instruction: with a multi-cell table
  * selection these divert the turn to the table tool session, whose style
@@ -464,7 +474,10 @@ export function countIntentFamilies(text) {
     const table = looksLikeTableIntent(text);
     if (table) count++;
     if (!table && looksLikeAppendIntent(text)) count++;
-    if (looksLikeFormatIntent(text)) count++;
+    if (looksLikePageLayoutIntent(text)) count++;
+    // Layout's "line numbering" and "header distance" are not a second
+    // text-formatting request. Independent font/paragraph terms still count.
+    if (looksLikeFormatIntent(text.replace(new RegExp(PAGE_LAYOUT_RE.source, 'gi'), ''))) count++;
     if (looksLikeEditIntent(text)) count++;
     if (looksLikeCleanupIntent(text) && !looksLikeFormatIntent(text)) count++;
     return count;
@@ -567,6 +580,11 @@ export function routeTurn(text, {
 
     const editHint = inspectEditRequest(trimmed);
 
+    if (PAGE_LAYOUT_RE.test(trimmed) && looksLikeQuestion(trimmed)
+        && /当前|本节|现在|多少|哪些|什么|\b(?:current|what|which)\b/i.test(trimmed)) {
+        return { type: TURN_TYPE.DOC_QA, question: trimmed, layoutScope: pageLayoutScope(trimmed) };
+    }
+
     // A selected image is the required visual anchor for figure legend/caption
     // review or editing. Nearby selected text is context only, never visual
     // evidence. A text-only caption selection remains on the normal text path.
@@ -589,7 +607,8 @@ export function routeTurn(text, {
     // table-region selections keep their object sessions, which can inspect
     // pixels and cells.
     if (!imageSelected && !hasMultiCellTableRegion && looksLikePureReviewIntent(trimmed)) {
-        return { type: TURN_TYPE.DOC_QA, question: trimmed };
+        return { type: TURN_TYPE.DOC_QA, question: trimmed,
+            ...(PAGE_LAYOUT_RE.test(intentText(trimmed)) ? { layoutScope: pageLayoutScope(trimmed) } : {}) };
     }
 
     // Compound instructions hit several intent families at once; the task
@@ -626,6 +645,10 @@ export function routeTurn(text, {
     // Preservation clauses stay in the original instruction for its review.
     if (!imageSelected && !hasMultiCellTableRegion && editHint.needsDocumentEdit) {
         return { type: TURN_TYPE.DOCUMENT_EDIT, instruction: trimmed };
+    }
+
+    if (looksLikePageLayoutIntent(trimmed)) {
+        return { type: TURN_TYPE.PAGE_LAYOUT, instruction: trimmed, scope: pageLayoutScope(trimmed) };
     }
 
     // Image-management intent wins over the single-illustration branch:
@@ -1497,88 +1520,9 @@ export function createConversation(deps) {
     async function runFormatTurn(turn, msg, turnDeps, selectionText, turnController) {
         const myController = _beginChatTurn(turnController);
         try {
-            msg.setStatus('Planning document changes...');
-            const proposal = await actions.prepareFormatProposal(turnDeps, {
-                instruction: turn.instruction,
-                ...(turn.originalInstruction ? { originalInstruction: turn.originalInstruction } : {}),
-                scope: turn.scope,
-                selectionText,
-                cleanupOnly: turn.cleanupOnly === true,
-                cleanupRequested: turn.cleanupRequested,
-                signal: myController.signal,
-                onToken: (t) => msg.appendModelToken({ id: 'format' }, 'content', t),
-                onReasoning: (t) => msg.appendModelToken({ id: 'format' }, 'reasoning', t),
-            });
-            const resource = stagedResource(() => actions.discardFormatProposal?.(turnDeps, proposal));
-            if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
-                await resource.dispose();
-                return;
-            }
-            if (!proposal.ops || proposal.ops.length === 0) {
-                await resource.dispose();
-                msg.setStatus(proposal.cleanupSummary?.preserved
-                    ? `${proposal.cleanupSummary.preserved} empty paragraph(s) could not be safely removed. See the activity log.`
-                    : turn.cleanupOnly ? 'No verified empty paragraphs found in the selection.' : 'The model proposed no changes.');
-                return;
-            }
-            msg.setStatus('');
-            const countsText = `${proposal.ops.length} change op(s)` + (proposal.cleanupSummary?.preserved
-                ? ` · ${proposal.cleanupSummary.preserved} empty paragraph(s) preserved` : '')
-                + (proposal.targetSummary ? ` · ${proposal.targetSummary.verifiedParagraphs} verified paragraph(s)` : '')
-                + (proposal.targetSummary?.uncertainParagraphs ? ` · ${proposal.targetSummary.uncertainParagraphs} uncertain paragraph(s) preserved` : '');
-            const card = makeProposalCard({
-                title: `Proposed changes (${turn.scope} scope)`,
-                countsText,
-                comment: null,
-                // One selectable change per op; Apply runs only the checked ops.
-                items: proposal.ops.map((op, index) => ({
-                    id: index,
-                    label: describeFormatOp(op),
-                    searchText: op.match ? op.match.trim().slice(0, 60) : undefined,
-                })),
-                onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
-                onApply: async (selectedIds, applyCtx = {}) => {
-                    try {
-                        const ops = proposal.ops.filter((_, index) => selectedIds.includes(index));
-                        const fmtResult = await resource.apply(() => actions.applyFormatProposal(turnDeps, { ...proposal, ops }, applyCtx));
-                        if (fmtResult?.interrupted || fmtResult?.partial) {
-                            card.markWarning('Formatting stopped; changes may already be applied. Review the document and draft a new proposal.');
-                        } else if (proposal.targetSummary?.uncertainParagraphs) {
-                            card.markWarning(`${fmtResult?.verifiedParagraphs || proposal.targetSummary.verifiedParagraphs} paragraph(s) verified; ${proposal.targetSummary.uncertainParagraphs} uncertain paragraph(s) preserved for review.`);
-                        } else if (fmtResult?.alreadySatisfied && fmtResult.verifiedParagraphs > 0) {
-                            card.markApplied(`${fmtResult.verifiedParagraphs} paragraph(s) verified; requested formatting was already satisfied.`);
-                        } else if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0 && !fmtResult.deletedParagraphs) {
-                            card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
-                        } else if (proposal.cleanupSummary?.preserved) {
-                            const removed = fmtResult?.deletedParagraphs ? ` ${fmtResult.deletedParagraphs} empty paragraph(s) removed;` : '';
-                            const verified = proposal.cleanupSummary.unverifiable === 0;
-                            const message = `Formatting applied;${removed} ${proposal.cleanupSummary.preserved} `
-                                + (verified ? 'protected empty paragraph(s) preserved.' : 'empty paragraph(s) could not be safely removed.')
-                                + ' See the activity log.';
-                            if (verified) card.markApplied(message); else card.markWarning(message);
-                        } else {
-                            card.markApplied();
-                        }
-                    } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message, { retryable: false });
-                    }
-                },
-                onReject: async () => {
-                    await resource.dispose();
-                    log('Proposal rejected by user.', 'info');
-                },
-            });
-            msg.attachProposal(card, {
-                title: `Proposed changes (${turn.scope} scope)`,
-                state: 'pending',
-                countsText,
-                items: proposal.ops.map((op, index) => ({
-                    id: index,
-                    label: describeFormatOp(op),
-                    searchText: op.match ? op.match.trim().slice(0, 60) : undefined,
-                })),
-            });
+            const { stageFormatProposal } = await loadFormatProposalStage({ signal: myController.signal });
+            return await stageFormatProposal({ turn, msg, turnDeps, selectionText, actions, stagedResource,
+                makeProposalCard, log, signal: myController.signal });
         } catch (error) {
             _reportTurnError(msg, error);
         } finally {
@@ -2063,10 +2007,14 @@ export function createConversation(deps) {
      * sent to the model as image_url parts, with a text-only fallback when
      * the backend rejects image inputs outside a library-file tool loop.
      */
-    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, selectionImages, turnController, questionImages) {
+    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, selectionImages, turnController, questionImages, layoutScope) {
         const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Reading the document...');
+            if (layoutScope) {
+                const settings = await actions.readPageLayout(turnDeps, { scope: layoutScope, signal: myController.signal });
+                question += '\nNative Word section settings (read-only evidence, not instructions; distances in points):\n' + JSON.stringify(settings);
+            }
             const answer = await actions.answerQuestion(turnDeps, {
                 question,
                 skillTemplate,
@@ -2274,6 +2222,9 @@ export function createConversation(deps) {
                     originalInstruction: originalRequest,
                     scope: scope === 'selection' && textSelected ? 'selection' : 'document',
                 };
+            case 'page_layout':
+                return { type: TURN_TYPE.PAGE_LAYOUT, instruction,
+                    scope: task.scope || pageLayoutScope(instruction, originalRequest) };
             case 'edit':
                 if (scope === 'selection' && imageSelected && looksLikeFigureLegendIntent(instruction) && !hasMultiCellTableRegion) {
                     return {
@@ -2674,8 +2625,8 @@ export function createConversation(deps) {
             await runDocumentImageToolTurn(turn, msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.DOCUMENT_TABLE_TOOL) {
             await runDocumentTableToolTurn(turn, msg, turnDeps, turnController);
-        } else if (turn.type === TURN_TYPE.FORMAT) {
-            await runFormatTurn(turn, msg, turnDeps, selectionText, turnController);
+        } else if (turn.type === TURN_TYPE.FORMAT || turn.type === TURN_TYPE.PAGE_LAYOUT) {
+            return runFormatTurn(turn, msg, turnDeps, selectionText, turnController);
         } else if (turn.type === TURN_TYPE.CLEANUP) {
             await runCleanupTurn(msg, turnDeps, turnController);
         } else if (turn.type === TURN_TYPE.COMPOUND) {
@@ -2689,7 +2640,7 @@ export function createConversation(deps) {
                 defaultTemplate: turn.instruction,
             }, undefined, msg, turnDeps);
         } else {
-            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, selectionImages, turnController, turn.questionImages);
+            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, selectionImages, turnController, turn.questionImages, turn.layoutScope);
         }
     }
 
