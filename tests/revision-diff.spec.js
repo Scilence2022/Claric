@@ -14,7 +14,7 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
     stickyContent = false, revisedPadding = false, nativeControls = false, rejectEmptyOoxml = false,
-    mathAbsorbsInsertBefore = false, reviewedTransform = (text) => text } = {}) {
+    mathAbsorbsInsertBefore = false, externalLinks = false, reviewedTransform = (text) => text } = {}) {
     let sequence = 0;
     // link: a Mac-style HYPERLINK field. Its reviewed text carries raw field
     // codes, a prefix ending inside its result exports the whole hyperlink,
@@ -39,14 +39,24 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             : atom.text === '‑' && nativeControls ? '<w:r><w:noBreakHyphen/></w:r>'
                 : `<w:r>${style}<w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
         const visible = atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
-        const linked = (atom.linkStart ? `<w:hyperlink w:anchor="L${atom.id}">` : '') + visible
+        const linked = (atom.linkStart ? externalLinks
+            ? `<w:hyperlink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId${atom.id}">`
+            : `<w:hyperlink w:anchor="L${atom.id}">` : '') + visible
             + (atom.link && group.some((other, i) => i <= index && other.linkStart && other.id === atom.id)
                 && (atom.linkEnd || index === group.length - 1) ? '</w:hyperlink>' : '');
         return atom.field ? `<w:fldSimple w:instr="HYPERLINK example">${visible}</w:fldSimple>` : linked;
         }).join('') + '</w:p>').join('');
         const end = revisedPadding && slice.some((atom) => atom.type !== 'plain')
             ? '<w:p><w:pPr><w:rPr><w:ins w:id="999"/></w:rPr></w:pPr></w:p>' : '<w:p/>';
-        return padding || nativeParagraphs ? `<w:document xmlns:w="${W}"><w:body>${content}${padding ? end : ''}</w:body></w:document>` : content;
+        const documentXml = padding || nativeParagraphs || externalLinks
+            ? `<w:document xmlns:w="${W}"><w:body>${content}${padding ? end : ''}</w:body></w:document>` : content;
+        if (!externalLinks) return documentXml;
+        const links = new Map(atoms.filter((atom) => atom.link).map((atom) => [atom.id, atom.link]));
+        return '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">'
+            + `<pkg:part pkg:name="/word/document.xml"><pkg:xmlData>${documentXml}</pkg:xmlData></pkg:part>`
+            + '<pkg:part pkg:name="/word/_rels/document.xml.rels"><pkg:xmlData><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + [...links].map(([id, url]) => `<Relationship Id="rId${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escape(url)}" TargetMode="External"/>`).join('')
+            + '</Relationships></pkg:xmlData></pkg:part></pkg:package>';
     };
     const table = { isNullObject: true, load: jest.fn() };
     const cell = { isNullObject: true, load: jest.fn() };
@@ -71,7 +81,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value: reviewedTransform(
                 atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => {
                     if (atom.math) return atom.mathStart ? atom.math.native : '';
-                    if (atom.link) return (atom.linkStart ? `\u0013HYPERLINK \\l "L${atom.id}" \\h\u0001\u0014` : '')
+                    if (atom.link) return (atom.linkStart ? `\u0013HYPERLINK ${externalLinks ? `"${atom.link}"` : `\\l "L${atom.id}"`} \\h\u0001\u0014` : '')
                         + atom.text + (atom.linkEnd ? '\u0015' : '');
                     const text = nativeControls && atom.symbol ? '(' : atom.text;
                     return nativeControls && atom.field ? '\u0013HYPERLINK example\u0014' + text + '\u0015' : text;
@@ -205,6 +215,38 @@ test('post-write changes to equation structure cause an uncertain outcome even i
     });
     await expect(tryRevisionDiff(w.context, w.scope, w.state().text, 'The new 𝑥_(𝑗) result.', jest.fn(),
         { paragraph: true, nativeTargets: true })).rejects.toMatchObject({ mutationAttempted: true });
+});
+
+test.each(['unchanged objects', 'changed prose', 'changed equation'])(
+    'read-back retains object evidence when Word changes equation serialization after a write: %s', async (outcome) => {
+    const math = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+        + '<m:sSub><m:e><m:r><m:rPr><m:nor/></m:rPr><m:t>log</m:t></m:r></m:e>'
+        + '<m:sub><m:r><m:t>2</m:t></m:r></m:sub></m:sSub></m:oMath>', native: 'log_(2)' };
+    const w = world([{ text: 'The old ' }, { text: 'log_(2)', math }, { text: ' result.' }], { nativeReviewed: true });
+    w.context.sync.mockImplementation(async () => {
+        if (!w.writes.length) return;
+        // The native serializer can switch to Word's punctuation-delimited
+        // form while the equation XML and UTF-16 length remain unchanged.
+        math.native = ',log-2.';
+        if (outcome === 'changed prose') w.atoms.find((atom) => atom.text === 'T').text = 'X';
+        if (outcome === 'changed equation') math.xml = math.xml.replace('<m:t>2', '<m:t>3');
+    });
+    const application = tryRevisionDiff(w.context, w.scope, w.state().text, 'The revised log_(2) result.', jest.fn(),
+        { paragraph: true, nativeTargets: true });
+    if (outcome === 'unchanged objects') {
+        await expect(application).resolves.toMatchObject({ strategy: 'revision' });
+        expect(w.state().text).toBe('The revised log_(2) result.');
+    } else await expect(application).rejects.toMatchObject({ mutationAttempted: true });
+});
+
+test('multi-paragraph selections with equations retain whole-range verification', async () => {
+    const math = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>k</m:t></m:r></m:oMath>', native: '𝑘' };
+    const w = world([{ text: 'The old ' }, { text: '𝑘', math }, { text: ' result.\nThe following paragraph.' }],
+        { nativeReviewed: true, nativeParagraphs: true });
+    const after = 'The revised 𝑘 result.\nThe following paragraph.';
+    await expect(tryRevisionDiff(w.context, w.scope, w.state().text, after, jest.fn(), { nativeTargets: true }))
+        .resolves.toMatchObject({ strategy: 'revision' });
+    expect(w.state().text).toBe(after);
 });
 
 test.each([[false, false], [false, true], [true, false]])('selection edits keep headings, blank paragraphs and repeated sentences in place, sentence mode=%s, missing searches=%s', async (lineDiffEnabled, missingSearches) => {
@@ -346,7 +388,7 @@ test.each([['only when 𝑘 is near 20.', 'After'], ['only when 𝑘, near 20.',
 // Without a field begin in the reviewed prefix, only the end boundary proves
 // which period follows the link.
 test.each([['raw field codes', (text) => text], ['no begin code', (text) => text.split('\u0013').map((part, i) => i ? part.slice(part.indexOf('\u0014') + 1) : part).join('')]])(
-    'a reference period directly after a Mac hyperlink field is not confused with periods inside the link: %s', async (_name, reviewedTransform) => {
+    'a reference period directly after a Mac hyperlink field is not confused with periods inside the link: %s', async (name, reviewedTransform) => {
     const w = world([{ text: 'P.\u00a0L. Antkowiak and R.\u00a0N. Grass. Nature Communications, 2020. ' },
         { text: 'doi:10.1038/s41467-020-19148-3', link: 'https://doi.org/10.1038/s41467-020-19148-3' }, { text: '.' }],
     { nativeReviewed: true, reviewedTransform });
@@ -356,7 +398,8 @@ test.each([['raw field codes', (text) => text], ['no begin code', (text) => text
     await tryRevisionDiff(w.context, w.scope, before, after, log, { paragraph: true, nativeTargets: true, preflightOnly: true });
     expect(w.writes).toHaveLength(0);
     await tryRevisionDiff(w.context, w.scope, before, after, log, { paragraph: true, nativeTargets: true });
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
+    if (name === 'no begin code') expect(log).toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
+    else expect(log).not.toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
     expect(w.state().text).toBe(after);
     expect(w.atoms.filter((atom) => atom.link).every((atom) => atom.type === 'plain')).toBe(true);
 });
@@ -822,6 +865,30 @@ test.each(['prose', 'equation'])('whole-document final read-back still rejects c
     expect(w.writes.length).toBeGreaterThan(0);
     expect(applied.amendmentsApplied).toBe(0);
     expect(applied.errors[0]).toMatch(/read-back differs.*paragraph 1: read-back/);
+});
+
+test.each([false, true])('whole-document polish preserves external Mac hyperlink fields through final read-back, sentence mode=%s', async (lineDiffEnabled) => {
+    const url = 'https://example.org/data';
+    const w = world([{ text: 'Archived data are available at ' }, { text: url, link: url },
+        { text: ' and included in the supplement.' }],
+    { nativeReviewed: true, externalLinks: true, padding: true, revisedPadding: true });
+    const originalFingerprint = w.state().inlineFingerprint;
+    for (const amendment of [`All archived data are available at ${url} and included in the supplement.`,
+        `All archived data are available at ${url} and provided in the supplement.`]) {
+        const parsed = await parseDocument();
+        w.bookmarks.set('chunk', w.scope);
+        const log = jest.fn();
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]),
+        { trackChangesEnabled: true, lineDiffEnabled, log });
+        expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [] });
+        expect(w.state().text).toBe(amendment);
+        expect(w.state().inlineFingerprint).toBe(originalFingerprint);
+        expect(log).not.toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
+    }
+    expect(w.atoms.filter((atom) => atom.link).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.writes.length).toBeGreaterThan(0);
+    expect(w.writes.every((write) => write.mode === 'TrackAll')).toBe(true);
 });
 
 test('a substantial second-round rewrite stays inside the existing paragraph', async () => {

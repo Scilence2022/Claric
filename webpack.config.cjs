@@ -395,11 +395,13 @@ module.exports = (env, argv) => {
       new HtmlWebpackPlugin({
         template: './src/taskpane/taskpane.html',
         filename: 'taskpane.html',
+        hash: true,
         chunks: ['taskpane']
       }),
       new HtmlWebpackPlugin({
         template: './src/commands/commands.html',
         filename: 'commands.html',
+        hash: true,
         chunks: ['commands']
       }),
       new CopyWebpackPlugin({
@@ -474,6 +476,7 @@ module.exports = (env, argv) => {
             );
             const out = {
               hash,
+              runtimeHash: stats.hash,
               builtAt: new Date().toISOString(),
               mode: 'production',
               appVersion: String(pkg.version || '0.0.0'),

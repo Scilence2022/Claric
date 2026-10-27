@@ -1,3 +1,4 @@
+/* global __webpack_hash__ */
 import appMetadata from '../../../package.json';
 import { containFocus } from './dialog.js';
 
@@ -11,6 +12,12 @@ export function initAboutView({ platform, wordApiVersion, log }) {
     const build = document.getElementById('aboutBuild');
     const builtAt = document.getElementById('aboutBuiltAt');
     appVersion.textContent = appMetadata.version;
+    // This value belongs to the executing bundle. A fresh metadata request
+    // alone cannot identify scripts retained in Word's webview cache.
+    const runtimeHash = typeof __webpack_hash__ === 'string' ? __webpack_hash__ : null;
+    build.textContent = runtimeHash || 'Unavailable';
+    builtAt.textContent = 'Unavailable';
+    if (runtimeHash) log(`Claric loaded runtime: ${runtimeHash} (${appMetadata.version})`, 'info');
     document.getElementById('aboutPlatform').textContent = platform || 'Unknown';
     document.getElementById('aboutWordApi').textContent = wordApiVersion || 'Unknown';
 
@@ -37,7 +44,13 @@ export function initAboutView({ platform, wordApiVersion, log }) {
         .then((response) => (response.ok ? response.json() : null))
         .then((info) => {
             if (!info || typeof info.hash !== 'string' || !/^[a-f0-9]{12}$/.test(info.hash)) return;
-            if (typeof info.appVersion === 'string' && info.appVersion.trim()) appVersion.textContent = info.appVersion;
+            if (!runtimeHash || info.runtimeHash !== runtimeHash) {
+                const mismatch = runtimeHash && typeof info.runtimeHash === 'string';
+                log(mismatch
+                    ? `Claric deployment ${info.hash} has a different runtime (${info.runtimeHash}); this pane is running ${runtimeHash}. Reload the Word add-in to load the update.`
+                    : `Claric deployment: ${info.hash}; loaded runtime could not be confirmed.`, mismatch ? 'warning' : 'info');
+                return;
+            }
             build.textContent = info.hash;
             const date = typeof info.builtAt === 'string' ? new Date(info.builtAt) : null;
             builtAt.textContent = date && Number.isFinite(date.getTime())

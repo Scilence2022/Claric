@@ -11,7 +11,7 @@ const REQUIRED_ASSETS = Object.freeze([
   'pdfjs/wasm/openjpeg.wasm', 'pdfjs/wasm/qcms_bg.wasm',
   ...[16, 32, 64, 80, 128].map((size) => `assets/icon-${size}.png`),
 ]);
-const REQUIRED_KEYS = ['appVersion', 'builtAt', 'hash', 'mode'];
+const REQUIRED_KEYS = ['appVersion', 'builtAt', 'hash', 'mode', 'runtimeHash'];
 const HASH_REGEX = /^[0-9a-f]{12}$/;
 const ISO_8601_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 
@@ -73,6 +73,9 @@ function verifyBuild({ rootDir = path.resolve(__dirname, '..') } = {}) {
   }
   if (typeof info.hash !== 'string' || !HASH_REGEX.test(info.hash)) {
     throw new Error('build-info.hash must be a 12-character lowercase hexadecimal string');
+  }
+  if (typeof info.runtimeHash !== 'string' || !/^[a-f0-9]{20}$/.test(info.runtimeHash)) {
+    throw new Error('build-info.runtimeHash must be a 20-character lowercase hexadecimal string');
   }
   if (typeof info.builtAt !== 'string' || !ISO_8601_REGEX.test(info.builtAt)
       || !Number.isFinite(Date.parse(info.builtAt))

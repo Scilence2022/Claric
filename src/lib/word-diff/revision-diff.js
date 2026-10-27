@@ -382,7 +382,11 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
                 }
             }
             await context.sync();
-            await verifyMutationText(context, range, after, xmlPositions
+            // Keep immutable-object evidence even when the initial native
+            // stream projected exactly. Word may switch equation/field text
+            // serialization after a tracked write; fresh XML must prove the
+            // final prose and unchanged objects in either location strategy.
+            await verifyMutationText(context, range, after, options.paragraph && state.paragraphCount === 1 && state.inlineFingerprint
                 ? { ...options, verifiedInlineFingerprint: state.inlineFingerprint } : options, insertedRanges);
         } finally {
             if (ownsTracking) { context.document.changeTrackingMode = previousMode; await context.sync(); }
