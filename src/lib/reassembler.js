@@ -107,7 +107,7 @@ async function _readParagraphStates(context, paraItems) {
     const batch = paraItems.slice(start, start + NATIVE_READ_BATCH_SIZE);
     const reads = batch.map((para) => {
       para.load('text');
-      return queueRevisionRead(para, { paragraph: true });
+      return queueRevisionRead(para, { paragraph: true, singleParagraphContent: true });
     });
     const tables = batch.map((para) => {
       const table = para.parentTableOrNullObject;
@@ -116,7 +116,7 @@ async function _readParagraphStates(context, paraItems) {
     });
     await context.sync();
     inTable.push(...tables.map((table) => !table.isNullObject));
-    revisionStates.push(...batch.map((para, index) => resolveRevisionRead(para, reads[index], { paragraph: true })));
+    revisionStates.push(...batch.map((para, index) => resolveRevisionRead(para, reads[index], { paragraph: true, singleParagraphContent: true })));
   }
   return { inTable, revisionStates };
 }
@@ -195,7 +195,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   const paraInTable = [];
   const states = [];
   allParaItems.forEach((p, i) => {
-    const state = revisionStates?.[i] || resolveRevisionRead(p, null, { paragraph: true });
+    const state = revisionStates?.[i] || resolveRevisionRead(p, null, { paragraph: true, singleParagraphContent: true });
     if (state.text.trim() !== '') {
       paraItems.push(p);
       paraInTable.push(inTable[i]);
@@ -291,11 +291,11 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
       const paraRange = paraItems[op.origIdx].getRange('Content');
       paraRange.load('text');
       changedParaRanges.set(op.origIdx, paraRange);
-      contentReads.set(op.origIdx, queueRevisionRead(paraRange, { paragraph: true }));
+      contentReads.set(op.origIdx, queueRevisionRead(paraRange, { paragraph: true, singleParagraphContent: true }));
     }
     await context.sync();
     for (const op of batch) contentStates.set(op.origIdx,
-      resolveRevisionRead(changedParaRanges.get(op.origIdx), contentReads.get(op.origIdx), { paragraph: true }));
+      resolveRevisionRead(changedParaRanges.get(op.origIdx), contentReads.get(op.origIdx), { paragraph: true, singleParagraphContent: true }));
   }
   if (changedParaRanges.size > 0) {
     // Validate every native content range before the first write. Paragraph
@@ -492,9 +492,9 @@ export async function bookmarkChunkRanges(chunks) {
     const boundaryEntries = [...boundaryParagraphs];
     for (let start = 0; start < boundaryEntries.length; start += NATIVE_READ_BATCH_SIZE) {
       const batch = boundaryEntries.slice(start, start + NATIVE_READ_BATCH_SIZE);
-      const reads = batch.map(([, para]) => queueRevisionRead(para, { paragraph: true }));
+      const reads = batch.map(([, para]) => queueRevisionRead(para, { paragraph: true, singleParagraphContent: true }));
       await context.sync();
-      batch.forEach(([index, para], i) => boundaryStates.set(index, resolveRevisionRead(para, reads[i], { paragraph: true })));
+      batch.forEach(([index, para], i) => boundaryStates.set(index, resolveRevisionRead(para, reads[i], { paragraph: true, singleParagraphContent: true })));
     }
 
     for (let i = 0; i < chunks.length; i++) {

@@ -1,5 +1,6 @@
 import { parseDocument } from '../lib/document-parser.js';
 import { queueRevisionRead, resolveRevisionRead } from '../lib/word-revisions.js';
+import { getNativeTextDiagnostics } from '../lib/native-text-diagnostics.js';
 
 const secretKey = /(?:api.?key|authorization|password|secret|^(?:access|refresh|pairing)?_?token$|^headers$)/i;
 const binaryKey = /^(?:dataUrl|base64|blob|imageData)$/i;
@@ -57,5 +58,7 @@ export async function buildContextReport({ state, session, chatText, logs, draft
         parts.push('\n## Current document (current revision view)', model.paragraphs.map((p) => p.text).join('\n'));
     } catch (error) { parts.push('\n## Current document', `Unavailable: ${error.message}`); }
     parts.push('\n## Activity log', logs || '(empty)');
+    const nativeDiagnostics = getNativeTextDiagnostics();
+    if (nativeDiagnostics.length) parts.push('\n## Native Word text diagnostics', serializable(nativeDiagnostics));
     return redactContext(parts.join('\n'), state.config);
 }

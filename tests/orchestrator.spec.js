@@ -121,6 +121,24 @@ function mockSendMessages(opts = {}) {
 
 const log = () => {}; // No-op logger
 
+test('native placeholders survive polish and repair without asking the model to reproduce equation glyphs', async () => {
+  const text = 'The old 𝑥 value should remain clear.';
+  const chunk = mockChunk('native', text, 0, 0);
+  chunk.paragraphs[0].protectedSpans = [{ start: 8, end: 10 }];
+  const send = jest.fn(async (_config, messages) => {
+    const source = messages.find((m) => m.role === 'user').content.split('[AMEND THIS TEXT]\n')[1].split('\n[END TEXT]')[0];
+    expect(source).not.toContain('𝑥');
+    const candidate = source.replace('old', 'revised');
+    return send.mock.calls.length === 1 ? candidate.replace(/⟦[^⟧]+⟧/, '𝒙') : candidate;
+  });
+  const results = await processChunksParallel([chunk], { config: {}, promptManager: mockPromptManager(),
+    documentContext: null, sendMessagesFn: send, log });
+  expect(results[0]).toMatchObject({ status: 'fulfilled', amendment: 'The revised 𝑥 value should remain clear.' });
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[1][1].find((m) => m.role === 'user').content).toContain('CLARIC_NATIVE');
+  expect(send.mock.calls[1][1].at(-1).content).toContain('preserve each native placeholder');
+});
+
 // --- Test Suites ---
 
 describe('processChunksParallel: chat replies are not document text', () => {

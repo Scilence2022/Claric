@@ -1,5 +1,6 @@
 /** Map final-view differences to verified Word ranges, preserving earlier revisions. */
 import { textEditHunks, touchesProtectedSpan } from '../text-edit-plan.js';
+import { recordNativeTextMismatch } from '../native-text-diagnostics.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState, normalizeRevisionText,
     RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, hostSupportsTrackedChanges,
     normalizeWordText, textMismatchDetail, queueCurrentTextRead, wordErrorDetail, projectNativeText } from '../word-revisions.js';
@@ -9,7 +10,7 @@ const MAX_CANDIDATES = 1024;
 const READ_BATCH_SIZE = 24;
 
 function planEdits(state, after) {
-    const hunks = textEditHunks(state.text, after).map((hunk) => ({ ...hunk, targets: [], anchor: null, location: null }));
+    const hunks = textEditHunks(state.text, after, state.protectedSpans).map((hunk) => ({ ...hunk, targets: [], anchor: null, location: null }));
     for (const hunk of hunks) {
         if (/[\n\t]/.test(hunk.text + state.text.slice(hunk.start, hunk.end))) {
             throw new RevisionSafetyError('Cannot change paragraph or tab boundaries with unresolved revisions.');
@@ -63,7 +64,7 @@ function planEdits(state, after) {
     return { hunks, targets };
 }
 
-async function locate(context, scope, targets, options, allowSplit = true, nativeProjection = null) {
+async function locate(context, scope, targets, options, allowSplit = true, nativeProjection = null, xmlBaseline = null) {
     const searches = new Map();
     for (const { text } of targets) {
         if (searches.has(text)) continue;
@@ -89,7 +90,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
             // indistinguishable from a genuine paragraph-start fragment in
             // a multi-paragraph prefix. Current-view native text retains
             // the exact range boundary without that export padding.
-            const currentPrefix = queueCurrentTextRead(prefix);
+            const currentPrefix = xmlBaseline === null ? queueCurrentTextRead(prefix) : null;
             const currentContent = queueCurrentTextRead(candidate.range);
             return { ...candidate, currentPrefix, currentContent,
                 xml: currentContent ? null : queueRevisionRead(candidate.range, { paragraph: true }),
@@ -104,15 +105,23 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
             if (candidate.currentContent && typeof candidate.currentContent.value !== 'string') {
                 throw new RevisionSafetyError('The current-view search target is unreadable. Generate a fresh proposal.');
             }
+            if (xmlBaseline !== null && !candidate.currentContent) {
+                throw new RevisionSafetyError('Native prose verification is unavailable. No text was written.');
+            }
             if (candidate.currentContent && normalizeWordText(candidate.currentContent.value) !== candidate.text) continue;
             const prefix = candidate.currentPrefix && normalizeWordText(candidate.currentPrefix.value);
             // Word includes REF instructions and legacy symbol placeholders
             // in native prefixes. Their raw lengths are not visible offsets.
             // Match the prefix to the independently verified whole stream.
             if (nativeProjection && prefix !== null && !nativeProjection.native.startsWith(prefix)) continue;
+            const prefixState = candidate.currentPrefix ? null : revisionTextState(candidate.prefix.value,
+                xmlBaseline === null ? options : { ...options, singleParagraphContent: true });
+            if (xmlBaseline !== null && prefixState.paragraphCount !== 1) continue;
+            const prefixText = prefixState?.text;
+            if (xmlBaseline !== null && !xmlBaseline.startsWith(prefixText)) continue;
             const offset = candidate.currentPrefix
                 ? nativeProjection ? nativeProjection.offsets[prefix.length] : prefix.length
-                : revisionTextState(candidate.prefix.value, options).text.length;
+                : prefixText.length;
             const key = JSON.stringify([offset, candidate.text]);
             if (!needed.has(key)) continue;
             selected.push({ ...candidate, key, xml: candidate.xml || queueRevisionRead(candidate.range, { paragraph: true }) });
@@ -145,7 +154,7 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
         const last = { start: target.start + target.text.length - lastText.length, text: lastText, range: null };
         return { target, first, last };
     });
-    await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false, nativeProjection);
+    await locate(context, scope, endpoints.flatMap(({ first, last }) => [first, last]), options, false, nativeProjection, xmlBaseline);
     for (let start = 0; start < endpoints.length; start += READ_BATCH_SIZE) {
       const unions = endpoints.slice(start, start + READ_BATCH_SIZE).map(({ target, first, last }) => {
           target.range = first.range.expandTo(last.range);
@@ -154,12 +163,37 @@ async function locate(context, scope, targets, options, allowSplit = true, nativ
       await context.sync();
       for (const { target, xml } of unions) {
         const content = resolveRevisionRead(target.range, xml, { paragraph: true });
-        if (content.hasHiddenContent || (content.protectedStructure && !(options.nativeTargets && content.fieldOnlyProtection))
+        if ((xml?.currentText && normalizeWordText(xml.currentText.value) !== target.text)
+            || content.hasHiddenContent || (content.protectedStructure && !(options.nativeTargets && content.fieldOnlyProtection))
             || content.protectedSpans.some(({ start, end }) => end > start) || content.text !== target.text) {
             throw new RevisionSafetyError('Located text crosses a revision boundary. Generate a fresh proposal.');
         }
       }
     }
+}
+
+/** Independently prove every editable character when a host's whole-text
+ * serializer cannot represent native inline objects. Protected results are
+ * excluded; no native prose discrepancy or ambiguous range is tolerated. */
+function proseProofTargets(state) {
+    const targets = [];
+    for (const segment of state.segments) {
+        let intervals = [{ start: segment.start, end: segment.start + segment.text.length }];
+        for (const span of state.protectedSpans) intervals = intervals.flatMap(({ start, end }) =>
+            span.end <= start || span.start >= end ? [{ start, end }]
+                : [{ start, end: Math.max(start, span.start) }, { start: Math.min(end, span.end), end }].filter((s) => s.end > s.start));
+        for (const interval of intervals) {
+            let start = interval.start;
+            while (start < interval.end) {
+                let end = Math.min(start + 200, interval.end);
+                if (end < interval.end && /[\uD800-\uDBFF]/.test(state.text[end - 1])) end--;
+                targets.push({ start, text: state.text.slice(start, end), range: null });
+                start = end;
+                if (targets.length > MAX_TARGETS) throw new RevisionSafetyError('Too many prose ranges to verify safely. Use a smaller selection.');
+            }
+        }
+    }
+    return targets;
 }
 
 /** Returns null for pristine legacy ranges; nativeTargets verifies pristine ranges too.
@@ -171,10 +205,13 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
     let mutationAttempted = false;
     try {
         await loadMutationVerifier();
-        const read = queueRevisionRead(range, options);
+        // nativeTargets + paragraph is used only for one proven paragraph's
+        // Content, so a copied empty export paragraph is not a real boundary.
+        const readOptions = options.paragraph && options.nativeTargets ? { ...options, singleParagraphContent: true } : options;
+        const read = queueRevisionRead(range, readOptions);
         if (!read) return null;
         await context.sync();
-        const state = resolveRevisionRead(range, read, options);
+        const state = resolveRevisionRead(range, read, readOptions);
         // Paragraph reads preserve actual manual line breaks. Whole-range
         // protocols normalize the native terminal paragraph boundary.
         const comparable = (text) => options.paragraph
@@ -187,7 +224,10 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         }
         const nativeProjection = read.currentText && projectNativeText(state,
             read.currentText.value, { trimEnd: !options.paragraph });
-        if (read.currentText && !nativeProjection) {
+        if (read.currentText && !nativeProjection) recordNativeTextMismatch(read, state);
+        const xmlPositions = !!(read.currentText && !nativeProjection && options.paragraph && state.paragraphCount === 1
+            && state.inlineFingerprint && state.protectedSpans.length && (!state.protectedStructure || state.fieldOnlyProtection));
+        if (read.currentText && !nativeProjection && !xmlPositions) {
             throw new RevisionSafetyError(`Native text and XML disagree before writing (${textMismatchDetail(comparable(state.text), comparable(read.currentText.value))}). Draft a new proposal.`);
         }
         if (!state.hasRevisions && !options.nativeTargets && !state.protectedSpans.length) return null;
@@ -200,11 +240,14 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         if (!hunks.length) return { strategy: 'revision', insertions: 0, deletions: 0, replacements: 0 };
         const ownsTracking = options.trackChanges !== false;
         if (ownsTracking && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
-        await locate(context, range, targets, options, true, nativeProjection);
+        if (xmlPositions) {
+            await locate(context, range, [...proseProofTargets(state), ...targets], options, true, null, state.text);
+            log('Verified all editable prose against native ranges and OOXML positions; native objects remain protected.', 'info');
+        } else await locate(context, range, targets, options, true, nativeProjection);
         if (ownsTracking) context.document.load('changeTrackingMode');
-        const baseline = queueRevisionRead(range, options);
+        const baseline = queueRevisionRead(range, readOptions);
         await context.sync();
-        if (resolveRevisionRead(range, baseline, options).fingerprint !== state.fingerprint) {
+        if (resolveRevisionRead(range, baseline, readOptions).fingerprint !== state.fingerprint) {
             throw new RevisionSafetyError('Revision state changed during location. Generate a fresh proposal.');
         }
         // A section can locate every revised paragraph before its first
@@ -241,7 +284,8 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
                 }
             }
             await context.sync();
-            await verifyMutationText(context, range, after, options, insertedRanges);
+            await verifyMutationText(context, range, after, xmlPositions
+                ? { ...options, verifiedInlineFingerprint: state.inlineFingerprint } : options, insertedRanges);
         } finally {
             if (ownsTracking) { context.document.changeTrackingMode = previousMode; await context.sync(); }
         }

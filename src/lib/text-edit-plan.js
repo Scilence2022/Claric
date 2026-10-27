@@ -13,7 +13,26 @@ export function diffUnicodeScalars(before, after) {
         .map(([op, encoded]) => [op, Array.from(encoded).map((id) => values[id.charCodeAt(0)]).join('')]);
 }
 
-export function textEditHunks(before, after) {
+export function textEditHunks(before, after, protectedSpans = []) {
+    // Unchanged native objects are anchors, rather than characters a global
+    // diff may align with similar prose elsewhere in a rewritten paragraph.
+    const spans = [...protectedSpans].sort((a, b) => a.start - b.start);
+    if (spans.length && spans.every((s, i) => s.end > s.start && (!i || s.start >= spans[i - 1].end))) {
+        const anchored = [];
+        let oldOffset = 0, newOffset = 0;
+        let valid = true;
+        for (const span of spans) {
+            const content = before.slice(span.start, span.end);
+            const position = after.indexOf(content, newOffset);
+            if (position < 0) { valid = false; break; }
+            anchored.push(...textEditHunks(before.slice(oldOffset, span.start), after.slice(newOffset, position))
+                .map((h) => ({ ...h, start: h.start + oldOffset, end: h.end + oldOffset })));
+            oldOffset = span.end;
+            newOffset = position + content.length;
+        }
+        if (valid) return [...anchored, ...textEditHunks(before.slice(oldOffset), after.slice(newOffset))
+            .map((h) => ({ ...h, start: h.start + oldOffset, end: h.end + oldOffset }))];
+    }
     const hunks = [];
     let offset = 0;
     let pending = null;

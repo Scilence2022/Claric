@@ -171,7 +171,7 @@ export async function parseDocument() {
             const batch = paragraphs.items.slice(start, start + PARSE_BATCH_SIZE);
             for (const para of batch) {
                 para.load('text,style,styleBuiltIn,isListItem');
-                revisionReads.push(queueRevisionRead(para, { paragraph: true }));
+                revisionReads.push(queueRevisionRead(para, { paragraph: true, singleParagraphContent: true }));
                 const tc = para.parentTableOrNullObject;
                 tc.load('isNullObject');
                 tableChecks.push(tc);
@@ -202,7 +202,7 @@ export async function parseDocument() {
         // Build in-memory model (no more sync calls)
         for (let i = 0; i < paragraphs.items.length; i++) {
             const para = paragraphs.items[i];
-            const revisionState = resolveRevisionRead(para, revisionReads[i], { paragraph: true });
+            const revisionState = resolveRevisionRead(para, revisionReads[i], { paragraph: true, singleParagraphContent: true });
             const text = revisionState.text;
             if (!text.trim()) continue;
 

@@ -13,7 +13,7 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
 /** Word searches the physical text, including deleted runs. Writes retain
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
-    stickyContent = false, revisedPadding = false, nativeControls = false } = {}) {
+    stickyContent = false, revisedPadding = false, nativeControls = false, reviewedTransform = (text) => text } = {}) {
     let sequence = 0;
     const atoms = parts.flatMap(({ text, type = 'plain', id = ++sequence, field = false, symbol = null, math = null }) =>
         Array.from(text).map((text, index) => ({ text, type, id, field, symbol, math, mathStart: index === 0 })));
@@ -50,12 +50,12 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             inlinePictures: collection([]),
             get text() { return atoms.slice(span.start, span.end).map((a) => a.text).join(''); },
             getOoxml: jest.fn(() => { xmlReads++; return { value: xml(atoms.slice(span.start, span.end)) }; }),
-            ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value:
+            ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value: reviewedTransform(
                 atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => {
                     if (atom.math) return atom.mathStart ? atom.math.native : '';
                     const text = nativeControls && atom.symbol ? '(' : atom.text;
                     return nativeControls && atom.field ? '\u0013HYPERLINK example\u0014' + text + '\u0015' : text;
-                }).join('').replace(/\n/g, '\r').replace(/‑/g, nativeControls ? '\u001E' : '‑') })) } : {}),
+                }).join('').replace(/\n/g, '\r').replace(/‑/g, nativeControls ? '\u001E' : '‑')) })) } : {}),
             getRange: (location) => location === 'Start' ? makeRange(span.start, span.start)
                 : location === 'End' ? makeRange(span.end, span.end) : range,
             expandTo: (other) => makeRange(Math.min(span.start, other._span.start), Math.max(span.end, other._span.end)),
@@ -121,10 +121,44 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
     const deps = { appState: { config: { trackChangesEnabled: true, lineDiffEnabled: false } }, log: jest.fn() };
     return { atoms, scope, paragraph, context, writes, deps, bookmarks,
         xmlReadCount: () => xmlReads,
-        state: () => revisionTextState(paragraphScope.getOoxml().value, { paragraph: true }) };
+        state: () => revisionTextState(paragraphScope.getOoxml().value, { paragraph: true, singleParagraphContent: true }) };
 }
 
 afterEach(() => { delete global.Word; });
+
+const opaqueMath = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+    + '<m:sSub><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sub><m:r><m:t>j</m:t></m:r></m:sub></m:sSub></m:oMath>',
+native: ',𝑗𝑥' };
+
+test('two tracked polish rounds verify all surrounding prose when whole-paragraph reviewed math cannot be projected', async () => {
+    const w = world([{ text: 'Older text', type: 'del' }, { text: 'The old ' }, { text: '𝑥_(𝑗)', math: opaqueMath },
+        { text: ' result. Keep the result.' }], { nativeReviewed: true, padding: true, revisedPadding: true });
+    for (const after of ['The revised 𝑥_(𝑗) result. Keep the result.', 'The final 𝑥_(𝑗) result. Keep this result.']) {
+        const before = w.state().text;
+        await tryRevisionDiff(w.context, w.scope, before, after, jest.fn(), { paragraph: true, nativeTargets: true, preflightOnly: true });
+        await tryRevisionDiff(w.context, w.scope, before, after, jest.fn(), { paragraph: true, nativeTargets: true });
+        expect(w.state().text).toBe(after);
+    }
+    expect(w.atoms.filter((a) => a.math).every((a) => a.type === 'plain')).toBe(true);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test('unverifiable unchanged prose blocks the native-object path before the first write', async () => {
+    const w = world([{ text: 'The old ' }, { text: '𝑥_(𝑗)', math: opaqueMath }, { text: ' result. Keep this unchanged.' }], { nativeReviewed: true, reviewedTransform: (text) => text.replace('Keep', 'Fake') });
+    await expect(tryRevisionDiff(w.context, w.scope, w.state().text, 'The revised 𝑥_(𝑗) result. Keep this unchanged.', jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toThrow(/Unverified|crosses/);
+    expect(w.writes).toHaveLength(0);
+});
+
+test('post-write changes to equation structure cause an uncertain outcome even if visible text stays the same', async () => {
+    const math = { ...opaqueMath };
+    const w = world([{ text: 'The old ' }, { text: '𝑥_(𝑗)', math }, { text: ' result.' }], { nativeReviewed: true });
+    w.context.sync.mockImplementation(async () => {
+        if (w.writes.length) math.xml = opaqueMath.xml.replace('<m:sSub>', '<m:sSub><m:sSubPr><m:ctrlPr/></m:sSubPr>');
+    });
+    await expect(tryRevisionDiff(w.context, w.scope, w.state().text, 'The new 𝑥_(𝑗) result.', jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toMatchObject({ mutationAttempted: true });
+});
 
 test.each([[false, false], [false, true], [true, false]])('selection edits keep headings, blank paragraphs and repeated sentences in place, sentence mode=%s, missing searches=%s', async (lineDiffEnabled, missingSearches) => {
     const before = '3.1 Summary\n\nThe first result is clear. The next result is preliminary.\nThe first result is clear. Further tests are needed.';

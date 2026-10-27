@@ -44,10 +44,14 @@ test('field mutations receive a repair request and the reviewed preview contains
   const fieldEnd = text.indexOf(')') + 1;
   const fieldChunk = chunk({ paragraphs: [{ text, protectedSpans: [{ start: fieldStart, end: fieldEnd }] }] });
   const send = jest.fn().mockResolvedValueOnce('A revised (Example 2026) result.')
-    .mockResolvedValueOnce('A revised (Example 2025) result.\n\n');
+    .mockImplementationOnce(async (_config, messages) => {
+      const masked = messages.find((message) => message.role === 'user').content
+        .split('[AMEND THIS TEXT]\n')[1].split('\n[END TEXT]')[0];
+      return masked.replace('An original', 'A revised') + '\n\n';
+    });
   const result = await processChunksParallel([fieldChunk], options(send));
   expect(send).toHaveBeenCalledTimes(2);
-  expect(send.mock.calls[1][1].at(-1).content).toContain('native field result');
+  expect(send.mock.calls[1][1].at(-1).content).toContain('native placeholder');
   expect(result[0]).toMatchObject({ status: 'fulfilled', amendment: 'A revised (Example 2025) result.' });
   expect(send.mock.calls[0][1].find((message) => message.role === 'user').content).toContain('read-only document data');
 });

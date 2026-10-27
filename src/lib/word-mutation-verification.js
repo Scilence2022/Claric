@@ -10,6 +10,18 @@ export async function verifyMutationText(context, range, expected, options = {},
     const target = options.verificationParagraph
         ? options.verificationParagraph.getRange('Content')
         : insertedRanges.filter(Boolean).reduce((scope, inserted) => scope.expandTo(inserted), range);
+    if (options.verifiedInlineFingerprint) {
+        const read = queueRevisionRead(target, { ...options, singleParagraphContent: true });
+        if (!read) throw new MutationSafetyError(new Error('Native object read-back is unavailable. Inspect Word before retrying.'));
+        await context.sync();
+        const state = resolveRevisionRead(target, read, { ...options, singleParagraphContent: true });
+        if (state.paragraphCount !== 1 || state.text !== normalizeWordText(expected)
+            || (state.protectedStructure && !state.fieldOnlyProtection)
+            || state.inlineFingerprint !== options.verifiedInlineFingerprint) {
+            throw new MutationSafetyError(new Error('Native object or prose read-back differs from the proposal. Inspect Word before retrying.'));
+        }
+        return;
+    }
     const current = queueCurrentTextRead(target);
     const read = current ? null : queueRevisionRead(target);
     if (!current && !read) return;
