@@ -50,11 +50,11 @@ test('parses bounded section targets, never silently dropping invalid operations
 });
 
 test.each(['去掉文档中的行号', '请移除全文行号。', '关闭当前节行号', '取消所选文档内的行号',
-    'Remove all line numbers from the document.', 'Please turn off line numbering'])('recognizes unambiguous line removal: %s', (text) => {
+    'Remove all line numbers from the document.', 'Please turn off line numbering', '不显示行号', '隐藏全文行号', '不要行号', "Don't show line numbers"])('recognizes unambiguous line removal: %s', (text) => {
     expect(explicitLineNumberRemoval(text)).toBe(true);
 });
 
-test.each(['不要移除行号', '如何移除行号？', 'remove line numbers and change margins', '去掉行号并删除所有内容'])('never treats compound/negated/questions as deterministic removal: %s', (text) => {
+test.each(['不要移除行号', '不要显示行号以外的内容', '如何移除行号？', 'remove line numbers and change margins', '去掉行号并删除所有内容'])('never treats compound/negated/questions as deterministic removal: %s', (text) => {
     expect(explicitLineNumberRemoval(text)).toBe(false);
 });
 

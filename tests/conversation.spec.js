@@ -3848,7 +3848,7 @@ describe('conversation history snapshots', () => {
 
 describe('native section/page layout', () => {
   test.each([
-    ['去掉文档中的行号', 'document'], ['Remove line numbering', 'document'],
+    ['去掉文档中的行号', 'document'], ['Remove line numbering', 'document'], ['不显示行号', 'document'],
     ['Set page margins to 2 cm', 'document'], ['将纸张改为A4', 'document'],
     ['将当前节改为双栏', 'selection'], ['关闭选区中的行号', 'selection'],
     ['Remove line numbers in the selected sections of the document', 'selection'],
