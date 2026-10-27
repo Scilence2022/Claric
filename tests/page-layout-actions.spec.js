@@ -5,7 +5,10 @@ const { PAGE_NUMBERS, PAGE_BOOLEANS, PAGE_ENUMS } = require('../src/lib/page-lay
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 function world(count = 3) {
-    const writes = [], control = { selected: [1], ignoreWrites: false, onSync: null };
+    const writes = [], control = { selected: [1], ignoreWrites: false, onSync: null, rejected: new Set() };
+    let pending = [];
+    const loader = (group) => jest.fn((names) => { pending.push(...names.split(',').map((name) => `${group}.${name}`)); });
+    const read = (key, value) => { pending.push(key); return value; };
     const state = Array.from({ length: count }, (_, i) => ({
         text: `Section ${i + 1} body`, protectedForForms: false,
         pageSetup: { ...Object.fromEntries(PAGE_NUMBERS.map((key) => [key, 0])),
@@ -22,20 +25,20 @@ function world(count = 3) {
     }
     const sections = state.map((s, i) => {
         const columns = {
-            load: jest.fn(),
-            getIsEvenlySpaced: () => ({ value: s.columns.evenlySpaced }),
-            getHasLineBetween: () => ({ value: s.columns.lineBetween }),
-            getFlowDirection: () => ({ value: s.columns.flowDirection }),
+            load: jest.fn((names) => { pending.push(names === 'items' ? 'columns.count' : `columns.${names.replace('items/', '')}`); }),
+            getIsEvenlySpaced: () => read('columns.evenlySpaced', { value: s.columns.evenlySpaced }),
+            getHasLineBetween: () => read('columns.lineBetween', { value: s.columns.lineBetween }),
+            getFlowDirection: () => read('columns.flowDirection', { value: s.columns.flowDirection }),
             setCount: (n) => mutate(i, 'columns', { items: Array.from({ length: n }, () => ({ width: 180, spaceAfter: 18 })) }),
             setIsEvenlySpaced: (evenlySpaced) => mutate(i, 'columns', { evenlySpaced }),
             setHasLineBetween: (lineBetween) => mutate(i, 'columns', { lineBetween }),
             setFlowDirection: (flowDirection) => mutate(i, 'columns', { flowDirection }),
             get items() { return s.columns.items; },
         };
-        return { load: jest.fn(), get protectedForForms() { return s.protectedForForms; },
-            pageSetup: { ...s.pageSetup, load: jest.fn(),
+        return { load: loader('section'), get protectedForForms() { return s.protectedForForms; },
+            pageSetup: { ...s.pageSetup, load: loader('pageSetup'),
                 set: (patch) => { mutate(i, 'pageSetup', patch); Object.assign(sections[i].pageSetup, s.pageSetup); },
-                lineNumbering: { ...s.lineNumbering, load: jest.fn(),
+                lineNumbering: { ...s.lineNumbering, load: loader('lineNumbering'),
                     set: (patch) => { mutate(i, 'lineNumbering', patch); Object.assign(sections[i].pageSetup.lineNumbering, s.lineNumbering); } },
                 textColumns: columns },
             body: { getRange: () => ({ index: i, compareLocationWith: (target) => ({ value: target.index === i ? 'Equal' : 'Before' }) }),
@@ -45,7 +48,12 @@ function world(count = 3) {
     });
     const collection = { load: jest.fn(), items: sections };
     const context = { document: { sections: collection, getSelection: () => ({ sections: { load: jest.fn(), items: control.selected.map((i) => sections[i]) } }) },
-        sync: jest.fn(async () => { control.onSync?.(); }) };
+        sync: jest.fn(async () => {
+            const rejected = pending.some((key) => control.rejected.has(key));
+            pending = [];
+            if (rejected) throw Object.assign(new Error('Error code: 0x80020004'), { code: 'GeneralException' });
+            control.onSync?.();
+        }) };
     global.Word = { run: jest.fn(async (fn) => fn(context)) };
     global.Office = { context: { requirements: { isSetSupported: jest.fn(() => true) } } };
     const deps = { appState: { config: { backend: 'mock', providers: { mock: { model: 'test-model' } } } },
@@ -219,12 +227,48 @@ test('invalid read scope, empty sections, missing API data and ambiguous selecti
     await expect(prepare(f.deps, { scope: 'paragraph' })).rejects.toThrow('scope');
     f.control.selected = [1, 1];
     await expect(read(f.deps, { scope: 'selection' })).rejects.toThrow('identify');
-    f.sections[0].pageSetup.leftMargin = NaN;
-    await expect(read(f.deps)).rejects.toThrow('could not read');
-    f.sections[0].pageSetup.leftMargin = 72;
-    f.state[0].columns.evenlySpaced = undefined;
-    await expect(read(f.deps)).rejects.toThrow('column settings');
     f.sections.length = 0;
     await expect(read(f.deps)).rejects.toThrow('1–100');
     expect(f.writes).toEqual([]);
+});
+
+test('Mac host-rejected and missing reads are left out; line numbers still turn off', async () => {
+    const f = world(2);
+    f.control.rejected = new Set(['pageSetup.twoPagesOnOne', 'columns.spaceAfter']);
+    f.sections[0].pageSetup.showGrid = null;
+    f.state[0].columns.evenlySpaced = undefined;
+    const records = await read(f.deps);
+    expect(records[0].pageSetup).not.toHaveProperty('twoPagesOnOne');
+    expect(records[0].pageSetup).not.toHaveProperty('showGrid');
+    expect(records[1].pageSetup).toHaveProperty('showGrid', false);
+    expect(records[0].columns).toEqual({ count: 1, items: [{ width: 468 }], lineBetween: false, flowDirection: 'LeftToRight' });
+    const proposal = await prepare(f.deps, { instruction: '不显示行号' });
+    expect(f.deps.sendActionRequest).not.toHaveBeenCalled();
+    expect(await apply(f.deps, proposal)).toMatchObject({ applied: true, verified: true, verifiedSections: 2 });
+    expect(f.writes).toEqual([0, 1].map((i) => ({ i, group: 'lineNumbering', patch: { isActive: false } })));
+});
+
+test('settings Word cannot read back are never changed', async () => {
+    const f = world(1);
+    f.control.rejected = new Set(['pageSetup.leftMargin', 'columns.width']);
+    f.sections[0].pageSetup.showGrid = null;
+    for (const patch of [{ pageSetup: { showGrid: true } }, { pageSetup: { leftMargin: 50 } }, { pageSetup: { topMargin: 50 } },
+        { columns: { count: 2, evenlySpaced: false, items: [{ width: 200 }, { width: 200 }] } }]) {
+        f.plan(patch);
+        await expect(prepare(f.deps, { instruction: 'Set layout' })).rejects.toThrow(/cannot read|could not read/);
+    }
+    expect(f.writes).toEqual([]);
+});
+
+test('a read failure that probing cannot isolate fails with its Word location', async () => {
+    const f = world(1);
+    f.context.sync.mockRejectedValue(Object.assign(new Error('Error code: 0x80020004'), { debugInfo: { errorLocation: 'Section.pageSetup' } }));
+    await expect(read(f.deps)).rejects.toThrow('0x80020004 (at Section.pageSetup)');
+});
+
+test('a property that becomes unreadable after preparation is not mistaken for a stale document', async () => {
+    const f = world(1);
+    const proposal = await prepare(f.deps, { instruction: 'Remove line numbers' });
+    f.control.rejected = new Set(['pageSetup.gutterStyle']);
+    expect(await apply(f.deps, proposal)).toMatchObject({ applied: true, verified: true });
 });
