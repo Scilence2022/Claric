@@ -29,7 +29,7 @@ import { initInputBar } from './ui/input-bar.js';
 import { initAboutView } from './ui/about-view.js';
 import { initScreenSharingView } from './ui/screen-sharing-view.js';
 import { createSettingsLoader } from './settings-loader.js';
-import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer } from './ui/status-bar.js';
+import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer, getActivityLogText } from './ui/status-bar.js';
 import { initHistoryView, openHistory } from './ui/history-view.js';
 import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession, setSessionScope } from './sessions.js';
 import { getProviderPreset } from '../lib/providers.js';
@@ -57,7 +57,25 @@ async function initialize() {
     appState.log = addLog;
 
     // Status bar (log drawer, comment pending bar)
-    initStatusBar();
+    const exportConfig = () => ({ ...appState.config,
+        pairingToken: document.getElementById('crossDocumentToken')?.value || '' });
+    initStatusBar({ getConfig: exportConfig });
+    document.getElementById('copyContextBtn')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        const status = document.getElementById('contextCopyStatus');
+        button.disabled = true;
+        status.textContent = 'Collecting context…';
+        try {
+            const { copyContext } = await loadLazyModule('context-export', () => import(/* webpackChunkName: "context-export" */ './context-export.js'));
+            const text = (id) => document.getElementById(id)?.textContent || '';
+            await copyContext({ state: { ...appState, config: exportConfig() }, session: chatView.getCurrentSession(),
+                chatText: text('chatMessages'), logs: getActivityLogText(), draft: document.getElementById('chatInput').value,
+                attachments: text('attachmentChips'), metadata: { version: text('aboutVersion'), build: text('aboutBuild'),
+                    builtAt: text('aboutBuiltAt'), wordApi: text('aboutWordApi') } });
+            status.textContent = 'All context copied.';
+        } catch (error) { status.textContent = `Could not copy context: ${error.message}`; }
+        finally { button.disabled = false; }
+    });
 
     // Chat view
     chatView.initChatView();

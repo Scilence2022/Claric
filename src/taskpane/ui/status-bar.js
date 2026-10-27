@@ -11,6 +11,10 @@
 
 /** Drawer DOM entries kept before the oldest are dropped. */
 const MAX_LOG_ENTRIES = 200;
+// Keep the full session text for export while limiting expensive DOM nodes.
+const activityEntries = [];
+
+export function getActivityLogText() { return activityEntries.join('\n'); }
 
 /**
  * Module state for the dev-server log endpoint probe. The POST is dev-only
@@ -46,6 +50,7 @@ function postToDevLog(body) {
  * @param {string} [type='info'] - One of 'info' | 'success' | 'warning' | 'error'
  */
 export function addLog(message, type = 'info') {
+    activityEntries.push(`[${new Date().toLocaleTimeString()}] [${type.toUpperCase()}] ${message}`);
     const logsDiv = typeof document !== 'undefined' ? document.getElementById('logs') : null;
     if (logsDiv) {
         const entry = document.createElement('div');
@@ -83,6 +88,7 @@ export function addLogWithRetry(message, type, retryCallback) {
         addLog(message, type);
         return;
     }
+    activityEntries.push(`[${new Date().toLocaleTimeString()}] [${type.toUpperCase()}] ${message}`);
 
     const entry = document.createElement('div');
     const timestamp = new Date().toLocaleTimeString();
@@ -106,6 +112,7 @@ export function addLogWithRetry(message, type, retryCallback) {
     }
 
     logsDiv.appendChild(entry);
+    while (logsDiv.childElementCount > MAX_LOG_ENTRIES) logsDiv.removeChild(logsDiv.firstElementChild);
     logsDiv.scrollTop = logsDiv.scrollHeight;
 
     console.log(`[${type.toUpperCase()}] ${message}`);
@@ -119,6 +126,7 @@ export function addLogWithRetry(message, type, retryCallback) {
  * Clears all entries from the activity log.
  */
 export function clearLogs() {
+    activityEntries.length = 0;
     const logsDiv = document.getElementById('logs');
     if (logsDiv) logsDiv.innerHTML = '';
 }
@@ -183,7 +191,7 @@ export function setConnectionStatus(state, text) {
  * by default; the caller wires #logBtn via this module's exported
  * toggleLogDrawer() so the click handler stays in one place.
  */
-export function initStatusBar() {
+export function initStatusBar({ getConfig = () => ({}) } = {}) {
     const drawer = document.getElementById('logDrawer');
     const closeBtn = document.getElementById('logDrawerCloseBtn');
     const clearBtn = document.getElementById('clearLogsBtn');
@@ -198,6 +206,19 @@ export function initStatusBar() {
     if (clearBtn) {
         clearBtn.addEventListener('click', clearLogs);
     }
+    document.getElementById('copyLogsBtn')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        const status = document.getElementById('logCopyStatus');
+        button.disabled = true;
+        try {
+            const { copyText } = await import('./clipboard.js');
+            const { redactContext } = await import('../context-export.js');
+            await copyText(redactContext(getActivityLogText() || 'No activity logs.', getConfig()));
+            if (status) status.textContent = 'All activity logs copied.';
+        } catch (error) {
+            if (status) status.textContent = error.message;
+        } finally { button.disabled = false; }
+    });
 }
 
 /**

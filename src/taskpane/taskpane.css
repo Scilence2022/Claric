@@ -175,6 +175,10 @@ body {
     flex: 1 1 auto;
 }
 
+.header-utilities-start { margin-left: auto; }
+.copy-status { padding: 0 var(--spacing-sm); }
+.copy-status:empty { display: none; }
+
 /* Uniform icon buttons: fixed square, flex-centered, so every header icon
    renders the same size regardless of its glyph line-height. */
 .icon-btn {
