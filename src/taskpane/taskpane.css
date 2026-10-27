@@ -178,6 +178,7 @@ body {
 .header-utilities-start { margin-left: auto; }
 .copy-status { padding: 0 var(--spacing-sm); }
 .copy-status:empty { display: none; }
+.context-copy-text { width: 100%; box-sizing: border-box; resize: vertical; margin: 8px 0; }
 
 /* Uniform icon buttons: fixed square, flex-centered, so every header icon
    renders the same size regardless of its glyph line-height. */

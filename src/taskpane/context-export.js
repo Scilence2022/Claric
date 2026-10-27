@@ -1,4 +1,3 @@
-import { copyText } from './ui/clipboard.js';
 import { parseDocument } from '../lib/document-parser.js';
 import { queueRevisionRead, resolveRevisionRead } from '../lib/word-revisions.js';
 
@@ -60,5 +59,3 @@ export async function buildContextReport({ state, session, chatText, logs, draft
     parts.push('\n## Activity log', logs || '(empty)');
     return redactContext(parts.join('\n'), state.config);
 }
-
-export async function copyContext(options) { await copyText(await buildContextReport(options)); }

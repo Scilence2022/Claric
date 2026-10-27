@@ -158,6 +158,11 @@
                 </dl>
                 <p class="help-text">Copy all context includes document text, chat, proposals, selection, input, settings and logs. API keys are removed.</p>
                 <p id="contextCopyStatus" class="help-text" role="status"></p>
+                <div id="contextCopyFallback" hidden>
+                    <label for="contextCopyText">Prepared context</label>
+                    <textarea id="contextCopyText" class="context-copy-text" rows="5" readonly spellcheck="false"></textarea>
+                    <button id="retryContextCopyBtn" type="button" class="btn">Copy prepared text</button>
+                </div>
                 <div class="modal-actions">
                     <button id="copyContextBtn" type="button" class="btn">Copy all context</button>
                     <button id="aboutCloseBtn" type="button" class="btn btn-primary">Close</button>
