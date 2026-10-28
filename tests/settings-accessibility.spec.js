@@ -115,3 +115,21 @@ test('turning Track Changes off disables automatic writes and explains why', () 
     expect(appState.config.autoApplyChanges).toBe(false);
     expect(document.getElementById('inputError').textContent).toContain('Track Changes is off');
 });
+
+test('General settings wires the manual undo-history control and its confirmation', async () => {
+    global.Office = { context: { requirements: { isSetSupported: () => true } } };
+    global.Word = { run: jest.fn() };
+    openSettings();
+    const button = document.getElementById('clearUndoHistoryBtn');
+    button.focus();
+    button.click();
+    expect(document.getElementById('settingsPageGeneral').contains(button)).toBe(true);
+    expect(document.activeElement.dataset.confirm).toBe('cancel');
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Promise.resolve();
+    expect(document.getElementById('settingsOverlay').hidden).toBe(false);
+    expect(document.activeElement).toBe(button);
+    expect(Word.run).not.toHaveBeenCalled();
+    delete global.Word;
+    delete global.Office;
+});

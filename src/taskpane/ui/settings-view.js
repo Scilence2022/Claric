@@ -39,6 +39,7 @@ import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../..
 import { appState, getActiveBackendConfig, getActiveImageConfig, debounce, persistSettings } from '../app-state.js';
 import { BUILTIN_SKILLS, RESERVED_MCP_SKILL } from '../skills.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
+import { initUndoHistoryControl } from './undo-history.js';
 
 import { containFocus } from './dialog.js';
 
@@ -235,6 +236,7 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
     document.getElementById('apiKey').addEventListener('input', onChatTextInput);
     document.getElementById('trackChangesCheckbox').addEventListener('change', saveSettings);
     document.getElementById('lineDiffCheckbox').addEventListener('change', saveSettings);
+    initUndoHistoryControl();
     document.getElementById('thinkingLevelSelect').addEventListener('change', (e) => {
         // The just-picked level drives the hint/temperature refresh; reading
         // the still-unsaved config here would snap the select back.
