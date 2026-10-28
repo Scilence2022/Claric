@@ -599,7 +599,7 @@ describe('section recovery and application progress', () => {
     const onRecover = jest.fn(async (id, _mode, ctx) => {
       ctx.onProposal({ before: 'Current section.', after: 'Recovered section.' });
       ctx.onChunkApplied(id, { applied: true });
-      return { amendmentsApplied: 1, errors: [] };
+      return { amendmentsApplied: 1, errors: [], recoveryReport: `${_mode}: section ${id} applied and verified.` };
     });
     const card = makeCard({ items: makeItems().slice(0, 2), onRecover,
       onApply: async (_ids, ctx) => {
@@ -618,6 +618,7 @@ describe('section recovery and application progress', () => {
     expect(rows[1].dataset.outcome).toBe('applied');
     expect(rows[1].querySelector('.proposal-card-recovery').hidden).toBe(true);
     expect(card.getItemPreviews()[1].after).toBe('Recovered section.');
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain(`${mode}: section b applied and verified.`);
     await card.applyAll();
     expect(onRecover).toHaveBeenCalledTimes(1);
   });
@@ -638,11 +639,12 @@ describe('section recovery and application progress', () => {
     const controller = registerController.mock.calls.at(-1)[0];
     controller.abort();
     expect(onRecover.mock.calls[0][2].signal.aborted).toBe(true);
-    fail(new Error('Cancelled before writing.'));
+    fail(Object.assign(new Error('Cancelled before writing.'), { recoveryReport: 'Force apply was paused for section a. No completion was verified.' }));
     await flush();
     expect(retry.disabled).toBe(false);
     expect(card.getItemOutcomes()).toEqual([{ id: 'a', outcome: 'uncertain' }]);
-    expect(card.el.querySelector('.proposal-card-status').textContent).toContain('Cancelled before writing');
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain('Force apply was paused for section a');
+    expect(card.el.querySelector('.proposal-card-status').getAttribute('role')).toBe('status');
     expect(registerController).toHaveBeenLastCalledWith(null);
   });
 });

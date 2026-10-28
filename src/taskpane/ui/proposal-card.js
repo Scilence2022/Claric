@@ -352,6 +352,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
 
     const status = document.createElement('div');
     status.className = 'proposal-card-status';
+    status.setAttribute('role', 'status');
     status.style.display = 'none';
 
     const progressBox = document.createElement('div');
@@ -687,9 +688,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
                     markItemApplied(id, outcome);
                 },
             });
-            detail = result?.interrupted ? 'Recovery paused before application.' : (result?.errors || []).join(' ');
+            detail = result?.recoveryReport || (result?.interrupted ? 'Recovery paused before application.' : (result?.errors || []).join(' '));
         } catch (error) {
-            detail = error.message || String(error);
+            detail = error.recoveryReport || error.message || String(error);
         } finally {
             applyInFlight = false;
             _anyCardApplyInFlight = false;

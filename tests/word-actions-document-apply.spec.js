@@ -140,9 +140,11 @@ describe('failed section recovery', () => {
   const succeeded = { amendmentsApplied: 1, failedChunkIds: [], errors: [], appliedChunkIds: ['blocked'] };
   let staged;
   let currentChunk;
+  let dependencies;
   beforeEach(async () => {
     applyChunkResults.mockResolvedValue(failedApply);
-    staged = await runDocumentSkill(deps(), { category: 'amendment', promptTemplate: 'Polish.', gateApply: true });
+    dependencies = deps();
+    staged = await runDocumentSkill(dependencies, { category: 'amendment', promptTemplate: 'Polish.', gateApply: true });
     await staged.apply(['blocked']);
     currentChunk = { ...chunks[1], paragraphs: [{ text: 'Current partially edited text.', revisionFingerprint: 'fresh' }] };
     readChunkSnapshot.mockResolvedValue(currentChunk);
@@ -165,7 +167,7 @@ describe('failed section recovery', () => {
   });
 
   test('force rebases the existing target on current text and fingerprints without bypassing verification', async () => {
-    await staged.recoverChunk('blocked', 'force');
+    const result = await staged.recoverChunk('blocked', 'force');
     expect(readChunkSnapshot).toHaveBeenCalledWith(chunks[1], '_blocked');
     const [selected, , options] = applyChunkResults.mock.calls[0];
     expect(selected[0]).toMatchObject({ amendment: 'Revised blocked paragraph.', chunk: currentChunk, comment: null });
@@ -173,6 +175,31 @@ describe('failed section recovery', () => {
     expect(options.chunkRevisionFingerprints.get('blocked')).toEqual(['fresh']);
     expect(options.trackChangesEnabled).toBe(true);
     expect(processChunksParallel).not.toHaveBeenCalled();
+    expect(result.recoveryReport).toContain('Force apply succeeded for section blocked');
+    expect(dependencies.log).toHaveBeenCalledWith(result.recoveryReport, 'success');
+  });
+
+  test.each([
+    [{ amendmentsApplied: 0, noChangeCount: 1, errors: [] }, 'already matches', 'success'],
+    [{ ...failedApply, partialChunkIds: ['blocked'], appliedParagraphs: 2 }, '2 paragraph edit(s) verified', 'warning'],
+    [failedApply, 'could not be verified', 'warning'],
+    [{ amendmentsApplied: 0, failedChunkIds: ['blocked'], errors: ['Protected object.'] }, 'Reason: Protected object.', 'warning'],
+    [{ amendmentsApplied: 0, interrupted: true, errors: [] }, 'was paused', 'warning'],
+  ])('force reports its actual outcome to the caller and activity log: %j', async (application, detail, level) => {
+    applyChunkResults.mockResolvedValueOnce(application);
+    const result = await staged.recoverChunk('blocked', 'force');
+    expect(result.recoveryReport).toContain('Force apply');
+    expect(result.recoveryReport).toContain(detail);
+    expect(dependencies.log).toHaveBeenCalledWith(result.recoveryReport, level);
+  });
+
+  test('a force read failure reports its reason without starting application', async () => {
+    readChunkSnapshot.mockRejectedValueOnce(new Error('The section bookmark is missing.'));
+    const error = await staged.recoverChunk('blocked', 'force').catch((error) => error);
+    expect(error.recoveryReport).toContain('Force apply failed for section blocked');
+    expect(error.recoveryReport).toContain('The section bookmark is missing');
+    expect(dependencies.log).toHaveBeenCalledWith(error.recoveryReport, 'warning');
+    expect(applyChunkResults).not.toHaveBeenCalled();
   });
 
   test('regeneration uses fresh source and applies only the newly generated section', async () => {
