@@ -7,7 +7,7 @@ jest.mock('../src/lib/word-diff/index.js', () => ({
 jest.mock('../src/lib/word-diff/revision-diff.js', () => ({ tryRevisionDiff: jest.fn() }));
 
 const { applyTokenMapStrategy, applySentenceDiffStrategy } = require('../src/lib/word-diff/index.js');
-const { applyChunkResults } = require('../src/lib/reassembler.js');
+const { applyChunkResults, readChunkSnapshot } = require('../src/lib/reassembler.js');
 const { RevisionSafetyError, MutationSafetyError } = require('../src/lib/word-revisions.js');
 const { tryRevisionDiff } = require('../src/lib/word-diff/revision-diff.js');
 
@@ -70,25 +70,81 @@ beforeEach(() => {
 });
 afterEach(() => { delete global.Word; });
 
-test('an unverified native write stops before touching the remaining section or inserting comments', async () => {
-  const document = nativeDocument(storedTexts);
-  document.range.insertComment = jest.fn();
-  const nativeError = Object.assign(new Error('GeneralException'), { code: 'GeneralException', debugInfo: { errorLocation: 'Range.insertText' } });
-  applyTokenMapStrategy.mockRejectedValueOnce(new MutationSafetyError(nativeError));
+function sectionFixtures(ids = ['head', 'tail']) {
+  const sections = ids.map((id, index) => {
+    const source = storedTexts.map((text) => `${id}: ${text}`);
+    const document = nativeDocument(source);
+    document.range.insertComment = jest.fn();
+    return { id, document, result: { chunkId: id, status: 'fulfilled',
+      amendment: source.map((text) => text.replace('clear', 'precise')).join('\n'), comment: 'Review note.',
+      chunk: { id, startIndex: index * 2, endIndex: index * 2 + 1, paragraphs: source.map((text) => ({ text })) } } };
+  });
+  const context = sections.at(-1).document.context;
+  context.document.getBookmarkRangeOrNullObject.mockImplementation((name) => sections.find(({ id }) => `_${id}` === name).document.range);
+  global.Word.run = jest.fn(async (callback) => callback(context));
+  return { sections, context, results: sections.map(({ result }) => result), bookmarks: new Map(ids.map((id) => [id, `_${id}`])) };
+}
+
+test('an unverified partial write is isolated; earlier sections and their comments still apply', async () => {
+  const { sections, context, results, bookmarks } = sectionFixtures();
+  applyTokenMapStrategy.mockImplementation(async (_ctx, range, _before, after) => {
+    range.state.text = after;
+    if (range === sections[1].document.contentRanges[0]) {
+      range.state.text = 'Unexpected read-back.';
+      throw new MutationSafetyError(new Error('Read-back differs.'));
+    }
+  });
   const onChunkApplied = jest.fn();
-  const results = ['head', 'tail'].map((id, index) => ({ chunkId: id, status: 'fulfilled',
-    amendment: amendedTexts.join('\n'), comment: 'Review note.', chunk: { id, endIndex: index,
-      paragraphs: storedTexts.map((text) => ({ text })) } }));
-  const result = await applyChunkResults(results, new Map([['head', '_head'], ['tail', '_tail']]),
-    { trackChangesEnabled: true, log: jest.fn(), onChunkApplied });
-  expect(result).toMatchObject({ halted: true, interrupted: false, attemptedChunkIds: ['tail'],
-    uncertainChunkIds: ['tail'], skippedChunkIds: ['head'], commentsInserted: 0 });
+  const onProgress = jest.fn();
+  const result = await applyChunkResults(results, bookmarks, { log: jest.fn(), onChunkApplied, onProgress });
+  expect(result).toMatchObject({ halted: false, interrupted: false, attemptedChunkIds: ['tail', 'head'],
+    amendmentsApplied: 1, appliedChunkIds: ['head'], partialChunkIds: ['tail'],
+    uncertainChunkIds: ['tail'], skippedChunkIds: [], commentsInserted: 1 });
+  expect(applyTokenMapStrategy).toHaveBeenCalledTimes(4);
+  expect(context.document.getBookmarkRangeOrNullObject.mock.calls.map(([name]) => name)).toEqual(['_tail', '_head', '_head']);
+  expect(sections[0].document.states.map(({ text }) => text).join('\n')).toBe(results[0].amendment);
+  expect(sections[1].document.range.insertComment).not.toHaveBeenCalled();
+  expect(sections[0].document.range.insertComment).toHaveBeenCalledTimes(1);
+  expect(onChunkApplied).toHaveBeenCalledWith('head', { applied: true, noChange: false });
+  expect(onProgress).toHaveBeenCalledWith({ chunkId: 'head', stage: 'bookmark and source read', appliedParagraphs: 0 });
+  expect(onProgress).toHaveBeenCalledWith({ chunkId: 'head', stage: 'paragraph 1: read-back', appliedParagraphs: 2 });
+});
+
+test.each(['drift', 'missing source', 'missing bookmark', 'missing paragraph evidence'])('continuation rejects %s in one section and still checks the next', async (failure) => {
+  const { sections, results, bookmarks } = sectionFixtures(['head', 'middle', 'tail']);
+  if (failure === 'drift') sections[1].document.states[0].text = 'Edited since staging.';
+  if (failure === 'missing source') delete results[1].chunk.paragraphs;
+  if (failure === 'missing bookmark') sections[1].document.range.isNullObject = true;
+  if (failure === 'missing paragraph evidence') delete sections[1].document.range.paragraphs;
+  applyTokenMapStrategy.mockRejectedValueOnce(new MutationSafetyError(new Error('Unverified write.')));
+  const result = await applyChunkResults(results, bookmarks, { log: jest.fn() });
+  expect(result).toMatchObject({ attemptedChunkIds: ['tail', 'middle', 'head'], failedChunkIds: ['tail', 'middle'],
+    appliedChunkIds: ['head'], uncertainChunkIds: ['tail'], halted: false });
+  expect(applyTokenMapStrategy).toHaveBeenCalledTimes(3);
+  expect(sections[1].document.range.insertComment).not.toHaveBeenCalled();
+});
+
+test('user cancellation still stops between sections after an unverified write', async () => {
+  const { results, bookmarks } = sectionFixtures();
+  const controller = new AbortController();
+  applyTokenMapStrategy.mockRejectedValueOnce(new MutationSafetyError(new Error('Unverified write.')));
+  const result = await applyChunkResults(results, bookmarks, { signal: controller.signal,
+    onChunkApplied: () => controller.abort() });
+  expect(result).toMatchObject({ attemptedChunkIds: ['tail'], interrupted: true, commentsInserted: 0 });
   expect(applyTokenMapStrategy).toHaveBeenCalledTimes(1);
-  expect(document.context.document.getBookmarkRangeOrNullObject).toHaveBeenCalledTimes(1);
-  expect(document.range.insertComment).not.toHaveBeenCalled();
-  expect(onChunkApplied).toHaveBeenCalledWith('head', { applied: false, skipped: true });
-  expect(result.errors[0]).toContain('Range.insertText');
-  expect(result.errors[0]).toContain('paragraph 2: native text edit');
+});
+
+test('recovery snapshots read current text and revision evidence only within the failed bookmark', async () => {
+  const { sections, results } = sectionFixtures();
+  sections[1].document.states[0].text = 'Current partially applied paragraph.';
+  const snapshot = await readChunkSnapshot(results[1].chunk, '_tail');
+  expect(snapshot.paragraphs[0].text).toBe('Current partially applied paragraph.');
+  expect(snapshot.paragraphs[0].revisionFingerprint).toBeDefined();
+  expect(results[1].chunk.paragraphs[0].text).toContain('tail:');
+  sections[1].document.range.paragraphs.items.pop();
+  await expect(readChunkSnapshot(results[1].chunk, '_tail')).rejects.toThrow('boundaries changed');
+  sections[1].document.range.isNullObject = true;
+  await expect(readChunkSnapshot(results[1].chunk, '_tail')).rejects.toThrow('no longer be located');
 });
 
 test('apply-time re-anchoring and changed-content reads bound full OOXML exports to 24 per sync', async () => {

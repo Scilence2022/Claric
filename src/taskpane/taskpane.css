@@ -1037,6 +1037,24 @@ body {
     white-space: pre-wrap;
 }
 
+.proposal-card-progress {
+    margin: 10px 0;
+    font-size: 12px;
+}
+.proposal-card-progress progress {
+    width: 100%;
+    height: 8px;
+    accent-color: var(--accent-color, #0d9d80);
+}
+.proposal-card-recovery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0;
+}
+.proposal-card-recovery[hidden], .proposal-card-progress[hidden] {
+    display: none;
+}
 .proposal-card-actions {
     display: flex;
     gap: var(--spacing-sm);

@@ -1172,6 +1172,8 @@ export function createConversation(deps) {
             notice,
             items,
             onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
+            onRecover: outcome.recoverChunk ? (id, mode, context) => outcome.recoverChunk(id, mode, context) : undefined,
+            showApplicationProgress: true,
             onApply: async (selectedChunkIds, applyCtx = {}) => {
                 appState.isProcessingDoc = true;
                 input.setProcessing(true);
@@ -1188,6 +1190,7 @@ export function createConversation(deps) {
                         incompleteMessage = uncertainCount
                             ? `Application could not be fully verified: ${verifiedEdits}${uncertainCount} section(s) may contain changes. Inspect Word before drafting a fresh proposal.`
                             : `Partially applied: ${verifiedEdits}${partialCount} section(s) remain incomplete. Review Word and draft a fresh proposal.`;
+                        incompleteMessage += ` ${applicationResult.amendmentsApplied || 0} section(s) applied successfully. Use the failed section's recovery options to continue.`;
                         if (applyErrors.length) incompleteMessage += ` ${applyErrors[0]}`;
                         if (applicationResult.halted) incompleteMessage += ` Application stopped; ${applicationResult.skippedChunkIds?.length || 0} remaining section(s) were left untouched.`;
                     }

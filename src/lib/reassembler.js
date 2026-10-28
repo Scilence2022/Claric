@@ -160,7 +160,7 @@ async function _readParagraphStates(context, paraItems) {
  */
 async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log, preloaded = null,
   { whitespaceOnly = false, expectedTexts = null,
-    progress = { appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false,
+    progress = { report: () => {}, appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false,
       stage: 'paragraph read' } } = {}) {
   let allParaItems;
   let inTable;
@@ -285,6 +285,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
   const changedOps = alignment.filter((op) => op.type === 'keep'
     && comparableText(origTexts[op.origIdx]) !== comparableText(amendedLines[op.newIdx]));
   progress.stage = 'paragraph preflight';
+  progress.report?.();
   for (let start = 0; start < changedOps.length; start += NATIVE_READ_BATCH_SIZE) {
     const batch = changedOps.slice(start, start + NATIVE_READ_BATCH_SIZE);
     for (const op of batch) {
@@ -351,6 +352,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
 
         if (comparableText(origText) !== comparableText(newText)) {
           progress.stage = `paragraph ${op.origIdx + 1}: native text edit`;
+          progress.report?.();
           const paraRange = changedParaRanges.get(op.origIdx);
 
           // Use word-level token map strategy scoped to single paragraph.
@@ -391,6 +393,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           progress.mutationAttempted = true;
           progress.pendingVerification = true;
           progress.stage = `paragraph ${op.origIdx + 1}: read-back`;
+          progress.report?.();
           // Preflight proved the prose against native ranges and protected
           // these inline objects. Preserve that evidence for the outer check;
           // raw reviewed text alone may use a different equation serializer.
@@ -399,9 +402,11 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
               verifiedInlineFingerprint: contentStates.get(op.origIdx)?.inlineFingerprint });
           progress.pendingVerification = false;
           progress.appliedParagraphs++;
+          progress.report?.();
         }
       } else if (op.type === 'delete') {
         progress.stage = `paragraph ${op.origIdx + 1}: structural delete`;
+        progress.report?.();
         // Structural table operations were refused before the first write.
         const para = paraItems[op.origIdx];
         progress.mutationAttempted = true;
@@ -409,6 +414,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
         para.delete();
       } else if (op.type === 'insert') {
         progress.stage = `output paragraph ${op.newIdx + 1}: structural insert`;
+        progress.report?.();
         // New paragraph from LLM -- insert after the preceding original paragraph.
         // Find the last 'keep' or 'delete' op before this one that references an origIdx.
         const insertText = amendedLines[op.newIdx].trim();
@@ -626,6 +632,35 @@ function _storedParagraphTexts(result, chunkOriginals) {
   return null;
 }
 
+/** Read a failed section's current source for an explicit recovery action.
+ * The bookmark remains the scope; never search the whole document for a
+ * replacement. Changed paragraph boundaries require a fresh document proposal.
+ */
+export async function readChunkSnapshot(chunk, bookmarkName) {
+  if (!bookmarkName) throw new RevisionSafetyError('The section bookmark is missing. Draft a fresh document proposal.');
+  return Word.run(async (context) => {
+    const range = context.document.getBookmarkRangeOrNullObject(bookmarkName);
+    range.load('isNullObject');
+    await context.sync();
+    if (range.isNullObject || !range.paragraphs) {
+      throw new RevisionSafetyError('The section can no longer be located. Draft a fresh document proposal.');
+    }
+    range.paragraphs.load('items');
+    await context.sync();
+    const { revisionStates, inTable } = await _readParagraphStates(context, range.paragraphs.items);
+    const visible = revisionStates.map((state, index) => ({ state, index })).filter(({ state }) => state.text.trim());
+    if (!visible.length || visible.length !== chunk.paragraphs?.length) {
+      throw new RevisionSafetyError('The section paragraph boundaries changed. Draft a fresh document proposal to establish its scope.');
+    }
+    const paragraphs = visible.map(({ state, index }, i) => ({
+      ...chunk.paragraphs[i], text: state.text, revisionFingerprint: state.fingerprint,
+      hasRevisions: state.hasRevisions, protectedSpans: state.protectedSpans || [],
+      tokenEstimate: Math.ceil(state.text.length / 4), inTable: inTable[index],
+    }));
+    return { ...chunk, paragraphs, tokenCount: Math.ceil(paragraphs.reduce((n, p) => n + p.text.length, 0) / 4) };
+  });
+}
+
 /**
  * Re-anchors a staged bookmark range to the stored original paragraphs.
  * When the bookmark absorbed paragraphs inserted after staging, narrows the
@@ -768,6 +803,7 @@ function _multiParagraphFallbackError(paraErr) {
  * @param {function(string, {applied: boolean, noChange?: boolean, error?: boolean, skipped?: boolean, partial?: boolean, uncertain?: boolean}): void} [options.onChunkApplied] -
  *   Called after each chunk's apply attempt with its chunkId + outcome, so the
  *   UI can mark individual items applied as they land
+ * @param {function(object): void} [options.onProgress] - Current section and paragraph verification stage
  * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, noChangeCount: number,
  *   errors: string[], appliedChunkIds: string[], attemptedChunkIds: string[], failedChunkIds: string[],
  *   partialChunkIds: string[], uncertainChunkIds: string[], appliedParagraphs: number, interrupted: boolean,
@@ -782,6 +818,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     chunkRevisionFingerprints = null,
     signal = null,
     onChunkApplied = /** @type {function(string, object): void} */ (() => {}),
+    onProgress = /** @type {function(object): void} */ (() => {}),
   } = options;
 
   let amendmentsApplied = 0;
@@ -793,9 +830,10 @@ export async function applyChunkResults(results, bookmarkMap, options) {
   const failedChunkIds = [];
   const partialChunkIds = [];
   const uncertainChunkIds = [];
+  const completedChunkIds = new Set();
   let appliedParagraphs = 0;
   let interrupted = false;
-  let halted = false;
+  const halted = false; // Kept for callers consuming older application results.
   const skippedChunkIds = [];
 
   // Collect rejected/cancelled errors for reporting
@@ -830,8 +868,12 @@ export async function applyChunkResults(results, bookmarkMap, options) {
       continue;
     }
 
-    const progress = { appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false,
+    const progress = { report: () => {
+      // Progress display failures must never interrupt Word mutations.
+      try { onProgress({ chunkId: result.chunkId, stage: progress.stage, appliedParagraphs: progress.appliedParagraphs }); } catch (_err) { /* UI only */ }
+    }, appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false,
       stage: 'bookmark and source read' };
+    progress.report();
     try {
       let chunkApplied = false;
       await Word.run(async (context) => {
@@ -849,6 +891,9 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         // working range to the stored original paragraphs so the amendment
         // never deletes absorbed content.
         const storedTexts = _storedParagraphTexts(result, chunkOriginals);
+        if (uncertainChunkIds.length && !storedTexts) {
+          throw new RevisionSafetyError('Cannot independently validate this section after an unverified write: staged source is missing.');
+        }
         let workRange = range;
         let preloaded = null;
         if (storedTexts) {
@@ -870,6 +915,9 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           }
           workRange = anchored.range;
           preloaded = anchored.preloaded;
+          if (uncertainChunkIds.length && !preloaded) {
+            throw new RevisionSafetyError('Cannot independently validate this section after an unverified write: paragraph evidence is unavailable.');
+          }
         }
 
         // Try paragraph-level strategy first (preserves formatting)
@@ -962,6 +1010,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
       } else {
         log(`Chunk ${result.chunkId}: no changes needed`, 'info');
       }
+      completedChunkIds.add(result.chunkId);
       onChunkApplied(result.chunkId, { applied: chunkApplied, noChange: !chunkApplied });
     } catch (err) {
       const partial = progress.appliedParagraphs > 0;
@@ -976,30 +1025,23 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         + (partial ? `; ${progress.appliedParagraphs} paragraph edit(s) already applied` : '')
         + (uncertain ? '; writes could not be verified; inspect Word before drafting fresh edits' : ''), 'error');
       onChunkApplied(result.chunkId, { applied: false, error: true, partial, uncertain });
-      if (uncertain) halted = true;
+      if (uncertain) log(`Chunk ${result.chunkId}: left for review; other sections will be checked independently before application.`, 'warning');
     }
     appliedParagraphs += progress.appliedParagraphs;
-    if (halted) {
-      // A host mutation no longer matches its draft. Stop this write pass;
-      // continuing would spread the same failure over untouched sections.
-      for (const remaining of reverseSorted.slice(reverseSorted.indexOf(result) + 1)) {
-        skippedChunkIds.push(remaining.chunkId);
-        onChunkApplied(remaining.chunkId, { applied: false, skipped: true });
-      }
-      log(`Application stopped after an unverified write; ${skippedChunkIds.length} remaining section(s) left untouched.`, 'warning');
-      break;
-    }
 
     // Yield to event loop between chunks to prevent UI freeze
     await _yieldToEventLoop();
   }
 
   // Phase 2: Comments in document order (after all amendments).
-  // Never add comments after a paused or unverified write pass.
-  if (!interrupted && !halted) {
+  // Failed sections retain their bookmarks for recovery, but must not receive
+  // comments. After an uncertain write, only independently verified sections
+  // are eligible; comment-only ranges have not passed that validation.
+  if (!interrupted) {
     const allCommentResults = results
       .filter((r) => r.status === 'fulfilled' && r.comment)
-      .filter((r) => bookmarkMap.get(r.chunkId));
+      .filter((r) => bookmarkMap.get(r.chunkId) && !failedChunkIds.includes(r.chunkId))
+      .filter((r) => !uncertainChunkIds.length || completedChunkIds.has(r.chunkId));
     let commentTrackingMode;
     let restoreCommentTracking = false;
     // Ensure tracked changes are off before inserting comments.
