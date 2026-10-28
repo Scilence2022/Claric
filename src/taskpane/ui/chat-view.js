@@ -399,11 +399,11 @@ function _wrapProposalCard(card, meta, onStateChange) {
     const notify = typeof onStateChange === 'function' ? onStateChange : () => {};
     let terminal = ['applied', 'rejected', 'warning'].includes(meta.state);
     for (const [method, state] of Object.entries({ markApplied: 'applied', markRejected: 'rejected',
-        markWarning: 'warning', markError: 'error', setPaused: 'paused' })) {
+        markWarning: 'warning', markError: 'error', setPaused: 'paused', markRecoveryResult: 'warning' })) {
         const original = card[method];
         if (typeof original !== 'function') continue;
         card[method] = function (message, options) {
-            if (terminal) return;
+            if (terminal && method !== 'markRecoveryResult') return;
             const result = original.call(card, message, options);
             const actualState = card.el.dataset.outcome || state;
             meta.state = actualState;
@@ -411,9 +411,16 @@ function _wrapProposalCard(card, meta, onStateChange) {
                 const item = meta.items?.find((item) => String(item.id) === String(id));
                 if (item) item.outcome = outcome;
             }
+            if (method === 'markRecoveryResult') {
+                for (const preview of card.getItemPreviews?.() || []) {
+                    const item = meta.items?.find((item) => String(item.id) === String(preview.id));
+                    if (item) Object.assign(item, preview);
+                }
+            }
             terminal = ['applied', 'rejected', 'warning'].includes(actualState)
                 || (method === 'markError' && options?.retryable === false);
-            const detail = actualState !== state ? card.el.querySelector('.proposal-card-status')?.textContent : message;
+            const detail = actualState !== state || method === 'markRecoveryResult'
+                ? card.el.querySelector('.proposal-card-status')?.textContent : message;
             if (detail && ['applied', 'warning', 'error', 'paused'].includes(actualState)) meta.detail = String(detail);
             else if (actualState === 'applied') delete meta.detail;
             notify();

@@ -375,6 +375,29 @@ describe('proposal state persistence', () => {
     expect(rows.map((row) => row.open)).toEqual([false, true]);
   });
 
+  test('successful recovery replaces the saved warning and stores the regenerated preview', async () => {
+    const msg = createAssistantMessage();
+    const items = [{ id: 'a', label: 'Section', before: 'old', after: 'proposed' }];
+    const card = createProposalCard({ title: 'Edits', items,
+      onApply: async (_ids, ctx) => ctx.onChunkApplied('a', { uncertain: true }),
+      onRecover: async (id, _mode, ctx) => {
+        ctx.onProposal({ before: 'current', after: 'regenerated' });
+        ctx.onChunkApplied(id, { applied: true });
+        return { errors: [] };
+      },
+    });
+    msg.attachProposal(card, { title: 'Edits', state: 'pending', items });
+    msg.finalizeForHistory();
+    await card.applyAll();
+    expect(getCurrentSession().messages[0].proposals[0].state).toBe('warning');
+    card.el.querySelector('[data-recovery="regenerate"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const saved = getCurrentSession().messages[0].proposals[0];
+    expect(saved.state).toBe('applied');
+    expect(saved.items[0]).toMatchObject({ before: 'current', after: 'regenerated', outcome: 'applied' });
+    expect(saved.detail).not.toContain('unverified');
+  });
+
   test('reject click flows through markRejected so meta leaves "pending"', () => {
     const msg = createAssistantMessage();
     const meta = { title: 'Proposed table', state: 'pending', countsText: '', items: [] };

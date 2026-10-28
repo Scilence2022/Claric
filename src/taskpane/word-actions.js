@@ -44,7 +44,7 @@ import {
 import { parseDocument } from '../lib/document-parser.js';
 import { chunkDocument } from '../lib/document-chunker.js';
 import { extractContext } from '../lib/context-extractor.js';
-import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
+import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, readChunkSnapshot, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
 import {
     buildIllustrationPrompt, buildImagePrompt, parseIllustration, sanitizeSvg,
     ensureSvgDimensions, svgDimensions, illustrationPositionFromInstruction,
@@ -3163,6 +3163,8 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
 
     const failed = results.filter(r => r.status === 'rejected').length;
     const cancelled = results.filter(r => r.status === 'cancelled').length;
+    const recoverableIds = new Set();
+    let recoveryInFlight = false;
 
     /**
      * Applies the processed results to the document (tracked changes +
@@ -3180,7 +3182,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
      *   progress callback for the proposal card to mark items applied.
      * @returns {Promise<object>} applicationResult from applyChunkResults
      */
-    const apply = async (chunkIds, { signal, onChunkApplied } = {}) => {
+    const apply = async (chunkIds, { signal, onChunkApplied, onProgress: onApplyProgress } = {}) => {
         const selected = Array.isArray(chunkIds)
             ? results.filter((r) => !r.amendment || (r.chunk && chunkIds.includes(r.chunk.id)))
             : results;
@@ -3192,7 +3194,9 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
             chunkRevisionFingerprints: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.revisionFingerprint)])),
             ...(signal ? { signal } : {}),
             ...(onChunkApplied ? { onChunkApplied } : {}),
+            ...(onApplyProgress ? { onProgress: onApplyProgress } : {}),
         });
+        for (const id of applicationResult.failedChunkIds || []) recoverableIds.add(id);
 
         // On a pause (interrupted) the not-yet-applied chunks must keep their
         // bookmarks so the "Continue applying" resume can still target them;
@@ -3202,7 +3206,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         if (!applicationResult.interrupted) {
             const keepNames = new Set(
                 results
-                    .filter((r) => r.status === 'rejected' || applicationResult.failedChunkIds?.includes(r.chunkId))
+                    .filter((r) => r.status === 'rejected' || recoverableIds.has(r.chunkId))
                     .map((r) => bookmarkMap.get(r.chunkId))
                     .filter(Boolean)
             );
@@ -3232,6 +3236,69 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         }
 
         return applicationResult;
+    };
+
+    // Recovery is a deliberate, single-section operation. Successful sections
+    // cannot be replayed, and failed attempts retain their bookmark.
+    const recoverChunk = async (id, mode, { signal, onChunkApplied, onProposal, onProgress: onApplyProgress } = {}) => {
+        if (!['retry', 'force', 'regenerate'].includes(mode)) throw new Error('Unknown recovery action.');
+        if (recoveryInFlight) throw new Error('A section recovery is already running.');
+        if (!recoverableIds.has(id)) throw new Error('Only failed sections can be recovered.');
+        const original = results.find((r) => r.chunkId === id && r.amendment);
+        if (!original) throw new Error('The failed section proposal is unavailable.');
+        recoveryInFlight = true;
+        try {
+            checkOperationSignal(signal);
+            let proposal = original;
+            if (mode !== 'retry') {
+                const chunk = await readChunkSnapshot(original.chunk, bookmarkMap.get(id));
+                checkOperationSignal(signal);
+                proposal = { ...original, chunk, comment: null };
+                if (mode === 'regenerate') {
+                    const { processChunksParallel } = await loadChunkProcessor({ signal });
+                    const regenerated = await processChunksParallel([chunk], {
+                        config: backendConfig, promptManager: promptShim,
+                        documentContext: extractContext({ ...docModel, paragraphs: docModel.paragraphs.map((p) =>
+                            chunk.paragraphs.find((current) => current.index === p.index) || p) }),
+                        log, signal, concurrency: 1, timeoutMs: 300000,
+                        commentInstructions, reviewPolicy, conversationHistory,
+                    });
+                    checkOperationSignal(signal);
+                    const next = regenerated[0];
+                    if (next?.status !== 'fulfilled' || !next.amendment) {
+                        throw new Error(next?.error || 'No regenerated changeset was produced.');
+                    }
+                    proposal = { ...next, chunkId: id, chunk, whitespaceOnly: original.whitespaceOnly, comment: null };
+                }
+                if (scopeTargets) (await loadEditScope({ signal })).applyEditScope([proposal], { targets: scopeTargets });
+                if (original.whitespaceOnly) {
+                    const check = validateWhitespaceCleanup(chunk.paragraphs.map((p) => p.text).join('\n'), proposal.amendment);
+                    if (!check.valid) throw new Error(check.reason);
+                }
+            }
+            // Re-check the newly captured source at write time, including its
+            // revision fingerprint. Force rebases the target; it never disables
+            // object protection, revision checks, or post-write verification.
+            checkOperationSignal(signal);
+            if (!proposal.amendment) throw new Error('No changes remain within the selected scope.');
+            Object.assign(original, proposal);
+            const preview = { before: proposal.chunk.paragraphs.map((p) => p.text).join('\n'), after: proposal.amendment };
+            if (onProposal) onProposal(preview);
+            const result = await applyChunkResults([{ ...proposal, comment: null }], new Map([[id, bookmarkMap.get(id)]]), {
+                trackChangesEnabled: appState.config.trackChangesEnabled,
+                lineDiffEnabled: appState.config.lineDiffEnabled, log, signal, onChunkApplied, onProgress: onApplyProgress,
+                chunkOriginals: new Map([[id, proposal.chunk.paragraphs.map((p) => p.text)]]),
+                chunkRevisionFingerprints: new Map([[id, proposal.chunk.paragraphs.map((p) => p.revisionFingerprint)]]),
+            });
+            if (!result.interrupted && !(result.failedChunkIds?.length) && !(result.errors?.length)) {
+                recoverableIds.delete(id);
+                await cleanupBookmarks(new Map([[id, bookmarkMap.get(id)]]));
+            }
+            log(`Section ${id}: ${mode} finished; ${result.amendmentsApplied} amendment(s) applied.`, result.errors?.length ? 'warning' : 'info');
+            return result;
+        } finally {
+            recoveryInFlight = false;
+        }
     };
 
     /**
@@ -3272,7 +3339,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     // when every chunk failed there is nothing to stage, and this is the
     // only handle the caller has to offer a retry link.
     if (gateApply) {
-        return { staged: true, results, chunks, apply, discard, retryFailed, failedCount: failed, cancelledCount: cancelled, scope };
+        return { staged: true, results, chunks, apply, discard, recoverChunk, retryFailed, failedCount: failed, cancelledCount: cancelled, scope };
     }
 
     const applicationResult = await apply(undefined, { signal });

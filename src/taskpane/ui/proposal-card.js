@@ -247,6 +247,7 @@ export function renderProposalItemOutcome(row, outcome) {
     row.classList.toggle('proposal-card-change-done', outcome === 'applied');
     row.classList.toggle('proposal-card-change-error', ['error', 'partial', 'uncertain', 'partial-uncertain', 'not-applied'].includes(outcome));
     row.classList.toggle('proposal-card-change-skipped', ['skipped', 'no-change'].includes(outcome));
+    row.querySelector('.proposal-card-change-status')?.remove();
     const tag = document.createElement('span');
     tag.className = 'proposal-card-change-status';
     tag.textContent = ITEM_OUTCOMES[outcome];
@@ -287,6 +288,8 @@ export function renderProposalItemOutcome(row, outcome) {
  * @param {function(Array<string|number>|undefined)} args.onApply - Async
  *   apply callback; receives the selected item ids when items are given
  * @param {function()} [args.onReject] - Reject callback
+ * @param {function(string, string, object)} [args.onRecover] - Explicit failed
+ *   section recovery (retry, force, regenerate); shares the apply write lock.
  * @param {function(AbortController|null)} [args.registerController] - Optional
  *   register/unregister the live apply AbortController so the host Stop button
  *   can abort (pause) the in-flight apply; receives null when apply settles
@@ -297,7 +300,7 @@ export function renderProposalItemOutcome(row, outcome) {
  *   released the busy flags early, letting a second pipeline interleave.
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string), markItemApplied: function(string, object), setPaused: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, notice, onApply, onReject, registerController, setApplyBusy, isBlocked, applyLabel = 'Apply as tracked changes' }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, notice, onApply, onRecover, onReject, registerController, setApplyBusy, isBlocked, showApplicationProgress = false, applyLabel = 'Apply as tracked changes' }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -351,6 +354,38 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     status.className = 'proposal-card-status';
     status.style.display = 'none';
 
+    const progressBox = document.createElement('div');
+    progressBox.className = 'proposal-card-progress';
+    progressBox.hidden = true;
+    const progressBar = document.createElement('progress');
+    progressBar.setAttribute('aria-label', 'Changeset application progress');
+    const progressText = document.createElement('div');
+    progressText.setAttribute('role', 'status');
+    progressText.setAttribute('aria-live', 'polite');
+    const progressDetail = document.createElement('div');
+    progressDetail.className = 'proposal-card-progress-detail';
+    progressBox.append(progressBar, progressText, progressDetail);
+    function showProgressDetail({ chunkId, stage, appliedParagraphs = 0 }) {
+        const entry = changeEntries.find(({ id }) => String(id) === String(chunkId));
+        const paragraph = stage.match(/(?:output )?paragraph (\d+)/)?.[1];
+        const action = stage === 'bookmark and source read' ? 'Checking section'
+            : stage === 'paragraph preflight' ? 'Checking paragraphs'
+                : stage.includes('read-back') ? 'Verifying changes' : 'Applying changes';
+        progressDetail.textContent = `${entry?.item.label || chunkId} · ${action}`
+            + (paragraph ? ` · paragraph ${paragraph}` : '')
+            + (appliedParagraphs ? ` · ${appliedParagraphs} paragraph edit(s) verified` : '');
+    }
+    let passIds = new Set();
+    const finishedIds = new Set();
+    function updateProgress() {
+        if (!passIds.size || (!showApplicationProgress && !onRecover)) return;
+        progressBox.hidden = false;
+        progressBar.max = passIds.size;
+        progressBar.value = finishedIds.size;
+        const successful = [...finishedIds].filter((id) => ['applied', 'no-change'].includes(itemOutcomes.get(id))).length;
+        progressText.textContent = `${finishedIds.size} / ${passIds.size} sections processed · ${successful} succeeded · ${finishedIds.size - successful} failed · ${passIds.size - finishedIds.size} remaining`;
+    }
+
     const actions = document.createElement('div');
     actions.className = 'proposal-card-actions';
 
@@ -394,7 +429,8 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             text.textContent = item.label;
             rowHead.appendChild(box);
             rowHead.appendChild(text);
-            changeEntries.push({ id: item.id, box, row, rowHead });
+            const entry = { id: item.id, item, box, row, rowHead, recovery: null, diff: null };
+            changeEntries.push(entry);
             if (item.searchText && onLocate) {
                 const locateItem = () => {
                     // Auto-applied proposals may no longer contain the source
@@ -422,7 +458,30 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
                 // Image op: visual before/after instead of the text diff.
                 row.appendChild(buildImageDiffElement(item));
             } else if (item.before !== undefined && item.after !== undefined) {
-                row.appendChild(buildTextDiffElement(item.before, item.after));
+                entry.diff = buildTextDiffElement(item.before, item.after);
+                row.appendChild(entry.diff);
+            }
+            if (onRecover) {
+                const recovery = document.createElement('div');
+                recovery.className = 'proposal-card-recovery';
+                recovery.hidden = true;
+                entry.recovery = recovery;
+                for (const [mode, label, hint] of [
+                    ['retry', 'Reapply', 'Check the original source again and retry this section.'],
+                    ['force', 'Force apply', 'Apply this proposal to the current section, even if its source changed. Equations, fields and existing revisions remain protected.'],
+                    ['regenerate', 'Regenerate and apply', 'Read the current section, generate a fresh changeset, and apply it.'],
+                ]) {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'btn btn-secondary btn-compact';
+                    button.dataset.recovery = mode;
+                    button.textContent = label;
+                    button.title = hint;
+                    button.disabled = true;
+                    button.addEventListener('click', () => runRecovery(entry, mode));
+                    recovery.appendChild(button);
+                }
+                row.appendChild(recovery);
             }
             details.appendChild(row);
         }
@@ -442,8 +501,8 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
 
     /** Verified applied item ids — cumulative across pause/resume runs. */
     const appliedIdSet = new Set();
-    // Finished attempts cannot be replayed from this proposal, even when a
-    // host failure left a section incomplete or its writes unverified.
+    // Bulk apply never replays finished attempts. Failed rows may be recovered
+    // only through their explicit single-section recovery actions.
     const attemptedIdSet = new Set();
     const itemOutcomes = new Map();
     let applyController = null;
@@ -472,13 +531,21 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
                 : status.noChange ? 'no-change' : status.applied === true ? 'applied' : 'not-applied';
         itemOutcomes.set(entry.id, outcome);
         if (outcome === 'applied') appliedIdSet.add(entry.id);
+        else appliedIdSet.delete(entry.id);
         entry.box.checked = outcome === 'applied';
         entry.box.disabled = true;
         renderProposalItemOutcome(entry.row, outcome);
+        if (entry.recovery) {
+            entry.recovery.hidden = ['applied', 'no-change'].includes(outcome);
+            if (!entry.recovery.hidden) entry.row.open = true;
+        }
+        if (passIds.has(entry.id)) finishedIds.add(entry.id);
+        updateProgress();
     }
 
     actions.appendChild(applyBtn);
     actions.appendChild(rejectBtn);
+    el.appendChild(progressBox);
     el.appendChild(actions);
     el.appendChild(status);
 
@@ -542,6 +609,11 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         rejectBtn.disabled = true;
         const resuming = applyBtn.textContent === 'Continue applying';
         const ids = selectedIds();
+        passIds = new Set(ids || []);
+        finishedIds.clear();
+        progressDetail.textContent = '';
+        updateProgress();
+        setRecoveryBusy(true);
         lastAppliedCount = changeBoxes.filter((b) => b.checked && !b.disabled).length;
         if (resuming) applyBtn.textContent = 'Applying...';
         applyController = new AbortController();
@@ -551,6 +623,7 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             await onApply(ids, {
                 signal: applyController.signal,
                 onChunkApplied: markItemApplied,
+                onProgress: showProgressDetail,
             });
             if (state === 'applying') api.markApplied();
         } catch (error) {
@@ -560,6 +633,8 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
             _anyCardApplyInFlight = false;
             if (typeof setApplyBusy === 'function') setApplyBusy(false);
             if (typeof registerController === 'function') registerController(null);
+            setRecoveryBusy(false);
+            progressDetail.textContent = '';
             // A paused state re-enables the button (setPaused was called by
             // the onApply handler); otherwise the caller settles terminal
             // state via markApplied/markWarning/markError.
@@ -567,6 +642,66 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     }
 
     applyBtn.addEventListener('click', runApply);
+
+    function setRecoveryBusy(busy) {
+        for (const entry of changeEntries) {
+            for (const button of entry.recovery?.querySelectorAll('button') || []) button.disabled = busy;
+        }
+    }
+
+    async function runRecovery(entry, mode) {
+        if (!onRecover || applyInFlight || _anyCardApplyInFlight || !attemptedIdSet.has(entry.id)
+            || ['applied', 'no-change'].includes(itemOutcomes.get(entry.id))) return;
+        const reason = isBlocked?.();
+        if (reason) { status.textContent = reason; status.style.display = ''; return; }
+        const previousState = state;
+        applyInFlight = true;
+        _anyCardApplyInFlight = true;
+        applyBtn.disabled = true;
+        setRecoveryBusy(true);
+        applyController = new AbortController();
+        registerController?.(applyController);
+        setApplyBusy?.(true);
+        passIds = new Set([entry.id]);
+        finishedIds.clear();
+        progressDetail.textContent = '';
+        progressBox.hidden = false;
+        progressBar.removeAttribute('value');
+        progressText.textContent = mode === 'regenerate' ? 'Reading section and generating a fresh changeset…' : 'Checking section before application…';
+        let detail = '';
+        try {
+            const result = await onRecover(entry.id, mode, {
+                signal: applyController.signal,
+                onProgress: showProgressDetail,
+                onProposal: ({ before, after }) => {
+                    entry.item.before = before;
+                    entry.item.after = after;
+                    const diff = buildTextDiffElement(before, after);
+                    if (entry.diff) entry.diff.replaceWith(diff);
+                    else entry.row.insertBefore(diff, entry.recovery);
+                    entry.diff = diff;
+                    progressText.textContent = 'Applying section…';
+                },
+                onChunkApplied: (id, outcome) => {
+                    attemptedIdSet.delete(entry.id);
+                    markItemApplied(id, outcome);
+                },
+            });
+            detail = result?.interrupted ? 'Recovery paused before application.' : (result?.errors || []).join(' ');
+        } catch (error) {
+            detail = error.message || String(error);
+        } finally {
+            applyInFlight = false;
+            _anyCardApplyInFlight = false;
+            setApplyBusy?.(false);
+            registerController?.(null);
+            setRecoveryBusy(false);
+            updateProgress();
+            if (!finishedIds.size) progressText.textContent = 'Recovery stopped; no verified completion.';
+            progressDetail.textContent = '';
+            api.markRecoveryResult(detail, { paused: previousState === 'paused' });
+        }
+    }
 
     const api = {
         el,
@@ -606,6 +741,21 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         /** Marks one change item applied live (chunk progress). */
         markItemApplied,
         getItemOutcomes: () => [...itemOutcomes].map(([id, outcome]) => ({ id, outcome })),
+        getItemPreviews: () => changeEntries.map(({ item }) => ({ id: item.id, before: item.before, after: item.after })),
+        /** Explicit recovery may update a previously settled warning card. */
+        markRecoveryResult(detail, { paused = false } = {}) {
+            const complete = changeEntries.every(({ id }) => ['applied', 'no-change'].includes(itemOutcomes.get(id)));
+            el.classList.remove('proposal-applied', 'proposal-warning', 'proposal-error', 'proposal-paused');
+            const resumePending = paused && !complete;
+            const outcome = complete ? 'applied' : resumePending ? 'paused' : 'warning';
+            el.dataset.outcome = outcome;
+            el.classList.add(`proposal-${outcome}`);
+            setState(resumePending ? 'paused' : 'settled');
+            applyBtn.disabled = !resumePending || !selectedIds()?.length;
+            status.style.display = '';
+            status.textContent = `${appliedIdSet.size} section(s) applied; ${[...itemOutcomes.values()].filter((value) => !['applied', 'no-change'].includes(value)).length} need review.`
+                + (detail ? ` ${detail}` : '');
+        },
         /** Enables "Continue applying" after a paused (interrupted) apply. */
         setPaused,
         /** Only replayable proposals may retry after an apply failure. */
