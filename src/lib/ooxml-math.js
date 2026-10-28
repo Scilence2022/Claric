@@ -3,6 +3,7 @@
  * operators such as fraction bars. Those CRs are not paragraph boundaries.
  * Never guess the native representation of an unknown equation construct. */
 export const MATH_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
 const latin = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 const greek = 'ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡϴΣΤΥΦΧΨΩ∇αβγδεζηθικλμνξοπρςστυφχψω∂ϵϑϰϕϱϖ';
@@ -20,10 +21,10 @@ const holes = { 0x1d455: 'ℎ', 0x1d49d: 'ℬ', 0x1d4a0: 'ℰ', 0x1d4a1: 'ℱ',
 function attribute(node, name, fallback = '') {
     return node?.getAttributeNS(MATH_NS, name) ?? fallback;
 }
-function property(node, name) { return Array.from(node?.children || []).find((child) => child.localName === name); }
+function property(node, name) { return Array.from(node?.children || []).find((child) => child.namespaceURI === MATH_NS && child.localName === name); }
 
-function runText(node, reviewed = false) {
-    const properties = property(node, 'rPr');
+function runText(node, reviewed = false, inheritedProperties = null) {
+    const properties = property(node, 'rPr') || inheritedProperties;
     const plain = property(properties, 'nor');
     const style = attribute(property(properties, 'sty'), 'val', 'i');
     const script = attribute(property(properties, 'scr'), 'val', 'roman');
@@ -32,6 +33,14 @@ function runText(node, reviewed = false) {
     const start = starts[key];
     let text = '';
     for (const child of Array.from(node.children)) {
+        // Mac Word places tracked math text inside m:r/w:ins/m:t,
+        // sometimes with the current m:rPr inside that revision wrapper.
+        // Read it in final view; omitting it makes a failed boundary write
+        // look absent and allows subsequent proposals to insert it again.
+        if (child.namespaceURI === W_NS && ['ins', 'moveTo'].includes(child.localName)) {
+            text += runText(child, reviewed, properties);
+            continue;
+        }
         if (child.localName !== 't' || child.namespaceURI !== MATH_NS) continue;
         for (const char of child.textContent || '') {
             if (plain) { text += char; continue; }
@@ -58,7 +67,9 @@ function runText(node, reviewed = false) {
  * reviewed=true selects Mac getReviewedText's punctuation-delimited format,
  * only for structures confirmed by captured native/XML pairs. */
 export function mathTextState(node, reviewed = false) {
-    if (node.namespaceURI !== MATH_NS) return { text: '', nativeText: null };
+    if (node.namespaceURI === W_NS && ['del', 'moveFrom'].includes(node.localName)) return { text: '', nativeText: '' };
+    const inserted = node.namespaceURI === W_NS && ['ins', 'moveTo'].includes(node.localName);
+    if (node.namespaceURI !== MATH_NS && !inserted) return { text: '', nativeText: null };
     const name = node.localName;
     if (name === 'r') {
         const text = runText(node);
@@ -69,7 +80,7 @@ export function mathTextState(node, reviewed = false) {
     const text = parts.map((part) => part.text).join('');
     const nativeText = parts.every((part) => part.nativeText !== null)
         ? parts.map((part) => part.nativeText).join('') : null;
-    if (['oMath', 'oMathPara', 'e', 'sub', 'sup', 'num', 'den', 'lim'].includes(name)) return { text, nativeText };
+    if (inserted || ['oMath', 'oMathPara', 'e', 'sub', 'sup', 'num', 'den', 'lim'].includes(name)) return { text, nativeText };
     const argument = (key) => parts[children.findIndex((child) => child.localName === key)]?.text || '';
     const structured = parts.every((part) => part.nativeText !== null)
         ? (reviewed ? ',' : '\n') + parts.map((part) => part.nativeText).join(reviewed ? '-' : '\n') + (reviewed ? '.' : '\n') : null;

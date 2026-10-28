@@ -14,7 +14,8 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
     stickyContent = false, revisedPadding = false, nativeControls = false, rejectEmptyOoxml = false,
-    mathAbsorbsInsertBefore = false, externalLinks = false, reviewedTransform = (text) => text } = {}) {
+    mathAbsorbsInsertBefore = false, mathAbsorbsInsertAfter = false,
+    externalLinks = false, reviewedTransform = (text) => text } = {}) {
     let sequence = 0;
     // link: a Mac-style HYPERLINK field. Its reviewed text carries raw field
     // codes, a prefix ending inside its result exports the whole hyperlink,
@@ -122,7 +123,8 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                 const at = location === 'Before' ? span.start : span.end;
                 // Mac Word gives text inserted at an equation's end boundary
                 // the preceding math-zone formatting.
-                const zone = mathAbsorbsInsertBefore && location === 'Before' ? atoms[at - 1]?.math : null;
+                const zone = mathAbsorbsInsertBefore && location === 'Before' ? atoms[at - 1]?.math
+                    : mathAbsorbsInsertAfter && location === 'After' ? atoms[at]?.math : null;
                 const added = Array.from(text).map((text) => ({ text, type: 'ins', id: ++sequence,
                     ...(zone ? { math: zone, mathStart: false } : {}) }));
                 atoms.splice(at, 0, ...added);
@@ -372,6 +374,71 @@ test('two polish rounds edit prose around an intact equation, raw hyperlink fiel
 });
 
 const kMath = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>k</m:t></m:r></m:oMath>', native: '𝑘' };
+
+test.each([
+    ['Use ', 'let ', 'Before'],
+    ['and ', 'f(x)=', 'Replace'],
+    ['🙂', 'then ', 'Replace'],
+])('insertions before equations stay in verified prose: %s + %s', async (prefix, insertion, location) => {
+    const w = world([{ text: 'Earlier wording', type: 'del', id: 'history' }, { text: prefix },
+        { text: '𝑘', math: kMath }, { text: '.' }],
+    { nativeReviewed: true, mathAbsorbsInsertAfter: true, mathAbsorbsInsertBefore: true });
+    const before = w.state();
+    const after = `${prefix}${insertion}𝑘.`;
+    await tryRevisionDiff(w.context, w.scope, before.text, after, jest.fn(),
+        { paragraph: true, nativeTargets: true, preflightOnly: true });
+    expect(w.writes).toHaveLength(0);
+    await tryRevisionDiff(w.context, w.scope, before.text, after, jest.fn(), { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe(after);
+    expect(w.state().inlineFingerprint).toBe(before.inlineFingerprint);
+    expect(w.writes.filter((write) => write.type === 'insert').map((write) => write.location)).toEqual([location]);
+    expect(w.atoms.filter((atom) => atom.math).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.atoms.filter((atom) => atom.id === 'history').map((atom) => atom.text).join('')).toBe('Earlier wording');
+});
+
+test.each([', ', ' ,'])('a single prose character between equations is replaced without sliding into either object: %s', async (insertion) => {
+    const w = world([{ text: '𝑘', math: kMath }, { text: ' ' }, { text: '𝑥_(𝑗)', math: opaqueMath }],
+        { nativeReviewed: true, mathAbsorbsInsertBefore: true, mathAbsorbsInsertAfter: true });
+    const before = w.state();
+    const after = `𝑘${insertion}𝑥_(𝑗)`;
+    await tryRevisionDiff(w.context, w.scope, before.text, after, jest.fn(), { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe(after);
+    expect(w.state().inlineFingerprint).toBe(before.inlineFingerprint);
+    expect(w.writes.filter((write) => write.type === 'insert').map((write) => write.location)).toEqual(['Replace']);
+});
+
+test.each(['prefix 𝑘', '𝑘 suffix'])('an equation-only paragraph has no safe prose insertion anchor: %s', async (after) => {
+    const w = world([{ text: '𝑘', math: kMath }], { nativeReviewed: true });
+    await expect(tryRevisionDiff(w.context, w.scope, '𝑘', after, jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toThrow(/safe visible insertion anchor/);
+    expect(w.writes).toHaveLength(0);
+});
+
+test.each([false, true])('whole-document mixed insertions on both sides of equations verify on repeated rounds, sentence mode=%s', async (lineDiffEnabled) => {
+    const w = world([{ text: 'Choose ' }, { text: '𝑘', math: kMath }, { text: ', ' },
+        { text: '𝑘', math: kMath }, { text: ', ' }, { text: '𝑘', math: kMath },
+        { text: '. For bounded ' }, { text: '𝑘', math: kMath }, { text: ' the value is ' },
+        { text: '𝑥_(𝑗)', math: opaqueMath }, { text: '.' }],
+    { nativeReviewed: true, padding: true, revisedPadding: true, stickyContent: true,
+        mathAbsorbsInsertBefore: true, mathAbsorbsInsertAfter: true });
+    const fingerprint = w.state().inlineFingerprint;
+    for (const amendment of [
+        'Choose 𝑘, let 𝑘, and set 𝑘. For bounded 𝑘, the value is f(x)=𝑥_(𝑗).',
+        'Choose 𝑘, take 𝑘, and then set 𝑘. For bounded 𝑘, the value is f(x)=𝑥_(𝑗).',
+    ]) {
+        const parsed = await parseDocument();
+        w.bookmarks.set('chunk', w.scope);
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]),
+        { trackChangesEnabled: true, lineDiffEnabled, log: jest.fn() });
+        expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [], uncertainChunkIds: [] });
+        expect(w.state().text).toBe(amendment);
+        expect(w.state().inlineFingerprint).toBe(fingerprint);
+    }
+    expect(w.atoms.filter((atom) => atom.math).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.writes.every((write) => write.mode === 'TrackAll')).toBe(true);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
 
 test.each([['only when 𝑘 is near 20.', 'After'], ['only when 𝑘, near 20.', 'Replace']])(
     'Mac Word insertions directly after an equation stay in prose: %s', async (tail, location) => {

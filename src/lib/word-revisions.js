@@ -214,6 +214,7 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         if (element.namespaceURI === MATH_NS && ['oMath', 'oMathPara'].includes(element.localName)) {
             rememberInline(element);
             const math = mathTextState(element);
+            if (['del', 'moveFrom'].some((name) => element.getElementsByTagNameNS(W, name).length)) hasHiddenContent = true;
             const start = text.length;
             boundary = true;
             // An equation is an immutable island, never an editable text run.
