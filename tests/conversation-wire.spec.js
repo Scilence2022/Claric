@@ -43,7 +43,8 @@ describe('conversation submit to HTTP request continuity', () => {
         return;
       }
       const lastMessage = textOf(body.messages[body.messages.length - 1]);
-      const isPlanner = lastMessage.includes('OUTPUT CONTRACT') || lastMessage.includes('The plan was invalid or missed requirements.');
+      const isPlanner = body.messages[0]?.role === 'system' && body.messages[0].content.includes('OUTPUT CONTRACT')
+        || lastMessage.includes('The plan was invalid or missed requirements.');
       const isReview = lastMessage.includes('"originalRequest":"The second one, please"');
       const answer = isPlanner
         ? JSON.stringify({ requirements: [{ id: 'r1', kind: 'action', outcome: 'answer', text: 'Explain the second recommendation' }],
@@ -214,14 +215,19 @@ describe('conversation submit to HTTP request continuity', () => {
     await conversation.submit('What are your recommendations for ALPHA-27?');
     await conversation.submit('The second one, please');
     expect(requests).toHaveLength(4);
-    for (const request of [requests[1], requests[3]]) {
-      expect(request.messages.slice(0, 2).map((message) => message.role)).toEqual(['user', 'assistant']);
-      expect(textOf(request.messages[0])).toBe('What are your recommendations for ALPHA-27?');
-      expect(textOf(request.messages[1])).toContain('Answer 1: proposal reference ALPHA-27.');
-    }
-    expect(textOf(requests[1].messages[2])).toContain('OUTPUT CONTRACT');
-    expect(textOf(requests[1].messages[2])).toContain('The second one, please');
+    const planner = requests[1].messages;
+    expect(planner.map((message) => message.role)).toEqual(['system', 'user']);
+    expect(textOf(planner[0])).toContain('OUTPUT CONTRACT');
+    const planningInput = JSON.parse(textOf(planner[1]));
+    expect(planningInput.originalRequest).toBe('The second one, please');
+    expect(planningInput.requestContext).toHaveLength(2);
+    expect(planningInput.requestContext[0].content).toBe('What are your recommendations for ALPHA-27?');
+    expect(planningInput.requestContext[1].content).toContain('Answer 1: proposal reference ALPHA-27.');
     expect(textOf(requests[2].messages.at(-1))).toContain('originalRequest');
+    expect(requests[2].stream).toBe(false);
+    expect(requests[3].messages.slice(0, 2).map((message) => message.role)).toEqual(['user', 'assistant']);
+    expect(textOf(requests[3].messages[0])).toBe('What are your recommendations for ALPHA-27?');
+    expect(textOf(requests[3].messages[1])).toContain('Answer 1: proposal reference ALPHA-27.');
     expect(textOf(requests[3].messages.at(-1))).toContain('Explain the second ALPHA-27 recommendation.');
     expect(chatView.getCurrentSession().messages).toHaveLength(4);
   });
