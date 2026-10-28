@@ -3257,7 +3257,10 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         const original = results.find((r) => r.chunkId === id && r.amendment);
         if (!original) throw new Error('The failed section proposal is unavailable.');
         recoveryInFlight = true;
+        let result;
+        let reportSectionRecovery;
         try {
+            ({ reportSectionRecovery } = await import(/* webpackChunkName: "section-recovery-report" */ '../lib/section-recovery-report.js'));
             checkOperationSignal(signal);
             let proposal = original;
             if (mode !== 'retry') {
@@ -3294,7 +3297,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
             Object.assign(original, proposal);
             const preview = { before: proposal.chunk.paragraphs.map((p) => p.text).join('\n'), after: proposal.amendment };
             if (onProposal) onProposal(preview);
-            const result = await applyChunkResults([{ ...proposal, comment: null }], new Map([[id, bookmarkMap.get(id)]]), {
+            result = await applyChunkResults([{ ...proposal, comment: null }], new Map([[id, bookmarkMap.get(id)]]), {
                 trackChangesEnabled: appState.config.trackChangesEnabled,
                 lineDiffEnabled: appState.config.lineDiffEnabled, log, signal, onChunkApplied, onProgress: onApplyProgress,
                 chunkOriginals: new Map([[id, proposal.chunk.paragraphs.map((p) => p.text)]]),
@@ -3304,8 +3307,10 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
                 recoverableIds.delete(id);
                 await cleanupBookmarks(new Map([[id, bookmarkMap.get(id)]]));
             }
-            log(`Section ${id}: ${mode} finished; ${result.amendmentsApplied} amendment(s) applied.`, result.errors?.length ? 'warning' : 'info');
-            return result;
+            return reportSectionRecovery(id, mode, result, null, log);
+        } catch (error) {
+            if (reportSectionRecovery) return reportSectionRecovery(id, mode, result, error, log);
+            throw error;
         } finally {
             recoveryInFlight = false;
         }
