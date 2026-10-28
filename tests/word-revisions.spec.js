@@ -3,6 +3,7 @@ import { revisionTextState, queueRevisionRead, resolveRevisionRead, normalizeRev
     verifyMutationText, MutationSafetyError, hostSupportsTrackedChanges, projectNativeText } from '../src/lib/word-revisions.js';
 import { parseDocument } from '../src/lib/document-parser.js';
 import { checkChunkAmendment } from '../src/lib/amendment-guard.js';
+import { getNativeTextDiagnostics } from '../src/lib/native-text-diagnostics.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const wrap = (xml) => `<w:document xmlns:w="${W}"><w:body>${xml}</w:body></w:document>`;
@@ -177,6 +178,31 @@ test('read-back reconciles raw fields using fresh XML and rejects changed visibl
     await expect(verifyMutationText(context, range, 'See Table 5 after.', { paragraph: true })).rejects.toThrow(/differs/);
     range.getOoxml = () => ({ value: wrap('<w:p><w:r><w:t>See Table 4 after.</w:t></w:r></w:p>') });
     await expect(verifyMutationText(context, range, 'See Table 4 after.', { paragraph: true })).rejects.toThrow(/differs/);
+});
+
+test.each(['prose', 'object', 'paragraph', 'structure'])(
+    'native mutation failures identify %s and retain the actual post-write evidence', async (change) => {
+    const math = '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>x</m:t></m:r></m:oMath>';
+    const original = wrap(`<w:p><w:r><w:t>Use </w:t></w:r>${math}</w:p>`);
+    const baseline = revisionTextState(original);
+    const xml = change === 'prose' ? original.replace('Use ', 'See ')
+        : change === 'object' ? original.replace('<m:r>', '<m:r><m:rPr><m:sty m:val="i"/></m:rPr>')
+            : change === 'paragraph' ? original.replace('</w:body>', '<w:p><w:r><w:t>Extra</w:t></w:r></w:p></w:body>')
+                : original.replace('</w:p>', '<w:r><w:drawing/></w:r></w:p>');
+    const range = { getReviewedText: () => ({ value: 'Native reviewed evidence' }), getOoxml: () => ({ value: xml }) };
+    const detail = { prose: /prose: expected .*first mismatch at/, object: /native objects:/,
+        paragraph: /paragraph count: expected 1, received 2/, structure: /unsupported protected structure/ }[change];
+    const error = await verifyMutationText({ sync: async () => {} }, range, baseline.text,
+        { paragraph: true, verifiedInlineFingerprint: baseline.inlineFingerprint }).catch((error) => error);
+    expect(error).toBeInstanceOf(MutationSafetyError);
+    expect(error.mutationAttempted).toBe(true);
+    expect(error.message).toMatch(detail);
+    expect(error.message).not.toMatch(/Use|See|Extra|Native reviewed evidence/);
+    const record = getNativeTextDiagnostics().at(-1);
+    expect(record).toMatchObject({ phase: 'post-write', expectedText: baseline.text,
+        actualText: revisionTextState(xml).text, reviewedText: 'Native reviewed evidence' });
+    expect(record.mismatch).toMatch(detail);
+    expect(record.documentXml).toContain(change === 'prose' ? 'See ' : 'Use ');
 });
 
 test.each(['(', '\uF0B0', '°'])('symbol read-back validates fresh glyph XML as well as native text: %s', async (native) => {

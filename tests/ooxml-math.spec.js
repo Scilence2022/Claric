@@ -38,6 +38,38 @@ test('equation preservation is enforced before a chunk amendment reaches Word', 
     expect(checkChunkAmendment(chunk, 'A revised result.').valid).toBe(false);
 });
 
+test.each(['ins', 'moveTo'])('tracked math run text inside w:%s remains visible and immutable', (revision) => {
+    const math = `<m:r><m:rPr><m:sty m:val="p"/></m:rPr><w:${revision} w:id="7">`
+        + '<w:rPr><w:rFonts w:ascii="Cambria Math"/><w:rPrChange w:id="8"><w:rPr/></w:rPrChange></w:rPr>'
+        + `<m:t xml:space="preserve">given </m:t></w:${revision}></m:r>` + power;
+    const xml = paragraph(math, 'Use ', '.');
+    const state = revisionTextState(xml);
+    expect(state.text).toBe('Use given 𝑥^(2).');
+    expect(state.hasRevisions).toBe(true);
+    expect(extractFinalTextFromOoxml(xml)).toBe(state.text);
+    expect(state.protectedSpans).toEqual([{ start: 4, end: state.text.length - 1 }]);
+    expect(projectNativeText(state, 'Use given ,𝑥-2..').text).toBe(state.text);
+    // Old proposal baselines cannot treat an already inserted word as absent.
+    expect(checkChunkAmendment({ paragraphs: [state] }, 'Use 𝑥^(2).').valid).toBe(false);
+});
+
+test('current math properties inside the tracked run take precedence over run defaults and historical properties', () => {
+    const math = '<m:r><w:rPr><w:rPrChange><m:rPr><m:sty m:val="b"/></m:rPr></w:rPrChange></w:rPr>'
+        + '<m:rPr><m:sty m:val="i"/></m:rPr><w:ins w:id="1"><m:rPr><m:sty m:val="p"/></m:rPr>'
+        + '<w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>given </m:t></w:ins><m:t>x</m:t></m:r>';
+    expect(revisionTextState(paragraph(math)).text).toBe('An old given 𝑥 result.');
+});
+
+test('math final view includes inserted runs and structures while excluding deleted and moved-source content', () => {
+    const math = '<w:del w:id="1">' + run('old') + '</w:del>'
+        + '<m:r><w:del w:id="2"><m:t>deleted</m:t></w:del><w:moveFrom w:id="3"><m:t>moved</m:t></w:moveFrom></m:r>'
+        + '<w:ins w:id="4">' + power + '</w:ins>'
+        + '<w:moveTo w:id="5">' + run('y') + '</w:moveTo>';
+    const state = revisionTextState(paragraph(math));
+    expect(state).toMatchObject({ text: 'An old 𝑥^(2)𝑦 result.', hasRevisions: true, hasHiddenContent: true });
+    expect(extractFinalTextFromOoxml(paragraph(math))).toBe(state.text);
+});
+
 test('Mac reviewed structured math maps exact prose positions without normalizing surrounding punctuation', () => {
     const sub = `<m:sSub><m:e>${run('y')}</m:e><m:sub>${run('j')}</m:sub></m:sSub>`;
     const nary = '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr>'

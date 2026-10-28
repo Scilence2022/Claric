@@ -52,8 +52,31 @@ function planEdits(state, after) {
             const next = Array.from(state.text.slice(hunk.start))[0];
             const protectedAt = (position) => state.protectedSpans.some(({ start, end }) => position >= start && position < end);
             if (prior && prior !== '\n' && prior !== '\t' && !protectedAt(hunk.start - prior.length)) {
-                hunk.anchor = target(hunk.start - prior.length, prior);
-                hunk.location = Word.InsertLocation.after;
+                const anchor = target(hunk.start - prior.length, prior);
+                if (protectedAt(hunk.start)) {
+                    // After the last prose character is also the start of
+                    // the next math/field zone. Mac Word can absorb that
+                    // insertion into the object. Move it inside the prose
+                    // when the trailing scalar permits an exact rotation;
+                    // otherwise replace only the proven prose character.
+                    const preceding = Array.from(state.text.slice(0, hunk.start - prior.length)).pop();
+                    if (hunk.text.endsWith(prior) && (!preceding
+                        || (preceding !== '\n' && preceding !== '\t'
+                            && !protectedAt(hunk.start - prior.length - preceding.length)))) {
+                        hunk.text = prior + hunk.text.slice(0, -prior.length);
+                        hunk.start -= prior.length;
+                        hunk.end = hunk.start;
+                        hunk.anchor = anchor;
+                        hunk.location = Word.InsertLocation.before;
+                    } else {
+                        hunk.start -= prior.length;
+                        hunk.text = prior + hunk.text;
+                        hunk.targets.push(anchor);
+                    }
+                } else {
+                    hunk.anchor = anchor;
+                    hunk.location = Word.InsertLocation.after;
+                }
             } else if (prior && protectedAt(hunk.start - prior.length) && next && next !== '\n' && next !== '\t'
                 && !protectedAt(hunk.start)) {
                 // Text inserted before a character inherits the preceding
@@ -62,7 +85,7 @@ function planEdits(state, after) {
                 // slide an insertion that begins with the next character past
                 // it, otherwise replace that character together with the text.
                 const anchor = target(hunk.start, next);
-                if (Array.from(hunk.text)[0] === next) {
+                if (Array.from(hunk.text)[0] === next && !protectedAt(hunk.start + next.length)) {
                     hunk.text = hunk.text.slice(next.length) + next;
                     hunk.start += next.length;
                     hunk.end = hunk.start;
@@ -76,7 +99,8 @@ function planEdits(state, after) {
             } else if (next && next !== '\n' && next !== '\t' && !protectedAt(hunk.start)) {
                 hunk.anchor = target(hunk.start, next);
                 hunk.location = Word.InsertLocation.before;
-            } else if (!hunk.start || hunk.start === state.text.length) {
+            } else if ((!hunk.start || hunk.start === state.text.length)
+                && !state.protectedSpans.some(({ start, end }) => hunk.start >= start && hunk.start <= end)) {
                 hunk.location = hunk.start ? Word.InsertLocation.after : Word.InsertLocation.before;
             }
             else throw new RevisionSafetyError('No safe visible insertion anchor. Select one paragraph.');
