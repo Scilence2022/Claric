@@ -309,6 +309,17 @@ describe('imageGeneration normalization', () => {
     });
 });
 
+describe('clearUndoHistoryAfterApply normalization', () => {
+    test('defaults off and accepts only saved boolean values', () => {
+        const { normalizeConfig, defaultConfig } = require('../src/taskpane/app-state.js');
+        expect(defaultConfig().clearUndoHistoryAfterApply).toBe(false);
+        for (const saved of [true, false, 'true', 1, null, undefined]) {
+            expect(normalizeConfig(defaultConfig(), { clearUndoHistoryAfterApply: saved }).clearUndoHistoryAfterApply)
+                .toBe(saved === true);
+        }
+    });
+});
+
 describe('autoApplyChanges normalization', () => {
     test('persists the boolean and defaults to false', () => {
         const { normalizeConfig, defaultConfig } = require('../src/taskpane/app-state.js');

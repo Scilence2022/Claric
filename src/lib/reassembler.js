@@ -800,9 +800,10 @@ function _multiParagraphFallbackError(paraErr) {
  * @param {AbortSignal} [options.signal] - Cooperative pause: when aborted, the
  *   loop finishes the in-flight chunk then stops before the next, leaving the
  *   remaining chunks' bookmarks intact so the caller can resume later
- * @param {function(string, {applied: boolean, noChange?: boolean, error?: boolean, skipped?: boolean, partial?: boolean, uncertain?: boolean}): void} [options.onChunkApplied] -
+ * @param {function(string, {applied: boolean, noChange?: boolean, error?: boolean, skipped?: boolean, partial?: boolean, uncertain?: boolean}): (void|Promise<void>)} [options.onChunkApplied] -
  *   Called after each chunk's apply attempt with its chunkId + outcome, so the
- *   UI can mark individual items applied as they land
+ *   UI can mark individual items applied as they land. Awaited between chunks
+ *   so opted-in post-apply maintenance completes before the next write.
  * @param {function(object): void} [options.onProgress] - Current section and paragraph verification stage
  * @returns {Promise<{amendmentsApplied: number, commentsInserted: number, noChangeCount: number,
  *   errors: string[], appliedChunkIds: string[], attemptedChunkIds: string[], failedChunkIds: string[],
@@ -817,9 +818,18 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     chunkOriginals = null,
     chunkRevisionFingerprints = null,
     signal = null,
-    onChunkApplied = /** @type {function(string, object): void} */ (() => {}),
+    onChunkApplied = /** @type {function(string, object): (void|Promise<void>)} */ (() => {}),
     onProgress = /** @type {function(object): void} */ (() => {}),
   } = options;
+
+  async function notifyChunkApplied(id, outcome) {
+    try { await onChunkApplied(id, outcome); }
+    catch (error) {
+      // The write outcome was already established. A UI/maintenance failure
+      // must not reclassify a verified edit as failed or make it replayable.
+      log(`Chunk ${id}: post-apply notification failed (${error.message || String(error)})`, 'warning');
+    }
+  }
 
   let amendmentsApplied = 0;
   let commentsInserted = 0;
@@ -864,7 +874,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     if (!bookmarkName) {
       errors.push(`Chunk ${result.chunkId}: no bookmark found`);
       failedChunkIds.push(result.chunkId);
-      onChunkApplied(result.chunkId, { applied: false, skipped: true });
+      await notifyChunkApplied(result.chunkId, { applied: false, skipped: true });
       continue;
     }
 
@@ -1011,7 +1021,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
         log(`Chunk ${result.chunkId}: no changes needed`, 'info');
       }
       completedChunkIds.add(result.chunkId);
-      onChunkApplied(result.chunkId, { applied: chunkApplied, noChange: !chunkApplied });
+      await notifyChunkApplied(result.chunkId, { applied: chunkApplied, noChange: !chunkApplied });
     } catch (err) {
       const partial = progress.appliedParagraphs > 0;
       const uncertain = !!(err.mutationAttempted || progress.pendingVerification || progress.pendingStructuralWrites
@@ -1024,7 +1034,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
       log(`Chunk ${result.chunkId}: amendment failed -- ${detail} (${progress.stage})`
         + (partial ? `; ${progress.appliedParagraphs} paragraph edit(s) already applied` : '')
         + (uncertain ? '; writes could not be verified; inspect Word before drafting fresh edits' : ''), 'error');
-      onChunkApplied(result.chunkId, { applied: false, error: true, partial, uncertain });
+      await notifyChunkApplied(result.chunkId, { applied: false, error: true, partial, uncertain });
       if (uncertain) log(`Chunk ${result.chunkId}: left for review; other sections will be checked independently before application.`, 'warning');
     }
     appliedParagraphs += progress.appliedParagraphs;

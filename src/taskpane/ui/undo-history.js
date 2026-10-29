@@ -1,5 +1,6 @@
-/** Manual document maintenance; never called by the changeset apply path. */
+/** Manual document maintenance control. */
 import { appState } from '../app-state.js';
+import { assertUndoHistoryAvailable, clearUndoHistory } from '../undo-history.js';
 import { containFocus } from './dialog.js';
 import { addLog } from './status-bar.js';
 
@@ -37,10 +38,7 @@ function assertAvailable() {
         || appState.processDocController || appState.chatController) {
         throw new Error('Wait for Claric to finish processing or applying changes before clearing undo history.');
     }
-    if (typeof Office === 'undefined' || !Office.context?.requirements?.isSetSupported('WordApiDesktop', '1.4')
-        || typeof Word === 'undefined' || typeof Word.run !== 'function') {
-        throw new Error('Clearing undo history requires a desktop version of Word that supports WordApiDesktop 1.4.');
-    }
+    assertUndoHistoryAvailable();
 }
 
 /** Wire the manual Settings button without adding a persistent preference. */
@@ -69,15 +67,8 @@ export function initUndoHistoryControl() {
             button.setAttribute('aria-busy', 'true');
             status.textContent = 'Clearing undo history...';
             status.hidden = false;
-            const started = performance.now();
-            await Word.run(async (context) => {
-                if (typeof context.document.undoClear !== 'function') {
-                    throw new Error('This Word version does not provide the clear undo history command.');
-                }
-                context.document.undoClear();
-                await context.sync();
-            });
-            report(`Undo history cleared (${Math.round(performance.now() - started)} ms). Existing tracked changes are preserved. Test typing and scrolling in Word to compare responsiveness.`, 'success');
+            const { durationMs } = await clearUndoHistory(addLog);
+            report(`Undo history cleared (${durationMs} ms). Existing tracked changes are preserved. Test typing and scrolling in Word to compare responsiveness.`, 'success');
         } catch (error) {
             report(`Could not clear undo history: ${error.message || String(error)}`, 'error');
         } finally {

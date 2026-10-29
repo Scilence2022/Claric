@@ -3456,9 +3456,9 @@ export async function retryFailedChunks(deps, {
                         trackChangesEnabled: appState.config.trackChangesEnabled,
                         lineDiffEnabled: appState.config.lineDiffEnabled,
                         log, signal,
-                        onChunkApplied: (id, detail) => {
+                        onChunkApplied: async (id, detail) => {
                             state.consumed.add(id);
-                            if (onChunkApplied) onChunkApplied(id, detail);
+                            if (onChunkApplied) await onChunkApplied(id, detail);
                         },
                         chunkOriginals: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.text)])),
                         chunkRevisionFingerprints: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.revisionFingerprint)])),

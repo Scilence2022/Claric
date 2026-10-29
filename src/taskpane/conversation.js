@@ -956,6 +956,11 @@ export function createConversation(deps) {
         const epoch = sessionEpoch;
         let ownRegisteredController = null;
         return _createProposalCardRaw({
+            onChangeSetApplied: async () => {
+                if (appState.config.clearUndoHistoryAfterApply !== true) return null;
+                const { clearUndoHistoryAfterChangeSet } = await import(/* webpackChunkName: "undo-history" */ './undo-history.js');
+                return clearUndoHistoryAfterChangeSet(appState.config, log);
+            },
             isBlocked: () => (epoch !== sessionEpoch ? 'This proposal belongs to a previous chat. Draft a new proposal.' : isBusy()
                 ? 'A run is currently processing — wait for it to finish before applying.'
                 : null),

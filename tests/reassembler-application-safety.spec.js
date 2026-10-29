@@ -85,6 +85,28 @@ function sectionFixtures(ids = ['head', 'tail']) {
   return { sections, context, results: sections.map(({ result }) => result), bookmarks: new Map(ids.map((id) => [id, `_${id}`])) };
 }
 
+test('post-apply maintenance is awaited between sections and cannot reclassify a verified write on failure', async () => {
+  const { context, results, bookmarks } = sectionFixtures();
+  let finish;
+  let started;
+  const entered = new Promise((resolve) => { started = resolve; });
+  const held = new Promise((resolve) => { finish = resolve; });
+  const log = jest.fn();
+  const onChunkApplied = jest.fn(async (id) => {
+    // The editing Word.run has restored the document's tracking mode.
+    expect(context.document.changeTrackingMode).toBe('Off');
+    if (id === 'tail') { started(); await held; throw new Error('Cleanup unavailable'); }
+  });
+  const pending = applyChunkResults(results, bookmarks, { log, onChunkApplied });
+  await entered;
+  expect(applyTokenMapStrategy).toHaveBeenCalledTimes(2);
+  expect(context.document.getBookmarkRangeOrNullObject.mock.calls.map(([name]) => name)).toEqual(['_tail']);
+  finish();
+  const result = await pending;
+  expect(result).toMatchObject({ appliedChunkIds: ['tail', 'head'], failedChunkIds: [], errors: [], amendmentsApplied: 2 });
+  expect(log).toHaveBeenCalledWith(expect.stringContaining('post-apply notification failed'), 'warning');
+});
+
 test('an unverified partial write is isolated; earlier sections and their comments still apply', async () => {
   const { sections, context, results, bookmarks } = sectionFixtures();
   applyTokenMapStrategy.mockImplementation(async (_ctx, range, _before, after) => {
