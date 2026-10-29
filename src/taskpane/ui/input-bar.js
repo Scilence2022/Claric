@@ -408,7 +408,7 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
     }
 
     /**
-     * Validates each picked or dropped file and shows a pending chip immediately,
+     * Validates each picked, dropped or pasted file and shows a pending chip immediately,
      * then parses files one by one: a parsed result swaps into its chip and a
      * failure removes the chip (errors remain visible until reset).
      */
@@ -473,6 +473,45 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
             attachInput.value = ''; // re-picking the same file must re-fire change
         });
     }
+
+    textarea.addEventListener('paste', (event) => {
+        const transfer = event.clipboardData;
+        if (!transfer) return;
+        const items = Array.from(transfer.items || []).filter((item) => item.kind === 'file');
+        const clipboardFiles = Array.from(transfer.files || []);
+        if (!items.length && !clipboardFiles.length) return;
+
+        // Read the clipboard synchronously: WebViews may clear it after the
+        // paste handler returns. File pastes must not also insert a filename
+        // or HTML representation into the draft; ordinary text keeps its default.
+        event.preventDefault();
+        if (attachmentsBusy()) {
+            rejectBusyFiles();
+            return;
+        }
+        const files = [];
+        if (items.length) {
+            for (const [index, item] of items.entries()) {
+                try {
+                    const entry = item.webkitGetAsEntry?.();
+                    if (entry?.isDirectory) {
+                        rejectFiles(`${entry.name || 'Folder'}: folders are not supported. Paste individual files instead.`);
+                        continue;
+                    }
+                    const file = item.getAsFile?.() || clipboardFiles[index];
+                    if (file) files.push(file);
+                    else rejectFiles('A pasted item could not be read. Try attaching the file with the attachment button.');
+                } catch (_error) {
+                    rejectFiles('A pasted item could not be read. Try attaching the file with the attachment button.');
+                }
+            }
+        } else {
+            files.push(...clipboardFiles);
+        }
+        // items and files usually describe the same payload. Consume one
+        // representation so a screenshot or copied file is attached once.
+        addFiles(files);
+    });
 
     textarea.addEventListener('compositionstart', () => {
         composing = true;
