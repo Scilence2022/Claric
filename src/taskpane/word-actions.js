@@ -51,7 +51,7 @@ import {
     illustrationPositionLabel, illustrationRenderer,
 } from '../lib/illustration.js';
 import { generateImage } from '../lib/image-client.js';
-import { imageIdentityKey } from '../lib/image-model.js';
+import { imageIdentityKey } from '../lib/image-identity.js';
 import { attachSvgSource, svgSourceIdFromPicture } from './svg-source-store.js';
 import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';

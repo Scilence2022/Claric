@@ -1011,6 +1011,90 @@ describe('prepareImageToolEdit', () => {
 describe('applyImageOps', () => {
     beforeEach(() => jest.clearAllMocks());
 
+    function addLayout(pic, overrides = {}) {
+        const setup = {
+            pageWidth: 612, leftMargin: 54, rightMargin: 54, gutter: 0,
+            textColumns: { load: jest.fn(), items: [{}] }, load: jest.fn(), ...overrides,
+        };
+        Object.assign(pic.paragraph, { leftIndent: 0, rightIndent: 0, firstLineIndent: 0 });
+        pic.getRange = () => ({ sections: { getFirst: () => ({ pageSetup: setup }) } });
+        pic.parentTableOrNullObject = { isNullObject: true, load: jest.fn() };
+        return setup;
+    }
+
+    test('full-width tool stages measured section width above 450pt and applies it', async () => {
+        const [pic] = setImageWorld([{ width: 300, height: 200 }]);
+        addLayout(pic);
+        sendMessages.mockResolvedValueOnce('{"tool":"resize_image","args":{"index":1,"fitToTextWidth":true}}')
+            .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"Fit to text width"}}');
+        const proposal = await prepareImageToolEdit(makeDeps(), { instruction: 'Fit the image to document width' });
+        expect(proposal.ops).toEqual([{ type: 'resize', index: 1, widthPt: 504, fitToTextWidth: true }]);
+        const result = await applyImageOps(makeDeps(), proposal);
+        expect(result.applied).toBe(1);
+        expect(result.warnings).toEqual([]);
+        expect(pic.width).toBe(504);
+    });
+
+    test('fit width accounts for margins, side gutter and paragraph indentation', async () => {
+        const [pic] = setImageWorld([{}]);
+        addLayout(pic, { gutter: 12, gutterPosition: 'Left' });
+        Object.assign(pic.paragraph, { leftIndent: 18, rightIndent: 9, firstLineIndent: 6 });
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 1, ops: [{ type: 'resize', index: 1, widthPt: 459, fitToTextWidth: true }],
+        });
+        expect(result.applied).toBe(1);
+        expect(pic.width).toBe(459);
+    });
+
+    test('top gutter does not reduce horizontal text width', async () => {
+        const [pic] = setImageWorld([{}]);
+        addLayout(pic, { gutter: 12, gutterPosition: 'Top' });
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 1, ops: [{ type: 'resize', index: 1, widthPt: 504, fitToTextWidth: true }],
+        });
+        expect(result.applied).toBe(1);
+        expect(pic.width).toBe(504);
+    });
+
+    test.each(['changed', 'missing', 'columns', 'table'])('fit width refuses %s layout rather than guessing or overflowing', async (reason) => {
+        const [pic] = setImageWorld([{ width: 300 }]);
+        const setup = addLayout(pic);
+        if (reason === 'changed') setup.pageWidth = 600;
+        if (reason === 'missing') setup.pageWidth = undefined;
+        if (reason === 'columns') setup.textColumns.items = [{}, {}];
+        if (reason === 'table') pic.parentTableOrNullObject.isNullObject = false;
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 1, ops: [{ type: 'resize', index: 1, widthPt: 504, fitToTextWidth: true }],
+        });
+        expect(result.applied).toBe(0);
+        expect(result.warnings.length).toBeGreaterThan(0);
+        expect(pic.width).toBe(300);
+    });
+
+    test('a silently ignored Word width change is reported as failure, not applied', async () => {
+        const [pic] = setImageWorld([{}]);
+        Object.defineProperty(pic, 'width', { get: () => 300, set: () => {} });
+        const result = await applyImageOps(makeDeps(), {
+            snapshotCount: 1, ops: [{ type: 'resize', index: 1, widthPt: 420 }],
+        });
+        expect(result.applied).toBe(0);
+        expect(result.warnings.join(' ')).toContain('Word did not apply');
+    });
+
+    test('scale does not apply twice when Word immediately updates the locked other axis', async () => {
+        const [pic] = setImageWorld([{ width: 200, height: 100 }]);
+        let width = 200;
+        let height = 100;
+        Object.defineProperties(pic, {
+            width: { get: () => width, set: (value) => { if (pic.lockAspectRatio) height *= value / width; width = value; } },
+            height: { get: () => height, set: (value) => { if (pic.lockAspectRatio) width *= value / height; height = value; } },
+        });
+        await applyImageOps(makeDeps(), { snapshotCount: 1, ops: [{ type: 'resize', index: 1, scalePct: 150 }] });
+        expect(pic.width).toBe(300);
+        expect(pic.height).toBe(150);
+        expect(pic.lockAspectRatio).toBe(true);
+    });
+
     test('index ops run first, inserts last; delete + insert verified', async () => {
         const items = setImageWorld([{ altTextDescription: 'sunset' }, {}]);
         const proposal = {
