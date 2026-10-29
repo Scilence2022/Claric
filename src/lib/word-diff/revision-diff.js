@@ -1,5 +1,7 @@
 /** Map final-view differences to verified Word ranges, preserving earlier revisions. */
 import { textEditHunks, touchesProtectedSpan } from '../text-edit-plan.js';
+import DiffMatchPatch from './diff-wordmode.js';
+import { diff_sentenceMode } from './sentence-diff.js';
 import { recordNativeTextMismatch } from '../native-text-diagnostics.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState, normalizeRevisionText,
     RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, hostSupportsTrackedChanges,
@@ -28,8 +30,15 @@ async function syncLocationRead(context, stage) {
     }
 }
 
-function planEdits(state, after) {
-    const hunks = textEditHunks(state.text, after, state.protectedSpans).map((hunk) => ({ ...hunk, targets: [], anchor: null, location: null }));
+function planEdits(state, after, granularity) {
+    // nativeTargets routes even pristine paragraphs here. Preserve the
+    // caller's word/sentence strategy instead of silently using scalar diff,
+    // which splits English rewrites into many edits inside otherwise whole words.
+    const dmp = /** @type {any} */ (new DiffMatchPatch());
+    const diff = granularity === 'word' ? (before, next) => dmp.diff_wordMode(before, next)
+        : granularity === 'sentence' ? diff_sentenceMode : undefined;
+    const hunks = textEditHunks(state.text, after, state.protectedSpans, diff)
+        .map((hunk) => ({ ...hunk, targets: [], targetGroups: [], anchor: null, location: null }));
     for (const hunk of hunks) {
         if (/[\n\t]/.test(hunk.text + state.text.slice(hunk.start, hunk.end))) {
             throw new RevisionSafetyError('Cannot change paragraph or tab boundaries with unresolved revisions.');
@@ -110,13 +119,17 @@ function planEdits(state, after) {
                 const end = Math.min(hunk.end, segment.start + segment.text.length);
                 // Word searches are capped at 255 UTF-16 code units.
                 let pos = start;
+                const group = [];
                 while (pos < end) {
                     let stop = Math.min(pos + 200, end);
                     const code = state.text.charCodeAt(stop - 1);
                     if (stop < end && code >= 0xd800 && code <= 0xdbff) stop--;
-                    hunk.targets.push(target(pos, state.text.slice(pos, stop)));
+                    const piece = target(pos, state.text.slice(pos, stop));
+                    hunk.targets.push(piece);
+                    group.push(piece);
                     pos = stop;
                 }
+                if (group.length) hunk.targetGroups.push(group);
             }
             if (hunk.targets.reduce((n, t) => n + t.text.length, 0) !== hunk.end - hunk.start) {
                 throw new RevisionSafetyError('The edit crosses an uneditable revision boundary.');
@@ -124,6 +137,36 @@ function planEdits(state, after) {
         }
     }
     return { hunks, targets };
+}
+
+/** Search-sized pieces are location evidence, not separate text mutations.
+ * Combine only pieces from one visible segment; earlier deletion/insertion
+ * boundaries remain disjoint. Prove each union before the first write. */
+async function prepareWriteRanges(context, hunks) {
+    const combined = [];
+    for (const hunk of hunks) {
+        // Equation-boundary insertions can become a one-character replacement.
+        const groups = hunk.targetGroups.length ? hunk.targetGroups : hunk.targets.map((target) => [target]);
+        hunk.writeRanges = groups.map((group) => {
+            if (group.length === 1) return group[0].range;
+            const range = group[0].range.expandTo(group.at(-1).range);
+            combined.push({ range, text: group.map((target) => target.text).join('') });
+            return range;
+        });
+    }
+    for (let start = 0; start < combined.length; start += READ_BATCH_SIZE) {
+        const batch = combined.slice(start, start + READ_BATCH_SIZE)
+            .map((target) => ({ ...target, read: queueRevisionRead(target.range, { paragraph: true }) }));
+        await syncLocationRead(context, 'combined mutation ranges');
+        for (const { range, text, read } of batch) {
+            if (!read) throw new RevisionSafetyError('Combined mutation range cannot be verified. No text was written.');
+            const state = resolveRevisionRead(range, read, { paragraph: true });
+            if ((read.currentText && normalizeWordText(read.currentText.value) !== text)
+                || state.text !== text || state.hasHiddenContent || state.protectedStructure || state.protectedSpans.length) {
+                throw new RevisionSafetyError('Combined mutation range crosses hidden or protected content. No text was written.');
+            }
+        }
+    }
 }
 
 async function locate(context, scope, targets, options, allowSplit = true, nativeProjection = null, xmlBaseline = null) {
@@ -358,7 +401,7 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         }
         state.text = comparable(state.text);
         const expected = comparable(after);
-        const { hunks, targets } = planEdits(state, expected);
+        const { hunks, targets } = planEdits(state, expected, options.diffGranularity);
         if (!hunks.length) return { strategy: 'revision', insertions: 0, deletions: 0, replacements: 0 };
         const ownsTracking = options.trackChanges !== false;
         if (ownsTracking && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
@@ -366,6 +409,7 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
             await locate(context, range, [...proseProofTargets(state), ...targets], options, true, null, state.text);
             log('Verified all editable prose against native ranges and OOXML positions; native objects remain protected.', 'info');
         } else await locate(context, range, targets, options, true, nativeProjection);
+        await prepareWriteRanges(context, hunks);
         if (ownsTracking) context.document.load('changeTrackingMode');
         const baseline = queueRevisionRead(range, readOptions);
         await context.sync();
@@ -398,8 +442,8 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
                     insertedRanges.push(anchor.insertText(hunk.text, hunk.location));
                     insertions++;
                 } else {
-                    for (let i = hunk.targets.length - 1; i >= 0; i--) {
-                        const target = hunk.targets[i].range;
+                    for (let i = hunk.writeRanges.length - 1; i >= 0; i--) {
+                        const target = hunk.writeRanges[i];
                         if (i === 0 && hunk.text) { insertedRanges.push(target.insertText(hunk.text, Word.InsertLocation.replace)); replacements++; }
                         else { target.delete(); deletions++; }
                     }
@@ -416,6 +460,8 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
             if (ownsTracking) { context.document.changeTrackingMode = previousMode; await context.sync(); }
         }
         log(options.nativeTargets ? 'Verified edits against native text and positions.' : 'Verified edits against current revision text.', 'info');
+        log(`Native diff: ${options.diffGranularity || 'character'} granularity, ${hunks.length} hunk(s), `
+            + `${targets.length} search target(s), ${insertions + deletions + replacements} mutation call(s).`, 'info');
         return { strategy: 'revision', insertions, deletions, replacements };
     } catch (error) {
         if (mutationAttempted) throw error instanceof MutationSafetyError ? error : new MutationSafetyError(error);

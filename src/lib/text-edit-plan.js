@@ -13,7 +13,8 @@ export function diffUnicodeScalars(before, after) {
         .map(([op, encoded]) => [op, Array.from(encoded).map((id) => values[id.charCodeAt(0)]).join('')]);
 }
 
-export function textEditHunks(before, after, protectedSpans = []) {
+/** The locator chooses edit granularity; native object anchors apply to every diff. */
+export function textEditHunks(before, after, protectedSpans = [], diff = diffUnicodeScalars) {
     // Unchanged native objects are anchors, rather than characters a global
     // diff may align with similar prose elsewhere in a rewritten paragraph.
     const spans = [...protectedSpans].sort((a, b) => a.start - b.start);
@@ -25,18 +26,18 @@ export function textEditHunks(before, after, protectedSpans = []) {
             const content = before.slice(span.start, span.end);
             const position = after.indexOf(content, newOffset);
             if (position < 0) { valid = false; break; }
-            anchored.push(...textEditHunks(before.slice(oldOffset, span.start), after.slice(newOffset, position))
+            anchored.push(...textEditHunks(before.slice(oldOffset, span.start), after.slice(newOffset, position), [], diff)
                 .map((h) => ({ ...h, start: h.start + oldOffset, end: h.end + oldOffset })));
             oldOffset = span.end;
             newOffset = position + content.length;
         }
-        if (valid) return [...anchored, ...textEditHunks(before.slice(oldOffset), after.slice(newOffset))
+        if (valid) return [...anchored, ...textEditHunks(before.slice(oldOffset), after.slice(newOffset), [], diff)
             .map((h) => ({ ...h, start: h.start + oldOffset, end: h.end + oldOffset }))];
     }
     const hunks = [];
     let offset = 0;
     let pending = null;
-    for (const [op, text] of diffUnicodeScalars(before, after)) {
+    for (const [op, text] of diff(before, after)) {
         if (op === 0) { pending = null; offset += text.length; continue; }
         if (!pending) { pending = { start: offset, end: offset, text: '' }; hunks.push(pending); }
         if (op === -1) { offset += text.length; pending.end = offset; }

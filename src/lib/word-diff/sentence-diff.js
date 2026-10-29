@@ -108,7 +108,7 @@ export function diff_sentenceMode(text1, text2) {
 export async function applySentenceDiffStrategy(context, range, text1, text2, log, options = {}) {
     text1 = normalizeWordText(text1);
     text2 = normalizeWordText(text2);
-    const revised = await tryRevisionDiff(context, range, text1, text2, log, options);
+    const revised = await tryRevisionDiff(context, range, text1, text2, log, { ...options, diffGranularity: 'sentence' });
     if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
     if (trackChanges && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');

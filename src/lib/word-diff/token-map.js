@@ -59,7 +59,7 @@ const TOKEN_RE = /(\w+|[^\w\s]+|\s+)/g;
  * @throws {Error} If all strategies fail
  */
 export async function applyTokenMapStrategy(context, range, originalText, newText, log, options = {}) {
-    const revised = await tryRevisionDiff(context, range, originalText, newText, log, options);
+    const revised = await tryRevisionDiff(context, range, originalText, newText, log, { ...options, diffGranularity: 'word' });
     if (revised) return revised;
     const trackChanges = options.trackChanges !== false;
     if (trackChanges && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
@@ -199,9 +199,8 @@ export async function applyTokenMapStrategy(context, range, originalText, newTex
         // Apply Deletes (reverse document order). Adjacent tokens (consecutive
         // indices) are coalesced into one spanning delete: a single Word
         // revision + undo entry per contiguous run instead of one per token.
-        // Per-token deletions inflate Word's session-scoped undo/revision
-        // bookkeeping, which survives add-in close and is a known source of
-        // post-apply editing lag (cleared only by closing the document).
+        // This reduces native mutation calls. Its effect on post-apply
+        // responsiveness must be measured on Word, independently of Undo.
         deleteIndices.sort((a, b) => a - b);
         const deleteRuns = [];
         for (const index of deleteIndices) {

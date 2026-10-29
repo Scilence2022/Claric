@@ -38,3 +38,9 @@ surrogate-safe search pieces, cursor fallback, reverse application, and an
 operation cap. It is not a new character-diff algorithm. Claric's proposal
 lifecycle, endpoint clients, document orchestration and structured-tool
 integration are separate additions relative to this pinned source.
+
+revision-diff.js is a Claric addition, not a vendored upstream strategy. It
+verifies native positions and existing revision/inline-object boundaries.
+Its planner respects the selected word/sentence/character granularity and
+combines search-length pieces into verified write ranges only within one
+visible segment. Preflight and write passes use the same granularity.
