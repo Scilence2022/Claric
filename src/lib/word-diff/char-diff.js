@@ -336,7 +336,7 @@ async function _buildPlanByCursorWalk(context, range, ops) {
  * @throws {Error} On cursor/document divergence or excessive op count
  */
 export async function applyCharDiffStrategy(context, range, originalText, newText, log = () => {}, options = {}) {
-    const revised = await tryRevisionDiff(context, range, originalText, newText, log, options);
+    const revised = await tryRevisionDiff(context, range, originalText, newText, log, { ...options, diffGranularity: 'character' });
     if (revised) return revised;
     const ops = computeCharEdits(originalText, newText).filter(([, text]) => text.length > 0);
     if (ops.length > MAX_OPS) {

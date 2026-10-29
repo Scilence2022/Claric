@@ -314,7 +314,9 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
       const op = alignment.find((op) => op.type === 'keep' && op.origIdx === index);
       const after = _paragraphTargetText(amendedLines[op.newIdx], whitespaceOnly);
       await tryRevisionDiff(context, changedParaRanges.get(index), origTexts[index], after, log,
-        { trackChanges: false, paragraph: true, preflightOnly: true, nativeTargets: true });
+        { trackChanges: false, paragraph: true, preflightOnly: true, nativeTargets: true,
+          diffGranularity: whitespaceOnly ? 'character' : lineDiffEnabled ? 'sentence'
+            : hasCjk(origTexts[index]) || hasCjk(after) ? 'character' : 'word' });
     }
   }
 

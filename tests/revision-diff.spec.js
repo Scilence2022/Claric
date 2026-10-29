@@ -642,9 +642,79 @@ test.each([
 test('splits long visible deletion searches below the Word limit', async () => {
     const before = 'ab'.repeat(130);
     const w = world([{ text: 'old', type: 'del' }, { text: before }]);
-    await tryRevisionDiff(w.context, w.scope, before, '', jest.fn());
+    const result = await tryRevisionDiff(w.context, w.scope, before, '', jest.fn());
     expect(w.state().text).toBe('');
     expect(w.scope.search.mock.calls.every(([text]) => text.length <= 200)).toBe(true);
+    expect(result).toMatchObject({ deletions: 1 });
+    expect(w.writes.filter((write) => write.type === 'delete')).toHaveLength(1);
+});
+
+test('word strategy reaches the native locator with word granularity and fewer mutations than scalar rewrites', async () => {
+    const before = 'The investigation demonstrated substantial improvement in reproducibility.';
+    const after = 'The analysis showed considerable gains in reliability.';
+    const run = async (strategy) => {
+        const w = world([{ text: 'Earlier deleted text. ', type: 'del', id: 'history' }, { text: before }], { nativeReviewed: true });
+        const result = await strategy(w.context, w.scope, before, after, jest.fn(), { paragraph: true, nativeTargets: true });
+        expect(w.state().text).toBe(after);
+        expect(w.atoms.filter((atom) => atom.id === 'history').map((atom) => atom.text).join('')).toBe('Earlier deleted text. ');
+        return result.insertions + result.deletions + result.replacements;
+    };
+    const scalarCalls = await run(tryRevisionDiff);
+    const wordCalls = await run(applyTokenMapStrategy);
+    expect(wordCalls).toBeLessThan(scalarCalls);
+});
+
+test('word granularity keeps unchanged English words intact rather than inserting inside them', async () => {
+    const w = world([{ text: 'The results are significant.' }], { nativeReviewed: true });
+    const log = jest.fn();
+    const result = await applyTokenMapStrategy(w.context, w.scope, w.state().text, 'The results are substantial.', log,
+        { paragraph: true, nativeTargets: true });
+    expect(result).toMatchObject({ strategy: 'revision', replacements: 1, insertions: 0, deletions: 0 });
+    expect(w.writes.filter((write) => write.type === 'insert').map((write) => write.text)).toEqual(['substantial']);
+    expect(w.state().text).toBe('The results are substantial.');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('word granularity, 1 hunk(s), 1 search target(s), 1 mutation call(s)'), 'info');
+});
+
+test.each([applySentenceDiffStrategy, applyCharDiffStrategy])('native locator honors the requested non-word strategy: %p', async (strategy) => {
+    const w = world([{ text: 'The results are significant. Keep this.' }], { nativeReviewed: true });
+    const log = jest.fn();
+    await strategy(w.context, w.scope, w.state().text, 'The results are substantial. Keep this.', log,
+        { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe('The results are substantial. Keep this.');
+    const granularity = strategy === applySentenceDiffStrategy ? 'sentence' : 'character';
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(`Native diff: ${granularity} granularity`), 'info');
+});
+
+test('long replacements combine search pieces but never combine across an earlier deletion', async () => {
+    const first = 'a'.repeat(240);
+    const last = 'b'.repeat(240);
+    const w = world([{ text: first }, { text: 'OLD HISTORY', type: 'del', id: 'history' }, { text: last }], { nativeReviewed: true });
+    const result = await tryRevisionDiff(w.context, w.scope, first + last, 'NEW', jest.fn(), { nativeTargets: true });
+    expect(result).toMatchObject({ replacements: 1, deletions: 1 });
+    expect(w.state().text).toBe('NEW');
+    expect(w.atoms.filter((atom) => atom.id === 'history').map((atom) => atom.text).join('')).toBe('OLD HISTORY');
+});
+
+test('a faulty native union that includes hidden text fails before any write or tracking change', async () => {
+    const before = 'a'.repeat(199) + 'b' + 'c'.repeat(60);
+    const w = world([{ text: 'HIDDEN', type: 'del', id: 'history' }, { text: before }], { nativeReviewed: true });
+    const search = w.scope.search.getMockImplementation();
+    w.scope.search.mockImplementation((...args) => {
+        const matches = search(...args);
+        for (const range of matches.items) {
+            const expand = range.expandTo;
+            range.expandTo = (other) => {
+                const union = expand(other);
+                union._span.start = 0;
+                return union;
+            };
+        }
+        return matches;
+    });
+    await expect(tryRevisionDiff(w.context, w.scope, before, '', jest.fn(), { nativeTargets: true }))
+        .rejects.toThrow('Combined mutation range crosses hidden or protected content');
+    expect(w.writes).toEqual([]);
+    expect(w.context.document.changeTrackingMode).toBe('TrackMineOnly');
 });
 
 test('caller-owned tracking is respected, and a no-op does not write', async () => {

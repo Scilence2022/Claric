@@ -215,6 +215,24 @@ test('native content mismatch in the first paragraph prevents writes to the tail
   expect(onChunkApplied).toHaveBeenCalledWith('section', { applied: false, error: true, partial: false, uncertain: false });
 });
 
+test.each([
+  { lineDiffEnabled: false, whitespaceOnly: false, granularity: 'word' },
+  { lineDiffEnabled: true, whitespaceOnly: false, granularity: 'sentence' },
+  { lineDiffEnabled: true, whitespaceOnly: true, granularity: 'character' },
+])('paragraph preflight uses the same $granularity plan as its write strategy', async ({ lineDiffEnabled, whitespaceOnly, granularity }) => {
+  const before = whitespaceOnly ? 'Original  text.' : 'Original text.';
+  const after = whitespaceOnly ? 'Original text.' : 'Changed text.';
+  nativeDocument([before]);
+  tryRevisionDiff.mockRejectedValueOnce(new RevisionSafetyError('Stop after capturing preflight.'));
+  await applyChunkResults([{ chunkId: 'section', status: 'fulfilled', whitespaceOnly, amendment: after,
+    chunk: { id: 'section', startIndex: 0, endIndex: 0, paragraphs: [{ text: before }] } }],
+  new Map([['section', '_section']]), { lineDiffEnabled });
+  expect(tryRevisionDiff).toHaveBeenCalledWith(expect.anything(), expect.anything(), before, after, expect.any(Function),
+    expect.objectContaining({ preflightOnly: true, nativeTargets: true, diffGranularity: granularity }));
+  expect(applyTokenMapStrategy).not.toHaveBeenCalled();
+  expect(applySentenceDiffStrategy).not.toHaveBeenCalled();
+});
+
 test('unlocatable existing revisions fail preflight before any paragraph is written', async () => {
   const document = nativeDocument(storedTexts);
   const revisedXml = () => ({ value: paragraphXml(storedTexts[0]).replace('<w:r>', '<w:ins><w:r>').replace('</w:r>', '</w:r></w:ins>') });
@@ -223,7 +241,7 @@ test('unlocatable existing revisions fail preflight before any paragraph is writ
   tryRevisionDiff.mockRejectedValueOnce(new RevisionSafetyError('Unverified visible revision target.'));
   const { result } = await apply();
   expect(tryRevisionDiff).toHaveBeenCalledWith(document.context, document.contentRanges[0], storedTexts[0], amendedTexts[0],
-    expect.any(Function), { trackChanges: false, paragraph: true, preflightOnly: true, nativeTargets: true });
+    expect.any(Function), { trackChanges: false, paragraph: true, preflightOnly: true, nativeTargets: true, diffGranularity: 'word' });
   expect(result).toMatchObject({ amendmentsApplied: 0, appliedParagraphs: 0, partialChunkIds: [], uncertainChunkIds: [] });
   expect(result.errors[0]).toMatch(/Unverified visible revision target/);
   expect(applyTokenMapStrategy).not.toHaveBeenCalled();
