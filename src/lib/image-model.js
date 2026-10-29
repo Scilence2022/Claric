@@ -129,29 +129,7 @@ export function normalizeImageLink(value) {
     return { url };
 }
 
-/**
- * Builds a stable, metadata-based identity for one snapshot image. It is not
- * intended to identify two visually identical images; callers must treat
- * duplicate keys as ambiguous rather than silently choosing the first one.
- *
- * @param {object} image
- * @returns {string}
- */
-export function imageIdentityKey(image = {}) {
-    if (image && typeof image.fingerprint === 'string' && image.fingerprint) {
-        return `fingerprint:${image.fingerprint}`;
-    }
-    return JSON.stringify([
-        Number.isFinite(Number(image.width)) ? Number(image.width) : null,
-        Number.isFinite(Number(image.height)) ? Number(image.height) : null,
-        String(image.altText ?? image.altTextDescription ?? ''),
-        String(image.title ?? image.altTextTitle ?? ''),
-        String(image.hyperlink ?? ''),
-        image.lockAspectRatio === undefined ? null : !!image.lockAspectRatio,
-        image.alignment === undefined ? null : String(image.alignment).toLowerCase(),
-        String(image.sourceId ?? image.svgSourceId ?? ''),
-    ]);
-}
+export { imageIdentityKey } from './image-identity.js';
 
 /**
  * Tool specs for the image draft model. design/replace execute a nested LLM
@@ -201,7 +179,7 @@ export const IMAGE_TOOL_SPECS = Object.freeze([
     }),
     defineTool({
         name: 'resize_image',
-        description: 'Scale one existing picture. Give exactly ONE size target: "widthPt" (8–450, height follows the aspect ratio), "heightPt" (8–600), or "scalePct" (5–400 percent of the current size). Optional "lockAspectRatio": true keeps the original proportions enforced by Word itself. Omitting all size targets with "lockAspectRatio" set only changes the lock.',
+        description: 'Scale one existing picture. Give exactly ONE size target: "fitToTextWidth": true to match the actual text width in the picture\'s section (use this for document-width/full-width requests; never guess a fixed width), "widthPt" (8–450), "heightPt" (8–600), or "scalePct" (5–400 percent of the current size). Dimensions preserve proportions. Optional "lockAspectRatio" controls the resulting Word lock. Omitting all size targets with "lockAspectRatio" set only changes the lock.',
         argsExample: { index: 1, widthPt: 300 },
     }),
     defineTool({
@@ -433,22 +411,30 @@ export function createImageModel(snapshot) {
         return _ok({ staged: `delete ${describe(index)}` });
     }
 
-    function recordResize(index, args = {}) {
+    function recordResize(index, args = {}, resolvedTextWidthPt) {
         if (!Number.isInteger(index) || !live(index)) {
             return _err(`"index" must be a live snapshot index (1..${images.length}, not already deleted or replaced).`);
         }
         const hasWidth = args.widthPt !== undefined && args.widthPt !== null;
         const hasHeight = args.heightPt !== undefined && args.heightPt !== null;
         const hasScale = args.scalePct !== undefined && args.scalePct !== null;
-        const sizeTargets = [hasWidth, hasHeight, hasScale].filter(Boolean).length;
+        const fit = args.fitToTextWidth === true;
+        if (args.fitToTextWidth !== undefined && typeof args.fitToTextWidth !== 'boolean') return _err('"fitToTextWidth" must be true or false.');
+        const sizeTargets = [hasWidth, hasHeight, hasScale, fit].filter(Boolean).length;
         if (sizeTargets > 1) {
-            return _err('Give exactly ONE of widthPt, heightPt, or scalePct.');
+            return _err('Give exactly ONE of widthPt, heightPt, scalePct, or fitToTextWidth.');
         }
 
         /** @type {Record<string, *>} */
         const op = { type: 'resize', index };
 
-        if (hasWidth) {
+        if (fit) {
+            if (!Number.isFinite(resolvedTextWidthPt) || resolvedTextWidthPt < 8 || resolvedTextWidthPt > 1584) {
+                return _err('The actual text width could not be read; no resize was staged.');
+            }
+            op.widthPt = resolvedTextWidthPt;
+            op.fitToTextWidth = true;
+        } else if (hasWidth) {
             const widthPt = Number(args.widthPt);
             if (!Number.isFinite(widthPt) || widthPt < 8 || widthPt > MAX_IMAGE_WIDTH_PT) {
                 return _err(`"widthPt" must be between 8 and ${MAX_IMAGE_WIDTH_PT}.`);
@@ -562,7 +548,7 @@ export function createImageModel(snapshot) {
                 case 'resize': {
                     const before = `${original.width}x${original.height}pt${op.lockAspectRatio !== undefined && op.lockAspectRatio !== (original.lockAspectRatio ?? true) ? `, aspect lock ${original.lockAspectRatio ? 'on' : 'off'}` : ''}`;
                     const afterParts = [];
-                    if (op.widthPt) afterParts.push(`${op.widthPt}pt wide`);
+                    if (op.widthPt) afterParts.push(`${op.widthPt}pt wide${op.fitToTextWidth ? ' (fit to text width)' : ''}`);
                     if (op.heightPt) afterParts.push(`${op.heightPt}pt tall`);
                     if (op.scalePct) afterParts.push(`${op.scalePct}% of current`);
                     if (op.lockAspectRatio !== undefined) afterParts.push(`lock ${op.lockAspectRatio ? 'on' : 'off'}`);

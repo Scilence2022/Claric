@@ -83,6 +83,16 @@ describe('createImageModel', () => {
         expect(m5.recordResize(1, { lockAspectRatio: 'yes' }).error).toMatch(/true or false/);
     });
 
+    test('fit-to-text width requires host-measured layout and preserves widths above the fixed-width cap', () => {
+        const model = createImageModel(SNAPSHOT);
+        expect(model.recordResize(1, { fitToTextWidth: true }).ok).toBe(false);
+        expect(model.recordResize(1, { fitToTextWidth: 'true' }, 480).ok).toBe(false);
+        expect(model.recordResize(1, { fitToTextWidth: true, widthPt: 420 }, 480).ok).toBe(false);
+        expect(model.recordResize(1, { fitToTextWidth: true }, 480.25).ok).toBe(true);
+        expect(model.ops).toEqual([{ type: 'resize', index: 1, widthPt: 480.25, fitToTextWidth: true }]);
+        expect(model.describeOps()[0].after).toContain('fit to text width');
+    });
+
     test('recordAlign validates the alignment value', () => {
         const model = createImageModel(SNAPSHOT);
         expect(model.recordAlign(1, 'justify').error).toMatch(/alignment.*left.*centered.*right/);
