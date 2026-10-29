@@ -36,6 +36,7 @@ export function defaultConfig() {
         backend: 'ollama',
         trackChangesEnabled: true,
         lineDiffEnabled: false,
+        clearUndoHistoryAfterApply: false,
         docExtraction: {
             richness: 'structured'
         },
@@ -224,6 +225,9 @@ export function normalizeConfig(defaults, parsedInput) {
     }
     if (typeof parsed.lineDiffEnabled === 'boolean') {
         out.lineDiffEnabled = parsed.lineDiffEnabled;
+    }
+    if (typeof parsed.clearUndoHistoryAfterApply === 'boolean') {
+        out.clearUndoHistoryAfterApply = parsed.clearUndoHistoryAfterApply;
     }
 
     if (parsed.docExtraction && typeof parsed.docExtraction === 'object') {

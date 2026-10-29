@@ -39,7 +39,6 @@ import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../..
 import { appState, getActiveBackendConfig, getActiveImageConfig, debounce, persistSettings } from '../app-state.js';
 import { BUILTIN_SKILLS, RESERVED_MCP_SKILL } from '../skills.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
-import { initUndoHistoryControl } from './undo-history.js';
 
 import { containFocus } from './dialog.js';
 
@@ -236,7 +235,26 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
     document.getElementById('apiKey').addEventListener('input', onChatTextInput);
     document.getElementById('trackChangesCheckbox').addEventListener('change', saveSettings);
     document.getElementById('lineDiffCheckbox').addEventListener('change', saveSettings);
-    initUndoHistoryControl();
+    document.getElementById('clearUndoHistoryAfterApplyCheckbox')?.addEventListener('change', saveSettings);
+    const clearUndoButton = document.getElementById('clearUndoHistoryBtn');
+    let loadingUndoControl = false;
+    const loadUndoControl = async () => {
+        if (loadingUndoControl) return;
+        loadingUndoControl = true;
+        try {
+            const { initUndoHistoryControl } = await import(/* webpackChunkName: "undo-history-control" */ './undo-history.js');
+            clearUndoButton.removeEventListener('click', loadUndoControl);
+            initUndoHistoryControl();
+            clearUndoButton.click();
+        } catch (error) {
+            const status = document.getElementById('clearUndoHistoryStatus');
+            if (status) {
+                status.textContent = `Could not load undo cleanup: ${error.message || String(error)}. Try again.`;
+                status.hidden = false;
+            }
+        } finally { loadingUndoControl = false; }
+    };
+    clearUndoButton?.addEventListener('click', loadUndoControl);
     document.getElementById('thinkingLevelSelect').addEventListener('change', (e) => {
         // The just-picked level drives the hint/temperature refresh; reading
         // the still-unsaved config here would snap the select back.
@@ -430,6 +448,8 @@ function saveSettings() {
         addLog('Auto-apply disabled because Track Changes is off.', 'warning');
     }
     config.lineDiffEnabled = document.getElementById('lineDiffCheckbox').checked;
+    const autoClearUndo = document.getElementById('clearUndoHistoryAfterApplyCheckbox');
+    if (autoClearUndo) config.clearUndoHistoryAfterApply = autoClearUndo.checked;
     config.docExtraction = {
         richness: document.getElementById('docRichnessSelect').value
     };
@@ -700,6 +720,8 @@ export function updateUIFromConfig() {
     document.getElementById('apiKey').value = backendConfig.apiKey;
     document.getElementById('trackChangesCheckbox').checked = config.trackChangesEnabled;
     document.getElementById('lineDiffCheckbox').checked = config.lineDiffEnabled;
+    const autoClearUndo = document.getElementById('clearUndoHistoryAfterApplyCheckbox');
+    if (autoClearUndo) autoClearUndo.checked = config.clearUndoHistoryAfterApply === true;
 
     // Model field stays editable (combobox) for every provider; typed or
     // selected values are saved as-is and the list refreshes on demand.

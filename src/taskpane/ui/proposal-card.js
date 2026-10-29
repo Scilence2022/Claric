@@ -290,6 +290,9 @@ export function renderProposalItemOutcome(row, outcome) {
  * @param {function()} [args.onReject] - Reject callback
  * @param {function(string, string, object)} [args.onRecover] - Explicit failed
  *   section recovery (retry, force, regenerate); shares the apply write lock.
+ * @param {function(string|number|undefined): Promise<object|null>} [args.onChangeSetApplied] -
+ *   Optional maintenance after a verified write. Awaited inside the apply lock;
+ *   its status is separate from the edit outcome. Chunk callbacks must be awaited.
  * @param {function(AbortController|null)} [args.registerController] - Optional
  *   register/unregister the live apply AbortController so the host Stop button
  *   can abort (pause) the in-flight apply; receives null when apply settles
@@ -300,7 +303,7 @@ export function renderProposalItemOutcome(row, outcome) {
  *   released the busy flags early, letting a second pipeline interleave.
  * @returns {{ el: HTMLElement, markApplied: function(), markRejected: function(), markWarning: function(string), markError: function(string), markItemApplied: function(string, object), setPaused: function(string) }}
  */
-export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, notice, onApply, onRecover, onReject, registerController, setApplyBusy, isBlocked, showApplicationProgress = false, applyLabel = 'Apply as tracked changes' }) {
+export function createProposalCard({ title, beforeChars, afterChars, countsText, previewSrc, previewSvg, tablePreview, items, onLocate, comment, notice, onApply, onRecover, onReject, onChangeSetApplied, registerController, setApplyBusy, isBlocked, showApplicationProgress = false, applyLabel = 'Apply as tracked changes' }) {
     const el = document.createElement('div');
     el.className = 'proposal-card';
 
@@ -508,6 +511,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     const itemOutcomes = new Map();
     let applyController = null;
     let applyInFlight = false;
+    let noChange = false;
+    let passHasChunkOutcomes = false;
+    const notifiedIds = new Set();
     let state = 'pending';
     function setState(next) {
         state = next;
@@ -549,6 +555,34 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     el.appendChild(progressBox);
     el.appendChild(actions);
     el.appendChild(status);
+
+    // Await optional maintenance while the apply lock is still held. It has
+    // its own status so a cleanup failure cannot change the edit outcome or
+    // invite the user to replay text that was already successfully applied.
+    async function notifyChangeSetApplied(id) {
+        if (!onChangeSetApplied) return;
+        try {
+            const maintenance = await import(/* webpackChunkName: "proposal-maintenance" */ './proposal-maintenance.js');
+            await maintenance.notifyChangeSetApplied(el, onChangeSetApplied, id);
+        } catch (error) {
+            // Even a failed lazy load must leave verified edits settled.
+            const warning = document.createElement('div');
+            warning.className = 'proposal-cleanup-status help-text';
+            warning.setAttribute('role', 'status');
+            warning.textContent = `Undo cleanup unavailable: ${error.message || String(error)}`;
+            el.appendChild(warning);
+        }
+    }
+
+    async function reportChunkApplied(id, outcome = {}) {
+        markItemApplied(id, outcome);
+        const entry = changeEntries.find((entry) => String(entry.id) === String(id));
+        if (!entry) return;
+        passHasChunkOutcomes = true;
+        if (notifiedIds.has(entry.id) || itemOutcomes.get(entry.id) !== 'applied') return;
+        notifiedIds.add(entry.id);
+        await notifyChangeSetApplied(entry.id);
+    }
 
     /** Disables both buttons and shows a terminal status line. */
     function settle(text, className) {
@@ -612,6 +646,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         const ids = selectedIds();
         passIds = new Set(ids || []);
         finishedIds.clear();
+        passHasChunkOutcomes = false;
+        notifiedIds.clear();
+        noChange = false;
         progressDetail.textContent = '';
         updateProgress();
         setRecoveryBusy(true);
@@ -623,10 +660,15 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         try {
             await onApply(ids, {
                 signal: applyController.signal,
-                onChunkApplied: markItemApplied,
+                onChunkApplied: reportChunkApplied,
                 onProgress: showProgressDetail,
             });
             if (state === 'applying') api.markApplied();
+            // Selection/format/table proposals apply as a single ChangeSet;
+            // document proposals notify each section within their write loop.
+            if (!passHasChunkOutcomes && !noChange && el.dataset.outcome === 'applied') {
+                await notifyChangeSetApplied();
+            }
         } catch (error) {
             api.markError(error.message || String(error));
         } finally {
@@ -665,6 +707,8 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
         setApplyBusy?.(true);
         passIds = new Set([entry.id]);
         finishedIds.clear();
+        notifiedIds.clear();
+        passHasChunkOutcomes = false;
         progressDetail.textContent = '';
         progressBox.hidden = false;
         progressBar.removeAttribute('value');
@@ -683,9 +727,9 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
                     entry.diff = diff;
                     progressText.textContent = 'Applying section…';
                 },
-                onChunkApplied: (id, outcome) => {
+                onChunkApplied: async (id, outcome) => {
                     attemptedIdSet.delete(entry.id);
-                    markItemApplied(id, outcome);
+                    await reportChunkApplied(id, outcome);
                 },
             });
             detail = result?.recoveryReport || (result?.interrupted ? 'Recovery paused before application.' : (result?.errors || []).join(' '));
@@ -707,7 +751,8 @@ export function createProposalCard({ title, beforeChars, afterChars, countsText,
     const api = {
         el,
         /** Terminal state after a successful apply. */
-        markApplied(message) {
+        markApplied(message, { noChange: unchanged = false } = {}) {
+            noChange = unchanged;
             const failed = [...itemOutcomes.values()].some((outcome) => !['applied', 'no-change'].includes(outcome));
             if (failed) {
                 settle(`${appliedIdSet.size} of ${changeBoxes.length} change(s) verified as applied. Some changes failed or remain unverified; review the item statuses and Word.`, 'proposal-warning');
