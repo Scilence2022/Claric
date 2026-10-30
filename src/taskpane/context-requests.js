@@ -66,6 +66,7 @@ export function createContextRequestManager({ client, agent, identity = client?.
         if (pending.size >= cacheLimit) return Promise.reject(new Error('Context request capacity reached'));
         const createdAt = clock();
         const body = { requestId, scope: payload.scope, ...(payload.artifactIds ? { artifactIds: clone(payload.artifactIds) } : {}) };
+        for (const field of ['digest', 'offset', 'limit', 'query']) if (payload[field] !== undefined) body[field] = payload[field];
         const item = { key, requestId, correlationId, target: Object.freeze(clone(target)), createdAt, expiresAt: createdAt + ttlMs, signal: options.signal, cancelKey: newId('cancel') };
         const promise = new Promise((resolve, reject) => { item.resolve = resolve; item.reject = reject; });
         item.abort = () => cancelItem(item, 'Context request aborted', 'ABORTED');

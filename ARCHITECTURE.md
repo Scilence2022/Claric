@@ -895,6 +895,39 @@ the corresponding `*_PROXY_TARGET` variables (host.docker.internal from a
 container for local LLMs), keeping LLM traffic same-origin so the add-in's
 default backend URLs work without mixed-content or CORS configuration.
 
+## Shared cross-document evidence
+
+`shared-evidence.js` maintains bounded immutable excerpts explicitly published
+by the user. An artifact has a random ID, SHA-256 content fingerprint, owning
+workspace/document/instance, source snapshot and revision, scope, size and TTL.
+The authenticated v2 `ArtifactStore` exposes only opted-in shared metadata to
+other instances in the same workspace; directed private artifacts retain their
+existing visibility. Artifact bodies and transcripts are not broadcast or
+checkpointed. Successful document departure removes its catalogue entries.
+
+`shared-evidence-controller.js` uses existing `context.request/response` messages
+for paginated reads and literal searches. The source checks its live revision
+before serving the published excerpt. The receiving controller validates
+provenance, the advertised fingerprint/version and page bounds. A fingerprint
+identifies the complete excerpt; partial pages are authenticated responses, not
+independently proven fragments of a Merkle tree. Read text can enter receiver
+chat history and model requests; withdrawal cannot erase previously read copies.
+
+Planning retains explicit per-instance references, treats excerpts as untrusted
+data, checks source freshness before and after generation, and rejects ambiguous
+targets or capabilities not advertised by the target. Evidence IDs used by a
+plan are retained through task input references and target proposal metadata.
+The target still runs its own preparation, review, write lease and native
+freshness verification; source evidence never grants authority to write.
+
+Distributed task states distinguish `awaiting_review`, `applying`, `applied`
+and terminal completion. `task.rejected` is a separate server-validated outcome;
+the server disallows success for a rejected proposal, and the source blocks
+dependent tasks. Expired accepted/applied work becomes `unknown` locally and
+must be reconciled manually. No automatic write replay is introduced. Evidence
+catalogues and excerpts are deliberately ephemeral; existing task/proposal
+checkpoint recovery remains metadata-only.
+
 ## Licensing
 
 - **MIT License** — Word add-in codebase

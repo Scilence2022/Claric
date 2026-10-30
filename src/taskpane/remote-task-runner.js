@@ -60,7 +60,7 @@ function proposalEventPayload(record) {
         taskId: record.taskId,
         revision: record.revision,
         baseRevision: String(record.baseRevision),
-        artifactIds: [],
+        artifactIds: record.artifactIds || [],
         ...(record.kind ? { kind: record.kind } : {}),
         ...(record.scope ? { scope: record.scope } : {}),
         ...(record.title ? { title: record.title } : {}),
@@ -163,7 +163,8 @@ export function createRemoteTaskRunner({
                         const revision = await documentAgent.getDocumentRevision(record.scope);
                         await publish(task, 'proposal.applied', { ...proposalTerminalPayload(record), documentRevision: String(revision), resourceId: 'write', fence: lease.fence }, 'applied');
                     }
-                    await publish(task, 'task.succeeded', { taskId: record.taskId, proposalId: record.proposalId }, 'succeeded');
+                    const terminal = decision === 'reject' ? 'rejected' : 'succeeded';
+                    await publish(task, `task.${terminal}`, { taskId: record.taskId, proposalId: record.proposalId }, terminal);
                     return { ...result, record: base.getRecord(), localResult: base.getLocalResult() };
                 } catch (error) {
                     const wrote = base.getRecord().state === 'applied' || base.getRecord().state === 'unknown';
@@ -199,7 +200,7 @@ export function createRemoteTaskRunner({
                 validateProposalInput(input);
                 guard(task);
                 const expiresAt = Math.min(Number(input.expiresAt ?? Infinity), event.createdAt + event.ttlMs);
-                const record = createProposalRecord({ ...input, proposalId: input.proposalId || event.payload.proposalId || `${taskId.slice(0, 110)}-proposal`, graphId: event.payload.graphId || input.graphId || 'remote-task-graph', taskId, attemptId: event.payload.attemptId || input.attemptId || `${taskId.slice(0, 110)}-attempt`, source: event.source, target: localIdentity, reviewRequired: true, state: 'pending', revision: 0, createdAt: clock(), expiresAt });
+                const record = createProposalRecord({ ...input, artifactIds: event.payload.artifactIds || [], proposalId: input.proposalId || event.payload.proposalId || `${taskId.slice(0, 110)}-proposal`, graphId: event.payload.graphId || input.graphId || 'remote-task-graph', taskId, attemptId: event.payload.attemptId || input.attemptId || `${taskId.slice(0, 110)}-attempt`, source: event.source, target: localIdentity, reviewRequired: true, state: 'pending', revision: 0, createdAt: clock(), expiresAt });
                 await publish(task, 'proposal.announced', proposalEventPayload(record), 'announced');
                 guard(task);
                 const runtime = makeRuntime(record, task);

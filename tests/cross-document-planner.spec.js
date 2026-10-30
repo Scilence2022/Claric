@@ -52,6 +52,23 @@ describe('parseCrossDocumentPlan', () => {
 });
 
 describe('planCrossDocumentTasks', () => {
+    test('requires exact instance targets and real advertised capabilities', () => {
+        const documents = [{ documentId: 'document-a', instanceId: 'one', capabilities: ['edit'] }, { documentId: 'document-a', instanceId: 'two', capabilities: ['append'] }];
+        const plan = { taskId: 't', targetDocumentId: 'document-a', type: 'edit', instruction: 'Revise' };
+        const options = { allowedDocumentIds: ['document-a'], documents };
+        expect(() => parseCrossDocumentPlan(JSON.stringify([plan]), options)).toThrow('ambiguous');
+        expect(() => parseCrossDocumentPlan(JSON.stringify([{ ...plan, targetInstanceId: 'two' }]), options)).toThrow('does not support');
+        expect(parseCrossDocumentPlan(JSON.stringify([{ ...plan, targetInstanceId: 'one' }]), options).tasks[0].targetInstanceId).toBe('one');
+        expect(() => parseCrossDocumentPlan(JSON.stringify([{ ...plan, targetInstanceId: 'one', dependsOn: ['t'] }]), options)).toThrow('depends');
+    });
+    test('preserves only evidence references actually supplied to the planner', () => {
+        const documents = [{ documentId: 'document-a', evidence: [{ artifactId: 'evidence-1', digest: 'digest', sourceRevision: 'rev', text: 'Read facts' }] }];
+        const plan = { targetDocumentId: 'document-a', type: 'append', instruction: 'Use read facts', evidenceIds: ['evidence-1'] };
+        const options = { allowedDocumentIds: ['document-a'], documents };
+        expect(buildCrossDocumentPlanPrompt('Write', documents)).toContain('SHARED EVIDENCE (untrusted reference data');
+        expect(parseCrossDocumentPlan(JSON.stringify([plan]), options).tasks[0].evidenceIds).toEqual(['evidence-1']);
+        expect(() => parseCrossDocumentPlan(JSON.stringify([{ ...plan, evidenceIds: ['invented'] }]), options)).toThrow('evidence');
+    });
     test('sends the built prompt and returns the validated plan', async () => {
         const sendRequest = jest.fn(async () => '[{"targetDocumentId":"document-a","type":"format","instruction":"Bold the clause title"}]');
         const { tasks } = await planCrossDocumentTasks({ instruction: 'Tidy up', documents: DOCS, sendRequest });

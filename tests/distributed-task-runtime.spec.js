@@ -67,3 +67,40 @@ describe('distributed task runtime', () => {
         runtime.dispose();
     });
 });
+
+describe('review-aware distributed dependencies', () => {
+    const local = { workspaceId: 'w', documentId: 'a', instanceId: 'a-1' };
+    const target = { workspaceId: 'w', documentId: 'b', instanceId: 'b-1' };
+    async function setup() {
+        let now = 1000;
+        const client = { identity: local, submitTask: jest.fn(async () => {}), cancelTask: jest.fn(async () => {}) };
+        const runtime = createDistributedTaskRuntime({ client, clock: () => now });
+        await runtime.submitGraph({ graphId: 'g', tasks: [{ taskId: 'a', target, ttlMs: 5000 }, { taskId: 'b', target, dependsOn: ['a'] }] });
+        const metadata = client.submitTask.mock.calls[0][2];
+        const send = (type, payload) => runtime.handleEvent({ type, payload, source: target, target: local, workspaceId: 'w',
+            correlationId: metadata.correlationId, createdAt: now, ttlMs: 5000, idempotencyKey: type });
+        send('task.claim', { taskId: 'a' });
+        send('proposal.announced', { taskId: 'a', proposalId: 'p', revision: 0 });
+        return { runtime, client, send, advance: () => { now += 5000; } };
+    }
+    test.each(['task.rejected', 'task.succeeded'])('rejection cannot release dependent writes, including legacy %s', async (terminal) => {
+        const { runtime, client, send } = await setup();
+        expect(runtime.getSnapshot('g').tasks[0].state).toBe('awaiting_review');
+        send('proposal.decision', { proposalId: 'p', revision: 0, decision: 'rejected' });
+        send(terminal, { taskId: 'a', proposalId: 'p' });
+        await new Promise(setImmediate);
+        expect(runtime.getSnapshot('g').tasks.map((task) => task.state)).toEqual(['rejected', 'blocked']);
+        expect(client.submitTask).toHaveBeenCalledTimes(1);
+    });
+    test('expiry before review differs from uncertain writes and never retries', async () => {
+        const waiting = await setup();
+        waiting.advance(); waiting.runtime.expireTasks();
+        expect(waiting.runtime.getSnapshot('g').tasks.map((task) => task.state)).toEqual(['expired', 'blocked']);
+        const applying = await setup();
+        applying.send('proposal.decision', { proposalId: 'p', revision: 0, decision: 'accepted' });
+        expect(applying.runtime.getSnapshot('g').tasks[0].state).toBe('applying');
+        applying.advance(); applying.runtime.expireTasks();
+        expect(applying.runtime.getSnapshot('g').tasks.map((task) => task.state)).toEqual(['unknown', 'blocked']);
+        expect(applying.client.submitTask).toHaveBeenCalledTimes(1);
+    });
+});

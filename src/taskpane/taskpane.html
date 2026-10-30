@@ -58,6 +58,21 @@
             <input id="crossDocumentToken" type="password" autocomplete="off">
             <button id="crossDocumentConnectBtn" type="button" class="btn btn-compact">Disconnect this document</button>
             <span id="crossDocumentConnectionStatus" class="cross-document-connection-status" role="status">Connecting automatically…</span>
+            <fieldset class="shared-evidence-controls">
+                <legend>Shared evidence</legend>
+                <p>Share excerpts explicitly with linked documents. Chat history is not shared. Metadata stays in the local coordination service; excerpt reads may reach the model configured in the receiving document.</p>
+                <select id="sharedEvidenceScope" aria-label="Content to share">
+                    <option value="selection">Selected passage</option>
+                    <option value="document">Document excerpt (up to 12,000 characters)</option>
+                </select>
+                <button id="sharedEvidenceShareBtn" type="button" class="btn btn-compact" disabled>Share excerpt</button>
+                <select id="sharedEvidenceLocal" aria-label="Your shared excerpts"></select>
+                <button id="sharedEvidenceWithdrawBtn" type="button" class="btn btn-compact" disabled>Withdraw excerpt</button>
+                <select id="sharedEvidenceRemote" aria-label="Available shared evidence"></select>
+                <input id="sharedEvidenceQuery" type="search" maxlength="200" placeholder="Search within shared evidence" aria-label="Search shared evidence">
+                <button id="sharedEvidenceReadBtn" type="button" class="btn btn-compact" disabled>Read evidence / next page</button>
+                <span id="sharedEvidenceStatus" class="help-text" role="status"></span>
+            </fieldset>
         </details>
         <section id="crossDocumentBar" class="cross-document-bar" hidden aria-label="Open Claric documents">
             <label for="crossDocumentTarget">Send task to:</label>
@@ -69,6 +84,7 @@
                 <option value="edit">Edit selection</option>
                 <option value="format">Format selection</option>
                 <option value="table">Insert table</option>
+                <option value="append">Append content</option>
             </select>
             <button id="crossDocumentSendBtn" type="button" class="btn btn-compact" disabled>Send task</button>
             <button id="crossDocumentPlanBtn" type="button" class="btn btn-compact" disabled title="Use this document's model to split the instruction into per-document tasks">Plan tasks</button>

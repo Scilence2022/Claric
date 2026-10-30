@@ -190,3 +190,32 @@ test('surfaces a planning failure without submitting a partial graph', async () 
     expect(document.getElementById('crossDocumentPlanBtn').disabled).toBe(false);
     document.getElementById('crossDocumentConnectBtn').click(); await flush();
 });
+
+test('does not submit a plan when its source context changes during model generation', async () => {
+    initCrossDocumentConnection(local);
+    await flushMicrotasks();
+    const select = document.getElementById('crossDocumentTarget');
+    select.value = target.instanceId; select.dispatchEvent(new Event('change'));
+    document.getElementById('crossDocumentContextBtn').click(); await flush();
+    planCrossDocumentTasks.mockImplementation(async () => {
+        context.requestContext.mockResolvedValue({ snapshot: { text: 'Changed source' } });
+        return { tasks: [{ taskId: 't1', type: 'edit', instruction: 'Edit', targetDocumentId: target.documentId, targetInstanceId: target.instanceId }] };
+    });
+    document.getElementById('chatInput').value = 'Use reference facts';
+    document.getElementById('crossDocumentPlanBtn').click(); await flush();
+    expect(runtime.submitGraph).not.toHaveBeenCalled();
+    expect(document.getElementById('crossDocumentStatus').textContent).toContain('changed while planning');
+});
+
+test('does not redirect work when the planned instance disconnects during generation', async () => {
+    initCrossDocumentConnection(local);
+    await flushMicrotasks();
+    planCrossDocumentTasks.mockImplementation(async () => {
+        options.onSnapshot({ documents: [], presence: {}, cursor: 2 });
+        return { tasks: [{ taskId: 't1', type: 'edit', instruction: 'Edit', targetDocumentId: target.documentId, targetInstanceId: target.instanceId }] };
+    });
+    document.getElementById('chatInput').value = 'Revise target';
+    document.getElementById('crossDocumentPlanBtn').click(); await flush();
+    expect(runtime.submitGraph).not.toHaveBeenCalled();
+    expect(document.getElementById('crossDocumentStatus').textContent).toContain('disconnected or became ambiguous');
+});

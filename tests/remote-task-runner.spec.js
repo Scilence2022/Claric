@@ -72,4 +72,11 @@ describe('remote task runner', () => {
         await runner.handleEvent(event);
         expect(onProposal).not.toHaveBeenCalled();
     });
+    test('reports rejected review as rejection, never success, and does not write', async () => {
+        const { runner, onProposal, published, event, documentAgent } = setup();
+        await runner.handleEvent(event);
+        expect((await onProposal.mock.calls[0][1].reject()).ok).toBe(true);
+        expect(published.map((item) => item.type)).toEqual(['task.claim', 'proposal.announced', 'proposal.decision', 'task.rejected']);
+        expect(documentAgent.applyProposal).not.toHaveBeenCalled();
+    });
 });

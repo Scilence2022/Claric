@@ -1,8 +1,8 @@
 import { createId } from '../lib/task-runtime/task-model.js';
 import { validateTaskGraph } from '../lib/task-runtime/task-graph.js';
 
-const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'blocked']);
-const EVENTS = new Set(['task.claim', 'task.progress', 'task.succeeded', 'task.failed', 'task.cancel', 'proposal.announced', 'proposal.updated', 'proposal.decision', 'proposal.applied', 'proposal.conflict']);
+const TERMINAL = new Set(['succeeded', 'rejected', 'expired', 'unknown', 'failed', 'cancelled', 'blocked']);
+const EVENTS = new Set(['task.claim', 'task.progress', 'task.succeeded', 'task.rejected', 'task.failed', 'task.cancel', 'proposal.announced', 'proposal.updated', 'proposal.decision', 'proposal.applied', 'proposal.conflict']);
 const FIELDS = ['workspaceId', 'documentId', 'instanceId'];
 const validId = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -25,11 +25,25 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
         do {
             changed = false;
             for (const task of graph.tasks.values()) {
-                if (task.state === 'pending' && task.dependsOn.some((id) => ['failed', 'cancelled', 'blocked'].includes(graph.tasks.get(id)?.state))) { task.state = 'blocked'; changed = true; }
+                if (task.state === 'pending' && task.dependsOn.some((id) => TERMINAL.has(graph.tasks.get(id)?.state) && graph.tasks.get(id)?.state !== 'succeeded')) {
+                    task.state = 'blocked'; changed = true;
+                    onStatus({ type: 'task.blocked', graphId: graph.graphId, taskId: task.taskId, state: 'blocked' });
+                }
             }
         } while (changed);
         const tasks = [...graph.tasks.values()];
         if (graph.state !== 'cancelled' && tasks.every((task) => TERMINAL.has(task.state))) graph.state = tasks.every((task) => task.state === 'succeeded') ? 'succeeded' : 'failed';
+    }
+    function expireTasks() {
+        if (disposed) return;
+        for (const graph of graphs.values()) {
+            for (const task of graph.tasks.values()) {
+                if (!task.issued || TERMINAL.has(task.state) || task.createdAt + task.ttlMs > clock()) continue;
+                task.state = ['accepted', 'applied'].includes(task.proposal?.state) ? 'unknown' : 'expired';
+                onResult({ type: `task.${task.state}`, graphId: graph.graphId, taskId: task.taskId, state: task.state });
+            }
+            settleGraph(graph);
+        }
     }
     async function dispatchReady(graph) {
         for (const task of graph.tasks.values()) {
@@ -88,6 +102,7 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
         return null;
     }
     function handleEvent(event) {
+        expireTasks();
         if (disposed || !event || !EVENTS.has(event.type) || !event.payload || event.workspaceId !== local.workspaceId) return false;
         if (!Number.isSafeInteger(event.createdAt) || !Number.isInteger(event.ttlMs) || event.ttlMs < 1000 || event.createdAt + event.ttlMs <= clock() || event.createdAt > clock() + 30000) return false;
         const found = locate(event);
@@ -118,11 +133,18 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
                 }
             }
         }
-        if (event.type === 'task.succeeded' && task.proposal && (event.payload.proposalId !== task.proposal.proposalId || !['applied', 'rejected'].includes(task.proposal.state))) return false;
+        if (['task.succeeded', 'task.rejected'].includes(event.type) && task.proposal
+            && (event.payload.proposalId !== task.proposal.proposalId || !['applied', 'rejected'].includes(task.proposal.state))) return false;
+        if (event.type === 'task.rejected' && task.proposal?.state !== 'rejected') return false;
         seen.set(key, event.createdAt + event.ttlMs);
         for (const [id, expiresAt] of seen) if (expiresAt <= clock()) seen.delete(id);
         while (seen.size > maxSeenEvents) seen.delete(seen.keys().next().value);
-        const next = { 'task.claim': 'claimed', 'task.progress': 'running', 'task.succeeded': 'succeeded', 'task.failed': 'failed', 'task.cancel': 'cancelled' }[event.type];
+        // Older peers may still report rejected review as task.succeeded.
+        // Never let that release dependencies that require an applied change.
+        const next = { 'task.claim': 'claimed', 'task.progress': 'running',
+            'task.succeeded': task.proposal?.state === 'rejected' ? 'rejected' : 'succeeded', 'task.rejected': 'rejected',
+            'task.failed': 'failed', 'task.cancel': 'cancelled', 'proposal.announced': 'awaiting_review', 'proposal.updated': 'awaiting_review',
+            'proposal.decision': event.payload.decision === 'accepted' ? 'applying' : 'review_rejected', 'proposal.applied': 'applied' }[event.type];
         if (next) task.state = next;
         task.lastEvent = clone(event);
         graph.events.push(clone(event));
@@ -154,9 +176,10 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
         return getSnapshot(graphId);
     }
     function getSnapshot(graphId) {
+        expireTasks();
         const graph = graphs.get(graphId);
         return graph ? clone({ graphId: graph.graphId, state: graph.state, tasks: [...graph.tasks.values()].map((task) => { const snapshot = { ...task }; delete snapshot.submitting; return snapshot; }), events: graph.events }) : null;
     }
     function dispose() { disposed = true; graphs.clear(); seen.clear(); }
-    return Object.freeze({ submitGraph, handleEvent, cancelTask, cancelGraph, getSnapshot, dispose, graphIds: () => [...graphs.keys()] });
+    return Object.freeze({ submitGraph, handleEvent, cancelTask, cancelGraph, getSnapshot, expireTasks, dispose, graphIds: () => [...graphs.keys()] });
 }

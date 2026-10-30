@@ -30,6 +30,17 @@ describe('coordination v2 state', () => {
         a = state.register({ workspaceId: 'workspace-a', documentId: 'document-a' }, binding);
         b = state.register({ workspaceId: 'workspace-a', documentId: 'document-b' }, binding);
     });
+    test('refuses a successful task outcome after rejected review', () => {
+        const publish = (session, event) => state.append(event, session.credential, binding);
+        const submitted = envelope(a.identity, b.identity, 'task.submit', { taskId: 't' }, 'task-review');
+        publish(a, submitted);
+        const next = (type, payload, id) => ({ ...envelope(b.identity, a.identity, type, payload, id), correlationId: submitted.correlationId });
+        publish(b, next('task.claim', { taskId: 't' }, 'claim-review'));
+        publish(b, next('proposal.announced', { proposalId: 'p', taskId: 't', revision: 0, baseRevision: 'r', artifactIds: [] }, 'announce-review'));
+        publish(b, next('proposal.decision', { proposalId: 'p', revision: 0, decision: 'rejected' }, 'reject-review'));
+        expect(() => publish(b, next('task.succeeded', { taskId: 't', proposalId: 'p' }, 'false-success'))).toThrow('outcome must match');
+        expect(publish(b, next('task.rejected', { taskId: 't', proposalId: 'p' }, 'rejected-review')).result.state).toBe('rejected');
+    });
 
     test('issues server identities and authenticates the issued credential', () => {
         expect(a.identity.instanceId).not.toBe(b.identity.instanceId);
