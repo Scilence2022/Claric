@@ -57,7 +57,8 @@ export async function readFormatInventory(context, scopeRange, { scope, signal, 
                 const descriptor = describeFormatParagraph({ index, text: paragraph.text, style: paragraph.style,
                     styleBuiltIn: paragraph.styleBuiltIn, ooxml: xml.value,
                     inTable: typeof table.isNullObject === 'boolean' ? !table.isNullObject : undefined,
-                    withinScope: scope === 'document' || inside(relation?.value), bold: font?.bold });
+                    withinScope: scope === 'document' || inside(relation?.value), bold: font?.bold,
+                    singleParagraphContent: true });
                 records[index] = { descriptor, structure: rangeStructureFingerprint(xml.value),
                     paragraph: copyProperties(paragraph, SCALARS), font: copyProperties(font, FONT_KEYS) };
             }
@@ -176,7 +177,13 @@ export function compileFormatTargetPlan(inventory, ops, { bodyOnly = false } = {
     for (const op of actionable) {
         if (op.match?.length > 255) throw new Error('Formatting match exceeds Word search limits. Use a paragraph ID instead.');
         const selected = resolveFormatParagraphs(inventory.descriptors, op, { bodyOnly });
-        if (!selected.targets.length) throw new Error('No verified formatting paragraphs matched. Choose an explicit target or revise the request.');
+        if (!selected.targets.length) {
+            const reasons = new Map();
+            for (const { reason } of selected.exclusions) reasons.set(reason, (reasons.get(reason) || 0) + 1);
+            const details = [...reasons].sort((a, b) => b[1] - a[1]).slice(0, 5)
+                .map(([reason, count]) => `${count}: ${reason}`).join(' ');
+            throw new Error(`No verified formatting paragraphs matched. Inspected ${inventory.descriptors.length} paragraph(s). ${details} Choose an explicit target or revise the request.`);
+        }
         selected.exclusions.forEach((entry) => excluded.set(entry.id, entry));
         const ids = selected.targets.map((d) => key(d, inventory.identityMode));
         entries.push({ signature: JSON.stringify(op), ids });
