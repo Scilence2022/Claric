@@ -176,7 +176,7 @@ export async function prepareFormatProposal(deps, { instruction, originalInstruc
             rawResponse = JSON.stringify([explicitAlignment]);
             log('Preparing explicit body alignment from verified Word paragraph evidence.', 'info');
         } else if (!cleanupOnly) {
-            const prompt = buildFormatPrompt(instruction, anchor.text, scope, inventory?.descriptors);
+            const prompt = buildFormatPrompt(instruction, anchor.text, scope, inventory?.nativeDescriptors || inventory?.descriptors);
             log(`Planning formatting ops [${backendConfig.model}]...`, 'info');
             if (canReadWordVisuals()) {
                 const { planFormatWithRendering } = await loadFormatPlanning({ signal });
