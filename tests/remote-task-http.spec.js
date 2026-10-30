@@ -100,9 +100,9 @@ describe('remote tasks through real HTTP v2', () => {
         await review.runtime[decision]();
         expect(agent.applyProposal).toHaveBeenCalledTimes(decision === 'apply' ? 1 : 0);
         const received = await source.refresh();
-        expect(received.events.some((entry) => entry.type === 'task.succeeded')).toBe(true);
+        expect(received.events.some((entry) => entry.type === (decision === 'apply' ? 'task.succeeded' : 'task.rejected'))).toBe(true);
         const final = await source.transport.getSnapshot();
-        expect(final.tasks[0].state).toBe('succeeded');
+        expect(final.tasks[0].state).toBe(decision === 'apply' ? 'succeeded' : 'rejected');
         expect(final.proposals[0]).toMatchObject({ state: decision === 'apply' ? 'applied' : 'rejected', source: source.identity, target: target.identity });
         if (decision === 'apply') {
             expect(final.proposals[0].documentRevision).toBe('r2');

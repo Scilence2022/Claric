@@ -103,7 +103,7 @@ class TaskStore extends RecordStore {
     if (envelope.type === 'task.submit') return this.create(envelope, taskId, 'submitted');
     const item = this.require(envelope, taskId);
     this.route(envelope, item, envelope.type === 'task.cancel' ? item.source : item.target);
-    if (['succeeded', 'failed', 'cancelled'].includes(item.state)) throw error('Task is already terminal');
+    if (['succeeded', 'rejected', 'failed', 'cancelled'].includes(item.state)) throw error('Task is already terminal');
     let state;
     if (envelope.type === 'task.claim') {
       if (item.state !== 'submitted') throw error('Task already claimed');
@@ -112,7 +112,7 @@ class TaskStore extends RecordStore {
     else {
       if (!['claimed', 'running'].includes(item.state)) throw error('Claim task before updating');
       requireOwner(envelope.source, item.claimedBy);
-      state = { 'task.progress': 'running', 'task.succeeded': 'succeeded', 'task.failed': 'failed' }[envelope.type];
+      state = { 'task.progress': 'running', 'task.succeeded': 'succeeded', 'task.rejected': 'rejected', 'task.failed': 'failed' }[envelope.type];
       if (envelope.type === 'task.progress' && envelope.payload.progress < (item.progress || 0)) throw error('Progress cannot decrease');
     }
     return this.put(envelope.workspaceId, taskId, { ...item, ...envelope.payload, state, updatedAt: this.clock() });
@@ -183,9 +183,22 @@ class ProposalStore extends RecordStore {
 }
 
 class ArtifactStore extends RecordStore {
+  list(workspaceId, identity) {
+    normalizeId(workspaceId, 'workspaceId'); this.purge();
+    return [...this.records.values()].filter((item) => item.workspaceId === workspaceId
+      && (item.shared === true || same(item.source, identity) || same(item.target, identity))).map(clone);
+  }
+  revoke(identity) { for (const [id, item] of this.records) if (same(item.source, identity)) this.records.delete(id); }
   apply(envelope) {
     const p = envelope.payload;
-    if (envelope.type === 'artifact.announced') return this.create(envelope, p.artifactId, 'available');
+    if (envelope.type === 'artifact.announced') {
+      if (p.shared === true) {
+        requireOwner(envelope.target, envelope.source);
+        if (p.mediaType !== 'text/plain' || !/^[a-f0-9]{64}$/.test(p.digest) || !['selection', 'document', 'outline', 'cursor'].includes(p.scope)
+          || !p.sourceRevision || !p.sourceSnapshotId || !Number.isInteger(p.textLength) || p.textLength < 1 || p.textLength > 12000 || p.size > 48000) throw error('Invalid shared evidence metadata', 400);
+      }
+      return this.create(envelope, p.artifactId, 'available');
+    }
     const item = this.require(envelope, p.artifactId); this.route(envelope, item, item.source);
     this.remove(envelope.workspaceId, p.artifactId); return { artifactId: p.artifactId, state: 'removed' };
   }
@@ -261,11 +274,18 @@ class CoordinationState {
     try {
       this.cursors.room(envelope.workspaceId);
       const group = envelope.type.split('.')[0];
+      if (['task.succeeded', 'task.rejected'].includes(envelope.type)) {
+        const related = this.proposals.list(actor.workspaceId, actor).filter((item) => item.taskId === envelope.payload.taskId);
+        if (related.length || envelope.type === 'task.rejected') {
+          const proposal = related.find((item) => item.proposalId === envelope.payload.proposalId && item.correlationId === envelope.correlationId);
+          if (!proposal || proposal.state !== (envelope.type === 'task.rejected' ? 'rejected' : 'applied')) throw error('Task outcome must match its reviewed proposal');
+        }
+      }
       const store = { document: this.documents, context: this.requests, task: this.tasks, proposal: this.proposals, lease: this.leases, artifact: this.artifacts }[group];
       const result = store.apply(envelope, this.leases, this.tasks);
       event = this.cursors.append(envelope, result);
       this.idempotency.set(id, { fingerprint, event, expiresAt: envelope.createdAt + envelope.ttlMs });
-      if (envelope.type === 'document.left') { this.leases.revoke(actor); this.sessions.revoke(actor); }
+      if (envelope.type === 'document.left') { this.leases.revoke(actor); this.artifacts.revoke(actor); this.sessions.revoke(actor); }
       if (this.persistence) this.persistence.checkpoint(this);
     } catch (caught) {
       for (let index = 0; index < stores.length; index += 1) { stores[index].records = backup[index].records; if (backup[index].nextFence !== undefined) stores[index].nextFence = backup[index].nextFence; }

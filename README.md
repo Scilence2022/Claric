@@ -488,8 +488,9 @@ changes require review in the target taskpane, regardless of the source's auto-a
 setting. **Read context** reads the selected peer's document. **Send task** sends
 the composer instruction with the chosen task type: **Edit selection** rewrites
 the peer's selected passage, **Format selection** drafts structured formatting
-ops for it, and **Insert table** drafts a table preview placed relative to the
-selection. Every type is reviewed and applied in the target taskpane only.
+ops for it, **Insert table** drafts a table preview placed relative to the
+selection, and **Append content** drafts new content at the document end.
+Every type is reviewed and applied in the target taskpane only.
 **Plan tasks** uses this document's configured model to split the composer
 instruction into a small per-document task graph (up to 8 tasks, with optional
 dependencies) across every connected document. Text read through **Read context**
@@ -498,6 +499,32 @@ data — never as instructions. The model's plan is validated fail-closed (unkno
 targets, unsupported types, or broken dependencies reject the whole plan; nothing
 is submitted partially), and each resulting task is still reviewed and applied in
 its target taskpane only.
+
+The workspace also offers **Shared evidence**. Choose **Selected passage** or
+**Document excerpt**, then **Share excerpt** to publish a versioned reference.
+Sharing is explicit; chat history is never broadcast. Each excerpt contains at
+most 12,000 characters, expires after 15 minutes, and remains in the source
+taskpane's memory. Only its metadata is announced to linked documents. Select an
+excerpt in another document and use **Read evidence / next page** or search
+within it to request pages of up to 3,000 characters (four loaded pages total).
+Pages carry the source instance, snapshot, revision, fingerprint and character
+offsets. Source changes require sharing a fresh excerpt. Planning revalidates
+references before the model request and before dispatch, and preserves cited
+artifact IDs on target proposal records. Reads travel through the authenticated
+local coordination service and may be sent to the receiving document's model.
+**Withdraw excerpt** immediately disables further source reads; copies already
+read into another chat are not erased. Disconnecting clears the local excerpt
+store, and a successful disconnect also removes its catalogue entries.
+
+Task status distinguishes delivery, claim, preparation, target review,
+application and completion. Rejecting a proposal is a rejected task, never a
+successful edit; its dependent tasks are blocked. Expiry after acceptance or
+application is reported as an uncertain outcome rather than automatically
+retrying a possible write. Multiple windows of the same document are targeted
+by instance ID, and advertised target capabilities constrain model plans.
+Restart the local coordination server and reload all participating taskpanes
+after updating, so they agree on the added evidence metadata and rejection
+events in the v2 protocol.
 **Disconnect this document**
 is the advanced manual override: it stops access and pauses automatic reconnection
 until the button is clicked again. The URL remains subject to loopback, origin,

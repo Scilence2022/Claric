@@ -6,7 +6,7 @@ const EVENT_TYPES = Object.freeze({
   PRESENCE: 'presence', METADATA: 'metadata',
   DOCUMENT_ANNOUNCE: 'document.announce', DOCUMENT_HEARTBEAT: 'document.heartbeat', DOCUMENT_LEFT: 'document.left',
   CONTEXT_REQUEST: 'context.request', CONTEXT_RESPONSE: 'context.response', CONTEXT_CANCEL: 'context.cancel',
-  TASK_SUBMIT: 'task.submit', TASK_CLAIM: 'task.claim', TASK_PROGRESS: 'task.progress', TASK_SUCCEEDED: 'task.succeeded', TASK_FAILED: 'task.failed', TASK_CANCEL: 'task.cancel',
+  TASK_SUBMIT: 'task.submit', TASK_CLAIM: 'task.claim', TASK_PROGRESS: 'task.progress', TASK_SUCCEEDED: 'task.succeeded', TASK_REJECTED: 'task.rejected', TASK_FAILED: 'task.failed', TASK_CANCEL: 'task.cancel',
   PROPOSAL_ANNOUNCED: 'proposal.announced', PROPOSAL_UPDATED: 'proposal.updated', PROPOSAL_DECISION: 'proposal.decision', PROPOSAL_APPLIED: 'proposal.applied', PROPOSAL_CONFLICT: 'proposal.conflict',
   LEASE_ACQUIRE: 'lease.acquire', LEASE_RENEW: 'lease.renew', LEASE_RELEASE: 'lease.release',
   ARTIFACT_ANNOUNCED: 'artifact.announced', ARTIFACT_REMOVED: 'artifact.removed',
@@ -23,13 +23,14 @@ const PARTY_FIELDS = ['workspaceId', 'documentId', 'instanceId'];
 const PAYLOAD_SCHEMAS = Object.freeze({
   'document.announce': { title: 'string?', revision: 'id?', capabilities: 'ids?' },
   'document.heartbeat': { revision: 'id?' }, 'document.left': {},
-  'context.request': { requestId: 'id', scope: 'id', artifactIds: 'ids?' },
+  'context.request': { requestId: 'id', scope: 'id', artifactIds: 'ids?', digest: 'id?', offset: 'integer?', limit: 'integer?', query: 'string?' },
   'context.response': { requestId: 'id', artifactIds: 'ids?', summary: 'string?', snapshot: 'object?', error: 'object?' },
   'context.cancel': { requestId: 'id', reason: 'string?' },
   'task.submit': { taskId: 'id', taskType: 'id?', instruction: 'string?', artifactIds: 'ids?', proposalId: 'id?', reviewRequired: 'boolean?', graphId: 'id?', attemptId: 'id?', payload: 'object?' },
   'task.claim': { taskId: 'id', graphId: 'id?', attemptId: 'id?' },
   'task.progress': { taskId: 'id', progress: 'progress', message: 'string?' },
   'task.succeeded': { taskId: 'id', proposalId: 'id?', artifactIds: 'ids?' },
+  'task.rejected': { taskId: 'id', proposalId: 'id' },
   'task.failed': { taskId: 'id', errorCode: 'id', message: 'string?' },
   'task.cancel': { taskId: 'id', reason: 'string?' },
   'proposal.announced': { proposalId: 'id', taskId: 'id', revision: 'integer', baseRevision: 'id', artifactIds: 'ids', kind: 'id?', scope: 'id?', title: 'string?', summary: 'string?' },
@@ -40,7 +41,7 @@ const PAYLOAD_SCHEMAS = Object.freeze({
   'lease.acquire': { resourceId: 'resource', durationMs: 'duration' },
   'lease.renew': { resourceId: 'resource', durationMs: 'duration', fence: 'fence' },
   'lease.release': { resourceId: 'resource', fence: 'fence' },
-  'artifact.announced': { artifactId: 'id', mediaType: 'string', digest: 'id', size: 'integer', summary: 'string?' },
+  'artifact.announced': { artifactId: 'id', mediaType: 'string', digest: 'id', size: 'integer', summary: 'string?', shared: 'boolean?', scope: 'id?', sourceRevision: 'id?', sourceSnapshotId: 'id?', textLength: 'integer?', truncated: 'boolean?' },
   'artifact.removed': { artifactId: 'id' },
 });
 function plainObject(value) { return value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value)); }

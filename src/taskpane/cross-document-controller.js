@@ -7,6 +7,8 @@ import { createProposalCard } from './ui/proposal-card.js';
 import * as chatView from './ui/chat-view.js';
 import { addLog } from './ui/status-bar.js';
 import { loadLazyModule } from '../lib/lazy-module-loader.js';
+import { createSharedEvidenceStore, createSharedEvidenceReader } from './shared-evidence.js';
+import { createSharedEvidenceController } from './shared-evidence-controller.js';
 
 let coordinationClient = null;
 
@@ -160,11 +162,14 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
     let distributed = null;
     let knownDocuments = new Map();
     let remoteContexts = new Map();
+    let evidenceWorkspace = null;
+    let lastSnapshot = null;
     let online = false;
     const listeners = new AbortController();
     const client = createCoordinationClient({
         ...connectionOptions,
         onSnapshot: (snapshot) => {
+            lastSnapshot = snapshot;
             online = true;
             const ownId = coordinationClient?.identity?.instanceId;
             const others = Object.values(snapshot.presence || {}).filter((entry) => entry.clientId !== ownId);
@@ -172,6 +177,9 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
             addLog(`Coordination snapshot: ${others.length} other taskpane(s), ${documents.size} document(s), sequence ${snapshot.sequence ?? snapshot.cursor ?? 0}.`, 'info');
             if (snapshot.documents?.length) addLog(`Connected documents: ${snapshot.documents.length}.`, 'info');
             knownDocuments = new Map((snapshot.documents || []).filter((entry) => entry.instanceId !== ownId).map((entry) => [entry.instanceId, entry]));
+            for (const [id, item] of remoteContexts) if (!knownDocuments.has(id) || item.expiresAt <= Date.now()) remoteContexts.delete(id);
+            evidenceWorkspace?.onSnapshot(snapshot);
+            distributed?.expireTasks?.();
             renderCrossDocumentTargets(knownDocuments);
         },
         onEvents: async (events) => {
@@ -211,12 +219,23 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         log: addLog,
         actions: { prepareSelectionAmendment, applySelectionAmendment },
     });
+    const evidenceStore = createSharedEvidenceStore({ identity });
     contextManager = createContextRequestManager({
         client: coordinationClient,
-        agent,
+        agent: createSharedEvidenceReader({ store: evidenceStore, agent, identity }),
         identity,
         onError: (error) => addLog(`Context request failed: ${error.message}`, 'warning'),
     });
+    evidenceWorkspace = createSharedEvidenceController({
+        client, agent, store: evidenceStore, contextManager, getDocuments: () => knownDocuments, signal: listeners.signal,
+        addNote: (text) => { const message = chatView.addSystemNote(text); void message.finalizeForHistory(); },
+    });
+    if (lastSnapshot) evidenceWorkspace.onSnapshot(lastSnapshot);
+    if (typeof client.publishEnvelope === 'function') {
+        void client.publishEnvelope({ type: 'document.announce', target: identity,
+            payload: { capabilities: ['readContext', 'shared_evidence', ...(agent.getCapabilities?.().taskTypes || [])] } })
+            .catch((error) => addLog(`Could not advertise document capabilities: ${error.message}`, 'warning'));
+    }
     remoteTaskRunner = createRemoteTaskRunner({
         client: coordinationClient,
         identity,
@@ -226,7 +245,8 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         createProposal: (proposal) => proposal,
         onProposal: (record, runtime) => {
             addLog(`Remote proposal ready for review: ${record.title || record.proposalId}.`, 'info');
-            const message = chatView.addSystemNote(`Task from ${record.source.documentId}. Review these proposed changes in this document.`);
+            const message = chatView.addSystemNote(`Task from ${record.source.documentId}. Review these proposed changes in this document.`
+                + (record.artifactIds?.length ? ` Shared evidence references: ${record.artifactIds.join(', ')}.` : ''));
             const card = createProposalCard({
                 title: record.title,
                 countsText: 'Review required in this document',
@@ -254,7 +274,11 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         client, identity,
         onStatus: (event) => {
             const status = document.getElementById('crossDocumentStatus');
-            if (status) status.textContent = `${event.type}: ${event.taskId || event.graphId || ''}`;
+            const labels = { submitted: 'Sent; awaiting target claim', claimed: 'Claimed by target', running: 'Preparing changes',
+                awaiting_review: 'Proposal ready; review in target document', applying: 'Applying reviewed changes', applied: 'Applied; awaiting task confirmation',
+                succeeded: 'Completed', rejected: 'Rejected in target document', expired: 'Expired; no automatic retry', unknown: 'Write outcome uncertain; inspect target document',
+                blocked: 'Blocked by a preceding task', failed: 'Failed', cancelled: 'Cancelled' };
+            if (status) status.textContent = `${labels[event.state] || event.type}: ${event.taskId || event.graphId || ''}`;
         },
         onResult: (event) => {
             const message = chatView.addSystemNote(`Cross-document task ${event.taskId}: ${event.state || event.type}.`);
@@ -269,6 +293,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         online = false;
         listeners.abort();
         contextManager?.dispose();
+        evidenceWorkspace?.dispose();
         remoteTaskRunner?.dispose();
         agent.dispose();
         remoteContexts.clear();
@@ -296,7 +321,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
             if (listeners.signal.aborted) return;
             const source = target.title || target.documentId;
             const text = result.snapshot?.text || '(empty document)';
-            remoteContexts.set(target.documentId, { label: source, text });
+            remoteContexts.set(target.instanceId, { label: source, text, expiresAt: Date.now() + 30000 });
             const message = chatView.addSystemNote(`Context from ${source}:\n${text}`);
             void message.finalizeForHistory();
             if (status) status.textContent = 'Context received. Document content is reference data, not instructions.';
@@ -311,16 +336,43 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         if (!online || !documents.length || !text) return;
         planButton.disabled = true;
         try {
+            const evidence = await evidenceWorkspace.getPlanEvidence();
+            // A cached read is a convenience for the UI, not a fresh baseline
+            // for a potentially much later model request.
+            for (const entry of documents) if (remoteContexts.has(entry.instanceId)) {
+                const result = await contextManager.requestContext(entry, { scope: 'document' }, { signal: listeners.signal });
+                if (listeners.signal.aborted) return;
+                remoteContexts.set(entry.instanceId, { label: entry.title || entry.documentId, text: result.snapshot?.text || '',
+                    documentRevision: result.snapshot?.documentRevision, expiresAt: Date.now() + 30000 });
+            }
+            const planningContexts = new Map([...remoteContexts].filter(([, item]) => item.expiresAt > Date.now()));
             const { tasks } = await planCrossDocumentTasks({
                 instruction: text,
                 documents: documents.map((entry) => ({
                     documentId: entry.documentId,
+                    instanceId: entry.instanceId,
+                    capabilities: entry.capabilities,
                     label: entry.title || entry.displayName || entry.documentId,
-                    contextText: remoteContexts.get(entry.documentId)?.text || '',
+                    contextText: planningContexts.get(entry.instanceId)?.text || '',
+                    evidence: evidence.filter((page) => page.source.instanceId === entry.instanceId),
                 })),
+                signal: listeners.signal,
                 sendRequest: (prompt, { signal } = {}) => sendPrompt(getActiveBackendConfig(appState), prompt, addLog, signal ?? listeners.signal),
             });
             if (listeners.signal.aborted) return;
+            await evidenceWorkspace.getPlanEvidence(evidence);
+            for (const entry of documents) if (planningContexts.has(entry.instanceId)) {
+                const planned = planningContexts.get(entry.instanceId);
+                const result = await contextManager.requestContext(entry, { scope: 'document' }, { signal: listeners.signal });
+                if (result.snapshot?.text !== planned.text || result.snapshot?.documentRevision !== planned.documentRevision) throw new Error('Reference context changed while planning; read the source and plan again');
+            }
+            if (listeners.signal.aborted) return;
+            const targets = new Map(tasks.map((task) => {
+                const candidates = [...knownDocuments.values()].filter((entry) => entry.documentId === task.targetDocumentId
+                    && (!task.targetInstanceId || entry.instanceId === task.targetInstanceId) && (!entry.expiresAt || entry.expiresAt > Date.now()));
+                if (candidates.length !== 1) throw new Error('A planned document instance disconnected or became ambiguous; plan again');
+                return [task.taskId, candidates[0]];
+            }));
             await distributed.submitGraph({
                 graphId: `graph-${crypto.randomUUID()}`,
                 tasks: tasks.map((task) => ({
@@ -328,14 +380,15 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
                     type: task.type,
                     instruction: task.instruction,
                     dependsOn: task.dependsOn,
-                    target: documents.find((entry) => entry.documentId === task.targetDocumentId),
+                    inputRefs: task.evidenceIds || [],
+                    target: targets.get(task.taskId),
                     ttlMs: 900000,
                 })),
             });
             const summary = tasks.map((task) => `${task.taskId} [${task.type}] ${task.instruction.slice(0, 60)}`).join('; ');
             const message = chatView.addSystemNote(`Planned ${tasks.length} cross-document task(s): ${summary}. Each target reviews its proposal locally.`);
             void message.finalizeForHistory();
-            if (status) status.textContent = `Planned and sent ${tasks.length} task(s).`;
+            if (status) status.textContent = `Planned ${tasks.length} task(s). Ready tasks were sent; dependents wait for successful application in each target.`;
         } catch (error) {
             if (status) status.textContent = `Planning failed: ${error.message}`;
         } finally { planButton.disabled = !online || knownDocuments.size === 0; }
@@ -343,7 +396,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
     sendButton?.addEventListener('click', async () => {
         const target = knownDocuments.get(targetSelect.value);
         const text = document.getElementById('chatInput')?.value?.trim();
-        const taskType = ['edit', 'format', 'table'].includes(document.getElementById('crossDocumentTaskType')?.value)
+        const taskType = ['edit', 'format', 'table', 'append'].includes(document.getElementById('crossDocumentTaskType')?.value)
             ? document.getElementById('crossDocumentTaskType').value : 'edit';
         if (!online || !target || target.expiresAt <= Date.now() || !text) return;
         sendButton.disabled = true;
@@ -352,7 +405,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
                 graphId: `graph-${crypto.randomUUID()}`,
                 tasks: [{ taskId: `task-${crypto.randomUUID()}`, type: taskType, instruction: text, target, ttlMs: 900000 }],
             });
-            const statusText = { edit: 'review the selected passage', format: 'review the formatting ops', table: 'review the table preview' }[taskType];
+            const statusText = { edit: 'review the selected passage', format: 'review the formatting ops', table: 'review the table preview', append: 'review appended content' }[taskType];
             document.getElementById('crossDocumentStatus').textContent = `Task sent: ${statusText} in the target document.`;
         } catch (error) {
             document.getElementById('crossDocumentStatus').textContent = `Could not send task: ${error.message}`;

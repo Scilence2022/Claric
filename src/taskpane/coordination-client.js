@@ -218,6 +218,7 @@ export function createV2CoordinationTransport({
             const payload = response ? record.result : type === 'context.request'
                 ? { requestId: record.requestId, scope: record.scope, ...(record.artifactIds ? { artifactIds: record.artifactIds } : {}) }
                 : { requestId: record.requestId, reason: 'Cancelled' };
+            if (type === 'context.request') for (const field of ['digest', 'offset', 'limit', 'query']) if (record[field] !== undefined) payload[field] = record[field];
             events.push({ version: 2, workspaceId: record.workspaceId, source: response ? record.target : record.source,
                 target: response ? record.source : record.target, type, payload, correlationId: record.correlationId,
                 idempotencyKey: `recovery-${record.requestId}`.slice(0, 128), createdAt: record.createdAt,

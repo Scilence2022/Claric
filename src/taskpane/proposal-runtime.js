@@ -1,4 +1,4 @@
-const RECORD_FIELDS = ['proposalId', 'graphId', 'taskId', 'attemptId', 'source', 'target', 'kind', 'scope', 'title', 'summary', 'items', 'baseRevision', 'revision', 'state', 'reviewRequired', 'createdAt', 'expiresAt'];
+const RECORD_FIELDS = ['proposalId', 'graphId', 'taskId', 'attemptId', 'source', 'target', 'kind', 'scope', 'title', 'summary', 'items', 'artifactIds', 'baseRevision', 'revision', 'state', 'reviewRequired', 'createdAt', 'expiresAt'];
 const TERMINAL_STATES = new Set(['applied', 'rejected', 'conflict', 'unknown']);
 const MAX_TEXT = 4000;
 const MAX_ITEMS = 200;
@@ -68,6 +68,11 @@ function normalize(input) {
     result.title = text(input.title, 'title', false);
     result.summary = text(input.summary, 'summary', false);
     result.items = normalizeItems(input.items || []);
+    if (input.artifactIds !== undefined) {
+        if (!Array.isArray(input.artifactIds) || input.artifactIds.length > 100
+            || input.artifactIds.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id))) throw new TypeError('Invalid proposal evidence references');
+        result.artifactIds = [...new Set(input.artifactIds)];
+    }
     if (input.baseRevision === undefined || (typeof input.baseRevision !== 'string' && typeof input.baseRevision !== 'number')) throw new TypeError('baseRevision is required');
     result.baseRevision = input.baseRevision;
     if (input.revision !== undefined && (!Number.isSafeInteger(input.revision) || input.revision < 0)) throw new TypeError('Invalid proposal revision');

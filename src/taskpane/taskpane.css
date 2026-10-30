@@ -115,6 +115,29 @@ body {
     padding: var(--spacing-sm) var(--spacing-md);
     border-bottom: 1px solid var(--border-color);
     font-size: var(--font-size-sm);
+    flex: 0 0 auto;
+    max-height: 45vh;
+    overflow-y: auto;
+}
+
+.shared-evidence-controls {
+    display: grid;
+    gap: var(--spacing-sm);
+    min-width: 0;
+    margin-top: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+}
+
+.shared-evidence-controls select {
+    min-width: 0;
+    width: 100%;
+    padding: 5px 7px;
+    background: var(--primary-bg);
+    color: var(--primary-text);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
 }
 
 .cross-document-settings label,
