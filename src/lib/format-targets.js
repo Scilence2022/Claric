@@ -1,5 +1,8 @@
 /** Native paragraph evidence and semantic selectors for formatting proposals. */
 import { documentPartRoot, extractFinalTextFromOoxml } from './ooxml-text.js';
+import { MATH_NS, mathTextState } from './ooxml-math.js';
+import { projectNativeText, revisionTextState } from './word-revisions.js';
+import { inspectEmptyParagraphXml } from './empty-paragraphs.js';
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const key = (value) => String(value || '').toLowerCase().replace(/[\s_-]+/g, '');
@@ -13,12 +16,23 @@ const PROTECTED_MARKUP = new Set(['sectPr', 'sdt', 'del', 'moveFrom', 'moveTo', 
 const OBJECT_MARKUP = new Set(['drawing', 'pict', 'object', 'txbxContent']);
 const NON_BODY_TARGETS = /标题|题注|表格|图表|图片|目录|参考文献|页眉|页脚|\b(?:headings?|titles?|captions?|tables?|images?|figures?|footnotes?|headers?|footers?|bibliograph(?:y|ies))\b/i;
 
-function singleParagraph(ooxml) {
+function singleParagraph(ooxml, singleParagraphContent) {
     const root = documentPartRoot(ooxml);
     if (!root) return null;
     const paragraphs = root.namespaceURI === W_NS && root.localName === 'p'
         ? [root] : Array.from(root.getElementsByTagNameNS(W_NS, 'p'));
-    return paragraphs.length === 1 ? paragraphs[0] : null;
+    if (paragraphs.length === 1) return paragraphs[0];
+    // Paragraph.getOoxml can append an empty export paragraph on Mac. Only
+    // a known native single-paragraph read authorizes ignoring that marker;
+    // never drop real text, whitespace, objects or protected boundaries.
+    if (singleParagraphContent && paragraphs.length === 2) {
+        const [paragraph, trailer] = paragraphs;
+        const body = paragraph.parentElement;
+        if (body?.namespaceURI === W_NS && body.localName === 'body' && trailer.parentElement === body
+            && !Array.from(trailer.getElementsByTagNameNS(W_NS, 't')).some((node) => node.textContent)
+            && inspectEmptyParagraphXml(new XMLSerializer().serializeToString(trailer)).deletable) return paragraph;
+    }
+    return null;
 }
 function on(element) { return !['0', 'false', 'off'].includes(element?.getAttributeNS(W_NS, 'val')); }
 function sentenceLike(text) {
@@ -31,10 +45,10 @@ function sentenceLike(text) {
  * eligible is specifically eligibility for a semantic body-text selector.
  * @param {{index?: number, text?: string, style?: string, styleBuiltIn?: string,
  * ooxml?: string, inTable?: boolean, withinScope?: boolean, bold?: boolean,
- * outlineLevel?: number}} [input]
+ * outlineLevel?: number, singleParagraphContent?: boolean}} [input]
  */
 export function describeFormatParagraph({ index, text, style, styleBuiltIn, ooxml, inTable, withinScope = true,
-    bold, outlineLevel } = {}) {
+    bold, outlineLevel, singleParagraphContent = false } = {}) {
     if (!Number.isInteger(index) || index < 0) throw new Error('Formatting paragraph index must be a non-negative integer.');
     const descriptor = { id: `p${index + 1}`, index, text: typeof text === 'string' ? text : '',
         style: typeof style === 'string' ? style : '', styleBuiltIn: typeof styleBuiltIn === 'string' ? styleBuiltIn : '',
@@ -46,7 +60,7 @@ export function describeFormatParagraph({ index, text, style, styleBuiltIn, ooxm
     // Exact-text character formatting needs only readable, fully in-scope
     // native text; equations, links and fields stay untouched around a hit.
     descriptor.inScope = true;
-    const paragraph = singleParagraph(ooxml);
+    const paragraph = singleParagraph(ooxml, singleParagraphContent);
     if (!paragraph) return result('unknown', 'XML does not identify one readable paragraph.');
     if (typeof inTable !== 'boolean') return result('unknown', 'Native table membership is unreadable.');
     descriptor.verified = true;
@@ -60,13 +74,27 @@ export function describeFormatParagraph({ index, text, style, styleBuiltIn, ooxm
     if (elements.some((element) => element.namespaceURI === W_NS && OBJECT_MARKUP.has(element.localName))) {
         return result('object', 'Paragraph contains a drawing, picture or embedded object.');
     }
-    if (elements.some((element) => element.namespaceURI !== W_NS
-        || PROTECTED_MARKUP.has(element.localName))) return result('protected', 'Paragraph contains protected or unsupported structure.');
-    // Paragraph-level XML may include a range's synthetic trailing marker.
-    // Only the exact native paragraph text, apart from its terminal mark, is compared.
+    if (elements.some((element) => element.namespaceURI === MATH_NS && element.localName === 'oMathPara')) {
+        return result('object', 'Paragraph contains a display equation.');
+    }
+    const equations = elements.filter((element) => element.namespaceURI === MATH_NS && element.localName === 'oMath');
+    const mathElements = new Set(equations.flatMap((equation) => [equation, ...Array.from(equation.getElementsByTagName('*'))]));
+    if (elements.some((element) => element.namespaceURI === W_NS ? PROTECTED_MARKUP.has(element.localName)
+        : element.namespaceURI !== MATH_NS || !mathElements.has(element))) {
+        return result('protected', 'Paragraph contains protected or unsupported structure.');
+    }
+    if (equations.some((equation) => mathTextState(equation).nativeText === null)) {
+        return result('protected', 'Inline equation has an unsupported native text representation.');
+    }
+    // Match only evidenced equation projections; ordinary text differences
+    // still fail verification. Native scalar formatting preserves equation XML.
     const xmlText = extractFinalTextFromOoxml(ooxml);
-    if (xmlText !== text.replace(/\r$/, '')) return result('unknown', 'Native text and paragraph XML disagree.', false);
-    const trimmed = text.trim();
+    const nativeText = text.replace(/\r$/, '');
+    if (xmlText !== nativeText && (!equations.length
+        || !projectNativeText(revisionTextState(ooxml, { paragraph: true, singleParagraphContent }), nativeText))) {
+        return result('unknown', 'Native text and paragraph XML disagree.', false);
+    }
+    const trimmed = xmlText.trim();
     if (!trimmed) return result('empty', 'Paragraph has no prose text.');
     const builtIn = key(styleBuiltIn);
     if (/^heading[1-9]$/.test(builtIn)) return result('heading', 'Native built-in heading style.');

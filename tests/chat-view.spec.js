@@ -375,6 +375,56 @@ describe('proposal state persistence', () => {
     expect(rows.map((row) => row.open)).toEqual([false, true]);
   });
 
+  test('force result report and current preview persist after recovery and history reload', async () => {
+    const msg = createAssistantMessage();
+    const items = [{ id: 'a', label: 'Section', before: 'old', after: 'proposed' }];
+    const card = createProposalCard({ title: 'Edits', items,
+      onApply: async (_ids, ctx) => ctx.onChunkApplied('a', { uncertain: true }),
+      onRecover: async (id, _mode, ctx) => {
+        ctx.onProposal({ before: 'current', after: 'regenerated' });
+        ctx.onChunkApplied(id, { applied: true });
+        return { errors: [], recoveryReport: 'Force apply succeeded for section a: the proposal was applied and verified. 2 paragraph edit(s) verified.' };
+      },
+    });
+    msg.attachProposal(card, { title: 'Edits', state: 'pending', items });
+    msg.finalizeForHistory();
+    await card.applyAll();
+    expect(getCurrentSession().messages[0].proposals[0].state).toBe('warning');
+    card.el.querySelector('[data-recovery="force"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const saved = getCurrentSession().messages[0].proposals[0];
+    expect(saved.state).toBe('applied');
+    expect(saved.items[0]).toMatchObject({ before: 'current', after: 'regenerated', outcome: 'applied' });
+    expect(saved.detail).not.toContain('unverified');
+    expect(saved.detail).toContain('Force apply succeeded for section a');
+    expect(saved.detail).toContain('2 paragraph edit(s) verified');
+    const restored = renderStaticProposalCard(saved);
+    expect(restored.querySelector('.proposal-card-status').textContent).toContain(saved.detail);
+  });
+
+  test('a partial force result remains a warning with its verified count and reason after reload', async () => {
+    const msg = createAssistantMessage();
+    const items = [{ id: 'a', label: 'Section', before: 'old', after: 'proposed' }];
+    const report = 'Force apply partially completed for section a. 2 paragraph edit(s) verified. Reason: Read-back differs.';
+    const card = createProposalCard({ title: 'Edits', items,
+      onApply: async (_ids, ctx) => ctx.onChunkApplied('a', { uncertain: true }),
+      onRecover: async (id, _mode, ctx) => {
+        ctx.onChunkApplied(id, { error: true, partial: true, uncertain: true });
+        return { amendmentsApplied: 0, errors: ['Read-back differs.'], recoveryReport: report };
+      },
+    });
+    msg.attachProposal(card, { title: 'Edits', state: 'pending', items });
+    msg.finalizeForHistory();
+    await card.applyAll();
+    card.el.querySelector('[data-recovery="force"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const saved = getCurrentSession().messages[0].proposals[0];
+    expect(saved.state).toBe('warning');
+    expect(saved.items[0].outcome).toBe('partial-uncertain');
+    expect(saved.detail).toContain(report);
+    expect(renderStaticProposalCard(saved).querySelector('.proposal-card-status').textContent).toContain(report);
+  });
+
   test('reject click flows through markRejected so meta leaves "pending"', () => {
     const msg = createAssistantMessage();
     const meta = { title: 'Proposed table', state: 'pending', countsText: '', items: [] };

@@ -56,14 +56,14 @@ export async function stageFormatProposal({ turn, msg, turnDeps, selectionText, 
                 const ops = proposal.ops.filter((_, index) => selectedIds.includes(index));
                 const fmtResult = await resource.apply(() => apply(turnDeps, { ...proposal, ops }, applyCtx));
                 if (layout) {
-                    if (fmtResult?.verified) card.markApplied(`${fmtResult.verifiedSections} section(s) verified.`);
+                    if (fmtResult?.verified) card.markApplied(`${fmtResult.verifiedSections} section(s) verified.`, { noChange: fmtResult.alreadySatisfied === true });
                     else card.markWarning('Page layout could not be verified. Inspect Word before retrying.');
                 } else if (fmtResult?.interrupted || fmtResult?.partial) {
                     card.markWarning('Formatting stopped; changes may already be applied. Review the document and draft a new proposal.');
                 } else if (proposal.targetSummary?.uncertainParagraphs) {
                     card.markWarning(`${fmtResult?.verifiedParagraphs || proposal.targetSummary.verifiedParagraphs} paragraph(s) verified; ${proposal.targetSummary.uncertainParagraphs} uncertain paragraph(s) preserved for review.`);
                 } else if (fmtResult?.alreadySatisfied && fmtResult.verifiedParagraphs > 0) {
-                    card.markApplied(`${fmtResult.verifiedParagraphs} paragraph(s) verified; requested formatting was already satisfied.`);
+                    card.markApplied(`${fmtResult.verifiedParagraphs} paragraph(s) verified; requested formatting was already satisfied.`, { noChange: true });
                 } else if (fmtResult && fmtResult.appliedRanges === 0 && fmtResult.insertedParagraphs === 0 && !fmtResult.deletedParagraphs) {
                     card.markWarning('Nothing applied — no formatting targets matched. See the activity log.');
                 } else if (proposal.cleanupSummary?.preserved) {

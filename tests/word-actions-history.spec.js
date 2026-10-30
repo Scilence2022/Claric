@@ -211,7 +211,12 @@ test.each([false, true])('append, table creation, plan, format and illustration 
         const result = await actions[name](deps, { ...options, ...args });
         expect(result).toBeTruthy();
         const body = bodies().at(name === 'planDocumentTasks' ? -2 : -1);
-        expectHistory(body.messages);
+        if (name === 'planDocumentTasks') {
+            expect(body.messages.map(({ role }) => role)).toEqual(['system', 'user']);
+            expect(JSON.parse(body.messages[1].content)).toEqual({ originalRequest: options.instruction, requestContext: history });
+        } else {
+            expectHistory(body.messages);
+        }
         expect(body.messages.at(-1).content).toContain(options.instruction);
         expect(body.stream).toBe(stream);
     }

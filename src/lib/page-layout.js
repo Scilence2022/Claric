@@ -79,8 +79,8 @@ export function parsePageLayoutOps(raw, availableIds) {
 }
 
 export function explicitLineNumberRemoval(instruction) {
-    return /^(?:请\s*)?(?:去掉|删除|移除|关闭|取消)(?:(?:整个|所有|全文|全篇|当前|本|选区|所选|文档|中|的|节|内)\s*)*行号[。.!！]?$/i.test(String(instruction).trim())
-        || /^(?:please\s+)?(?:remove|disable|turn off|delete)\s+(?:all\s+|the\s+)?line (?:numbers?|numbering)(?:\s+(?:from|in)\s+(?:the\s+)?(?:whole document|document|selection|current section))?[.!]?$/i.test(String(instruction).trim());
+    return /^(?:请\s*)?(?:去掉|去除|删除|删掉|移除|关闭|关掉|取消|隐藏|不显示|不要显示|不要)(?:(?:整个|所有|全文|全篇|当前|本|选区|所选|文档|中|的|节|内)\s*)*行号[。.!！]?$/i.test(String(instruction).trim())
+        || /^(?:please\s+)?(?:remove|disable|turn off|delete|hide|do not show|don't show)\s+(?:all\s+|the\s+)?line (?:numbers?|numbering)(?:\s+(?:from|in)\s+(?:the\s+)?(?:whole document|document|selection|current section))?[.!]?$/i.test(String(instruction).trim());
 }
 
 export function buildPageLayoutPrompt(instruction, sections) {

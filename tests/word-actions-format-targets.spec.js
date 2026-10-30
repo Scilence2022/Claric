@@ -8,6 +8,11 @@ const { prepareFormatProposal, applyFormatProposal } = require('../src/taskpane/
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
 const WP14 = 'http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing';
+const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+const power = `<m:oMath xmlns:m="${M}"><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath>`;
+const equationProse = 'The expression \r𝑥\r2\r explains the observed behavior and the limits of the complete model.';
+const equationXml = `<w:p xmlns:w="${W}"><w:r><w:t>The expression </w:t></w:r>${power}<w:r><w:t> explains the observed behavior and the limits of the complete model.</w:t></w:r></w:p>`;
+const nativeExport = (content) => `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="${W}"><w:body>${content}<w:p/><w:sectPr/></w:body></w:document></pkg:xmlData></pkg:part></pkg:package>`;
 const prose = 'This paragraph explains the observed system behavior and the practical evidence supporting a safe native formatting operation.';
 const escapeXml = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const defaults = { alignment: 'Left', lineSpacing: 12, spaceBefore: 0, spaceAfter: 6, leftIndent: 0, rightIndent: 0, firstLineIndent: 0 };
@@ -23,6 +28,7 @@ function world(specs = [{}, { text: '6 Discussion' }, { picture: true, text: '' 
             superscript: false, subscript: false, allCaps: false, smallCaps: false, color: '#000000',
             highlightColor: 'None', name: 'Times New Roman', size: 12, load: jest.fn() };
         const xml = () => {
+            if (state.ooxml) return state.ooxml;
             let textRuns = `<w:r><w:t>${escapeXml(state.text)}</w:t></w:r>`;
             if (state.characterFormat?.bold) {
                 const offset = state.text.indexOf(state.characterFormat.match);
@@ -107,6 +113,47 @@ test('explicit body alignment uses native evidence without a model or PDF and ex
     expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
     expect(w.document.getSelection).not.toHaveBeenCalled();
     expect(w.range.insertBookmark).not.toHaveBeenCalled();
+});
+
+test.each(['inline math', 'native export with trailing marker'])('正文段落两端对齐 prepares and applies to %s using native paragraph evidence', async (kind) => {
+    const ooxml = kind === 'inline math' ? equationXml : nativeExport(equationXml);
+    const displayXml = equationXml.replace(power, `<m:oMathPara xmlns:m="${M}">${power}</m:oMathPara>`);
+    const plainXml = nativeExport(`<w:p xmlns:w="${W}"><w:r><w:t>${prose}</w:t></w:r></w:p>`);
+    const w = world([{ text: equationProse, ooxml }, { ooxml: plainXml },
+        { text: '6 Discussion' }, { text: 'Figure 1. Observed behavior.' }, { inTable: true },
+        { picture: true }, { text: equationProse, ooxml: displayXml }]);
+    const originalText = w.range.text;
+    const proposal = await prepareFormatProposal(w.deps, { instruction: '正文段落两端对齐', scope: 'document' });
+    expect(proposal.targetSummary).toMatchObject({ verifiedParagraphs: 2, excludedParagraphs: 5 });
+    expect(sendPrompt).not.toHaveBeenCalled();
+    expect(await applyFormatProposal(w.deps, proposal)).toMatchObject({ applied: true, appliedRanges: 2, partial: false });
+    expect(w.writes).toEqual([0, 1].map((index) => ({ index, property: 'alignment', value: 'Justified' })));
+    expect(w.range.text).toBe(originalText);
+    expect(w.paragraphs[0].getOoxml().value).toBe(ooxml);
+    expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
+});
+
+test('a changed inline equation invalidates body alignment before any native write', async () => {
+    const w = world([{ text: equationProse, ooxml: equationXml }]);
+    const proposal = await prepareFormatProposal(w.deps, { instruction: '正文段落两端对齐', scope: 'document' });
+    w.states[0].text = equationProse.replace('\r2\r', '\r3\r');
+    w.states[0].ooxml = equationXml.replace('<m:t>2</m:t>', '<m:t>3</m:t>');
+    await expect(applyFormatProposal(w.deps, proposal)).rejects.toThrow(/changed/);
+    expect(w.writes).toEqual([]);
+});
+
+test('zero body targets explain their native evidence exclusions without exposing document text', async () => {
+    const different = `<w:p xmlns:w="${W}"><w:r><w:t>A different native text.</w:t></w:r></w:p>`;
+    const w = world([{ text: '6 Discussion' }, { ooxml: different }, { ooxml: different }]);
+    let failure;
+    try { await prepareFormatProposal(w.deps, { instruction: '正文段落两端对齐', scope: 'document' }); }
+    catch (error) { failure = error; }
+    expect(failure?.message).toContain('No verified formatting paragraphs matched. Inspected 3 paragraph(s).');
+    expect(failure.message).toContain('2: Native text and paragraph XML disagree.');
+    expect(failure.message).toContain('1: Text identifies a short numbered or named heading.');
+    expect(failure.message).not.toContain(prose);
+    expect(failure.message).not.toContain('6 Discussion');
+    expect(w.writes).toEqual([]);
 });
 
 test('document drawing identity drift is preserved and cannot reject an unrelated body-alignment Apply', async () => {

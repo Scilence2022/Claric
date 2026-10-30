@@ -4,14 +4,14 @@ jest.mock('../src/lib/document-parser.js', () => ({ parseDocument: jest.fn() }))
 jest.mock('../src/lib/document-chunker.js', () => ({ chunkDocument: jest.fn() }));
 jest.mock('../src/lib/context-extractor.js', () => ({ extractContext: () => ({ definitions: [], outline: [] }) }));
 jest.mock('../src/lib/reassembler.js', () => ({
-  bookmarkChunkRanges: jest.fn(), applyChunkResults: jest.fn(), cleanupBookmarks: jest.fn(),
+  bookmarkChunkRanges: jest.fn(), applyChunkResults: jest.fn(), cleanupBookmarks: jest.fn(), readChunkSnapshot: jest.fn(),
 }));
 jest.mock('../src/lib/orchestrator.js', () => ({ processChunksParallel: jest.fn() }));
 
 const { runDocumentSkill } = require('../src/taskpane/word-actions.js');
 const { parseDocument } = require('../src/lib/document-parser.js');
 const { chunkDocument } = require('../src/lib/document-chunker.js');
-const { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks } = require('../src/lib/reassembler.js');
+const { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, readChunkSnapshot } = require('../src/lib/reassembler.js');
 const { processChunksParallel } = require('../src/lib/orchestrator.js');
 
 const chunks = ['applied', 'blocked', 'model-failed'].map((id, index) => ({
@@ -132,4 +132,123 @@ test('document review policy and full source context survive repeated failed-chu
     expect(options.documentContext).toBe(originalContext);
   }
   expect(applyChunkResults).not.toHaveBeenCalled();
+});
+
+describe('failed section recovery', () => {
+  const failedApply = { amendmentsApplied: 0, failedChunkIds: ['blocked'], uncertainChunkIds: ['blocked'],
+    attemptedChunkIds: ['blocked'], errors: ['Read-back differs.'] };
+  const succeeded = { amendmentsApplied: 1, failedChunkIds: [], errors: [], appliedChunkIds: ['blocked'] };
+  let staged;
+  let currentChunk;
+  let dependencies;
+  beforeEach(async () => {
+    applyChunkResults.mockResolvedValue(failedApply);
+    dependencies = deps();
+    staged = await runDocumentSkill(dependencies, { category: 'amendment', promptTemplate: 'Polish.', gateApply: true });
+    await staged.apply(['blocked']);
+    currentChunk = { ...chunks[1], paragraphs: [{ text: 'Current partially edited text.', revisionFingerprint: 'fresh' }] };
+    readChunkSnapshot.mockResolvedValue(currentChunk);
+    applyChunkResults.mockClear().mockResolvedValue(succeeded);
+    cleanupBookmarks.mockClear();
+    processChunksParallel.mockClear();
+  });
+
+  test('reapply retains the proposal baseline and touches only the failed section', async () => {
+    await staged.recoverChunk('blocked', 'retry');
+    expect(readChunkSnapshot).not.toHaveBeenCalled();
+    const [selected, selectedBookmarks, options] = applyChunkResults.mock.calls[0];
+    expect(selected.map((r) => r.chunkId)).toEqual(['blocked']);
+    expect(selectedBookmarks).toEqual(new Map([['blocked', '_blocked']]));
+    expect(options.chunkOriginals.get('blocked')).toEqual(['Paragraph 2.']);
+    expect(cleanupBookmarks).toHaveBeenCalledWith(selectedBookmarks);
+    expect(processChunksParallel).not.toHaveBeenCalled();
+    await expect(staged.recoverChunk('blocked', 'retry')).rejects.toThrow('Only failed sections');
+    await expect(staged.recoverChunk('applied', 'force')).rejects.toThrow('Only failed sections');
+  });
+
+  test('force rebases the existing target on current text and fingerprints without bypassing verification', async () => {
+    const result = await staged.recoverChunk('blocked', 'force');
+    expect(readChunkSnapshot).toHaveBeenCalledWith(chunks[1], '_blocked');
+    const [selected, , options] = applyChunkResults.mock.calls[0];
+    expect(selected[0]).toMatchObject({ amendment: 'Revised blocked paragraph.', chunk: currentChunk, comment: null });
+    expect(options.chunkOriginals.get('blocked')).toEqual(['Current partially edited text.']);
+    expect(options.chunkRevisionFingerprints.get('blocked')).toEqual(['fresh']);
+    expect(options.trackChangesEnabled).toBe(true);
+    expect(processChunksParallel).not.toHaveBeenCalled();
+    expect(result.recoveryReport).toContain('Force apply succeeded for section blocked');
+    expect(dependencies.log).toHaveBeenCalledWith(result.recoveryReport, 'success');
+  });
+
+  test.each([
+    [{ amendmentsApplied: 0, noChangeCount: 1, errors: [] }, 'already matches', 'success'],
+    [{ ...failedApply, partialChunkIds: ['blocked'], appliedParagraphs: 2 }, '2 paragraph edit(s) verified', 'warning'],
+    [failedApply, 'could not be verified', 'warning'],
+    [{ amendmentsApplied: 0, failedChunkIds: ['blocked'], errors: ['Protected object.'] }, 'Reason: Protected object.', 'warning'],
+    [{ amendmentsApplied: 0, interrupted: true, errors: [] }, 'was paused', 'warning'],
+  ])('force reports its actual outcome to the caller and activity log: %j', async (application, detail, level) => {
+    applyChunkResults.mockResolvedValueOnce(application);
+    const result = await staged.recoverChunk('blocked', 'force');
+    expect(result.recoveryReport).toContain('Force apply');
+    expect(result.recoveryReport).toContain(detail);
+    expect(dependencies.log).toHaveBeenCalledWith(result.recoveryReport, level);
+  });
+
+  test('a force read failure reports its reason without starting application', async () => {
+    readChunkSnapshot.mockRejectedValueOnce(new Error('The section bookmark is missing.'));
+    const error = await staged.recoverChunk('blocked', 'force').catch((error) => error);
+    expect(error.recoveryReport).toContain('Force apply failed for section blocked');
+    expect(error.recoveryReport).toContain('The section bookmark is missing');
+    expect(dependencies.log).toHaveBeenCalledWith(error.recoveryReport, 'warning');
+    expect(applyChunkResults).not.toHaveBeenCalled();
+  });
+
+  test('regeneration uses fresh source and applies only the newly generated section', async () => {
+    processChunksParallel.mockResolvedValue([{ ...fulfilled(currentChunk), amendment: 'Newly generated wording.' }]);
+    const onProposal = jest.fn();
+    await staged.recoverChunk('blocked', 'regenerate', { onProposal });
+    expect(processChunksParallel).toHaveBeenCalledWith([currentChunk], expect.objectContaining({ concurrency: 1 }));
+    expect(applyChunkResults.mock.calls[0][0][0].amendment).toBe('Newly generated wording.');
+    expect(onProposal).toHaveBeenCalledWith({ before: 'Current partially edited text.', after: 'Newly generated wording.' });
+  });
+
+  test('a recovery failure keeps the bookmark and allows another deliberate attempt', async () => {
+    applyChunkResults.mockResolvedValueOnce(failedApply);
+    await staged.recoverChunk('blocked', 'force');
+    expect(cleanupBookmarks).not.toHaveBeenCalled();
+    await staged.recoverChunk('blocked', 'retry');
+    expect(applyChunkResults.mock.calls[1][2].chunkOriginals.get('blocked')).toEqual(['Current partially edited text.']);
+    expect(cleanupBookmarks).toHaveBeenCalledTimes(1);
+  });
+
+  test('generation failure never applies the old target; cancellation never starts recovery writes', async () => {
+    processChunksParallel.mockResolvedValue([{ status: 'rejected', error: 'Provider unavailable.' }]);
+    await expect(staged.recoverChunk('blocked', 'regenerate')).rejects.toThrow('Provider unavailable');
+    expect(applyChunkResults).not.toHaveBeenCalled();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(staged.recoverChunk('blocked', 'force', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(applyChunkResults).not.toHaveBeenCalled();
+    expect(cleanupBookmarks).not.toHaveBeenCalled();
+  });
+
+  test('edits during regeneration are guarded by the captured source, and concurrent recovery is refused', async () => {
+    let finish;
+    processChunksParallel.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = staged.recoverChunk('blocked', 'regenerate');
+    while (!finish) await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(staged.recoverChunk('blocked', 'force')).rejects.toThrow('already running');
+    finish([{ ...fulfilled(currentChunk), amendment: 'Fresh rewrite.' }]);
+    await pending;
+    expect(applyChunkResults.mock.calls[0][2].chunkRevisionFingerprints.get('blocked')).toEqual(['fresh']);
+  });
+});
+
+test('resuming the remaining selection retains bookmarks for earlier failed attempts', async () => {
+  applyChunkResults.mockResolvedValueOnce({ amendmentsApplied: 0, failedChunkIds: ['blocked'],
+    uncertainChunkIds: ['blocked'], interrupted: true, errors: ['Read-back failed.'] });
+  const staged = await runDocumentSkill(deps(), { category: 'amendment', promptTemplate: 'Polish.', gateApply: true });
+  await staged.apply(['blocked']);
+  applyChunkResults.mockResolvedValueOnce({ amendmentsApplied: 1, failedChunkIds: [], interrupted: false, errors: [] });
+  await staged.apply(['applied']);
+  expect(cleanupBookmarks).toHaveBeenCalledWith(bookmarks, { keep: new Set(['_blocked', '_model-failed']) });
 });

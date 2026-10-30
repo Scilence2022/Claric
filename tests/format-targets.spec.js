@@ -2,6 +2,10 @@
 const { describeFormatParagraph: describe, resolveFormatParagraphs: resolve,
     requestsBodyFormatting, explicitBodyAlignmentOp } = require('../src/lib/format-targets.js');
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+const power = `<m:oMath xmlns:m="${M}"><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath>`;
+const mathXml = (equation = power) => `<w:p xmlns:w="${W}"><w:r><w:t>The expression </w:t></w:r>${equation}<w:r><w:t> explains the observed behavior and the limits of the complete model.</w:t></w:r></w:p>`;
+const mathProse = 'The expression 𝑥^(2) explains the observed behavior and the limits of the complete model.';
 const prose = 'The model observes the document structure before it proposes an edit. This paragraph describes the complete mechanism and its limitations.';
 const xml = (text, properties = '', extra = '') => `<w:p xmlns:w="${W}"><w:pPr>${properties}</w:pPr><w:r><w:t>${text}</w:t></w:r>${extra}</w:p>`;
 const paragraph = (options = {}) => describe({ index: 0, text: prose, style: 'Normal', styleBuiltIn: 'Normal',
@@ -73,6 +77,39 @@ test('complete body prose with an inline reference or field remains eligible for
     }
 });
 
+test.each(['𝑥^(2)', '\r𝑥\r2\r', ',𝑥-2.'])('inline Word math matches its evidenced native representation: %j', (expression) => {
+    const text = mathProse.replace('𝑥^(2)', expression);
+    const item = paragraph({ text, ooxml: mathXml() });
+    expect(item).toMatchObject({ text, role: 'body', eligible: true, verified: true });
+    expect(resolve([item], { paragraphRole: 'body' }).targets).toEqual([item]);
+});
+
+test.each([
+    ['changed equation', mathProse.replace('𝑥^(2)', '\r𝑥\r3\r'), mathXml()],
+    ['changed prose', mathProse.replace('the observed', 'the  observed'), mathXml()],
+    ['unknown equation', mathProse, mathXml(power.replaceAll('sSup', 'unknown'))],
+    ['foreign equation content', mathProse, mathXml(power.replace('</m:e>', '<custom xmlns="urn:custom"/></m:e>'))],
+    ['display equation', mathProse, mathXml(`<m:oMathPara xmlns:m="${M}">${power}</m:oMathPara>`)],
+])('%s cannot become a body target through math support', (_name, text, ooxml) => {
+    expect(paragraph({ text, ooxml }).eligible).toBe(false);
+});
+
+const nativeExport = (content, trailer = '<w:p/>') => `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="${W}"><w:body>${content}${trailer}<w:sectPr/></w:body></w:document></pkg:xmlData></pkg:part></pkg:package>`;
+
+test('single native paragraph exports can include an empty synthetic trailing paragraph', () => {
+    const ooxml = nativeExport(xml(prose));
+    expect(paragraph({ ooxml }).eligible).toBe(false); // Arbitrary multi-paragraph input is not evidence.
+    expect(paragraph({ ooxml, singleParagraphContent: true })).toMatchObject({ role: 'body', eligible: true });
+    expect(paragraph({ text: mathProse, ooxml: nativeExport(mathXml()), singleParagraphContent: true }))
+        .toMatchObject({ role: 'body', eligible: true });
+});
+
+test.each([xml('Another native paragraph.'), xml(' '), '<w:p><w:r><w:drawing/></w:r></w:p>',
+    '<w:p><w:pPr><w:sectPr/></w:pPr></w:p>', '<w:p><w:bookmarkStart w:id="1"/></w:p>'])(
+'a substantive or protected second paragraph is never discarded: %s', (trailer) => {
+    expect(paragraph({ ooxml: nativeExport(xml(prose), trailer), singleParagraphContent: true }).eligible).toBe(false);
+});
+
 test.each([
     ['missing XML', { ooxml: undefined }],
     ['invalid XML', { ooxml: '<invalid' }],
@@ -109,7 +146,9 @@ test('font-only exact text reaches in-scope paragraphs with equations, but parag
     const disagree = paragraph({ text, ooxml: xml('different') });
     const outside = paragraph({ text, withinScope: false });
     const unreadable = paragraph({ text: undefined });
-    expect(math).toMatchObject({ role: 'protected', verified: true, inScope: true });
+    // Paragraph-level selectors cannot use it; exact-text font ops can.
+    expect(math.inScope).toBe(true);
+    expect(math.verified && math.role !== 'protected').toBe(false);
     expect(disagree).toMatchObject({ verified: false, inScope: true });
     expect(outside.inScope).toBe(false);
     expect(unreadable.inScope).toBe(false);

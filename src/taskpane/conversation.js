@@ -956,6 +956,11 @@ export function createConversation(deps) {
         const epoch = sessionEpoch;
         let ownRegisteredController = null;
         return _createProposalCardRaw({
+            onChangeSetApplied: async () => {
+                if (appState.config.clearUndoHistoryAfterApply !== true) return null;
+                const { clearUndoHistoryAfterChangeSet } = await import(/* webpackChunkName: "undo-history" */ './undo-history.js');
+                return clearUndoHistoryAfterChangeSet(appState.config, log);
+            },
             isBlocked: () => (epoch !== sessionEpoch ? 'This proposal belongs to a previous chat. Draft a new proposal.' : isBusy()
                 ? 'A run is currently processing — wait for it to finish before applying.'
                 : null),
@@ -1172,6 +1177,8 @@ export function createConversation(deps) {
             notice,
             items,
             onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
+            onRecover: outcome.recoverChunk ? (id, mode, context) => outcome.recoverChunk(id, mode, context) : undefined,
+            showApplicationProgress: true,
             onApply: async (selectedChunkIds, applyCtx = {}) => {
                 appState.isProcessingDoc = true;
                 input.setProcessing(true);
@@ -1188,6 +1195,7 @@ export function createConversation(deps) {
                         incompleteMessage = uncertainCount
                             ? `Application could not be fully verified: ${verifiedEdits}${uncertainCount} section(s) may contain changes. Inspect Word before drafting a fresh proposal.`
                             : `Partially applied: ${verifiedEdits}${partialCount} section(s) remain incomplete. Review Word and draft a fresh proposal.`;
+                        incompleteMessage += ` ${applicationResult.amendmentsApplied || 0} section(s) applied successfully. Use the failed section's recovery options to continue.`;
                         if (applyErrors.length) incompleteMessage += ` ${applyErrors[0]}`;
                         if (applicationResult.halted) incompleteMessage += ` Application stopped; ${applicationResult.skippedChunkIds?.length || 0} remaining section(s) were left untouched.`;
                     }

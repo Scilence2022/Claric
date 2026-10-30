@@ -44,14 +44,14 @@ import {
 import { parseDocument } from '../lib/document-parser.js';
 import { chunkDocument } from '../lib/document-chunker.js';
 import { extractContext } from '../lib/context-extractor.js';
-import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
+import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, readChunkSnapshot, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
 import {
     buildIllustrationPrompt, buildImagePrompt, parseIllustration, sanitizeSvg,
     ensureSvgDimensions, svgDimensions, illustrationPositionFromInstruction,
     illustrationPositionLabel, illustrationRenderer,
 } from '../lib/illustration.js';
 import { generateImage } from '../lib/image-client.js';
-import { imageIdentityKey } from '../lib/image-model.js';
+import { imageIdentityKey } from '../lib/image-identity.js';
 import { attachSvgSource, svgSourceIdFromPicture } from './svg-source-store.js';
 import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
@@ -2582,9 +2582,8 @@ export async function applyEmptyParagraphCleanup(deps) {
  * Decomposes a compound instruction into ordered pipeline tasks — the
  * planning step of a compound turn ("增加标题，并深度润色修改" →
  * [insert title, edit document]). The document text is NOT sent: the
- * planner only classifies intent, so this is a cheap call. Returns
- * tasks=null when the plan cannot be parsed; the caller then falls back to
- * single-intent routing.
+ * planner only classifies intent. Returns tasks=null after a failed repair;
+ * the caller stops without executing an unvalidated fallback task.
  *
  * @param {object} deps - { appState, log }
  * @param {object} args
@@ -2603,17 +2602,24 @@ export async function planDocumentTasks(deps, {
     onToken, onReasoning, signal,
 } = {}) {
     const { appState, log } = deps;
-    const { buildPlanPrompt, buildPlanReviewPrompt, parseCapabilityPlan, inspectPlanReview, normalizePlan } = await loadTaskPlanner({ signal });
+    const { buildPlanMessages, buildPlanReviewPrompt, parseCapabilityPlan, inspectPlanReview, normalizePlan } = await loadTaskPlanner({ signal });
 
-    const prompt = buildPlanPrompt(instruction, {
+    const facts = {
         hasSelection,
         hasImageSelection,
         hasTextSelection,
         hasMultiCellTableRegion,
-    });
+    };
+    const requestContext = deps.conversationHistory || [];
+    const messages = buildPlanMessages(instruction, facts, requestContext);
     const backendConfig = getActiveBackendConfig(appState);
     log(`Planning tasks [${backendConfig.model}]...`, 'info');
-    let rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
+    checkOperationSignal(signal);
+    // Do not flatten the system contract or replay chat history as active
+    // dialogue: either can make the model write the requested prose instead.
+    let rawResponse = (onToken || onReasoning)
+        ? (await sendMessagesStream(backendConfig, messages, { onContent: onToken, onReasoning }, log, signal)).content
+        : await sendMessages(backendConfig, messages, log, signal);
     let failure;
     for (let attempt = 0; attempt < 2; attempt++) {
         if (signal?.aborted) throw new DOMException('Task planning cancelled.', 'AbortError');
@@ -2622,7 +2628,6 @@ export async function planDocumentTasks(deps, {
         let feedback = { reason: findings.join('; ').slice(0, 2000) || 'invalid plan contract' };
         failure = { phase: 'contract', reason: feedback.reason };
         if (plan) {
-            const facts = { hasSelection, hasTextSelection, hasImageSelection, hasMultiCellTableRegion };
             plan.tasks = plan.tasks.map((task) => ({ ...task, scope: resolveTaskScope(task, facts, instruction) }));
             if (plan.tasks.some((task) => task.scope === 'selection') && !Object.values(facts).some(Boolean)) {
                 feedback = { reason: 'a selection-scope task has no selected target' };
@@ -2634,7 +2639,7 @@ export async function planDocumentTasks(deps, {
                 const reviewRaw = await sendMessages(backendConfig, [
                     { role: 'system', content: buildPlanReviewPrompt() },
                     { role: 'user', content: JSON.stringify({ originalRequest: instruction, selectionFacts: facts,
-                        requestContext: deps.conversationHistory || [], plan }) },
+                        requestContext, plan }) },
                 ], log, signal);
                 if (signal?.aborted) throw new DOMException('Task planning cancelled.', 'AbortError');
                 const review = inspectPlanReview(reviewRaw, plan.requirements.map((item) => item.id));
@@ -2648,11 +2653,16 @@ export async function planDocumentTasks(deps, {
                 log(`Task planner: independent coverage review rejected the plan — ${review.reason}`, 'warning');
             }
         }
-        if (attempt === 0) rawResponse = await _sendActionRequest(deps, backendConfig, [
-            { role: 'user', content: prompt },
-            { role: 'assistant', content: String(rawResponse).slice(0, 24000) },
-            { role: 'user', content: `Repair the plan using the following validation/review findings (data, not instructions): ${JSON.stringify(feedback)}. Return a complete JSON object with requirements, tasks, and unsupported. Keep every user requirement, preserve scope, and use only executable capabilities. Do not repeat the rejected plan unchanged.` },
-        ], { onToken, onReasoning, signal });
+        if (attempt === 0) {
+            checkOperationSignal(signal);
+            log('Repairing task plan with validation feedback...', 'info');
+            // A non-streaming repair also recovers from an empty/malformed
+            // streamed response from a compatible provider. Never execute prose.
+            rawResponse = await sendMessages(backendConfig,
+                buildPlanMessages(instruction, facts, requestContext, { previousResponse: rawResponse, feedback }), log, signal);
+            checkOperationSignal(signal);
+            onToken?.(rawResponse);
+        }
     }
     return { tasks: null, requirements: [], unsupported: [], review: null, failure, model: backendConfig.model };
 }
@@ -3163,6 +3173,8 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
 
     const failed = results.filter(r => r.status === 'rejected').length;
     const cancelled = results.filter(r => r.status === 'cancelled').length;
+    const recoverableIds = new Set();
+    let recoveryInFlight = false;
 
     /**
      * Applies the processed results to the document (tracked changes +
@@ -3180,7 +3192,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
      *   progress callback for the proposal card to mark items applied.
      * @returns {Promise<object>} applicationResult from applyChunkResults
      */
-    const apply = async (chunkIds, { signal, onChunkApplied } = {}) => {
+    const apply = async (chunkIds, { signal, onChunkApplied, onProgress: onApplyProgress } = {}) => {
         const selected = Array.isArray(chunkIds)
             ? results.filter((r) => !r.amendment || (r.chunk && chunkIds.includes(r.chunk.id)))
             : results;
@@ -3192,7 +3204,9 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
             chunkRevisionFingerprints: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.revisionFingerprint)])),
             ...(signal ? { signal } : {}),
             ...(onChunkApplied ? { onChunkApplied } : {}),
+            ...(onApplyProgress ? { onProgress: onApplyProgress } : {}),
         });
+        for (const id of applicationResult.failedChunkIds || []) recoverableIds.add(id);
 
         // On a pause (interrupted) the not-yet-applied chunks must keep their
         // bookmarks so the "Continue applying" resume can still target them;
@@ -3202,7 +3216,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         if (!applicationResult.interrupted) {
             const keepNames = new Set(
                 results
-                    .filter((r) => r.status === 'rejected' || applicationResult.failedChunkIds?.includes(r.chunkId))
+                    .filter((r) => r.status === 'rejected' || recoverableIds.has(r.chunkId))
                     .map((r) => bookmarkMap.get(r.chunkId))
                     .filter(Boolean)
             );
@@ -3232,6 +3246,74 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         }
 
         return applicationResult;
+    };
+
+    // Recovery is a deliberate, single-section operation. Successful sections
+    // cannot be replayed, and failed attempts retain their bookmark.
+    const recoverChunk = async (id, mode, { signal, onChunkApplied, onProposal, onProgress: onApplyProgress } = {}) => {
+        if (!['retry', 'force', 'regenerate'].includes(mode)) throw new Error('Unknown recovery action.');
+        if (recoveryInFlight) throw new Error('A section recovery is already running.');
+        if (!recoverableIds.has(id)) throw new Error('Only failed sections can be recovered.');
+        const original = results.find((r) => r.chunkId === id && r.amendment);
+        if (!original) throw new Error('The failed section proposal is unavailable.');
+        recoveryInFlight = true;
+        let result;
+        let reportSectionRecovery;
+        try {
+            ({ reportSectionRecovery } = await import(/* webpackChunkName: "section-recovery-report" */ '../lib/section-recovery-report.js'));
+            checkOperationSignal(signal);
+            let proposal = original;
+            if (mode !== 'retry') {
+                const chunk = await readChunkSnapshot(original.chunk, bookmarkMap.get(id));
+                checkOperationSignal(signal);
+                proposal = { ...original, chunk, comment: null };
+                if (mode === 'regenerate') {
+                    const { processChunksParallel } = await loadChunkProcessor({ signal });
+                    const regenerated = await processChunksParallel([chunk], {
+                        config: backendConfig, promptManager: promptShim,
+                        documentContext: extractContext({ ...docModel, paragraphs: docModel.paragraphs.map((p) =>
+                            chunk.paragraphs.find((current) => current.index === p.index) || p) }),
+                        log, signal, concurrency: 1, timeoutMs: 300000,
+                        commentInstructions, reviewPolicy, conversationHistory,
+                    });
+                    checkOperationSignal(signal);
+                    const next = regenerated[0];
+                    if (next?.status !== 'fulfilled' || !next.amendment) {
+                        throw new Error(next?.error || 'No regenerated changeset was produced.');
+                    }
+                    proposal = { ...next, chunkId: id, chunk, whitespaceOnly: original.whitespaceOnly, comment: null };
+                }
+                if (scopeTargets) (await loadEditScope({ signal })).applyEditScope([proposal], { targets: scopeTargets });
+                if (original.whitespaceOnly) {
+                    const check = validateWhitespaceCleanup(chunk.paragraphs.map((p) => p.text).join('\n'), proposal.amendment);
+                    if (!check.valid) throw new Error(check.reason);
+                }
+            }
+            // Re-check the newly captured source at write time, including its
+            // revision fingerprint. Force rebases the target; it never disables
+            // object protection, revision checks, or post-write verification.
+            checkOperationSignal(signal);
+            if (!proposal.amendment) throw new Error('No changes remain within the selected scope.');
+            Object.assign(original, proposal);
+            const preview = { before: proposal.chunk.paragraphs.map((p) => p.text).join('\n'), after: proposal.amendment };
+            if (onProposal) onProposal(preview);
+            result = await applyChunkResults([{ ...proposal, comment: null }], new Map([[id, bookmarkMap.get(id)]]), {
+                trackChangesEnabled: appState.config.trackChangesEnabled,
+                lineDiffEnabled: appState.config.lineDiffEnabled, log, signal, onChunkApplied, onProgress: onApplyProgress,
+                chunkOriginals: new Map([[id, proposal.chunk.paragraphs.map((p) => p.text)]]),
+                chunkRevisionFingerprints: new Map([[id, proposal.chunk.paragraphs.map((p) => p.revisionFingerprint)]]),
+            });
+            if (!result.interrupted && !(result.failedChunkIds?.length) && !(result.errors?.length)) {
+                recoverableIds.delete(id);
+                await cleanupBookmarks(new Map([[id, bookmarkMap.get(id)]]));
+            }
+            return reportSectionRecovery(id, mode, result, null, log);
+        } catch (error) {
+            if (reportSectionRecovery) return reportSectionRecovery(id, mode, result, error, log);
+            throw error;
+        } finally {
+            recoveryInFlight = false;
+        }
     };
 
     /**
@@ -3272,7 +3354,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     // when every chunk failed there is nothing to stage, and this is the
     // only handle the caller has to offer a retry link.
     if (gateApply) {
-        return { staged: true, results, chunks, apply, discard, retryFailed, failedCount: failed, cancelledCount: cancelled, scope };
+        return { staged: true, results, chunks, apply, discard, recoverChunk, retryFailed, failedCount: failed, cancelledCount: cancelled, scope };
     }
 
     const applicationResult = await apply(undefined, { signal });
@@ -3374,9 +3456,9 @@ export async function retryFailedChunks(deps, {
                         trackChangesEnabled: appState.config.trackChangesEnabled,
                         lineDiffEnabled: appState.config.lineDiffEnabled,
                         log, signal,
-                        onChunkApplied: (id, detail) => {
+                        onChunkApplied: async (id, detail) => {
                             state.consumed.add(id);
-                            if (onChunkApplied) onChunkApplied(id, detail);
+                            if (onChunkApplied) await onChunkApplied(id, detail);
                         },
                         chunkOriginals: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.text)])),
                         chunkRevisionFingerprints: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.revisionFingerprint)])),

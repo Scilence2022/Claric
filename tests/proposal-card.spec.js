@@ -567,3 +567,105 @@ describe('applyAll (auto-apply path)', () => {
         expect(onApply).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('section recovery and application progress', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test('progress counts successful and failed attempts, including failure followed by success', async () => {
+    let finish;
+    let progress;
+    const card = makeCard({ items: makeItems(), showApplicationProgress: true, onApply: async (_ids, ctx) => {
+      progress = ctx;
+      await new Promise((resolve) => { finish = resolve; });
+    } });
+    const pending = card.applyAll();
+    const bar = card.el.querySelector('progress');
+    expect(bar.max).toBe(3);
+    expect(bar.value).toBe(0);
+    progress.onProgress({ chunkId: 'c', stage: 'paragraph 2: read-back', appliedParagraphs: 1 });
+    expect(card.el.querySelector('.proposal-card-progress-detail').textContent).toContain('Verifying changes · paragraph 2 · 1 paragraph edit(s) verified');
+    progress.onChunkApplied('c', { applied: true });
+    progress.onChunkApplied('b', { uncertain: true });
+    expect(bar.value).toBe(2);
+    expect(card.el.querySelector('.proposal-card-progress').textContent).toContain('1 succeeded · 1 failed · 1 remaining');
+    progress.onChunkApplied('a', { applied: true });
+    finish();
+    await pending;
+    expect(bar.value).toBe(3);
+    expect(card.el.dataset.outcome).toBe('warning');
+  });
+
+  test.each(['retry', 'force', 'regenerate'])('%s is offered only for failed rows and updates a settled card after success', async (mode) => {
+    const onRecover = jest.fn(async (id, _mode, ctx) => {
+      ctx.onProposal({ before: 'Current section.', after: 'Recovered section.' });
+      ctx.onChunkApplied(id, { applied: true });
+      return { amendmentsApplied: 1, errors: [], recoveryReport: `${_mode}: section ${id} applied and verified.` };
+    });
+    const card = makeCard({ items: makeItems().slice(0, 2), onRecover,
+      onApply: async (_ids, ctx) => {
+        ctx.onChunkApplied('b', { uncertain: true });
+        ctx.onChunkApplied('a', { applied: true });
+      } });
+    await card.applyAll();
+    const rows = card.el.querySelectorAll('.proposal-card-change');
+    expect(rows[0].querySelector('.proposal-card-recovery').hidden).toBe(true);
+    expect(rows[1].querySelector('.proposal-card-recovery').hidden).toBe(false);
+    rows[1].querySelector(`[data-recovery="${mode}"]`).click();
+    await flush();
+    expect(onRecover).toHaveBeenCalledWith('b', mode, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(card.el.dataset.outcome).toBe('applied');
+    expect(rows[1].querySelectorAll('.proposal-card-change-status')).toHaveLength(1);
+    expect(rows[1].dataset.outcome).toBe('applied');
+    expect(rows[1].querySelector('.proposal-card-recovery').hidden).toBe(true);
+    expect(card.getItemPreviews()[1].after).toBe('Recovered section.');
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain(`${mode}: section b applied and verified.`);
+    await card.applyAll();
+    expect(onRecover).toHaveBeenCalledTimes(1);
+  });
+
+  test('recovery serializes clicks, registers cancellation, and preserves the failed verdict on errors', async () => {
+    let fail;
+    const registerController = jest.fn();
+    const onRecover = jest.fn(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const card = makeCard({ items: makeItems().slice(0, 1), onRecover, registerController,
+      onApply: async (_ids, ctx) => ctx.onChunkApplied('a', { uncertain: true }) });
+    await card.applyAll();
+    const retry = card.el.querySelector('[data-recovery="retry"]');
+    retry.click();
+    retry.click();
+    expect(onRecover).toHaveBeenCalledTimes(1);
+    expect(retry.disabled).toBe(true);
+    expect(card.el.querySelector('progress').hasAttribute('value')).toBe(false);
+    const controller = registerController.mock.calls.at(-1)[0];
+    controller.abort();
+    expect(onRecover.mock.calls[0][2].signal.aborted).toBe(true);
+    fail(Object.assign(new Error('Cancelled before writing.'), { recoveryReport: 'Force apply was paused for section a. No completion was verified.' }));
+    await flush();
+    expect(retry.disabled).toBe(false);
+    expect(card.getItemOutcomes()).toEqual([{ id: 'a', outcome: 'uncertain' }]);
+    expect(card.el.querySelector('.proposal-card-status').textContent).toContain('Force apply was paused for section a');
+    expect(card.el.querySelector('.proposal-card-status').getAttribute('role')).toBe('status');
+    expect(registerController).toHaveBeenLastCalledWith(null);
+  });
+});
+
+test('recovering a failed item while paused preserves the remaining selection for resume', async () => {
+  let calls = 0;
+  const card = makeCard({ items: makeItems().slice(0, 2),
+    onApply: async (_ids, ctx) => {
+      if (!calls++) {
+        ctx.onChunkApplied('b', { uncertain: true });
+        card.setPaused('Paused');
+      } else ctx.onChunkApplied('a', { applied: true });
+    },
+    onRecover: async (id, _mode, ctx) => { ctx.onChunkApplied(id, { applied: true }); return { errors: [] }; },
+  });
+  await card.applyAll();
+  card.el.querySelectorAll('[data-recovery="force"]')[1].click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(card.el.dataset.outcome).toBe('paused');
+  expect(card.el.querySelector('.btn-primary').disabled).toBe(false);
+  await card.applyAll();
+  expect(card.el.dataset.outcome).toBe('applied');
+  expect(card.getItemOutcomes()).toEqual([{ id: 'b', outcome: 'applied' }, { id: 'a', outcome: 'applied' }]);
+});

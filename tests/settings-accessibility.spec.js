@@ -115,3 +115,40 @@ test('turning Track Changes off disables automatic writes and explains why', () 
     expect(appState.config.autoApplyChanges).toBe(false);
     expect(document.getElementById('inputError').textContent).toContain('Track Changes is off');
 });
+
+test('General settings persists automatic undo cleanup and restores the saved checkbox', () => {
+    const { loadSettings } = require('../src/taskpane/app-state.js');
+    const { updateUIFromConfig } = require('../src/taskpane/ui/settings-view.js');
+    openSettings();
+    const checkbox = document.getElementById('clearUndoHistoryAfterApplyCheckbox');
+    expect(checkbox.checked).toBe(false);
+    expect(document.getElementById(checkbox.getAttribute('aria-describedby')).textContent).toContain('earlier manual edits');
+    checkbox.click();
+    expect(appState.config.clearUndoHistoryAfterApply).toBe(true);
+    expect(JSON.parse(localStorage.getItem('wordAI.config')).clearUndoHistoryAfterApply).toBe(true);
+    appState.config = defaultConfig();
+    loadSettings();
+    updateUIFromConfig();
+    expect(checkbox.checked).toBe(true);
+    checkbox.click();
+    expect(JSON.parse(localStorage.getItem('wordAI.config')).clearUndoHistoryAfterApply).toBe(false);
+});
+
+test('General settings wires the manual undo-history control and its confirmation', async () => {
+    global.Office = { context: { requirements: { isSetSupported: () => true } } };
+    global.Word = { run: jest.fn() };
+    openSettings();
+    const button = document.getElementById('clearUndoHistoryBtn');
+    button.focus();
+    button.click();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(document.getElementById('settingsPageGeneral').contains(button)).toBe(true);
+    expect(document.activeElement.dataset.confirm).toBe('cancel');
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await Promise.resolve();
+    expect(document.getElementById('settingsOverlay').hidden).toBe(false);
+    expect(document.activeElement).toBe(button);
+    expect(Word.run).not.toHaveBeenCalled();
+    delete global.Word;
+    delete global.Office;
+});

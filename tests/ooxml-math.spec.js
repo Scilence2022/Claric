@@ -38,6 +38,38 @@ test('equation preservation is enforced before a chunk amendment reaches Word', 
     expect(checkChunkAmendment(chunk, 'A revised result.').valid).toBe(false);
 });
 
+test.each(['ins', 'moveTo'])('tracked math run text inside w:%s remains visible and immutable', (revision) => {
+    const math = `<m:r><m:rPr><m:sty m:val="p"/></m:rPr><w:${revision} w:id="7">`
+        + '<w:rPr><w:rFonts w:ascii="Cambria Math"/><w:rPrChange w:id="8"><w:rPr/></w:rPrChange></w:rPr>'
+        + `<m:t xml:space="preserve">given </m:t></w:${revision}></m:r>` + power;
+    const xml = paragraph(math, 'Use ', '.');
+    const state = revisionTextState(xml);
+    expect(state.text).toBe('Use given 𝑥^(2).');
+    expect(state.hasRevisions).toBe(true);
+    expect(extractFinalTextFromOoxml(xml)).toBe(state.text);
+    expect(state.protectedSpans).toEqual([{ start: 4, end: state.text.length - 1 }]);
+    expect(projectNativeText(state, 'Use given ,𝑥-2..').text).toBe(state.text);
+    // Old proposal baselines cannot treat an already inserted word as absent.
+    expect(checkChunkAmendment({ paragraphs: [state] }, 'Use 𝑥^(2).').valid).toBe(false);
+});
+
+test('current math properties inside the tracked run take precedence over run defaults and historical properties', () => {
+    const math = '<m:r><w:rPr><w:rPrChange><m:rPr><m:sty m:val="b"/></m:rPr></w:rPrChange></w:rPr>'
+        + '<m:rPr><m:sty m:val="i"/></m:rPr><w:ins w:id="1"><m:rPr><m:sty m:val="p"/></m:rPr>'
+        + '<w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>given </m:t></w:ins><m:t>x</m:t></m:r>';
+    expect(revisionTextState(paragraph(math)).text).toBe('An old given 𝑥 result.');
+});
+
+test('math final view includes inserted runs and structures while excluding deleted and moved-source content', () => {
+    const math = '<w:del w:id="1">' + run('old') + '</w:del>'
+        + '<m:r><w:del w:id="2"><m:t>deleted</m:t></w:del><w:moveFrom w:id="3"><m:t>moved</m:t></w:moveFrom></m:r>'
+        + '<w:ins w:id="4">' + power + '</w:ins>'
+        + '<w:moveTo w:id="5">' + run('y') + '</w:moveTo>';
+    const state = revisionTextState(paragraph(math));
+    expect(state).toMatchObject({ text: 'An old 𝑥^(2)𝑦 result.', hasRevisions: true, hasHiddenContent: true });
+    expect(extractFinalTextFromOoxml(paragraph(math))).toBe(state.text);
+});
+
 test('Mac reviewed structured math maps exact prose positions without normalizing surrounding punctuation', () => {
     const sub = `<m:sSub><m:e>${run('y')}</m:e><m:sub>${run('j')}</m:sub></m:sSub>`;
     const nary = '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr>'
@@ -103,6 +135,50 @@ test('read-back validates structured equations against fresh XML', async () => {
     await expect(verifyMutationText(context, range, 'An old 𝑥^(2) result.', { paragraph: true })).rejects.toThrow(/read-back differs/);
 });
 
+const scriptL = run('l', '<m:scr m:val="script"/><m:sty m:val="p"/>');
+
+test('Mac reviewed script l projects only inside the evidenced equation, with exact following prose offsets', () => {
+    const xml = paragraph(scriptL, 'A literal 𝓁 and ', '-unit limit.');
+    const state = revisionTextState(xml);
+    expect(state.text).toBe('A literal 𝓁 and 𝓁-unit limit.');
+    const native = 'A literal 𝓁 and ℓ-unit limit.';
+    const projection = projectNativeText(state, native);
+    expect(projection?.text).toBe(state.text);
+    expect(projection?.offsets[native.indexOf('-unit')]).toBe(state.text.indexOf('-unit'));
+    expect(projection?.offsets[native.length]).toBe(state.text.length);
+    expect(projectNativeText(state, state.text)?.text).toBe(state.text);
+    for (const bad of [native.replace('literal 𝓁', 'literal ℓ'), native.replace('ℓ-unit', 'l-unit'),
+        native.replace('limit.', 'limits.'), native.replace(' and ', ' and ')]) {
+        expect(projectNativeText(state, bad)).toBeNull();
+    }
+    const nested = revisionTextState(paragraph(`<m:sSup><m:e>${run('2')}</m:e><m:sup>${scriptL}</m:sup></m:sSup>`));
+    expect(projectNativeText(nested, 'An old ,2-ℓ. result.')?.text).toBe('An old 2^(𝓁) result.');
+});
+
+test.each([
+    run('l'), run('l', '<m:scr m:val="script"/><m:sty m:val="b"/>'),
+    run('𝓁', '<m:nor/>'), run('𝓁', '<m:sty m:val="p"/>'),
+])('script l aliases do not apply to other math styles or literal glyphs: %s', (math) => {
+    expect(projectNativeText(revisionTextState(paragraph(math)), 'An old ℓ result.')).toBeNull();
+});
+
+test('script l read-back fetches fresh XML even when the native text contains no supplementary math glyph', async () => {
+    let xml = paragraph(scriptL, 'A revised ', '-unit limit.');
+    let native = 'A revised ℓ-unit limit.';
+    const range = { getReviewedText: () => ({ value: native }), getOoxml: jest.fn(() => ({ value: xml })) };
+    const context = { sync: async () => {} };
+    const expected = 'A revised 𝓁-unit limit.';
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).resolves.toBeUndefined();
+    expect(range.getOoxml).toHaveBeenCalled();
+    native = 'A revised ℓ-unit limits.';
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
+    native = 'A revised ℓ-unit limit.';
+    xml = paragraph(run('l'), 'A revised ', '-unit limit.');
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
+    xml = `<w:p xmlns:w="${W}"><w:r><w:t>${expected}</w:t></w:r></w:p>`;
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
+});
+
 const target = 'https://example.org/data';
 const hyperlinkPackage = (relationship = target) => `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">`
     + `<pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="${W}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p>`
@@ -112,7 +188,7 @@ const hyperlinkPackage = (relationship = target) => `<pkg:package xmlns:pkg="htt
     + `<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${relationship}" TargetMode="External"/>`
     + '</Relationships></pkg:xmlData></pkg:part></pkg:package>';
 
-test.each(['', ' \\h'])('native hyperlink field codes require a matching document relationship, switch=%s', (switches) => {
+test.each(['', ' \\h', ' \\h\u0001'])('native hyperlink field codes require a matching document relationship, switch=%s', (switches) => {
     const state = revisionTextState(hyperlinkPackage());
     const native = `See \u0013HYPERLINK "${target}"${switches}\u0014dataset\u0015 here.`;
     expect(projectNativeText(state, native).text).toBe('See dataset here.');
@@ -125,4 +201,24 @@ test.each(['', ' \\h'])('native hyperlink field codes require a matching documen
     expect(revisionTextState(hyperlinkPackage('https://example.net/data')).fingerprint).not.toBe(state.fingerprint);
     const unrelated = revisionTextState(hyperlinkPackage().replace('/word/_rels/document.xml.rels', '/word/_rels/header1.xml.rels'));
     expect(projectNativeText(unrelated, native)).toBeNull();
+});
+
+test('Mac hyperlink control read-back requires fresh relationship and result evidence', async () => {
+    let xml = hyperlinkPackage();
+    let native = `See \u0013HYPERLINK "${target}" \\h\u0001\u0014dataset\u0015 here.`;
+    const range = { getReviewedText: () => ({ value: native }), getOoxml: () => ({ value: xml }) };
+    const context = { sync: async () => {} };
+    const expected = 'See dataset here.';
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).resolves.toBeUndefined();
+    xml = hyperlinkPackage('https://example.net/changed');
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
+    xml = hyperlinkPackage();
+    for (const changed of [native.replace('dataset', 'changed'), native.replace(' here.', ' elsewhere.'),
+        native.replace('\\h\u0001', '\\h\u0002'), native.replace('\\h\u0001', '\\x\u0001'),
+        native.replace('\\h\u0001', '\\h\u0001\u0001'), native.replace('dataset', 'data\u0001set')]) {
+        const state = revisionTextState(xml);
+        expect(projectNativeText(state, changed)).toBeNull();
+    }
+    native = native.replace('dataset', 'changed');
+    await expect(verifyMutationText(context, range, expected, { paragraph: true })).rejects.toThrow(/read-back differs/);
 });

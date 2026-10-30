@@ -395,11 +395,13 @@ module.exports = (env, argv) => {
       new HtmlWebpackPlugin({
         template: './src/taskpane/taskpane.html',
         filename: 'taskpane.html',
+        hash: true,
         chunks: ['taskpane']
       }),
       new HtmlWebpackPlugin({
         template: './src/commands/commands.html',
         filename: 'commands.html',
+        hash: true,
         chunks: ['commands']
       }),
       new CopyWebpackPlugin({
@@ -474,6 +476,7 @@ module.exports = (env, argv) => {
             );
             const out = {
               hash,
+              runtimeHash: stats.hash,
               builtAt: new Date().toISOString(),
               mode: 'production',
               appVersion: String(pkg.version || '0.0.0'),
@@ -523,7 +526,9 @@ module.exports = (env, argv) => {
       // and exempt from the per-asset limit, not from artifact verification.
       hints: 'error',
       maxAssetSize: 700 * 1024,
-      maxEntrypointSize: 560 * 1024,
+      // Allow the small per-ChangeSet completion/serialization hooks. The
+      // native undo command and maintenance UI are loaded on demand.
+      maxEntrypointSize: 562 * 1024,
       assetFilter: (name) => !/pdf\.worker\.min\.mjs$/.test(name)
     },
     devtool: isDev ? 'eval-source-map' : false

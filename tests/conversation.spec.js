@@ -676,6 +676,42 @@ describe('routeTurn', () => {
 });
 
 describe('createConversation.submit', () => {
+  test.each([false, true])('local document proposals honor automatic undo cleanup = %s', async (enabled) => {
+    const view = makeView();
+    const state = makeAppState({ config: { clearUndoHistoryAfterApply: enabled } });
+    const context = { document: { undoClear: jest.fn() }, sync: jest.fn(async () => {}) };
+    const previousWord = global.Word;
+    const previousOffice = global.Office;
+    global.Word = { run: jest.fn(async (callback) => callback(context)) };
+    global.Office = { context: { requirements: { isSetSupported: () => true } } };
+    try {
+      const staged = {
+        staged: true,
+        results: ['c0', 'c1'].map((id) => ({ status: 'fulfilled', amendment: `new ${id}`, chunk: { id, text: `old ${id}` } })),
+        chunks: ['c0', 'c1'].map((id) => ({ id, paragraphs: [{ text: `old ${id}` }] })),
+        apply: jest.fn(async (_ids, progress) => {
+          for (const id of ['c1', 'c0']) {
+            expect(state.isProcessingDoc).toBe(true);
+            await progress.onChunkApplied(id, { applied: true });
+          }
+          return { amendmentsApplied: 2, commentsInserted: 0, errors: [] };
+        }),
+        discard: jest.fn(), failedCount: 0, cancelledCount: 0,
+      };
+      const conv = createConversation({ appState: state, view, input: makeInput(), log: jest.fn(),
+        actions: makeActions({ runDocumentSkill: jest.fn(async () => staged) }), getSelectionText: async () => '' });
+      await conv.submit('please polish the whole document');
+      await view._msg.attachProposal.mock.calls[0][0].applyAll();
+      expect(context.document.undoClear).toHaveBeenCalledTimes(enabled ? 2 : 0);
+      expect(state.isProcessingDoc).toBe(false);
+    } finally {
+      if (previousWord === undefined) delete global.Word;
+      else global.Word = previousWord;
+      if (previousOffice === undefined) delete global.Office;
+      else global.Office = previousOffice;
+    }
+  });
+
   test('delete all comments stages a native action despite a selected passage', async () => {
     const view = makeView();
     const proposal = { scope: 'document', comments: [{ id: 'c1' }, { id: 'c2' }], replies: 1 };
@@ -3848,7 +3884,7 @@ describe('conversation history snapshots', () => {
 
 describe('native section/page layout', () => {
   test.each([
-    ['去掉文档中的行号', 'document'], ['Remove line numbering', 'document'],
+    ['去掉文档中的行号', 'document'], ['Remove line numbering', 'document'], ['不显示行号', 'document'],
     ['Set page margins to 2 cm', 'document'], ['将纸张改为A4', 'document'],
     ['将当前节改为双栏', 'selection'], ['关闭选区中的行号', 'selection'],
     ['Remove line numbers in the selected sections of the document', 'selection'],

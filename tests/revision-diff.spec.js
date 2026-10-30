@@ -14,7 +14,8 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
  * deleted atoms and adjust live range boundaries, unlike flat string mocks. */
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
     stickyContent = false, revisedPadding = false, nativeControls = false, rejectEmptyOoxml = false,
-    mathAbsorbsInsertBefore = false, reviewedTransform = (text) => text } = {}) {
+    mathAbsorbsInsertBefore = false, mathAbsorbsInsertAfter = false,
+    externalLinks = false, reviewedTransform = (text) => text } = {}) {
     let sequence = 0;
     // link: a Mac-style HYPERLINK field. Its reviewed text carries raw field
     // codes, a prefix ending inside its result exports the whole hyperlink,
@@ -39,14 +40,24 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             : atom.text === '‑' && nativeControls ? '<w:r><w:noBreakHyphen/></w:r>'
                 : `<w:r>${style}<w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
         const visible = atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
-        const linked = (atom.linkStart ? `<w:hyperlink w:anchor="L${atom.id}">` : '') + visible
+        const linked = (atom.linkStart ? externalLinks
+            ? `<w:hyperlink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId${atom.id}">`
+            : `<w:hyperlink w:anchor="L${atom.id}">` : '') + visible
             + (atom.link && group.some((other, i) => i <= index && other.linkStart && other.id === atom.id)
                 && (atom.linkEnd || index === group.length - 1) ? '</w:hyperlink>' : '');
         return atom.field ? `<w:fldSimple w:instr="HYPERLINK example">${visible}</w:fldSimple>` : linked;
         }).join('') + '</w:p>').join('');
         const end = revisedPadding && slice.some((atom) => atom.type !== 'plain')
             ? '<w:p><w:pPr><w:rPr><w:ins w:id="999"/></w:rPr></w:pPr></w:p>' : '<w:p/>';
-        return padding || nativeParagraphs ? `<w:document xmlns:w="${W}"><w:body>${content}${padding ? end : ''}</w:body></w:document>` : content;
+        const documentXml = padding || nativeParagraphs || externalLinks
+            ? `<w:document xmlns:w="${W}"><w:body>${content}${padding ? end : ''}</w:body></w:document>` : content;
+        if (!externalLinks) return documentXml;
+        const links = new Map(atoms.filter((atom) => atom.link).map((atom) => [atom.id, atom.link]));
+        return '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">'
+            + `<pkg:part pkg:name="/word/document.xml"><pkg:xmlData>${documentXml}</pkg:xmlData></pkg:part>`
+            + '<pkg:part pkg:name="/word/_rels/document.xml.rels"><pkg:xmlData><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + [...links].map(([id, url]) => `<Relationship Id="rId${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escape(url)}" TargetMode="External"/>`).join('')
+            + '</Relationships></pkg:xmlData></pkg:part></pkg:package>';
     };
     const table = { isNullObject: true, load: jest.fn() };
     const cell = { isNullObject: true, load: jest.fn() };
@@ -71,7 +82,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
             ...(nativeReviewed ? { getReviewedText: jest.fn(() => ({ value: reviewedTransform(
                 atoms.slice(span.start, span.end).filter((atom) => atom.type !== 'del').map((atom) => {
                     if (atom.math) return atom.mathStart ? atom.math.native : '';
-                    if (atom.link) return (atom.linkStart ? `\u0013HYPERLINK \\l "L${atom.id}" \\h\u0001\u0014` : '')
+                    if (atom.link) return (atom.linkStart ? `\u0013HYPERLINK ${externalLinks ? `"${atom.link}"` : `\\l "L${atom.id}"`} \\h\u0001\u0014` : '')
                         + atom.text + (atom.linkEnd ? '\u0015' : '');
                     const text = nativeControls && atom.symbol ? '(' : atom.text;
                     return nativeControls && atom.field ? '\u0013HYPERLINK example\u0014' + text + '\u0015' : text;
@@ -112,7 +123,8 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                 const at = location === 'Before' ? span.start : span.end;
                 // Mac Word gives text inserted at an equation's end boundary
                 // the preceding math-zone formatting.
-                const zone = mathAbsorbsInsertBefore && location === 'Before' ? atoms[at - 1]?.math : null;
+                const zone = mathAbsorbsInsertBefore && location === 'Before' ? atoms[at - 1]?.math
+                    : mathAbsorbsInsertAfter && location === 'After' ? atoms[at]?.math : null;
                 const added = Array.from(text).map((text) => ({ text, type: 'ins', id: ++sequence,
                     ...(zone ? { math: zone, mathStart: false } : {}) }));
                 atoms.splice(at, 0, ...added);
@@ -205,6 +217,38 @@ test('post-write changes to equation structure cause an uncertain outcome even i
     });
     await expect(tryRevisionDiff(w.context, w.scope, w.state().text, 'The new 𝑥_(𝑗) result.', jest.fn(),
         { paragraph: true, nativeTargets: true })).rejects.toMatchObject({ mutationAttempted: true });
+});
+
+test.each(['unchanged objects', 'changed prose', 'changed equation'])(
+    'read-back retains object evidence when Word changes equation serialization after a write: %s', async (outcome) => {
+    const math = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+        + '<m:sSub><m:e><m:r><m:rPr><m:nor/></m:rPr><m:t>log</m:t></m:r></m:e>'
+        + '<m:sub><m:r><m:t>2</m:t></m:r></m:sub></m:sSub></m:oMath>', native: 'log_(2)' };
+    const w = world([{ text: 'The old ' }, { text: 'log_(2)', math }, { text: ' result.' }], { nativeReviewed: true });
+    w.context.sync.mockImplementation(async () => {
+        if (!w.writes.length) return;
+        // The native serializer can switch to Word's punctuation-delimited
+        // form while the equation XML and UTF-16 length remain unchanged.
+        math.native = ',log-2.';
+        if (outcome === 'changed prose') w.atoms.find((atom) => atom.text === 'T').text = 'X';
+        if (outcome === 'changed equation') math.xml = math.xml.replace('<m:t>2', '<m:t>3');
+    });
+    const application = tryRevisionDiff(w.context, w.scope, w.state().text, 'The revised log_(2) result.', jest.fn(),
+        { paragraph: true, nativeTargets: true });
+    if (outcome === 'unchanged objects') {
+        await expect(application).resolves.toMatchObject({ strategy: 'revision' });
+        expect(w.state().text).toBe('The revised log_(2) result.');
+    } else await expect(application).rejects.toMatchObject({ mutationAttempted: true });
+});
+
+test('multi-paragraph selections with equations retain whole-range verification', async () => {
+    const math = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>k</m:t></m:r></m:oMath>', native: '𝑘' };
+    const w = world([{ text: 'The old ' }, { text: '𝑘', math }, { text: ' result.\nThe following paragraph.' }],
+        { nativeReviewed: true, nativeParagraphs: true });
+    const after = 'The revised 𝑘 result.\nThe following paragraph.';
+    await expect(tryRevisionDiff(w.context, w.scope, w.state().text, after, jest.fn(), { nativeTargets: true }))
+        .resolves.toMatchObject({ strategy: 'revision' });
+    expect(w.state().text).toBe(after);
 });
 
 test.each([[false, false], [false, true], [true, false]])('selection edits keep headings, blank paragraphs and repeated sentences in place, sentence mode=%s, missing searches=%s', async (lineDiffEnabled, missingSearches) => {
@@ -331,6 +375,71 @@ test('two polish rounds edit prose around an intact equation, raw hyperlink fiel
 
 const kMath = { xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>k</m:t></m:r></m:oMath>', native: '𝑘' };
 
+test.each([
+    ['Use ', 'let ', 'Before'],
+    ['and ', 'f(x)=', 'Replace'],
+    ['🙂', 'then ', 'Replace'],
+])('insertions before equations stay in verified prose: %s + %s', async (prefix, insertion, location) => {
+    const w = world([{ text: 'Earlier wording', type: 'del', id: 'history' }, { text: prefix },
+        { text: '𝑘', math: kMath }, { text: '.' }],
+    { nativeReviewed: true, mathAbsorbsInsertAfter: true, mathAbsorbsInsertBefore: true });
+    const before = w.state();
+    const after = `${prefix}${insertion}𝑘.`;
+    await tryRevisionDiff(w.context, w.scope, before.text, after, jest.fn(),
+        { paragraph: true, nativeTargets: true, preflightOnly: true });
+    expect(w.writes).toHaveLength(0);
+    await tryRevisionDiff(w.context, w.scope, before.text, after, jest.fn(), { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe(after);
+    expect(w.state().inlineFingerprint).toBe(before.inlineFingerprint);
+    expect(w.writes.filter((write) => write.type === 'insert').map((write) => write.location)).toEqual([location]);
+    expect(w.atoms.filter((atom) => atom.math).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.atoms.filter((atom) => atom.id === 'history').map((atom) => atom.text).join('')).toBe('Earlier wording');
+});
+
+test.each([', ', ' ,'])('a single prose character between equations is replaced without sliding into either object: %s', async (insertion) => {
+    const w = world([{ text: '𝑘', math: kMath }, { text: ' ' }, { text: '𝑥_(𝑗)', math: opaqueMath }],
+        { nativeReviewed: true, mathAbsorbsInsertBefore: true, mathAbsorbsInsertAfter: true });
+    const before = w.state();
+    const after = `𝑘${insertion}𝑥_(𝑗)`;
+    await tryRevisionDiff(w.context, w.scope, before.text, after, jest.fn(), { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe(after);
+    expect(w.state().inlineFingerprint).toBe(before.inlineFingerprint);
+    expect(w.writes.filter((write) => write.type === 'insert').map((write) => write.location)).toEqual(['Replace']);
+});
+
+test.each(['prefix 𝑘', '𝑘 suffix'])('an equation-only paragraph has no safe prose insertion anchor: %s', async (after) => {
+    const w = world([{ text: '𝑘', math: kMath }], { nativeReviewed: true });
+    await expect(tryRevisionDiff(w.context, w.scope, '𝑘', after, jest.fn(),
+        { paragraph: true, nativeTargets: true })).rejects.toThrow(/safe visible insertion anchor/);
+    expect(w.writes).toHaveLength(0);
+});
+
+test.each([false, true])('whole-document mixed insertions on both sides of equations verify on repeated rounds, sentence mode=%s', async (lineDiffEnabled) => {
+    const w = world([{ text: 'Choose ' }, { text: '𝑘', math: kMath }, { text: ', ' },
+        { text: '𝑘', math: kMath }, { text: ', ' }, { text: '𝑘', math: kMath },
+        { text: '. For bounded ' }, { text: '𝑘', math: kMath }, { text: ' the value is ' },
+        { text: '𝑥_(𝑗)', math: opaqueMath }, { text: '.' }],
+    { nativeReviewed: true, padding: true, revisedPadding: true, stickyContent: true,
+        mathAbsorbsInsertBefore: true, mathAbsorbsInsertAfter: true });
+    const fingerprint = w.state().inlineFingerprint;
+    for (const amendment of [
+        'Choose 𝑘, let 𝑘, and set 𝑘. For bounded 𝑘, the value is f(x)=𝑥_(𝑗).',
+        'Choose 𝑘, take 𝑘, and then set 𝑘. For bounded 𝑘, the value is f(x)=𝑥_(𝑗).',
+    ]) {
+        const parsed = await parseDocument();
+        w.bookmarks.set('chunk', w.scope);
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]),
+        { trackChangesEnabled: true, lineDiffEnabled, log: jest.fn() });
+        expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [], uncertainChunkIds: [] });
+        expect(w.state().text).toBe(amendment);
+        expect(w.state().inlineFingerprint).toBe(fingerprint);
+    }
+    expect(w.atoms.filter((atom) => atom.math).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.writes.every((write) => write.mode === 'TrackAll')).toBe(true);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
 test.each([['only when 𝑘 is near 20.', 'After'], ['only when 𝑘, near 20.', 'Replace']])(
     'Mac Word insertions directly after an equation stay in prose: %s', async (tail, location) => {
         const w = world([{ text: 'A random sequence is unique only when ' }, { text: '𝑘', math: kMath }, { text: ' near 20.' }],
@@ -346,7 +455,7 @@ test.each([['only when 𝑘 is near 20.', 'After'], ['only when 𝑘, near 20.',
 // Without a field begin in the reviewed prefix, only the end boundary proves
 // which period follows the link.
 test.each([['raw field codes', (text) => text], ['no begin code', (text) => text.split('\u0013').map((part, i) => i ? part.slice(part.indexOf('\u0014') + 1) : part).join('')]])(
-    'a reference period directly after a Mac hyperlink field is not confused with periods inside the link: %s', async (_name, reviewedTransform) => {
+    'a reference period directly after a Mac hyperlink field is not confused with periods inside the link: %s', async (name, reviewedTransform) => {
     const w = world([{ text: 'P.\u00a0L. Antkowiak and R.\u00a0N. Grass. Nature Communications, 2020. ' },
         { text: 'doi:10.1038/s41467-020-19148-3', link: 'https://doi.org/10.1038/s41467-020-19148-3' }, { text: '.' }],
     { nativeReviewed: true, reviewedTransform });
@@ -356,7 +465,8 @@ test.each([['raw field codes', (text) => text], ['no begin code', (text) => text
     await tryRevisionDiff(w.context, w.scope, before, after, log, { paragraph: true, nativeTargets: true, preflightOnly: true });
     expect(w.writes).toHaveLength(0);
     await tryRevisionDiff(w.context, w.scope, before, after, log, { paragraph: true, nativeTargets: true });
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
+    if (name === 'no begin code') expect(log).toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
+    else expect(log).not.toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
     expect(w.state().text).toBe(after);
     expect(w.atoms.filter((atom) => atom.link).every((atom) => atom.type === 'plain')).toBe(true);
 });
@@ -532,9 +642,79 @@ test.each([
 test('splits long visible deletion searches below the Word limit', async () => {
     const before = 'ab'.repeat(130);
     const w = world([{ text: 'old', type: 'del' }, { text: before }]);
-    await tryRevisionDiff(w.context, w.scope, before, '', jest.fn());
+    const result = await tryRevisionDiff(w.context, w.scope, before, '', jest.fn());
     expect(w.state().text).toBe('');
     expect(w.scope.search.mock.calls.every(([text]) => text.length <= 200)).toBe(true);
+    expect(result).toMatchObject({ deletions: 1 });
+    expect(w.writes.filter((write) => write.type === 'delete')).toHaveLength(1);
+});
+
+test('word strategy reaches the native locator with word granularity and fewer mutations than scalar rewrites', async () => {
+    const before = 'The investigation demonstrated substantial improvement in reproducibility.';
+    const after = 'The analysis showed considerable gains in reliability.';
+    const run = async (strategy) => {
+        const w = world([{ text: 'Earlier deleted text. ', type: 'del', id: 'history' }, { text: before }], { nativeReviewed: true });
+        const result = await strategy(w.context, w.scope, before, after, jest.fn(), { paragraph: true, nativeTargets: true });
+        expect(w.state().text).toBe(after);
+        expect(w.atoms.filter((atom) => atom.id === 'history').map((atom) => atom.text).join('')).toBe('Earlier deleted text. ');
+        return result.insertions + result.deletions + result.replacements;
+    };
+    const scalarCalls = await run(tryRevisionDiff);
+    const wordCalls = await run(applyTokenMapStrategy);
+    expect(wordCalls).toBeLessThan(scalarCalls);
+});
+
+test('word granularity keeps unchanged English words intact rather than inserting inside them', async () => {
+    const w = world([{ text: 'The results are significant.' }], { nativeReviewed: true });
+    const log = jest.fn();
+    const result = await applyTokenMapStrategy(w.context, w.scope, w.state().text, 'The results are substantial.', log,
+        { paragraph: true, nativeTargets: true });
+    expect(result).toMatchObject({ strategy: 'revision', replacements: 1, insertions: 0, deletions: 0 });
+    expect(w.writes.filter((write) => write.type === 'insert').map((write) => write.text)).toEqual(['substantial']);
+    expect(w.state().text).toBe('The results are substantial.');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('word granularity, 1 hunk(s), 1 search target(s), 1 mutation call(s)'), 'info');
+});
+
+test.each([applySentenceDiffStrategy, applyCharDiffStrategy])('native locator honors the requested non-word strategy: %p', async (strategy) => {
+    const w = world([{ text: 'The results are significant. Keep this.' }], { nativeReviewed: true });
+    const log = jest.fn();
+    await strategy(w.context, w.scope, w.state().text, 'The results are substantial. Keep this.', log,
+        { paragraph: true, nativeTargets: true });
+    expect(w.state().text).toBe('The results are substantial. Keep this.');
+    const granularity = strategy === applySentenceDiffStrategy ? 'sentence' : 'character';
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(`Native diff: ${granularity} granularity`), 'info');
+});
+
+test('long replacements combine search pieces but never combine across an earlier deletion', async () => {
+    const first = 'a'.repeat(240);
+    const last = 'b'.repeat(240);
+    const w = world([{ text: first }, { text: 'OLD HISTORY', type: 'del', id: 'history' }, { text: last }], { nativeReviewed: true });
+    const result = await tryRevisionDiff(w.context, w.scope, first + last, 'NEW', jest.fn(), { nativeTargets: true });
+    expect(result).toMatchObject({ replacements: 1, deletions: 1 });
+    expect(w.state().text).toBe('NEW');
+    expect(w.atoms.filter((atom) => atom.id === 'history').map((atom) => atom.text).join('')).toBe('OLD HISTORY');
+});
+
+test('a faulty native union that includes hidden text fails before any write or tracking change', async () => {
+    const before = 'a'.repeat(199) + 'b' + 'c'.repeat(60);
+    const w = world([{ text: 'HIDDEN', type: 'del', id: 'history' }, { text: before }], { nativeReviewed: true });
+    const search = w.scope.search.getMockImplementation();
+    w.scope.search.mockImplementation((...args) => {
+        const matches = search(...args);
+        for (const range of matches.items) {
+            const expand = range.expandTo;
+            range.expandTo = (other) => {
+                const union = expand(other);
+                union._span.start = 0;
+                return union;
+            };
+        }
+        return matches;
+    });
+    await expect(tryRevisionDiff(w.context, w.scope, before, '', jest.fn(), { nativeTargets: true }))
+        .rejects.toThrow('Combined mutation range crosses hidden or protected content');
+    expect(w.writes).toEqual([]);
+    expect(w.context.document.changeTrackingMode).toBe('TrackMineOnly');
 });
 
 test('caller-owned tracking is respected, and a no-op does not write', async () => {
@@ -780,6 +960,72 @@ test('whole-document reassembly aligns final text and verifies the staged revisi
     const stale = await applyChunkResults([result], new Map([['c', 'chunk']]), options);
     expect(stale.amendmentsApplied).toBe(0);
     expect(stale.errors[0]).toMatch(/no longer matches/);
+});
+
+test.each([false, true].flatMap((lineDiffEnabled) => [
+    { lineDiffEnabled, label: 'opaque equation', text: '𝑥_(𝑗)', math: opaqueMath },
+    { lineDiffEnabled, label: 'script l', text: '𝓁', math: {
+        xml: '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r>'
+            + '<m:rPr><m:scr m:val="script"/><m:sty m:val="p"/></m:rPr><m:t>l</m:t></m:r></m:oMath>', native: 'ℓ',
+    } },
+]))('whole-document read-back retains $label across two polish rounds, sentence mode=$lineDiffEnabled', async ({ lineDiffEnabled, text, math }) => {
+    const w = world([{ text: 'The old ' }, { text, math }, { text: ' result. Keep the result.' }],
+        { nativeReviewed: true, padding: true, revisedPadding: true, rejectEmptyOoxml: true });
+    for (const amendment of [`The revised ${text} result. Keep the result.`, `The final ${text} result. Keep this result.`]) {
+        const parsed = await parseDocument();
+        w.bookmarks.set('chunk', w.scope);
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]),
+        { trackChangesEnabled: true, lineDiffEnabled, log: jest.fn() });
+        expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [] });
+        expect(w.state().text).toBe(amendment);
+    }
+    expect(w.atoms.filter((atom) => atom.math).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.writes.length).toBeGreaterThan(0);
+    expect(w.writes.every((write) => write.mode === 'TrackAll')).toBe(true);
+    expect(w.scope.insertText).not.toHaveBeenCalled();
+});
+
+test.each(['prose', 'equation'])('whole-document final read-back still rejects changed %s after the strategy verifies its write', async (change) => {
+    const math = { ...opaqueMath };
+    const w = world([{ text: 'The old ' }, { text: '𝑥_(𝑗)', math }, { text: ' result.' }], { nativeReviewed: true });
+    const parsed = await parseDocument();
+    w.bookmarks.set('chunk', w.scope);
+    const log = jest.fn((message) => {
+        // This log occurs after the strategy's own successful read-back.
+        if (!message.startsWith('Verified edits against native text')) return;
+        if (change === 'prose') w.atoms.find((atom) => atom.text === 'T').text = 'X';
+        else math.xml = math.xml.replace('<m:sSub>', '<m:sSub><m:sSubPr><m:ctrlPr/></m:sSubPr>');
+    });
+    const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment: 'The revised 𝑥_(𝑗) result.',
+        chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]), { log });
+    expect(w.writes.length).toBeGreaterThan(0);
+    expect(applied.amendmentsApplied).toBe(0);
+    expect(applied.errors[0]).toMatch(/read-back differs.*paragraph 1: read-back/);
+});
+
+test.each([false, true])('whole-document polish preserves external Mac hyperlink fields through final read-back, sentence mode=%s', async (lineDiffEnabled) => {
+    const url = 'https://example.org/data';
+    const w = world([{ text: 'Archived data are available at ' }, { text: url, link: url },
+        { text: ' and included in the supplement.' }],
+    { nativeReviewed: true, externalLinks: true, padding: true, revisedPadding: true });
+    const originalFingerprint = w.state().inlineFingerprint;
+    for (const amendment of [`All archived data are available at ${url} and included in the supplement.`,
+        `All archived data are available at ${url} and provided in the supplement.`]) {
+        const parsed = await parseDocument();
+        w.bookmarks.set('chunk', w.scope);
+        const log = jest.fn();
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]),
+        { trackChangesEnabled: true, lineDiffEnabled, log });
+        expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [] });
+        expect(w.state().text).toBe(amendment);
+        expect(w.state().inlineFingerprint).toBe(originalFingerprint);
+        expect(log).not.toHaveBeenCalledWith(expect.stringContaining('OOXML positions'), 'info');
+    }
+    expect(w.atoms.filter((atom) => atom.link).every((atom) => atom.type === 'plain')).toBe(true);
+    expect(w.writes.length).toBeGreaterThan(0);
+    expect(w.writes.every((write) => write.mode === 'TrackAll')).toBe(true);
 });
 
 test('a substantial second-round rewrite stays inside the existing paragraph', async () => {

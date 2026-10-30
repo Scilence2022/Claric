@@ -1,6 +1,8 @@
 /** Read-back of written Word content, loaded before the first mutation. */
 import { queueCurrentTextRead, queueRevisionRead, resolveRevisionRead, normalizeRevisionText,
     normalizeWordText, textMismatchDetail, MutationSafetyError, projectNativeText, hasNativeFieldCodes } from './word-revisions.js';
+import { rangeFingerprintDifference } from './ooxml-fingerprint.js';
+import { recordNativeTextMismatch } from './native-text-diagnostics.js';
 
 /** Verify final-view content after a strategy's writes without resetting it. */
 export async function verifyMutationText(context, range, expected, options = {}, insertedRanges = []) {
@@ -15,10 +17,22 @@ export async function verifyMutationText(context, range, expected, options = {},
         if (!read) throw new MutationSafetyError(new Error('Native object read-back is unavailable. Inspect Word before retrying.'));
         await context.sync();
         const state = resolveRevisionRead(target, read, { ...options, singleParagraphContent: true });
-        if (state.paragraphCount !== 1 || state.text !== normalizeWordText(expected)
-            || (state.protectedStructure && !state.fieldOnlyProtection)
-            || state.inlineFingerprint !== options.verifiedInlineFingerprint) {
-            throw new MutationSafetyError(new Error('Native object or prose read-back differs from the proposal. Inspect Word before retrying.'));
+        const wanted = normalizeWordText(expected);
+        const mismatches = [];
+        if (state.paragraphCount !== 1) mismatches.push(`paragraph count: expected 1, received ${state.paragraphCount}`);
+        if (state.text !== wanted) mismatches.push(`prose: ${textMismatchDetail(wanted, state.text)}`);
+        if (state.protectedStructure && !state.fieldOnlyProtection) mismatches.push('unsupported protected structure');
+        if (state.inlineFingerprint !== options.verifiedInlineFingerprint) {
+            mismatches.push(`native objects: ${rangeFingerprintDifference(options.verifiedInlineFingerprint, state.inlineFingerprint)}`);
+        }
+        if (mismatches.length) {
+            const mismatch = mismatches.join('; ');
+            // Previously only pre-write serializer mismatches were captured,
+            // leaving the actual failed mutation without read-back evidence.
+            // Full text/XML stays in the explicitly exported context report.
+            try { recordNativeTextMismatch(read, state, { phase: 'post-write', expectedText: wanted, mismatch }); }
+            catch { /* diagnostics must not mask an uncertain write */ }
+            throw new MutationSafetyError(new Error(`Native object or prose read-back differs from the proposal (${mismatch}). Inspect Word before retrying.`));
         }
         return;
     }
@@ -37,9 +51,11 @@ export async function verifyMutationText(context, range, expected, options = {},
     let actual = comparable(current ? current.value : resolveRevisionRead(target, read, options).text);
     const wanted = comparable(expected);
     if (current && actual !== wanted && (hasNativeFieldCodes(current.value)
-        || /[(\uF000-\uF0FF\r\n\uD835]/.test(current.value))) {
+        || /[(\uF000-\uF0FF\r\n\uD835]/.test(current.value) || /\uD835/.test(wanted))) {
         // Fields, symbols and structured equations need fresh XML evidence. Never
         // use the pre-write projection to bless changed field results/glyphs.
+        // A supplementary math glyph can serialize as a BMP letterlike symbol,
+        // so inspect the expected text as well as Word's native representation.
         const xml = queueRevisionRead(target, options);
         if (xml) {
             await context.sync();

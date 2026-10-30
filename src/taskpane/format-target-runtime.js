@@ -57,7 +57,8 @@ export async function readFormatInventory(context, scopeRange, { scope, signal, 
                 const descriptor = describeFormatParagraph({ index, text: paragraph.text, style: paragraph.style,
                     styleBuiltIn: paragraph.styleBuiltIn, ooxml: xml.value,
                     inTable: typeof table.isNullObject === 'boolean' ? !table.isNullObject : undefined,
-                    withinScope: scope === 'document' || inside(relation?.value), bold: font?.bold });
+                    withinScope: scope === 'document' || inside(relation?.value), bold: font?.bold,
+                    singleParagraphContent: true });
                 records[index] = { descriptor, structure: rangeStructureFingerprint(xml.value),
                     paragraph: copyProperties(paragraph, SCALARS), font: copyProperties(font, FONT_KEYS) };
             }
@@ -144,7 +145,11 @@ function expectedEnum(group, property, value) {
 
 /** Tell the planner why an exact match found nothing, so it can correct the op. */
 function unmatchedTargetMessage(inventory, op, exclusions) {
-    const generic = 'No verified formatting paragraphs matched. Choose an explicit target or revise the request.';
+    const reasons = new Map();
+    for (const { reason } of exclusions) reasons.set(reason, (reasons.get(reason) || 0) + 1);
+    const details = [...reasons].sort((a, b) => b[1] - a[1]).slice(0, 5)
+        .map(([reason, count]) => `${count}: ${reason}`).join(' ');
+    const generic = `No verified formatting paragraphs matched. Inspected ${inventory.descriptors.length} paragraph(s). ${details} Choose an explicit target or revise the request.`;
     if (typeof op.match !== 'string') return generic;
     const quoted = JSON.stringify(op.match.length > 60 ? `${op.match.slice(0, 60)}…` : op.match);
     const blocked = exclusions.filter((entry) => inventory.descriptors[entry.index]?.text.includes(op.match));
