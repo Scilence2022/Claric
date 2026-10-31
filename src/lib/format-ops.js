@@ -14,6 +14,7 @@
  *   [
  *     {
  *       "match": "optional exact substring to format",
+ *       "submatch": "optional exact part of match; only it is formatted",
  *       "paragraphStyle": "optional built-in style target (e.g. \"heading1\")",
  *       "paragraphRole": "body",
  *       "paragraphIds": ["p1", "p2"],
@@ -88,6 +89,7 @@ export function buildFormatPrompt(instruction, scopeText, scope, inventory) {
         '- Each array item is one operation:\n' +
         '  {\n' +
         '    "match": "optional exact substring of the text to format (use one op per distinct target)",\n' +
+        '    "submatch": "optional exact part of match; only its first occurrence inside each match hit is formatted",\n' +
         '    "paragraphStyle": "optional built-in style of paragraphs to target (e.g. \\"heading1\\")",\n' +
         '    "paragraphRole": "body (verified prose paragraphs only)",\n' +
         '    "paragraphIds": ["p1", "p2"],\n' +
@@ -103,9 +105,14 @@ export function buildFormatPrompt(instruction, scopeText, scope, inventory) {
         '  }\n' +
         `- Omit all target selectors to target the entire ${scopeName}, subject to the user's scope constraints.\n` +
         '- Use exactly ONE target selector: match, paragraphStyle, paragraphRole, or paragraphIds. Selectors cannot be combined.\n' +
+        '- match is case-sensitive and also hits inside longer words ("k-mer" also hits "k-mers"). To format only PART of each hit, add "submatch" ' +
+        '(font only): {"match":"k-mer","submatch":"k","font":{"italic":true}} italicizes just the k of every k-mer. ' +
+        'Text inside equations is not matched; equation symbols (e.g. 𝑘) are already math-formatted.\n' +
+        '- A font-only match op may target any fully in-scope paragraph whose native text contains the match, including unverified paragraphs ' +
+        'with equations, links or fields: only the exact hits are formatted. Paragraph or list payloads still require verified paragraphs.\n' +
         '- For body text or prose requests, use paragraphRole:"body" or verified body paragraphIds. Never substitute paragraphStyle:"normal" for body prose: headings, captions and tables may also use Normal, and prose may use custom styles.\n' +
         '- paragraphStyle selects the native locale-independent styleBuiltIn value; it does not select a localized/custom style name.\n' +
-        '- paragraphIds select exact captured native paragraphs (at most 500 IDs); use only IDs in the inventory. Unverified/partial/protected paragraphs remain excluded; unknown-role paragraphs cannot be inferred as body prose.\n' +
+        '- paragraphIds select exact captured native paragraphs (at most 500 IDs); use only IDs in the inventory. Unverified/partial/protected paragraphs remain excluded from paragraph-level selectors; unknown-role paragraphs cannot be inferred as body prose.\n' +
         '- Lists: "listType": "bullet" or "number" turns the target paragraphs into ONE list (several matched ' +
         'paragraphs become consecutive items); "listLevel" (0-8) sets the nesting level; "listType": "none" ' +
         'removes list formatting. One op per list — do not emit a separate op per item.\n' +
@@ -165,7 +172,7 @@ function _sanitizeOp(entry, log) {
 
     if (entry.cleanup !== undefined) {
         if (entry.cleanup?.emptyParagraphs === true
-            && ['match', 'paragraphStyle', 'paragraphRole', 'paragraphIds'].every((key) => entry[key] === undefined)
+            && ['match', 'submatch', 'paragraphStyle', 'paragraphRole', 'paragraphIds'].every((key) => entry[key] === undefined)
             && !entry.font && !entry.paragraph && !entry.insert && !entry.headingNumber) return { cleanup: { emptyParagraphs: true } };
         log('Format ops: dropped invalid or mixed cleanup payload', 'warning');
         return null;
@@ -177,8 +184,22 @@ function _sanitizeOp(entry, log) {
         log('Format ops: dropped conflicting target selectors', 'warning');
         return null;
     }
+    if (entry.submatch !== undefined && entry.match === undefined) {
+        log('Format ops: dropped a submatch without match', 'warning');
+        return null;
+    }
     if (typeof entry.match === 'string' && entry.match.trim()) {
         op.match = entry.match;
+        if (entry.submatch !== undefined) {
+            // A part-of-match target is character formatting only; it must
+            // never fall back to formatting the whole match.
+            if (typeof entry.submatch !== 'string' || !entry.submatch.trim() || entry.submatch === entry.match
+                || !entry.match.includes(entry.submatch) || entry.paragraph || entry.insert) {
+                log('Format ops: dropped an invalid submatch (it must be an exact part of match, font only)', 'warning');
+                return null;
+            }
+            op.submatch = entry.submatch;
+        }
     } else if (typeof entry.paragraphStyle === 'string' && entry.paragraphStyle.trim()) {
         op.paragraphStyle = entry.paragraphStyle.trim();
     } else if (entry.paragraphRole === 'body') {
@@ -340,7 +361,7 @@ export function describeFormatOp(op) {
     const target = op.insert
         ? `insert at ${op.insert.position}`
         : op.match
-            ? `"${_truncate(op.match, 40)}"`
+            ? op.submatch ? `"${_truncate(op.submatch, 20)}" in "${_truncate(op.match, 40)}"` : `"${_truncate(op.match, 40)}"`
             : op.paragraphStyle
                 ? `${op.paragraphStyle} paragraphs`
                 : op.paragraphRole === 'body'

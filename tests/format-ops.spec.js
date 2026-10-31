@@ -89,6 +89,23 @@ describe('parseFormatOps', () => {
     expect(both).toEqual([]);
   });
 
+  test('submatch formats only an exact part of each match and never widens to the whole hit', () => {
+    const [op] = parseFormatOps('[{"match":"k-mer","submatch":"k","font":{"italic":true}}]');
+    expect(op).toEqual({ match: 'k-mer', submatch: 'k', font: { italic: true } });
+    expect(describeFormatOp(op)).toBe('"k" in "k-mer" → italic');
+    for (const entry of [
+      { submatch: 'k', font: { italic: true } },
+      { paragraphIds: ['p1'], submatch: 'k', font: { italic: true } },
+      { match: 'k-mer', submatch: 'x', font: { italic: true } },
+      { match: 'k-mer', submatch: '', font: { italic: true } },
+      { match: 'k-mer', submatch: 'k-mer', font: { italic: true } },
+      { match: 'k-mer', submatch: 7, font: { italic: true } },
+      { match: 'k-mer', submatch: 'k', paragraph: { alignment: 'centered' } },
+      { match: 'k-mer', submatch: 'k', font: { italic: true }, paragraph: { alignment: 'centered' } },
+    ]) expect(parseFormatOps(JSON.stringify([entry]))).toEqual([]);
+    expect(buildFormatPrompt('修改所有 k-mer 的 k 为斜体', 'k-mer sets', 'document')).toContain('"submatch":"k"');
+  });
+
   test('semantic body and captured paragraph ID selectors survive sanitization', () => {
     expect(parseFormatOps('[{"paragraphRole":"body","paragraph":{"alignment":"justified"}},{"paragraphIds":["p1","p7"],"font":{"bold":false}}]'))
       .toEqual([{ paragraphRole: 'body', paragraph: { alignment: 'justified' } }, { paragraphIds: ['p1', 'p7'], font: { bold: false } }]);
