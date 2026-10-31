@@ -21,7 +21,7 @@ const ALLOWED_FIELDS = new Set(['version', 'workspaceId', 'documentId', 'type', 
 const V2_FIELDS = new Set(['version', 'workspaceId', 'source', 'target', 'type', 'correlationId', 'idempotencyKey', 'ttlMs', 'createdAt', 'payload']);
 const PARTY_FIELDS = ['workspaceId', 'documentId', 'instanceId'];
 const PAYLOAD_SCHEMAS = Object.freeze({
-  'document.announce': { title: 'string?', revision: 'id?', capabilities: 'ids?' },
+  'document.announce': { title: 'string?', revision: 'id?', capabilities: 'ids?', access: 'object?' },
   'document.heartbeat': { revision: 'id?' }, 'document.left': {},
   'context.request': { requestId: 'id', scope: 'id', artifactIds: 'ids?', digest: 'id?', offset: 'integer?', limit: 'integer?', query: 'string?' },
   'context.response': { requestId: 'id', artifactIds: 'ids?', summary: 'string?', snapshot: 'object?', error: 'object?' },

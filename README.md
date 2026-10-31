@@ -478,9 +478,10 @@ the remote hosted build and requires repository permissions; it is not part of i
 
 The development server and Node production server both expose `/coordination`.
 After initialization, each Word taskpane automatically registers and discovers
-same-workspace documents through the same-origin `/coordination` endpoint. Expand
-**Cross-document workspace** to inspect the endpoint or enter a pairing token if the
-server was configured with `COORDINATION_TOKEN`. No token is saved by this form.
+same-workspace documents through the same-origin `/coordination` endpoint. Open
+**Settings → Workspace** to configure the endpoint or enter a pairing token if the
+server was configured with `COORDINATION_TOKEN`. A successfully connected address
+is remembered on this device; pairing tokens are never saved.
 A temporary service outage does not affect single-document chat: the taskpane uses
 bounded background retries, while 401/403 authorization failures stop retries and
 ask for a pairing token. Connected peers may request bounded context and edit tasks;
@@ -500,7 +501,25 @@ targets, unsupported types, or broken dependencies reject the whole plan; nothin
 is submitted partially), and each resulting task is still reviewed and applied in
 its target taskpane only.
 
-The workspace also offers **Shared evidence**. Choose **Selected passage** or
+The toolbar's **Cross-document workspace** button shows a live count and opens
+a document-first panel. The default **Documents** tab lists the current document
+and connected instances, with actions to read context or choose a task target.
+Connection details stay in Settings, so the chat retains its full height.
+
+The current document's master permissions control context reads and edit
+requests. Each peer document also has separate restrictions under **Can read this
+document** and **Can request edits here**: these control that peer's access to
+the current document, not permission to write into the peer. A peer rule covers
+all linked instances of its document ID; master switches cannot be overridden by
+individual grants. Rules are saved under this workspace and document identity
+on this device. Unknown/corrupt saved policies deny access. Permissions are
+checked in the source taskpane and coordination server, including before
+returning cached/in-flight context and before applying a staged edit. Revocation
+does not remove copies already received by another chat, and edits always need
+target-side review. Refresh participating taskpanes and restart the coordination
+service when updating to this permission-aware build.
+
+The panel's second tab offers **Shared evidence**. Choose **Selected passage** or
 **Document excerpt**, then **Share excerpt** to publish a versioned reference.
 Sharing is explicit; chat history is never broadcast. Each excerpt contains at
 most 12,000 characters, expires after 15 minutes, and remains in the source

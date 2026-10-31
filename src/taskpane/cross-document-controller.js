@@ -9,6 +9,9 @@ import { addLog } from './ui/status-bar.js';
 import { loadLazyModule } from '../lib/lazy-module-loader.js';
 import { createSharedEvidenceStore, createSharedEvidenceReader } from './shared-evidence.js';
 import { createSharedEvidenceController } from './shared-evidence-controller.js';
+import { createWorkspaceAccess } from './workspace-access.js';
+import { createWorkspaceView } from './ui/workspace-view.js';
+import { allowsDocumentAccess } from '../lib/coordination/access.cjs';
 
 let coordinationClient = null;
 
@@ -28,12 +31,15 @@ function connectionLabel(button, connected) {
     if (button) button.textContent = connected ? 'Disconnect this document' : 'Connect this document';
 }
 
-export function initCrossDocumentConnection(localIdentity) {
+export function initCrossDocumentConnection(localIdentity, { onOpenSettings } = {}) {
     const button = document.getElementById('crossDocumentConnectBtn');
     const urlInput = document.getElementById('crossDocumentUrl');
     const tokenInput = document.getElementById('crossDocumentToken');
     const status = document.getElementById('crossDocumentConnectionStatus');
     if (!button || !urlInput || !tokenInput || !status) return;
+    const addressKey = 'claric.workspace.coordinationUrl';
+    try { if (!urlInput.value) urlInput.value = localStorage.getItem(addressKey) || ''; } catch { /* Storage may be unavailable in Office web. */ }
+    const access = createWorkspaceAccess({ identity: localIdentity });
 
     let stop = null;
     let retryTimer = null;
@@ -42,6 +48,19 @@ export function initCrossDocumentConnection(localIdentity) {
     let manuallyDisconnected = false;
     let authorizationStopped = false;
     let generation = 0;
+    let connectedUrl = '';
+    const workspaceView = createWorkspaceView({ identity: localIdentity, access, onOpenSettings,
+        onAccessChange: async (documentId, operation, allowed) => {
+            access.update(documentId, operation, allowed);
+            try { await stop?.updateAccess?.(); }
+            catch (error) { throw new Error(`Saved on this device; service sync failed: ${error.message}`); }
+        },
+    });
+    const setStatus = (text, style = '', connected = false) => {
+        status.textContent = text;
+        status.className = `cross-document-connection-status ${style}`;
+        workspaceView.connection(text, connected);
+    };
 
     const clearRetry = () => {
         if (retryTimer !== null) clearTimeout(retryTimer);
@@ -60,6 +79,7 @@ export function initCrossDocumentConnection(localIdentity) {
         stop = null;
         if (currentStop) await currentStop();
         connectionLabel(button, false);
+        workspaceView.update(new Map(), false);
     };
 
     const scheduleReconnect = (error) => {
@@ -68,14 +88,12 @@ export function initCrossDocumentConnection(localIdentity) {
         const message = String(error?.message || '');
         if (statusCode !== null && ![404, 503].includes(statusCode)) return;
         if (statusCode === null && /^(Use a local|An HTTPS taskpane|Cross-document work requires)/.test(message)) {
-            status.textContent = `Not connected: ${message}`;
-            status.className = 'cross-document-connection-status error';
+            setStatus(`Not connected: ${message}`, 'error');
             return;
         }
         const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
         retryAttempt += 1;
-        status.textContent = `Unavailable — retrying in ${Math.ceil(delay / 1000)}s.`;
-        status.className = 'cross-document-connection-status warning';
+        setStatus(`Unavailable — retrying in ${Math.ceil(delay / 1000)}s.`, 'warning');
         retryTimer = setTimeout(() => {
             retryTimer = null;
             void connect();
@@ -87,8 +105,7 @@ export function initCrossDocumentConnection(localIdentity) {
             authorizationStopped = true;
             clearRetry();
             void disconnect().finally(() => {
-                status.textContent = 'Authorization required — enter a pairing token in Advanced settings, then connect again.';
-                status.className = 'cross-document-connection-status error';
+                setStatus('Authorization required — enter a pairing token in Settings → Workspace, then connect again.', 'error');
                 connectionLabel(button, false);
             });
             return;
@@ -107,20 +124,20 @@ export function initCrossDocumentConnection(localIdentity) {
                 || !['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
                 || !['https:', 'http:'].includes(parsed.protocol)) throw new Error('Use a local HTTP(S) coordination URL without credentials or query parameters');
             if (location.protocol === 'https:' && parsed.protocol !== 'https:') throw new Error('An HTTPS taskpane requires an HTTPS coordination endpoint');
-            status.textContent = 'Connecting…';
-            status.className = 'cross-document-connection-status';
-            const candidateStop = await startCoordination({ identity: localIdentity, baseUrl: parsed.href.replace(/\/$/, ''), token: tokenInput.value }, handleUnavailable);
+            setStatus('Connecting…');
+            const candidateStop = await startCoordination({ identity: localIdentity, baseUrl: parsed.href.replace(/\/$/, ''), token: tokenInput.value, access, workspaceView }, handleUnavailable);
             if (currentGeneration !== generation || manuallyDisconnected) {
                 await candidateStop();
                 return;
             }
             stop = candidateStop;
+            connectedUrl = urlInput.value.trim();
+            try { localStorage.setItem(addressKey, connectedUrl); } catch { addLog('Could not remember the coordination address on this device.', 'warning'); }
             retryAttempt = 0;
             authorizationStopped = false;
             tokenInput.value = '';
             connectionLabel(button, true);
-            status.textContent = 'Connected — reads allowed; edits require local review.';
-            status.className = 'cross-document-connection-status connected';
+            setStatus('Connected · edits require review in their target document.', 'connected', true);
         } catch (error) {
             if (currentGeneration === generation && !manuallyDisconnected) handleUnavailable(error);
         } finally {
@@ -131,10 +148,14 @@ export function initCrossDocumentConnection(localIdentity) {
     button.addEventListener('click', async () => {
         button.disabled = true;
         try {
+            if (stop && urlInput.value.trim() !== connectedUrl) {
+                await disconnect();
+                await connect();
+                return;
+            }
             if (stop || connecting || retryTimer !== null) {
                 await disconnect(true);
-                status.textContent = 'Disconnected — automatic reconnection is paused.';
-                status.className = 'cross-document-connection-status';
+                setStatus('Disconnected — automatic reconnection is paused.');
                 return;
             }
             manuallyDisconnected = false;
@@ -145,11 +166,12 @@ export function initCrossDocumentConnection(localIdentity) {
             button.disabled = false;
         }
     });
-    window.addEventListener('pagehide', () => { void disconnect(true); }, { once: true });
+    window.addEventListener('pagehide', () => { workspaceView.dispose(); void disconnect(true); }, { once: true });
     void connect();
 }
 
 async function startCoordination(connectionOptions, onUnavailable = null) {
+    const { access, workspaceView } = connectionOptions;
     const [{ createCoordinationClient }, { createDocumentAgent }, { createContextRequestManager }, { createRemoteTaskRunner }, { createDistributedTaskRuntime }] = await Promise.all([
         loadLazyModule('coordination-client', () => import(/* webpackChunkName: "coordination-client" */ './coordination-client.js')),
         loadLazyModule('document-agent', () => import(/* webpackChunkName: "document-agent" */ './document-agent.js')),
@@ -177,6 +199,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
             addLog(`Coordination snapshot: ${others.length} other taskpane(s), ${documents.size} document(s), sequence ${snapshot.sequence ?? snapshot.cursor ?? 0}.`, 'info');
             if (snapshot.documents?.length) addLog(`Connected documents: ${snapshot.documents.length}.`, 'info');
             knownDocuments = new Map((snapshot.documents || []).filter((entry) => entry.instanceId !== ownId).map((entry) => [entry.instanceId, entry]));
+            workspaceView.update(knownDocuments, true);
             for (const [id, item] of remoteContexts) if (!knownDocuments.has(id) || item.expiresAt <= Date.now()) remoteContexts.delete(id);
             evidenceWorkspace?.onSnapshot(snapshot);
             distributed?.expireTasks?.();
@@ -192,6 +215,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         },
         onError: (error) => {
             online = false;
+            workspaceView.update(new Map(), false);
             renderCrossDocumentTargets(new Map());
             onUnavailable?.(error);
         },
@@ -215,6 +239,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
     }).catch(() => { /* persistence is best effort */ });
     const agent = createDocumentAgent({
         identity,
+        authorize: access.allows,
         appState,
         log: addLog,
         actions: { prepareSelectionAmendment, applySelectionAmendment },
@@ -224,6 +249,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         client: coordinationClient,
         agent: createSharedEvidenceReader({ store: evidenceStore, agent, identity }),
         identity,
+        authorize: access.allows,
         onError: (error) => addLog(`Context request failed: ${error.message}`, 'warning'),
     });
     evidenceWorkspace = createSharedEvidenceController({
@@ -231,15 +257,18 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         addNote: (text) => { const message = chatView.addSystemNote(text); void message.finalizeForHistory(); },
     });
     if (lastSnapshot) evidenceWorkspace.onSnapshot(lastSnapshot);
-    if (typeof client.publishEnvelope === 'function') {
-        void client.publishEnvelope({ type: 'document.announce', target: identity,
-            payload: { capabilities: ['readContext', 'shared_evidence', ...(agent.getCapabilities?.().taskTypes || [])] } })
-            .catch((error) => addLog(`Could not advertise document capabilities: ${error.message}`, 'warning'));
-    }
+    const announceAccess = async () => {
+        if (typeof client.publishEnvelope !== 'function') return;
+        await client.publishEnvelope({ type: 'document.announce', target: identity,
+            payload: { title: String(connectionOptions.identity.displayName || 'Word document').slice(0, 256),
+                access: access.get(), capabilities: ['readContext', 'shared_evidence', ...(agent.getCapabilities?.().taskTypes || [])] } });
+    };
+    void announceAccess().catch((error) => addLog(`Could not sync workspace permissions; update the coordination service: ${error.message}`, 'warning'));
     remoteTaskRunner = createRemoteTaskRunner({
         client: coordinationClient,
         identity,
         documentAgent: agent,
+        authorize: access.allows,
         prepareTask: (payload, options) => agent.prepareTask(payload, options),
         isOnline: () => online && !listeners.signal.aborted,
         createProposal: (proposal) => proposal,
@@ -251,7 +280,8 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
                 title: record.title,
                 countsText: 'Review required in this document',
                 items: record.items,
-                isBlocked: () => appState.isProcessing || appState.isProcessingDoc ? 'Wait for the current operation to finish.' : null,
+                isBlocked: () => !access.allows(record.source, 'requestEdits') ? 'Edit requests from this document are disabled.'
+                    : appState.isProcessing || appState.isProcessingDoc ? 'Wait for the current operation to finish.' : null,
                 onApply: async (selectedIds) => {
                     const result = await runtime.apply(selectedIds);
                     if (!result.ok) {
@@ -301,19 +331,20 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         await client.stop();
         if (coordinationClient === client) coordinationClient = null;
     };
+    stop.updateAccess = announceAccess;
     const targetSelect = document.getElementById('crossDocumentTarget');
     const contextButton = document.getElementById('crossDocumentContextBtn');
     const planButton = document.getElementById('crossDocumentPlanBtn');
     const sendButton = document.getElementById('crossDocumentSendBtn');
     const listenerOptions = { signal: listeners.signal };
     targetSelect?.addEventListener('change', () => {
-        const hasTarget = online && knownDocuments.has(targetSelect.value);
-        if (contextButton) contextButton.disabled = !hasTarget;
-        if (sendButton) sendButton.disabled = !hasTarget;
+        const target = online && knownDocuments.get(targetSelect.value);
+        if (contextButton) contextButton.disabled = !target || !allowsDocumentAccess(target.access, identity.documentId, 'readContext');
+        if (sendButton) sendButton.disabled = !target || !allowsDocumentAccess(target.access, identity.documentId, 'requestEdits');
     }, listenerOptions);
     contextButton?.addEventListener('click', async () => {
         const target = knownDocuments.get(targetSelect.value);
-        if (!online || !target || target.expiresAt <= Date.now()) return;
+        if (!online || !target || target.expiresAt <= Date.now() || !allowsDocumentAccess(target.access, identity.documentId, 'readContext')) return;
         contextButton.disabled = true;
         const status = document.getElementById('crossDocumentStatus');
         try {
@@ -332,7 +363,8 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
     planButton?.addEventListener('click', async () => {
         const text = document.getElementById('chatInput')?.value?.trim();
         const status = document.getElementById('crossDocumentStatus');
-        const documents = [...knownDocuments.values()].filter((entry) => !entry.expiresAt || entry.expiresAt > Date.now());
+        const documents = [...knownDocuments.values()].filter((entry) => (!entry.expiresAt || entry.expiresAt > Date.now())
+            && allowsDocumentAccess(entry.access, identity.documentId, 'requestEdits'));
         if (!online || !documents.length || !text) return;
         planButton.disabled = true;
         try {
@@ -398,7 +430,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
         const text = document.getElementById('chatInput')?.value?.trim();
         const taskType = ['edit', 'format', 'table', 'append'].includes(document.getElementById('crossDocumentTaskType')?.value)
             ? document.getElementById('crossDocumentTaskType').value : 'edit';
-        if (!online || !target || target.expiresAt <= Date.now() || !text) return;
+        if (!online || !target || target.expiresAt <= Date.now() || !text || !allowsDocumentAccess(target.access, identity.documentId, 'requestEdits')) return;
         sendButton.disabled = true;
         try {
             await distributed.submitGraph({
@@ -428,6 +460,13 @@ function renderCrossDocumentTargets(documents) {
     }
     select.value = current;
     bar.hidden = select.options.length < 2;
+    const target = documents.get(select.value);
+    const sourceId = coordinationClient?.identity?.documentId;
+    const contextButton = document.getElementById('crossDocumentContextBtn');
+    const sendButton = document.getElementById('crossDocumentSendBtn');
+    if (contextButton) contextButton.disabled = !target || !allowsDocumentAccess(target.access, sourceId, 'readContext');
+    if (sendButton) sendButton.disabled = !target || !allowsDocumentAccess(target.access, sourceId, 'requestEdits');
     const planButton = document.getElementById('crossDocumentPlanBtn');
-    if (planButton) planButton.disabled = documents.size < 1;
+    if (planButton) planButton.disabled = ![...documents.values()].some((entry) => entry.expiresAt > Date.now()
+        && allowsDocumentAccess(entry.access, sourceId, 'requestEdits'));
 }

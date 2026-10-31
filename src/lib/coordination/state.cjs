@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { normalizeId } = require('./identity.cjs');
 const { validateV2Envelope } = require('./protocol.cjs');
 const { CoordinationPersistence } = require('./persistence.cjs');
+const { normalizeDocumentAccess, allowsDocumentAccess } = require('./access.cjs');
 
 function clone(value) { return value === undefined ? value : JSON.parse(JSON.stringify(value)); }
 function key(...parts) { return parts.join('\u0000'); }
@@ -37,6 +38,8 @@ class SessionStore {
   }
   revoke(identity) { for (const [id, session] of this.sessions) if (same(identity, session.identity)) this.sessions.delete(id); }
   has(identity) { this.purge(); return [...this.sessions.values()].some((session) => same(identity, session.identity)); }
+  access(identity) { this.purge(); return [...this.sessions.values()].find((session) => same(identity, session.identity))?.access; }
+  setAccess(identity, access) { for (const session of this.sessions.values()) if (same(identity, session.identity)) session.access = clone(access); }
 }
 
 class RecordStore {
@@ -79,6 +82,7 @@ class DocumentRegistry extends RecordStore {
   }
   apply(envelope) {
     const identity = envelope.source; requireOwner(envelope.target, identity);
+    if (envelope.payload.access !== undefined) envelope.payload.access = normalizeDocumentAccess(envelope.payload.access);
     if (envelope.type === 'document.left') { this.remove(identity.workspaceId, identity.instanceId); return { ...identity, active: false }; }
     const old = this.get(identity.workspaceId, identity.instanceId);
     if (envelope.type === 'document.heartbeat' && !old) throw error('Announce document before heartbeat', 404);
@@ -258,6 +262,15 @@ class CoordinationState {
   }
   register(input, binding) { return this.sessions.register(input, binding); }
   authenticate(credential, binding) { return this.sessions.authenticate(credential, binding); }
+  canAccess(owner, peer, operation) {
+    // Keep restrictions for the life of the authenticated session, even when
+    // presence expires. A stale presence record must not reopen cached reads.
+    return this.sessions.has(owner) && allowsDocumentAccess(this.sessions.access(owner), peer.documentId, operation);
+  }
+  readableRequest(item, actor) {
+    if (!same(item.source, actor) || !item.result?.snapshot || this.canAccess(item.target, actor, 'readContext')) return item;
+    return { ...item, result: { requestId: item.requestId, error: { code: 'ACCESS_DENIED', message: 'The source no longer permits access to this context.' } } };
+  }
   append(input, credential, binding) {
     if (this.persistenceBlocked) throw error('Coordination persistence unavailable; restart required', 503);
     const actor = this.authenticate(credential, binding);
@@ -274,6 +287,13 @@ class CoordinationState {
     try {
       this.cursors.room(envelope.workspaceId);
       const group = envelope.type.split('.')[0];
+      const assertAccess = (owner, peer, operation) => {
+        if (!this.canAccess(owner, peer, operation)) throw error('Document permission denied', 403);
+      };
+      if (envelope.type === 'context.request') assertAccess(envelope.target, actor, 'readContext');
+      if (envelope.type === 'context.response' && envelope.payload.snapshot) assertAccess(actor, envelope.target, 'readContext');
+      if (envelope.type === 'task.submit') assertAccess(envelope.target, actor, 'requestEdits');
+      if (envelope.type === 'proposal.applied' || envelope.type === 'proposal.decision' && envelope.payload.decision === 'accepted') assertAccess(actor, envelope.target, 'requestEdits');
       if (['task.succeeded', 'task.rejected'].includes(envelope.type)) {
         const related = this.proposals.list(actor.workspaceId, actor).filter((item) => item.taskId === envelope.payload.taskId);
         if (related.length || envelope.type === 'task.rejected') {
@@ -294,13 +314,22 @@ class CoordinationState {
       if (caught.code === 'CHECKPOINT_UNAVAILABLE') this.persistenceBlocked = true;
       throw caught;
     }
+    if (envelope.type === 'document.announce' && envelope.payload.access !== undefined) this.sessions.setAccess(actor, envelope.payload.access);
     this.publish(envelope.workspaceId, event);
     return clone(event);
   }
   snapshot(credential, binding) {
     const actor = this.authenticate(credential, binding); const room = this.cursors.room(actor.workspaceId);
-    return { version: 2, storage: this.persistence ? 'local-checkpoint' : 'memory', epoch: this.cursors.epoch, workspaceId: actor.workspaceId, cursor: room.sequence, capturedAt: this.clock(), documents: this.documents.list(actor.workspaceId), requests: this.requests.list(actor.workspaceId, actor), tasks: this.tasks.list(actor.workspaceId, actor), proposals: this.proposals.list(actor.workspaceId, actor), leases: this.leases.list(actor.workspaceId, actor), artifacts: this.artifacts.list(actor.workspaceId, actor), recovery: { tasks: this.recovery.tasks.filter((item) => item.workspaceId === actor.workspaceId && (!item.source || same(item.source, actor) || same(item.target, actor))), proposals: this.recovery.proposals.filter((item) => item.workspaceId === actor.workspaceId && (!item.source || same(item.source, actor) || same(item.target, actor))) } };
+    return { version: 2, storage: this.persistence ? 'local-checkpoint' : 'memory', epoch: this.cursors.epoch, workspaceId: actor.workspaceId, cursor: room.sequence, capturedAt: this.clock(), documents: this.documents.list(actor.workspaceId), requests: this.requests.list(actor.workspaceId, actor).map((item) => this.readableRequest(item, actor)), tasks: this.tasks.list(actor.workspaceId, actor), proposals: this.proposals.list(actor.workspaceId, actor), leases: this.leases.list(actor.workspaceId, actor), artifacts: this.artifacts.list(actor.workspaceId, actor), recovery: { tasks: this.recovery.tasks.filter((item) => item.workspaceId === actor.workspaceId && (!item.source || same(item.source, actor) || same(item.target, actor))), proposals: this.recovery.proposals.filter((item) => item.workspaceId === actor.workspaceId && (!item.source || same(item.source, actor) || same(item.target, actor))) } };
   }
-  events(credential, binding, after, epoch) { const actor = this.authenticate(credential, binding); return this.cursors.events(actor.workspaceId, after, actor, epoch); }
+  events(credential, binding, after, epoch) {
+    const actor = this.authenticate(credential, binding);
+    const batch = this.cursors.events(actor.workspaceId, after, actor, epoch);
+    batch.events = batch.events.map((event) => {
+      if (event.type !== 'context.response' || !event.payload.snapshot || !same(event.target, actor) || this.canAccess(event.source, actor, 'readContext')) return event;
+      return { ...event, result: undefined, payload: { requestId: event.payload.requestId, error: { code: 'ACCESS_DENIED', message: 'The source no longer permits access to this context.' } } };
+    });
+    return batch;
+  }
 }
 module.exports = { SessionStore, DocumentRegistry, RequestStore, TaskStore, ProposalStore, LeaseStore, ArtifactStore, SnapshotCursorStore, CoordinationState };

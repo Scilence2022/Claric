@@ -897,6 +897,23 @@ default backend URLs work without mixed-content or CORS configuration.
 
 ## Shared cross-document evidence
 
+The header workspace button opens `ui/workspace-view.js`, a focus-contained
+side panel with Documents as the initial tab and Shared evidence as a secondary
+tab. Transport configuration lives in Settings → Workspace, independently of
+chat layout. Connection address persistence excludes pairing tokens.
+
+`workspace-access.js` persists owner-controlled master and per-peer document
+rules under the current workspace/document identity. `coordination/access.cjs`
+defines the common policy vocabulary used by the UI, incoming read/task guards
+and coordination server. A peer restriction cannot override a disabled master
+permission. Policies are advertised with document metadata; titles are the
+document display names rather than full paths. New reads/tasks, late read
+responses, and accepted/applied proposals are checked server-side. Client
+guards also check cached read delivery and the final Word write boundary,
+including when permissions change during asynchronous preparation. Permissions
+restrict future access, not copies already delivered. Policy storage is local
+to the device and document identity; it is not an account-wide permission sync.
+
 `shared-evidence.js` maintains bounded immutable excerpts explicitly published
 by the user. An artifact has a random ID, SHA-256 content fingerprint, owning
 workspace/document/instance, source snapshot and revision, scope, size and TTL.

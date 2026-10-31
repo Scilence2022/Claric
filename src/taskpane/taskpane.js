@@ -196,7 +196,7 @@ async function initialize() {
         if (restored) chatView.setCurrentSession(restored);
     }
     void loadLazyModule('cross-document-controller', () => import(/* webpackChunkName: "cross-document-controller" */ './cross-document-controller.js'))
-        .then(({ initCrossDocumentConnection }) => initCrossDocumentConnection(localIdentity))
+        .then(({ initCrossDocumentConnection }) => initCrossDocumentConnection(localIdentity, { onOpenSettings: () => settings.open('workspace') }))
         .catch((error) => addLog(`Cross-document controls unavailable: ${error.message}`, 'warning'));
 
     // Live selection preview above the input bar (text snippet + image

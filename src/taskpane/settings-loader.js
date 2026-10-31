@@ -30,10 +30,11 @@ export function createSettingsLoader({
     };
     return {
         testConnection,
-        async open() {
+        async open(section) {
             try {
                 const view = await ready();
-                view.openSettings();
+                if (typeof section === 'string') view.openSettings(section);
+                else view.openSettings();
                 void testConnection();
             } catch (error) {
                 log(`Open settings failed: ${error.message}`, 'error');

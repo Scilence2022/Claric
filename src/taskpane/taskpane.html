@@ -32,6 +32,10 @@
                 <button id="filesBtn" class="icon-btn" data-tooltip="Files" aria-label="Files" aria-haspopup="dialog" aria-controls="filesOverlay">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V4h6l2 3h10v13H3z"/></svg>
                 </button>
+                <button id="workspaceBtn" type="button" class="icon-btn workspace-trigger" data-tooltip="Cross-document workspace" aria-label="Cross-document workspace" aria-haspopup="dialog" aria-controls="workspacePanel" aria-expanded="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="8" rx="1.5"/><rect x="14" y="13" width="7" height="8" rx="1.5"/><path d="M10 7h5a3 3 0 0 1 3 3v3M6 11v4a3 3 0 0 0 3 3h5"/></svg>
+                    <span id="workspaceCount" class="workspace-count" hidden aria-hidden="true">0</span>
+                </button>
                 <button id="shareWordViewBtn" type="button" class="icon-btn" data-tooltip="Share Word window" aria-label="Share Word window" aria-pressed="false">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M9 10h6M12 7v6"/></svg>
                 </button>
@@ -49,48 +53,6 @@
 
         <div id="connectionError" class="connection-error" role="status" hidden></div>
         <div id="wordViewStatus" class="help-text word-view-status" role="status" hidden></div>
-        <details class="cross-document-settings">
-            <summary>Cross-document workspace</summary>
-            <p>Documents link automatically through the same-origin coordination service. Connected instances can read this document and request edits; every edit requires review here.</p>
-            <label for="crossDocumentUrl">Local coordination URL</label>
-            <input id="crossDocumentUrl" type="url" placeholder="Same-origin /coordination" autocomplete="off">
-            <label for="crossDocumentToken">Pairing token (if configured)</label>
-            <input id="crossDocumentToken" type="password" autocomplete="off">
-            <button id="crossDocumentConnectBtn" type="button" class="btn btn-compact">Disconnect this document</button>
-            <span id="crossDocumentConnectionStatus" class="cross-document-connection-status" role="status">Connecting automatically…</span>
-            <fieldset class="shared-evidence-controls">
-                <legend>Shared evidence</legend>
-                <p>Share excerpts explicitly with linked documents. Chat history is not shared. Metadata stays in the local coordination service; excerpt reads may reach the model configured in the receiving document.</p>
-                <select id="sharedEvidenceScope" aria-label="Content to share">
-                    <option value="selection">Selected passage</option>
-                    <option value="document">Document excerpt (up to 12,000 characters)</option>
-                </select>
-                <button id="sharedEvidenceShareBtn" type="button" class="btn btn-compact" disabled>Share excerpt</button>
-                <select id="sharedEvidenceLocal" aria-label="Your shared excerpts"></select>
-                <button id="sharedEvidenceWithdrawBtn" type="button" class="btn btn-compact" disabled>Withdraw excerpt</button>
-                <select id="sharedEvidenceRemote" aria-label="Available shared evidence"></select>
-                <input id="sharedEvidenceQuery" type="search" maxlength="200" placeholder="Search within shared evidence" aria-label="Search shared evidence">
-                <button id="sharedEvidenceReadBtn" type="button" class="btn btn-compact" disabled>Read evidence / next page</button>
-                <span id="sharedEvidenceStatus" class="help-text" role="status"></span>
-            </fieldset>
-        </details>
-        <section id="crossDocumentBar" class="cross-document-bar" hidden aria-label="Open Claric documents">
-            <label for="crossDocumentTarget">Send task to:</label>
-            <select id="crossDocumentTarget" aria-label="Target open document">
-                <option value="">Current document</option>
-            </select>
-            <button id="crossDocumentContextBtn" type="button" class="btn btn-compact" disabled>Read context</button>
-            <select id="crossDocumentTaskType" aria-label="Cross-document task type">
-                <option value="edit">Edit selection</option>
-                <option value="format">Format selection</option>
-                <option value="table">Insert table</option>
-                <option value="append">Append content</option>
-            </select>
-            <button id="crossDocumentSendBtn" type="button" class="btn btn-compact" disabled>Send task</button>
-            <button id="crossDocumentPlanBtn" type="button" class="btn btn-compact" disabled title="Use this document's model to split the instruction into per-document tasks">Plan tasks</button>
-            <span id="crossDocumentStatus" class="help-text" role="status"></span>
-        </section>
-
         <!-- Chat message area -->
         <main id="chatMessages" class="chat-messages" aria-live="polite">
             <div id="welcome" class="welcome">
@@ -160,6 +122,64 @@
 
         </footer>
 
+        <div id="workspaceOverlay" class="workspace-overlay" hidden>
+            <aside id="workspacePanel" class="workspace-panel" role="dialog" aria-modal="true" aria-labelledby="workspaceTitle">
+                <div class="workspace-header">
+                    <div><h2 id="workspaceTitle">Cross-document workspace</h2><p id="workspaceConnectionStatus" class="help-text" role="status">Connecting…</p></div>
+                    <button id="workspaceCloseBtn" type="button" class="icon-btn" aria-label="Close workspace">&times;</button>
+                </div>
+                <div class="workspace-tabs" role="tablist" aria-label="Workspace sections">
+                    <button id="workspaceTabDocuments" type="button" role="tab" aria-selected="true" aria-controls="workspaceDocuments">Documents</button>
+                    <button id="workspaceTabEvidence" type="button" role="tab" aria-selected="false" aria-controls="workspaceEvidence" tabindex="-1">Shared evidence</button>
+                </div>
+                <div class="workspace-body">
+                    <section id="workspaceDocuments" role="tabpanel" aria-labelledby="workspaceTabDocuments">
+                        <h3 class="workspace-section-title">This document</h3>
+                        <div id="workspaceOwnDocument"></div>
+                        <div class="workspace-section-heading"><h3 class="workspace-section-title">Connected documents <span id="workspaceListCount">0</span></h3><span class="help-text">Live connections</span></div>
+                        <p class="help-text workspace-permission-hint">Permissions below control access <strong>to this document</strong>. A peer document’s rules cover all its linked windows. Edits still need your review.</p>
+                        <div id="workspaceDocumentList"></div>
+                        <p id="workspaceEmpty" class="workspace-empty">Open another Word document with Claric connected to the same service to share context or request changes.</p>
+        <section id="crossDocumentBar" class="cross-document-bar" hidden aria-label="Open Claric documents">
+            <label for="crossDocumentTarget">Send task to:</label>
+            <select id="crossDocumentTarget" aria-label="Target open document">
+                <option value="">Current document</option>
+            </select>
+            <button id="crossDocumentContextBtn" type="button" class="btn btn-compact" disabled>Read context</button>
+            <select id="crossDocumentTaskType" aria-label="Cross-document task type">
+                <option value="edit">Edit selection</option>
+                <option value="format">Format selection</option>
+                <option value="table">Insert table</option>
+                <option value="append">Append content</option>
+            </select>
+            <button id="crossDocumentSendBtn" type="button" class="btn btn-compact" disabled>Send task</button>
+            <button id="crossDocumentPlanBtn" type="button" class="btn btn-compact" disabled title="Use this document's model to split the instruction into per-document tasks">Plan tasks</button>
+            <span id="crossDocumentStatus" class="help-text" role="status"></span>
+        </section>
+
+                    </section>
+                    <section id="workspaceEvidence" role="tabpanel" aria-labelledby="workspaceTabEvidence" hidden>
+            <fieldset class="shared-evidence-controls">
+                <legend>Shared evidence</legend>
+                <p>Share excerpts explicitly with linked documents. Chat history is not shared. Metadata stays in the local coordination service; excerpt reads may reach the model configured in the receiving document.</p>
+                <select id="sharedEvidenceScope" aria-label="Content to share">
+                    <option value="selection">Selected passage</option>
+                    <option value="document">Document excerpt (up to 12,000 characters)</option>
+                </select>
+                <button id="sharedEvidenceShareBtn" type="button" class="btn btn-compact" disabled>Share excerpt</button>
+                <select id="sharedEvidenceLocal" aria-label="Your shared excerpts"></select>
+                <button id="sharedEvidenceWithdrawBtn" type="button" class="btn btn-compact" disabled>Withdraw excerpt</button>
+                <select id="sharedEvidenceRemote" aria-label="Available shared evidence"></select>
+                <input id="sharedEvidenceQuery" type="search" maxlength="200" placeholder="Search within shared evidence" aria-label="Search shared evidence">
+                <button id="sharedEvidenceReadBtn" type="button" class="btn btn-compact" disabled>Read evidence / next page</button>
+                <span id="sharedEvidenceStatus" class="help-text" role="status"></span>
+            </fieldset>
+                    </section>
+                </div>
+                <div class="workspace-footer"><span id="workspaceAccessStatus" class="help-text" role="status"></span><button id="workspaceSettingsBtn" type="button" class="btn btn-compact">Connection settings</button></div>
+            </aside>
+        </div>
+
         <!-- About dialog -->
         <div id="aboutOverlay" class="modal">
             <section id="aboutPanel" class="modal-content about-panel" role="dialog" aria-modal="true" aria-labelledby="aboutTitle" aria-describedby="aboutDescription">
@@ -203,6 +223,7 @@
                     <button id="settingsTabGeneral" class="settings-tab active" role="tab" aria-selected="true" data-tab="general">General</button>
                     <button id="settingsTabPrompts" class="settings-tab" role="tab" aria-selected="false" data-tab="prompts">Prompts</button>
                     <button id="settingsTabSkills" class="settings-tab" role="tab" aria-selected="false" data-tab="skills">Skills</button>
+                    <button id="settingsTabWorkspace" class="settings-tab" role="tab" aria-selected="false" data-tab="workspace">Workspace</button>
                     <button id="settingsTabMcp" class="settings-tab" role="tab" aria-selected="false" data-tab="mcp">MCP Servers</button>
                 </div>
                 <div class="settings-body">
@@ -423,6 +444,17 @@
                     </div>
                     </div><!-- /settingsPageGeneral -->
 
+                    <div id="settingsPageWorkspace" class="settings-page" role="tabpanel" aria-labelledby="settingsTabWorkspace" hidden>
+                        <p class="settings-section-label">Cross-document connection</p>
+                        <p class="help-text">Connect open Word documents through your local coordination service. The address is remembered on this device. Pairing tokens are used once and never saved.</p>
+                        <div class="form-group"><label for="crossDocumentUrl">Local coordination URL</label>
+                            <input id="crossDocumentUrl" type="url" placeholder="Same-origin /coordination" autocomplete="off"></div>
+                        <div class="form-group"><label for="crossDocumentToken">Pairing token (if configured)</label>
+                            <input id="crossDocumentToken" type="password" autocomplete="off"></div>
+                        <button id="crossDocumentConnectBtn" type="button" class="btn btn-compact">Connect this document</button>
+                        <span id="crossDocumentConnectionStatus" class="cross-document-connection-status help-text" role="status">Connecting automatically…</span>
+                        <p class="help-text">Manage linked documents and access from the workspace button in the top toolbar. Edits always require review in the target document.</p>
+                    </div>
                     <div id="settingsPagePrompts" class="settings-page" role="tabpanel" aria-labelledby="settingsTabPrompts" hidden>
                     <p class="settings-section-label">Prompt Management</p>
                     <p class="help-text">Saved prompts also appear as slash commands in the chat input. The active Context prompt is prepended to every request.</p>

@@ -2,6 +2,20 @@ import { createDocumentAgent } from '../src/taskpane/document-agent.js';
 const { webcrypto } = require('crypto');
 
 describe('document agent', () => {
+    test('checks edit permission after the final asynchronous revision read and before writing', async () => {
+        let allowed = true;
+        let revoke = false;
+        const apply = jest.fn();
+        const agent = create({ authorize: () => allowed, actions: {
+            readSelectionContent: async () => { if (revoke) allowed = false; return { text: 'Before' }; },
+            prepareSelectionAmendment: async () => ({ selectionText: 'Before', amendedText: 'After' }),
+            applySelectionAmendment: apply,
+        } });
+        const record = { ...await agent.prepareTask({ taskId: 'restricted', taskType: 'edit', instruction: 'Edit' }), target: identity };
+        revoke = true;
+        await expect(agent.applyProposal(['text-1'], record)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+        expect(apply).not.toHaveBeenCalled();
+    });
     const identity = { workspaceId: 'workspace', documentId: 'document-b', instanceId: 'instance-b' };
     const create = (options = {}) => createDocumentAgent({ identity, cryptoImpl: webcrypto, ...options });
 

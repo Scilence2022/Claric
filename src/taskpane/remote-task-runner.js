@@ -74,7 +74,7 @@ function proposalTerminalPayload(record) {
 
 export function createRemoteTaskRunner({
     client, identity, documentAgent, prepareTask = documentAgent?.prepareTask?.bind(documentAgent), createProposal = (prepared) => prepared,
-    onProposal = () => {}, onStatus = () => {}, clock = Date.now, isOnline = () => true,
+    onProposal = () => {}, onStatus = () => {}, clock = Date.now, isOnline = () => true, authorize = () => true,
 } = {}) {
     if (!client || typeof client.publishEnvelope !== 'function') throw new TypeError('Remote task runner requires client.publishEnvelope');
     const localIdentity = requireIdentity(identity || client.identity, 'identity');
@@ -89,10 +89,11 @@ export function createRemoteTaskRunner({
     const failure = (code, message) => Object.assign(new Error(message), { code });
     const codeFor = (error) => /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(error?.code) ? error.code : 'REMOTE_TASK_FAILED';
 
-    function guard(task) {
+    function guard(task, checkAccess = true) {
         if (disposed || !isOnline()) throw failure('offline', 'Target coordination is offline');
         if (task.controller.signal.aborted) throw failure('cancelled', 'Task was cancelled');
         if (task.event.createdAt + task.event.ttlMs <= clock()) throw failure('expired', 'Task expired');
+        if (checkAccess && !authorize(task.event.source, 'requestEdits')) throw failure('ACCESS_DENIED', 'This document no longer allows edit requests from the requesting document');
     }
     async function publish(task, type, payload, suffix, target = task.event.source) {
         const event = task.event;
@@ -187,7 +188,7 @@ export function createRemoteTaskRunner({
         task.work = (async () => {
             let claimed = false;
             try {
-                guard(task);
+                guard(task, false);
                 validateProposalInput(event.payload);
                 await publish(task, 'task.claim', { taskId }, 'claim');
                 claimed = true;

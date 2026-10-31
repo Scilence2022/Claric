@@ -13,6 +13,29 @@ function event(type, source, target, payload, correlationId = 'correlation-1') {
 }
 
 describe('context request manager', () => {
+    test('denies reads and rechecks permission before sending cached or in-flight results', async () => {
+        const client = makeClient();
+        const source = { workspaceId: 'workspace-a', documentId: 'document-a', instanceId: 'instance-a' };
+        let allowed = false;
+        const agent = { readContext: jest.fn(async () => ({ text: 'private' })) };
+        const manager = createContextRequestManager({ client, agent, authorize: () => allowed });
+        const request = event('context.request', source, client.identity, { requestId: 'blocked', scope: 'document' });
+        await manager.handleEvent(request);
+        expect(agent.readContext).not.toHaveBeenCalled();
+        expect(client.respondContext.mock.calls[0][1]).toMatchObject({ error: { code: 'ACCESS_DENIED' } });
+        allowed = true;
+        const cached = event('context.request', source, client.identity, { requestId: 'cached', scope: 'document' }, 'cached');
+        await manager.handleEvent(cached);
+        expect(client.respondContext.mock.calls.at(-1)[1].snapshot.text).toBe('private');
+        allowed = false;
+        await manager.handleEvent(cached);
+        expect(client.respondContext.mock.calls.at(-1)[1]).not.toHaveProperty('snapshot');
+        allowed = true;
+        agent.readContext.mockImplementation(async () => { allowed = false; return { text: 'late private' }; });
+        await manager.handleEvent(event('context.request', source, client.identity, { requestId: 'late', scope: 'document' }, 'late'));
+        expect(client.respondContext.mock.calls.at(-1)[1]).toMatchObject({ error: { code: 'ACCESS_DENIED' } });
+        manager.dispose();
+    });
     test('responds to a targeted request and ignores another document', async () => {
         const client = makeClient();
         const agent = { readContext: jest.fn(async () => ({ text: 'bounded data', snapshotId: 'snapshot-1' })) };

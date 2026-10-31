@@ -364,7 +364,8 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
 }
 
 /** Opens the settings slide-over. */
-export function openSettings() {
+export function openSettings(section) {
+    if (typeof section === 'string' && document.getElementById(`settingsPage${capitalize(section)}`)) switchSettingsTab(section);
     document.getElementById('settingsOverlay').removeAttribute('hidden');
     // Re-render on every open so the lists reflect edits made elsewhere.
     renderSkillImportList();
