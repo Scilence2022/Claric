@@ -36,6 +36,7 @@ let remote;
 let message;
 beforeEach(() => {
     jest.clearAllMocks();
+    localStorage.clear();
     const html = fs.readFileSync(path.join(__dirname, '../src/taskpane/taskpane.html'), 'utf8');
     document.body.innerHTML = html.slice(html.indexOf('<body>') + 6, html.indexOf('</body>'));
     client = { identity: { ...local, instanceId: 'a-server' }, transport: { version: 2 }, stop: jest.fn(async () => {}) };
@@ -52,6 +53,18 @@ beforeEach(() => {
     createDistributedTaskRuntime.mockReturnValue(runtime);
     chatView.addSystemNote.mockReturnValue(message);
     createProposalCard.mockReturnValue({ markWarning: jest.fn(), setPaused: jest.fn() });
+});
+
+test('persists only a successful coordination address, not its pairing token', async () => {
+    document.getElementById('crossDocumentUrl').value = 'https://localhost:3010/coordination';
+    document.getElementById('crossDocumentToken').value = 'temporary-pairing-token';
+    initCrossDocumentConnection(local);
+    await flushMicrotasks();
+    expect(localStorage.getItem('claric.workspace.coordinationUrl')).toBe('https://localhost:3010/coordination');
+    expect(JSON.stringify({ ...localStorage })).not.toContain('temporary-pairing-token');
+    expect(document.getElementById('crossDocumentToken').value).toBe('');
+    document.getElementById('workspaceBtn').click();
+    expect(document.getElementById('workspaceDocumentList').textContent).toContain('Target');
 });
 
 afterEach(() => {

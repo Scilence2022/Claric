@@ -8,7 +8,7 @@ const keyFor = (id, correlation, peer) => JSON.stringify([id, correlation, ...FI
 let sequence = 0;
 const newId = (prefix) => `${prefix}-${Date.now().toString(36)}-${(++sequence).toString(36)}`;
 
-export function createContextRequestManager({ client, agent, identity = client?.identity, clock = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, timeoutMs = DEFAULT_TIMEOUT_MS, cacheLimit = 1000, onError = () => {} } = {}) {
+export function createContextRequestManager({ client, agent, identity = client?.identity, clock = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, timeoutMs = DEFAULT_TIMEOUT_MS, cacheLimit = 1000, onError = () => {}, authorize = () => true } = {}) {
     if (!client || typeof client.requestContext !== 'function' || typeof client.respondContext !== 'function') throw new Error('Context request manager requires a v2 coordination client');
     if (!agent || typeof agent.readContext !== 'function' || !validParty(identity)) throw new Error('Context request manager requires a document agent and complete identity');
     if (!Number.isInteger(cacheLimit) || cacheLimit < 1 || !Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error('Invalid context limits');
@@ -79,6 +79,7 @@ export function createContextRequestManager({ client, agent, identity = client?.
     }
     async function sendResponse(item) {
         if (disposed || item.cancelled || item.controller.signal.aborted || item.expiresAt <= clock()) return;
+        if (!authorize(item.event.source, 'readContext')) item.result = { requestId: item.event.payload.requestId, error: { code: 'ACCESS_DENIED', message: 'This document no longer allows context reads from the requesting document.' } };
         await client.respondContext(item.event, item.result, item.metadata);
     }
     async function handleEvent(event) {
@@ -128,7 +129,10 @@ export function createContextRequestManager({ client, agent, identity = client?.
         item.timer = setTimeoutImpl(() => { item.controller.abort(); inbound.delete(key); }, item.expiresAt - clock());
         inbound.set(key, item);
         item.promise = Promise.resolve().then(async () => {
-            try { item.result = { requestId: event.payload.requestId, snapshot: await agent.readContext(clone(event.payload), { signal: item.controller.signal }) }; }
+            try {
+                if (!authorize(event.source, 'readContext')) throw Object.assign(new Error('This document does not allow context reads from the requesting document.'), { code: 'ACCESS_DENIED' });
+                item.result = { requestId: event.payload.requestId, snapshot: await agent.readContext(clone(event.payload), { signal: item.controller.signal }) };
+            }
             catch (error) { item.result = { requestId: event.payload.requestId, error: { code: String(error.code || 'CONTEXT_READ_FAILED'), message: String(error.message || error).slice(0, 2048) } }; }
         });
         await item.promise;

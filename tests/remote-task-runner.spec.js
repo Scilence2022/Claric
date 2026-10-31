@@ -28,6 +28,21 @@ function setup(overrides = {}) {
 }
 
 describe('remote task runner', () => {
+    test('rechecks edit permission before preparing and before applying an already staged proposal', async () => {
+        let allowed = true;
+        const setupResult = setup({ authorize: () => allowed });
+        const { runner, onProposal, event, documentAgent } = setupResult;
+        await runner.handleEvent(event);
+        allowed = false;
+        const result = await onProposal.mock.calls[0][1].apply();
+        expect(result.ok).toBe(false);
+        expect(result.conflict.code).toBe('ACCESS_DENIED');
+        expect(documentAgent.applyProposal).not.toHaveBeenCalled();
+        const denied = setup({ authorize: () => false });
+        await denied.runner.handleEvent(denied.event);
+        expect(denied.onProposal).not.toHaveBeenCalled();
+        expect(denied.published.some((item) => item.type === 'task.failed')).toBe(true);
+    });
     test('filters exact target and returns an awaitable event handler', async () => {
         const { runner, event, identity } = setup();
         for (const key of ['workspaceId', 'documentId', 'instanceId']) {

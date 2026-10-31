@@ -56,7 +56,7 @@ async function localSelection() {
     });
 }
 
-export function createDocumentAgent({ identity, actions = {}, appState = {}, log = () => {}, clock = Date.now, cryptoImpl = globalThis.crypto } = {}) {
+export function createDocumentAgent({ identity, actions = {}, appState = {}, log = () => {}, clock = Date.now, cryptoImpl = globalThis.crypto, authorize = () => true } = {}) {
     if (!identity || ['workspaceId', 'documentId', 'instanceId'].some((key) => typeof identity[key] !== 'string' || !identity[key])) {
         throw fail('INVALID_IDENTITY', 'Document agent requires a complete local identity');
     }
@@ -194,6 +194,7 @@ export function createDocumentAgent({ identity, actions = {}, appState = {}, log
             if (!Array.isArray(selectedItemIds) || selectedItemIds.length !== 1 || String(selectedItemIds[0]) !== prepared.itemId) throw fail('INVALID_ITEMS', 'Select the prepared change');
             if (record.baseRevision !== prepared.baseRevision || await getDocumentRevision(prepared.scope, { signal }) !== prepared.baseRevision) throw fail('STALE', 'Document changed since preparation');
             check(signal);
+            if (!authorize(record.source, 'requestEdits')) throw fail('ACCESS_DENIED', 'Edit permission was revoked before the Word write');
             prepared.attempted = true;
             const apply = { edit: applySelection, append: applyAppend, format: applyFormat, table: applyTable }[prepared.kind];
             const result = await apply(deps, prepared.proposal);
