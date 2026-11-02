@@ -394,6 +394,27 @@ function _assertNotLengthTruncated(choice) {
 }
 
 /**
+ * Reduces a provider's JSON error envelope to its message and error type or code,
+ * which is what a person can act on. Any other body passes through unchanged.
+ *
+ * @param {string} body - Response body text
+ * @returns {string}
+ * @private
+ */
+function _providerErrorText(body) {
+  try {
+    const parsed = JSON.parse(body);
+    const error = parsed?.error ?? parsed;
+    const message = typeof error === 'string' ? error : error?.message;
+    if (typeof message !== 'string' || !message.trim()) return body;
+    const kind = [error?.type, error?.code].find((value) => typeof value === 'string' && value);
+    return kind ? `${message.trim()} [${kind}]` : message.trim();
+  } catch {
+    return body;
+  }
+}
+
+/**
  * Builds the error message for a non-ok response, including a truncated
  * slice of the response body: OpenAI-compatible backends put the actionable
  * detail there (rate-limit reason, unknown model, context-length exceeded),
@@ -402,13 +423,13 @@ function _assertNotLengthTruncated(choice) {
  * not logged server-side, and never contains the request's credentials.
  *
  * @param {Response} response - A response with ok === false
- * @returns {Promise<string>} e.g. "HTTP 429: {"error":{"message":"rate limited"}}"
+ * @returns {Promise<string>} e.g. "HTTP 429: rate limited"
  * @private
  */
 async function _describeHttpError(response) {
   let detail = '';
   try {
-    detail = (await response.text()).slice(0, 300).trim();
+    detail = _providerErrorText((await response.text()).trim()).slice(0, 300).trim();
   } catch {
     // Unreadable body -- the status line alone still beats nothing.
   }

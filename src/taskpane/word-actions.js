@@ -53,6 +53,7 @@ import {
 import { generateImage } from '../lib/image-client.js';
 import { imageIdentityKey } from '../lib/image-identity.js';
 import { attachSvgSource, svgSourceIdFromPicture } from './svg-source-store.js';
+import { captureWordViewForQuestion, WORD_VIEW_REJECTED_NOTE } from './word-screen-capture.js';
 import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
@@ -3645,16 +3646,25 @@ function _selectedImagesBlock(imageMeta, note) {
  *   Metadata of inline pictures inside the selection. They enter the prompt
  *   as object references (size + alt text), not raw bytes — the model is
  *   pointed at the image tool session (read_image) for visual content
+ * @param {boolean} [args.requestWordView] - The user asked about the live Word
+ *   window: prompt them to share it unless sharing is already active. Active
+ *   sharing attaches a fresh frame either way; turns with library files use
+ *   the file tool session, which has no text-only retry, and attach none.
  * @param {function} [args.onToken] - Called with each streamed token
  * @param {function} [args.onReasoning] - Called with each streamed thinking token
  * @param {function} [args.onStatus] - Called with stage updates ("Reading the document...", "Waiting for model...")
  * @param {AbortSignal} [args.signal] - Cancellation signal
  * @returns {Promise<string>} The full answer text
  */
-export async function answerQuestion(deps, { question, skillTemplate, selectionText, selectionImages, questionImages, onToken, onReasoning, onStatus, signal } = {}) {
+export async function answerQuestion(deps, { question, skillTemplate, selectionText, selectionImages, questionImages, requestWordView, onToken, onReasoning, onStatus, signal } = {}) {
     const { appState, log } = deps;
     const fileReferences = Array.isArray(deps.fileReferences) ? deps.fileReferences : [];
     if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+
+    // Settle window sharing first so the user is not left waiting on a prompt
+    // behind the document read, and the frame matches what they see now.
+    const wordView = fileReferences.length ? { image: null, note: '' }
+        : await captureWordViewForQuestion({ request: requestWordView, signal, log, onStatus });
 
     // Capture local context before the potentially slow whole-document read.
     // A submit-time snapshot remains authoritative even if the cursor moves.
@@ -3732,7 +3742,7 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
             ? [{ role: 'system', content: contextPrompt.template }] : []),
         { role: 'user', content },
     ], deps.conversationHistory);
-    const uploaded = (Array.isArray(questionImages) ? questionImages : [])
+    const uploaded = [...(Array.isArray(questionImages) ? questionImages : []), ...(wordView.image ? [wordView.image] : [])]
         .filter((img) => img && typeof img.dataUrl === 'string' && img.dataUrl);
     if (fileReferences.length) {
         const { answerFileQuestion } = await loadFileQuestion({ signal });
@@ -3747,7 +3757,7 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
     if (uploaded.length > 0) {
         // Text-only backends may reject image parts; retry only the current request without them.
         const parts = [
-            { type: 'text', text: prompt },
+            { type: 'text', text: prompt + wordView.note },
             ...uploaded.map((img) => ({ type: 'image_url', image_url: { url: img.dataUrl } })),
         ];
         try {
@@ -3762,10 +3772,12 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
             if (onStatus) onStatus(`Waiting for ${backendConfig.model}...`);
         }
     }
+    // Never leave a text-only retry claiming that a rejected frame is attached.
+    const textPrompt = prompt + (wordView.image ? WORD_VIEW_REJECTED_NOTE : wordView.note);
     if (deps.conversationHistory?.length) {
-        return (await sendMessagesStream(backendConfig, requestMessages(prompt), handlers, log, signal, 300000)).content;
+        return (await sendMessagesStream(backendConfig, requestMessages(textPrompt), handlers, log, signal, 300000)).content;
     }
-    return sendPromptStream(backendConfig, prompt, handlers, log, signal, 300000);
+    return sendPromptStream(backendConfig, textPrompt, handlers, log, signal, 300000);
 }
 
 /**

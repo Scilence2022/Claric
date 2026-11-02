@@ -11,7 +11,7 @@ export const CAPABILITY_CATALOG = Object.freeze([
     { type: 'illustration', effect: 'document', draft: 'image', description: 'Design and insert an illustration.' },
     { type: 'image_management', effect: 'document', draft: 'image', description: 'Inspect or modify existing Word images and visible figure captions using image tools.' },
     { type: 'table_management', effect: 'document', draft: 'table', description: 'Inspect or modify existing native Word tables, including cell text/whitespace, rows, merges, font, shading and native table/row borders. Supports all document tables in one task and academic three-line tables: remove other borders and retain the top rule, header-bottom rule and bottom rule. It produces a separate proposal and cannot see another unapplied proposal.' },
-    { type: 'qa', effect: 'answer', draft: null, description: 'Answer a question in chat using the document or supplied references; no Word change.' },
+    { type: 'qa', effect: 'answer', draft: null, description: 'Answer a question in chat using the document or supplied references; no Word change. Covers requests to share or read the visible Word window: the host prompts the user to share it and attaches a screenshot.' },
 ]);
 
 export const CAPABILITY_BY_TYPE = new Map(CAPABILITY_CATALOG.map((item) => [item.type, item]));

@@ -43,6 +43,7 @@ import { buildAttachmentContext, splitAttachments, attachmentMeta } from '../lib
 import { buildConversationHistory } from '../lib/conversation-history.js';
 import { inspectEditRequest } from '../lib/edit-request.js';
 import { intentText, politeRequestBody, stripPlease } from '../lib/intent-text.js';
+import { looksLikeWordViewRequest } from './word-screen-capture.js';
 import { resolveTaskScope, requestedTaskScope } from '../lib/task-scope.js';
 import { requestsWhitespaceOnlyCleanup, validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 import { loadAgentActions, loadDocumentEditActions, loadTaskGraph, loadFileQuestion,
@@ -600,6 +601,13 @@ export function routeTurn(text, {
             hasImageSelection: imageSelected,
             hasTextSelection: textSelected,
         };
+    }
+
+    // Sharing or reading the Word window is a chat turn: the planner has no
+    // capability for it, and sharing itself starts from the user's click.
+    if (!imageSelected && !hasMultiCellTableRegion && looksLikeWordViewRequest(trimmed)
+        && !looksLikeEditIntent(trimmed) && countIntentFamilies(editHint.intentText) === 0) {
+        return { type: TURN_TYPE.DOC_QA, question: trimmed };
     }
 
     // A check/review request that asks for no change is answered, even when
@@ -2015,7 +2023,7 @@ export function createConversation(deps) {
      * sent to the model as image_url parts, with a text-only fallback when
      * the backend rejects image inputs outside a library-file tool loop.
      */
-    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, selectionImages, turnController, questionImages, layoutScope) {
+    async function runQaTurn(question, skillTemplate, msg, turnDeps, selectionText, selectionImages, turnController, questionImages, layoutScope, requestWordView) {
         const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Reading the document...');
@@ -2029,6 +2037,7 @@ export function createConversation(deps) {
                 selectionText,
                 selectionImages,
                 questionImages,
+                requestWordView,
                 signal: myController.signal,
                 onStatus: (s) => msg.setStatus(s),
                 onToken: (token) => {
@@ -2271,7 +2280,8 @@ export function createConversation(deps) {
                     ? { type: TURN_TYPE.TABLE_TOOL, instruction }
                     : { type: TURN_TYPE.DOCUMENT_TABLE_TOOL, instruction };
             case 'qa':
-                return { type: TURN_TYPE.DOC_QA, question: instruction };
+                return { type: TURN_TYPE.DOC_QA, question: instruction,
+                    ...(looksLikeWordViewRequest(instruction) ? { requestWordView: true } : {}) };
             default:
                 throw new Error(`Unsupported planned capability: ${task.type}`);
         }
@@ -2648,7 +2658,7 @@ export function createConversation(deps) {
                 defaultTemplate: turn.instruction,
             }, undefined, msg, turnDeps);
         } else {
-            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, selectionImages, turnController, turn.questionImages, turn.layoutScope);
+            await runQaTurn(turn.question, null, msg, turnDeps, selectionText, selectionImages, turnController, turn.questionImages, turn.layoutScope, turn.requestWordView);
         }
     }
 
@@ -2736,6 +2746,8 @@ export function createConversation(deps) {
         });
         if (!turn) return;
         if (turn.type === TURN_TYPE.FORMAT) turn.cleanupRequested = requestsEmptyParagraphCleanup(effective);
+        // Decide from the user's words, before attachment text joins the question.
+        if (turn.type === TURN_TYPE.DOC_QA && looksLikeWordViewRequest(effective)) turn.requestWordView = true;
 
         const fileReferences = list.filter((attachment) => attachment.fileId).map((attachment) => ({
             fileId: attachment.fileId, versionId: attachment.versionId,

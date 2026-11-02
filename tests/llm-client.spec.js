@@ -360,7 +360,27 @@ describe('sendPrompt', () => {
 
     await expect(
       sendPrompt({ url: '/vllm', apiKey: '', model: 'test', maxRetries: 0 }, 'Hello')
-    ).rejects.toThrow('HTTP 429: {"error":{"message":"rate limited, retry after 30s"}}');
+    ).rejects.toThrow('HTTP 429: rate limited, retry after 30s');
+  });
+
+  test.each([
+    ['gateway envelope', '{"error":{"message":"The requested model is not available.","type":"overloaded_error","param":"","code":null}}',
+      'HTTP 503: The requested model is not available. [overloaded_error]'],
+    ['Anthropic envelope', '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', 'HTTP 503: Overloaded [overloaded_error]'],
+    ['string error', '{"error":"no channel"}', 'HTTP 503: no channel'],
+    ['top-level message', '{"message":"no channel"}', 'HTTP 503: no channel'],
+    ['JSON without a message', '{"error":{"code":7}}', 'HTTP 503: {"error":{"code":7}}'],
+    ['plain text', 'bad gateway', 'HTTP 503: bad gateway'],
+  ])('reports the provider message from a %s', async (_name, body, expected) => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 503, statusText: '', text: async () => body });
+    await expect(sendPrompt({ url: '/vllm', apiKey: '', model: 'test', maxRetries: 0 }, 'Hello')).rejects.toThrow(new Error(expected));
+  });
+
+  test('keeps a long provider message bounded after removing its envelope', async () => {
+    const message = 'x'.repeat(500);
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 503, statusText: '', text: async () => JSON.stringify({ error: { message } }) });
+    await expect(sendPrompt({ url: '/vllm', apiKey: '', model: 'test', maxRetries: 0 }, 'Hello'))
+      .rejects.toThrow(new Error(`HTTP 503: ${'x'.repeat(300)}`));
   });
 
   test('HTTP error without a readable body still reports the status line', async () => {
@@ -509,7 +529,7 @@ describe('testConnection', () => {
 
     await expect(
       testConnection({ url: '/vllm', apiKey: '' })
-    ).rejects.toThrow('HTTP 429: {"error":{"message":"rate limited, retry after 30s"}}');
+    ).rejects.toThrow('HTTP 429: rate limited, retry after 30s');
   });
 
   test('times out when the backend never answers', async () => {

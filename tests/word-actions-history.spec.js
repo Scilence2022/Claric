@@ -22,7 +22,13 @@ jest.mock('../src/lib/reassembler.js', () => ({
     applyChunkResults: jest.fn(async () => ({ amendmentsApplied: 0, commentsInserted: 0 })),
 }));
 
+jest.mock('../src/taskpane/word-screen-capture.js', () => ({
+    ...jest.requireActual('../src/taskpane/word-screen-capture.js'),
+    captureWordViewForQuestion: jest.fn(async () => ({ image: null, note: '' })),
+}));
+
 const actions = require('../src/taskpane/word-actions.js');
+const { captureWordViewForQuestion, WORD_VIEW_REJECTED_NOTE } = require('../src/taskpane/word-screen-capture.js');
 const { parseDocument } = require('../src/lib/document-parser.js');
 const { chunkDocument } = require('../src/lib/document-chunker.js');
 const { resumeCommentFromBookmark } = require('../src/lib/comment-request.js');
@@ -394,4 +400,47 @@ test('a document retry with originally absent history does not adopt later turns
     await run.retryFailed();
     expect(bodies()[1].messages.map((m) => m.role)).toEqual(['system', 'user']);
     expect(JSON.stringify(bodies()[1])).not.toContain(history[1].content);
+});
+
+describe('QA with the shared Word window', () => {
+    const frame = { image: { dataUrl: 'data:image/jpeg;base64,frame' }, note: '\n\nFRAME ATTACHED' };
+
+    test('asks about the window before reading the document and attaches the frame', async () => {
+        const { deps } = world();
+        const order = [];
+        captureWordViewForQuestion.mockImplementationOnce(async () => { order.push('window'); return frame; });
+        extractDocumentStructured.mockImplementationOnce(async () => { order.push('document'); return 'Current document'; });
+        await actions.answerQuestion(deps, { question: 'What is on my screen?', requestWordView: true });
+        expect(order).toEqual(['window', 'document']);
+        expect(captureWordViewForQuestion).toHaveBeenLastCalledWith(expect.objectContaining({ request: true }));
+        const [text, image] = bodies()[0].messages.at(-1).content;
+        expect(text.text).toContain('FRAME ATTACHED');
+        expect(image.image_url.url).toBe(frame.image.dataUrl);
+    });
+
+    test('a text-only model never hears that a rejected frame is attached', async () => {
+        const { deps } = world();
+        captureWordViewForQuestion.mockResolvedValueOnce(frame);
+        fetch.mockReset().mockResolvedValueOnce(failure()).mockResolvedValue(response('Plain answer'));
+        await expect(actions.answerQuestion(deps, { question: 'What is on my screen?' })).resolves.toBe('Plain answer');
+        const retry = JSON.stringify(bodies()[1]);
+        expect(retry).not.toContain('FRAME ATTACHED');
+        expect(retry).not.toContain('image_url');
+        expect(bodies()[1].messages.at(-1).content).toContain(WORD_VIEW_REJECTED_NOTE);
+    });
+
+    test('a declined share reaches the model as text only', async () => {
+        const { deps } = world();
+        captureWordViewForQuestion.mockResolvedValueOnce({ image: null, note: '\n\nNO WINDOW' });
+        await actions.answerQuestion(deps, { question: 'What is on my screen?', requestWordView: true });
+        expect(bodies()[0].messages.at(-1).content).toContain('NO WINDOW');
+    });
+
+    test('library file questions keep the file session and take no frame', async () => {
+        const { deps } = world();
+        deps.fileReferences = [{ fileId: 'missing', versionId: 'v1', name: 'a.txt' }];
+        captureWordViewForQuestion.mockClear();
+        await expect(actions.answerQuestion(deps, { question: 'Summarize', requestWordView: true })).rejects.toThrow();
+        expect(captureWordViewForQuestion).not.toHaveBeenCalled();
+    });
 });
