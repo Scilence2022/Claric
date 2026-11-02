@@ -154,6 +154,16 @@ describe('routeTurn', () => {
     }
   });
 
+  test.each(['拉起窗口共享请求', '看一下我的屏幕', 'Share my Word window', 'What is on my screen?'])('window request %s is answered in chat', (text) => {
+    expect(routeTurn(text, { skills: BUILTIN_SKILLS })).toEqual({ type: TURN_TYPE.DOC_QA, question: text });
+  });
+
+  test('document changes that mention the window keep their own pipelines', () => {
+    expect(routeTurn('把屏幕上的标题改成红色', { skills: BUILTIN_SKILLS }).type).not.toBe(TURN_TYPE.DOC_QA);
+    expect(routeTurn('Polish the text on my screen', { skills: BUILTIN_SKILLS }).type).not.toBe(TURN_TYPE.DOC_QA);
+    expect(routeTurn('拉起窗口共享请求', { hasImageSelection: true, skills: BUILTIN_SKILLS }).type).not.toBe(TURN_TYPE.DOC_QA);
+  });
+
   test('unknown selected instructions require planning; explanatory comment questions stay Q&A', () => {
     expect(routeTurn('delete all footnotes', { hasSelection: true, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.COMPOUND);
     expect(routeTurn('export this as a PDF', { hasSelection: true, skills: BUILTIN_SKILLS }).type).toBe(TURN_TYPE.COMPOUND);
@@ -3650,6 +3660,14 @@ describe('conversation history snapshots', () => {
     expect(summary).toContain('Inserted 1 comment(s)');
     chatView.setCurrentSession(chatView.getCurrentSession());
     expect(document.querySelector('.msg-completion').textContent).toBe(summary);
+  });
+
+  test('only a request naming the Word window asks to share it', async () => {
+    const { conv, actions } = setup();
+    await conv.submit('拉起窗口共享请求');
+    expect(actions.answerQuestion.mock.calls[0][1]).toMatchObject({ question: '拉起窗口共享请求', requestWordView: true });
+    await conv.submit('这篇文章讲了什么？');
+    expect(actions.answerQuestion.mock.calls[1][1].requestWordView).toBeFalsy();
   });
 
   test('a rejected document check exposes an error summary without proposals', async () => {

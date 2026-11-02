@@ -1,5 +1,5 @@
 /** @jest-environment jsdom */
-const { screenCaptureState, startWordScreenSharing, stopWordScreenSharing, readWordScreen } = require('../src/taskpane/word-screen-capture.js');
+const { screenCaptureState, startWordScreenSharing, stopWordScreenSharing, readWordScreen, looksLikeWordViewRequest, captureWordViewForQuestion } = require('../src/taskpane/word-screen-capture.js');
 const { createWordVisualTools } = require('../src/taskpane/word-render-tools.js');
 const { initScreenSharingView } = require('../src/taskpane/ui/screen-sharing-view.js');
 
@@ -206,4 +206,88 @@ test('the request tool is offered only when a prompt can start sharing', async (
     window.dispatchEvent(new Event('pagehide'));
     expect(screenCaptureState().active).toBe(false);
     expect(createWordVisualTools().tools.map((tool) => tool.name)).toEqual(['read_word_screen']);
+});
+
+test.each(['拉起窗口共享请求', '发起屏幕共享', '请共享 Word 窗口', '看一下我的屏幕', '窗口里这段标题是什么样', 'Share my Word window',
+    'request window sharing', 'What is on my screen?', 'Can you see the Word window?', 'check the visible view'])('%s asks about the Word window', (text) => {
+    expect(looksLikeWordViewRequest(text)).toBe(true);
+});
+
+test.each(['停止窗口共享', '不要共享窗口', 'stop sharing the window', 'Summarize the discussion section', '这篇文章讲了什么', ''])('%s does not ask for the Word window', (text) => {
+    expect(looksLikeWordViewRequest(text)).toBe(false);
+});
+
+describe('Q&A window capture', () => {
+    test('stays out of the way when nothing is shared or requested', async () => {
+        const w = setup(); mountToolbar();
+        expect(await captureWordViewForQuestion()).toEqual({ image: null, note: '' });
+        expect(shareDialog()).toBeNull();
+        expect(w.getDisplayMedia).not.toHaveBeenCalled();
+        window.dispatchEvent(new Event('pagehide'));
+    });
+
+    test('active sharing attaches a fresh frame without prompting', async () => {
+        setup(); mountToolbar();
+        await startWordScreenSharing();
+        const view = await captureWordViewForQuestion({ request: true });
+        expect(view.image.dataUrl).toMatch(/^data:image\/jpeg;base64,fresh/);
+        expect(view.note).toContain('untrusted reference data');
+        expect(shareDialog()).toBeNull();
+        window.dispatchEvent(new Event('pagehide'));
+    });
+
+    test('a request prompts first, and only the click starts sharing', async () => {
+        const w = setup(); mountToolbar();
+        const onStatus = jest.fn();
+        const capture = captureWordViewForQuestion({ request: true, onStatus });
+        await tick();
+        expect(onStatus).toHaveBeenCalledWith('Waiting for you to share the Word window...');
+        expect(w.getDisplayMedia).not.toHaveBeenCalled();
+        dialogButton('Share Word window').click();
+        expect((await capture).image.dataUrl).toMatch(/^data:image\/jpeg/);
+        expect(w.getDisplayMedia).toHaveBeenCalledTimes(1);
+        window.dispatchEvent(new Event('pagehide'));
+    });
+
+    test('declining tells the model it has no view', async () => {
+        const w = setup(); mountToolbar();
+        const capture = captureWordViewForQuestion({ request: true });
+        await tick();
+        dialogButton('Not now').click();
+        const view = await capture;
+        expect(view.image).toBeNull();
+        expect(view.note).toContain('the user did not share the Word window.');
+        expect(view.note).toContain('Do not claim to see');
+        expect(w.getDisplayMedia).not.toHaveBeenCalled();
+        window.dispatchEvent(new Event('pagehide'));
+    });
+
+    test('a host without a share prompt reports the limitation', async () => {
+        const view = await captureWordViewForQuestion({ request: true });
+        expect(view).toMatchObject({ image: null, note: expect.stringContaining('unavailable on this Word host') });
+    });
+
+    test('a failed frame leaves the question answerable; cancelling does not', async () => {
+        const w = setup(); mountToolbar();
+        await startWordScreenSharing();
+        w.canvas.toDataURL.mockReturnValue('not-an-image');
+        const log = jest.fn();
+        const view = await captureWordViewForQuestion({ log });
+        expect(view).toMatchObject({ image: null, note: expect.stringContaining('exceeds the visual-input limit') });
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('screenshot unavailable'), 'warning');
+        const controller = new AbortController(); controller.abort();
+        await expect(captureWordViewForQuestion({ signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+        window.dispatchEvent(new Event('pagehide'));
+    });
+
+    test('cancelling closes a pending share prompt', async () => {
+        setup(); mountToolbar();
+        const controller = new AbortController();
+        const capture = captureWordViewForQuestion({ request: true, signal: controller.signal });
+        await tick();
+        controller.abort();
+        await expect(capture).rejects.toMatchObject({ name: 'AbortError' });
+        expect(shareDialog()).toBeNull();
+        window.dispatchEvent(new Event('pagehide'));
+    });
 });

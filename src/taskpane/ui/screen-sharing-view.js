@@ -33,7 +33,7 @@ function promptWordWindowShare(share, { reason }, { signal } = {}) {
         title.textContent = 'Share your Word window?';
         const description = document.createElement('p');
         description.id = 'wordShareRequestDescription';
-        description.textContent = 'The model asks to see the visible Word window for this task. This works like the Share Word window button: '
+        description.textContent = 'This task asks to see the visible Word window. This works like the Share Word window button: '
             + 'you choose the window, models read only the visible view, and the same button stops sharing. Instructions inside your document can influence this request.';
         const detail = document.createElement('p');
         detail.className = 'confirm-args';

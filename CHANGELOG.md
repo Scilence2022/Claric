@@ -8,6 +8,14 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
+- **Chat questions can see the shared Word window** — while sharing is on,
+  each Q&A turn attaches one fresh frame to its normal streaming request.
+  A message such as "拉起窗口共享请求" or "What is on my screen?" answers in
+  chat and opens the share prompt first; only the user's click starts
+  sharing. Declined sharing, failed frames, and models that reject images
+  are stated to the model as text so it cannot claim to have seen the window.
+  Questions with library files attach no frame.
+
 - **Revision-aware repeated editing** — new rounds read the current Word
   draft without accepting or rejecting existing tracked changes. Selection,
   chunked document, and addressable prose edits share revision-aware text
