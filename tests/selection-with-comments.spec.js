@@ -1,14 +1,7 @@
 /**
- * Specs for src/lib/selection-with-comments.js : formatSelectionWithComments
- * (Phase 05.2-R2 — splicer behavior).
- *
- * Covers the OOXML splicer: how comment anchors overlapping the selection are
+ * Tests how OOXML comment anchors overlapping the selection are
  * rendered as annotation envelopes — fully inside, head/tail/both truncated,
  * nested ranges, resolved status, tracked changes, and no-comments passthrough.
- *
- * 7 OOXML fixtures inlined as JS template strings per RESEARCH.md
- * § OOXML Fixture Sketches (lines 706–786) — fixtures readable next to
- * assertions, no separate .xml files.
  */
 
 const { JSDOM } = require('jsdom');
@@ -21,7 +14,7 @@ if (typeof globalThis.DOMParser === 'undefined') {
 const { formatSelectionWithComments } = require('../src/lib/selection-with-comments.js');
 
 // ---------------------------------------------------------------------------
-// OOXML namespace constants (mirror src/lib/comment-extractor.js:16-17)
+// OOXML namespace constants
 // ---------------------------------------------------------------------------
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -30,8 +23,7 @@ const PKG_NS = 'http://schemas.microsoft.com/office/2006/xmlPackage';
 /**
  * Wrap a `<w:body>` payload in the canonical pkg:package envelope so the
  * existing extractDocumentBody helper from comment-extractor.js can resolve
- * the body element. Per RESEARCH.md fixture 1, every fixture must be a
- * complete pkg:package wrap.
+ * the body element.
  *
  * @param {string} bodyInner - raw inner body XML (one or more <w:p>...).
  * @returns {string} full pkg:package OOXML string.
@@ -47,7 +39,7 @@ function wrapPackage(bodyInner) {
 }
 
 // ---------------------------------------------------------------------------
-// 7 inlined OOXML fixtures — RESEARCH.md § OOXML Fixture Sketches
+// OOXML fixtures
 // ---------------------------------------------------------------------------
 
 /** Fixture 1: single comment, fully inside selection. */
@@ -118,9 +110,7 @@ const FIXTURE_7_NO_COMMENTS = wrapPackage(
 );
 
 // ---------------------------------------------------------------------------
-// Annotation-token enum (STYLE.md "No Magic Strings"). The module keeps its
-// canonical strings private (only formatSelectionWithComments is exported),
-// so the spec mirrors the expected vocabulary here.
+// Expected annotation markers
 // ---------------------------------------------------------------------------
 
 const ANNOTATION_TOKENS = Object.freeze({
@@ -133,12 +123,11 @@ const ANNOTATION_TOKENS = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------
-// CommentThread fixture builder (matches Plan 02 extractor return shape).
+// CommentThread fixture builder
 // ---------------------------------------------------------------------------
 
 /**
- * Build a CommentThread test fixture matching the shape extractCommentsOnRange
- * (Plan 02) will return.
+ * Build a fixture matching the shape returned by extractCommentsOnRange.
  *
  * @param {object} opts
  * @param {string} [opts.id]
@@ -163,10 +152,10 @@ function makeThread({
 }
 
 // ---------------------------------------------------------------------------
-// Tests — 8 splicer behaviors per VALIDATION.md R2 table
+// Tests
 // ---------------------------------------------------------------------------
 
-describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
+describe('formatSelectionWithComments', () => {
     it('fully inside: single-comment fully-inside renders annotation at correct offsets', () => {
         const thread = makeThread({
             id: 'c0',
@@ -274,12 +263,7 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
     });
 
     it('mixed status: resolved thread carries (resolved) marker; open thread does not', () => {
-        // Plan 01 SUMMARY § Next Phase Readiness recommended tightening this
-        // assertion away from a positional-distance heuristic (which couldn't
-        // distinguish two co-anchored threads on a single w:id pair) toward
-        // exact occurrence counting + structural co-location. We split into two
-        // independent passes — one fixture, one thread per pass — which
-        // mirrors real Word OOXML semantics (one Comment per w:id).
+        // Word stores one comment per w:id. Check each status in its own pass.
         const openThread = makeThread({
             id: 'c0',
             content: 'open thread',
@@ -336,16 +320,3 @@ describe('formatSelectionWithComments (Phase 05.2-R2)', () => {
         expect(result).toContain('comment on inserted text');
     });
 });
-
-// Fixtures must be queryable from outside via the file (Plan 03 may import them
-// for parallel coverage). They are also declared here for static-grep gating.
-module.exports = {
-    FIXTURE_1_FULLY_INSIDE,
-    FIXTURE_2_HEAD_OUTSIDE,
-    FIXTURE_3_TAIL_OUTSIDE,
-    FIXTURE_4_BOTH_OUTSIDE,
-    FIXTURE_5_NESTED,
-    FIXTURE_6_TRACKED_CHANGES,
-    FIXTURE_7_NO_COMMENTS,
-    ANNOTATION_TOKENS,
-};

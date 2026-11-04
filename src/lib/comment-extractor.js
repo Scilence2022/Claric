@@ -416,23 +416,6 @@ export async function extractCommentsOnRange(context, selectionRange) {
 }
 
 /**
- * Extracts the full document body as plain text.
- * Returns the complete text content of the active document's body.
- *
- * @returns {Promise<string>} The document body text
- */
-export async function extractDocumentText() {
-    let text = '';
-    await Word.run(async (context) => {
-        const body = context.document.body;
-        body.load('text');
-        await context.sync();
-        text = body.text || '';
-    });
-    return text;
-}
-
-/**
  * Extracts heading level from a built-in style name.
  * Returns 1-9 for Heading1-Heading9, 0 for non-heading styles.
  * @param {string} styleBuiltIn

@@ -110,12 +110,19 @@ describe('createProposalCard', () => {
     expect(rows[0].textContent).toContain('Section one');
   });
 
-  test('before/after items render an inline diff with del/ins marks', () => {
-    const card = makeCard({ items: makeItems() });
+  test('before/after items render whole-word del/ins marks for a replaced word', () => {
+    const items = makeItems();
+    items[0].before = 'The quick brown fox jumps over the lazy dog.';
+    items[0].after = 'The quick red fox jumps over the lazy dog.';
+    const card = makeCard({ items });
     const diffs = card.el.querySelectorAll('.diff-view');
     expect(diffs).toHaveLength(2); // third item has no before/after
-    expect(diffs[0].querySelector('del').textContent).toBe('old');
-    expect(diffs[0].querySelector('ins').textContent).toBe('new');
+    expect([...diffs[0].children].map((el) => [el.tagName, el.textContent])).toEqual([
+      ['SPAN', 'The quick '],
+      ['DEL', 'brown'],
+      ['INS', 'red'],
+      ['SPAN', ' fox jumps over the lazy dog.'],
+    ]);
   });
 
   test('each change can be expanded independently without changing its selection', () => {

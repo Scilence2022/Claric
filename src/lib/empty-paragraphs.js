@@ -96,7 +96,3 @@ export function inspectEmptyParagraphXml(ooxml) {
     }
     return { deletable: true, reason: null };
 }
-
-export function isDeletableEmptyParagraphXml(ooxml) {
-    return inspectEmptyParagraphXml(ooxml).deletable;
-}

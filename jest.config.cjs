@@ -1,6 +1,5 @@
-// Test environment strategy: 'node' by default. Specs that need a DOM
-// either declare `@jest-environment jsdom` in a docblock (6 specs) or
-// construct JSDOM manually via `new JSDOM(...)` (3 specs).
+// Specs run in Node by default. Specs that need a DOM can declare
+// `@jest-environment jsdom` or create an isolated JSDOM instance.
 module.exports = {
   testEnvironment: 'node',
   transform: {
