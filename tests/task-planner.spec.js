@@ -4,14 +4,15 @@
  * the task-type allowlist so only known pipelines get dispatched.
  */
 
-const { buildPlanPrompt, buildPlanReviewPrompt, parsePlan, parseCapabilityPlan, parsePlanReview, inspectPlanReview } = require('../src/lib/task-planner.js');
+const { buildPlanMessages, buildPlanReviewPrompt, parsePlan, parseCapabilityPlan, inspectPlanReview } = require('../src/lib/task-planner.js');
 
 describe('parsePlan', () => {
   test('native page layout is executable in both planner and independent review', () => {
     expect(parsePlan('[{"type":"page_layout","scope":"document","instruction":"去掉文档中的行号"}]'))
       .toEqual([{ type: 'page_layout', scope: 'document', instruction: '去掉文档中的行号' }]);
-    expect(buildPlanPrompt('去掉文档中的行号', true)).toContain('Do not route these to format or mark them unsupported');
-    expect(buildPlanReviewPrompt('x', {}, {})).toContain('WordApiDesktop 1.3');
+    const [system] = buildPlanMessages('去掉文档中的行号', { hasSelection: true });
+    expect(system.content).toContain('Do not route these to format or mark them unsupported');
+    expect(buildPlanReviewPrompt()).toContain('WordApiDesktop 1.3');
   });
   test('parses a bare JSON task array', () => {
     const tasks = parsePlan('[{"type":"insert","instruction":"增加标题"},{"type":"edit","instruction":"深度润色"}]');
@@ -29,9 +30,9 @@ describe('parsePlan', () => {
   test('includes native comment deletion in the executable capability catalog', () => {
     expect(parsePlan('[{"type":"comment_management","instruction":"delete all comments"}]'))
       .toEqual([{ type: 'comment_management', instruction: 'delete all comments' }]);
-    const prompt = buildPlanPrompt('delete all comments', { hasSelection: true, hasTextSelection: true });
-    expect(prompt).toContain('Never substitute a prose rewrite for a comment action');
-    expect(prompt).toContain('A text selection is context, not permission to rewrite it');
+    const [system] = buildPlanMessages('delete all comments', { hasSelection: true, hasTextSelection: true });
+    expect(system.content).toContain('Never substitute a prose rewrite for a comment action');
+    expect(system.content).toContain('A text selection is context, not permission to rewrite it');
   });
 
   test('accepts the document-scope image/table management task types', () => {
@@ -107,10 +108,14 @@ describe('parsePlan', () => {
   });
 });
 
-describe('buildPlanPrompt', () => {
-  test('embeds the instruction and lists every capability', () => {
-    const p = buildPlanPrompt('增加标题，并深度润色修改', false);
-    expect(p).toContain('增加标题，并深度润色修改');
+describe('buildPlanMessages', () => {
+  test('sends the instruction as user data and lists capabilities in the system contract', () => {
+    const instruction = '增加标题，并深度润色修改';
+    const [system, user] = buildPlanMessages(instruction, { hasSelection: false });
+    expect(system.role).toBe('system');
+    expect(user.role).toBe('user');
+    expect(JSON.parse(user.content)).toEqual({ originalRequest: instruction, requestContext: [] });
+    const p = system.content;
     for (const type of ['"insert"', '"format"', '"edit"', '"append"', '"table"', '"illustration"', '"qa"']) {
       expect(p).toContain(type);
     }
@@ -124,8 +129,10 @@ describe('buildPlanPrompt', () => {
   });
 
   test('states the selection context both ways', () => {
-    expect(buildPlanPrompt('x', true)).toContain('has a text selection');
-    expect(buildPlanPrompt('x', false)).toContain('NO text selection');
+    const [selected] = buildPlanMessages('x', { hasSelection: true, hasTextSelection: true });
+    const [unselected] = buildPlanMessages('x', { hasSelection: false });
+    expect(selected.content).toContain('has a text selection');
+    expect(unselected.content).toContain('NO text selection');
   });
 
   test('the OUTPUT CONTRACT enum accepts every TASK_TYPE the parser allows', () => {
@@ -133,8 +140,8 @@ describe('buildPlanPrompt', () => {
     // table_management while the CAPABILITIES section taught them, so a
     // contract-obeying model could never emit those two task types and the
     // corresponding compound sub-tasks misrouted.
-    const p = buildPlanPrompt('x', false);
-    const contract = p.slice(p.indexOf('OUTPUT CONTRACT'));
+    const [{ content }] = buildPlanMessages('x', { hasSelection: false });
+    const contract = content.slice(content.indexOf('OUTPUT CONTRACT'));
     expect(contract).toContain('document_edit|insert|format|page_layout|edit|append|table|illustration|image_management|table_management|qa');
     // And no type known to the parser is missing from the enum.
     for (const type of [
@@ -245,7 +252,6 @@ describe('auditable capability plans', () => {
     expect(result.accepted).toBe(false);
     expect(result.feedback).toEqual(review);
     expect(result.reason).toContain(review.missing[0]);
-    expect(parsePlanReview(JSON.stringify(review), ['r1', 'r2', 'r3'])).toBeNull();
   });
 
   test('an approving reviewer still must account for all IDs and unsupported accuracy', () => {
@@ -261,22 +267,24 @@ describe('auditable capability plans', () => {
   });
 
   test('planner and independent reviewer receive the same native capability catalog', () => {
-    for (const prompt of [buildPlanPrompt('全文优化格式，多余的空格，表格修改为三线格', true), buildPlanReviewPrompt()]) {
+    const [system] = buildPlanMessages('全文优化格式，多余的空格，表格修改为三线格', { hasSelection: true });
+    for (const prompt of [system.content, buildPlanReviewPrompt()]) {
       expect(prompt).toContain('academic three-line tables');
       expect(prompt).toContain('redundant spaces in body text');
       expect(prompt).toContain('separate proposal');
     }
-    expect(buildPlanPrompt('x', true)).toContain('Tasks of different capabilities may jointly cover one action');
-    expect(buildPlanPrompt('x', true)).toContain('Never cover one action with two tasks of the same capability');
+    expect(system.content).toContain('Tasks of different capabilities may jointly cover one action');
+    expect(system.content).toContain('Never cover one action with two tasks of the same capability');
     expect(buildPlanReviewPrompt()).not.toContain('Any doubt means');
   });
 
-  test('independent review must explicitly account for every requirement', () => {
+  test('accepts a complete review and preserves its summary', () => {
     const review = { complete: true, unsupportedAccurate: true,
       checks: ['r1', 'r2', 'r3'].map((requirementId) => ({ requirementId, represented: true })),
       missing: [], invented: [], summary: 'Covered' };
-    expect(parsePlanReview(JSON.stringify(review), ['r1', 'r2', 'r3'])).toMatchObject({ complete: true });
-    review.checks.pop();
-    expect(parsePlanReview(JSON.stringify(review), ['r1', 'r2', 'r3'])).toBeNull();
+    expect(inspectPlanReview(JSON.stringify(review), ['r1', 'r2', 'r3'])).toEqual({
+      accepted: true,
+      review: { complete: true, summary: 'Covered' },
+    });
   });
 });

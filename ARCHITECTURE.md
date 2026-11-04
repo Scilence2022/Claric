@@ -711,7 +711,7 @@ OOXML tracked changes pipeline:
 ### Task Planner (`src/lib/task-planner.js`)
 
 - `TASK_TYPES = ['insert','format','edit','append','table','illustration','qa','image_management','table_management']`, `MAX_TASKS = 6`, per-task instruction cap 500 chars
-- `buildPlanPrompt(instruction, hasSelection)` — also used to classify ambiguous single instructions
+- `buildPlanMessages(instruction, selectionFacts, requestContext, repair)` keeps the planning contract in a system message and sends the request and its context as user data
 - `parsePlan(raw, log)` — validated `Array<{type, instruction}> | null`
 - `conversation.js` maps tasks to turns (`turnForTask`); `insert` tasks always run at document scope; `image_management` → document-scope image tool session, `table_management` → document-scope table tool session (both first-class planner task types so "润色全文 + 给所有图片加 alt 文字" decomposes into separately reviewable cards)
 

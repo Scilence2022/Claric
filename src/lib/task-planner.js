@@ -37,20 +37,6 @@ const MAX_TASKS = 6;
 /** Per-task instruction length cap — planner output should be terse. */
 const MAX_TASK_INSTRUCTION_CHARS = 4000;
 
-/**
- * Builds the LLM prompt that decomposes a compound instruction into an
- * ordered task list.
- *
- * @param {string} instruction - The user's compound instruction
- * @param {boolean|object} hasSelection - Whether the document has a non-empty selection,
- *   or selection facts ({ hasSelection, hasImageSelection, hasTextSelection,
- *   hasMultiCellTableRegion })
- * @returns {string}
- */
-export function buildPlanPrompt(instruction, hasSelection) {
-    return buildPlanSystemPrompt(hasSelection) + '\n\nUSER INSTRUCTION:\n' + (instruction || '').trim();
-}
-
 function buildPlanSystemPrompt(hasSelection) {
     const facts = typeof hasSelection === 'object' && hasSelection !== null
         ? hasSelection
@@ -192,10 +178,6 @@ export function inspectPlanReview(raw, requirementIds) {
         || 'review rejected plan completeness';
     return { accepted: false, reason, feedback: { complete: value.complete, unsupportedAccurate: value.unsupportedAccurate,
         checks: value.checks.map(({ requirementId, represented }) => ({ requirementId, represented })), missing: value.missing, invented: value.invented, summary } };
-}
-
-export function parsePlanReview(raw, requirementIds) {
-    return inspectPlanReview(raw, requirementIds).review || null;
 }
 
 /**

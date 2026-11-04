@@ -162,12 +162,6 @@ describe('buildSummaryHtml markdown conversion', () => {
         expect(html).toContain('<p>Already HTML</p>');
     });
 
-    test('existing tests still pass -- HTML summary text passes through marked unchanged', () => {
-        const summaryText = '<p>This is the LLM-generated summary with <strong>findings</strong>.</p>';
-        const html = buildSummaryHtml(summaryText, sampleComments);
-        expect(html).toContain(summaryText);
-    });
-
     test('adds inline border styles to markdown tables for Word rendering', () => {
         const tableMarkdown = '| Header 1 | Header 2 |\n|---|---|\n| Cell A | Cell B |';
         const html = buildSummaryHtml(tableMarkdown, sampleComments);

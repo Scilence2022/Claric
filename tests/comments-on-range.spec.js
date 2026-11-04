@@ -1,28 +1,7 @@
 /**
- * Wave 0 RED specs for src/lib/comment-extractor.js : extractCommentsOnRange (Phase 05.2-R1).
- *
- * These tests are intentionally failing — the function under test is not yet implemented.
- * Plan 02 (Wave 1) lands the implementation and turns these GREEN.
- *
- * Failure mode while RED: `extractCommentsOnRange is not a function` (destructured
- * undefined export from an existing module — no MODULE_NOT_FOUND, no SyntaxError).
- *
- * Mirrors the Jest harness from tests/comment-extractor.spec.js:1-12.
+ * Tests comment range filtering and reply extraction with mocked Word proxies.
  */
-
-const { JSDOM } = require('jsdom');
 const { extractCommentsOnRange } = require('../src/lib/comment-extractor.js');
-
-// Provide DOMParser for OOXML tests (node test environment lacks it)
-if (typeof globalThis.DOMParser === 'undefined') {
-    const dom = new JSDOM('');
-    globalThis.DOMParser = dom.window.DOMParser;
-}
-
-// ============================================================================
-// LocationRelation enums (STYLE.md "No Magic Strings")
-// Mirrors INTERSECTING_RELATIONS / EXCLUDED set Plan 02 will export.
-// ============================================================================
 
 /** @type {ReadonlyArray<string>} 9 relations a comment must be KEPT for. */
 const TEST_INTERSECTING_RELATIONS = Object.freeze([
@@ -94,16 +73,14 @@ function createMockComment({
         resolved,
         load: jest.fn(),
         getRange: jest.fn(() => range),
-        getReplies: jest.fn(() => repliesCollection),
         replies: repliesCollection,
-        _comparedLocation: comparedLocation, // exposed for assertions
-        _range: range,
+        _comparedLocation: comparedLocation,
     };
     return comment;
 }
 
 /**
- * Build a mock CommentReply with no `resolved` property (per research correction #2).
+ * Build a mock CommentReply with the properties exposed by Word.
  *
  * @param {object} opts
  * @returns {object} Office.js-shaped mock CommentReply
@@ -124,18 +101,14 @@ function createMockReply({ id = 'r0', content = '', authorName = '', creationDat
  * (mimics ClientResult settling after sync).
  *
  * @param {Array<object>} commentItems - mock Comment objects
- * @param {object} [opts]
- * @param {object} [opts.selectionRange] - optional explicit selectionRange spy
  * @returns {{context: object, body: object, selectionRange: object, syncCalls: {n: number}}}
  */
-function createContext(commentItems, { selectionRange } = {}) {
+function createContext(commentItems) {
     const syncCalls = { n: 0 };
     const body = {
         getComments: jest.fn(() => ({ items: commentItems, load: jest.fn() })),
     };
-    const sel = selectionRange || {
-        // Anti-pattern guard: extractor MUST NOT call selectionRange.getComments()
-        // (research § Anti-Patterns). Spy installed so the assertion is exact.
+    const selectionRange = {
         getComments: jest.fn(() => {
             throw new Error('selectionRange.getComments() must not be called — use body.getComments()');
         }),
@@ -144,8 +117,7 @@ function createContext(commentItems, { selectionRange } = {}) {
         document: { body },
         sync: jest.fn(async () => {
             syncCalls.n += 1;
-            // Settle every comment's deferred locationRelation (ClientResult.value
-            // becomes available only after sync per research Pitfall 1).
+            // Word populates ClientResult.value during sync.
             for (const c of commentItems) {
                 if (c && c._comparedLocation && c._comparedLocation._pending !== undefined) {
                     c._comparedLocation.value = c._comparedLocation._pending;
@@ -153,31 +125,14 @@ function createContext(commentItems, { selectionRange } = {}) {
             }
         }),
     };
-    return { context, body, selectionRange: sel, syncCalls };
+    return { context, body, selectionRange, syncCalls };
 }
-
-beforeEach(() => {
-    global.Word = {
-        run: jest.fn(async (rangeOrCallback, maybeCallback) => {
-            // Support both Word.run(callback) and Word.run(range, callback) shapes
-            // per research § Pattern 1 / Open Q2.
-            if (typeof rangeOrCallback === 'function') {
-                return rangeOrCallback(/* test never reaches here directly */);
-            }
-            return maybeCallback(/* test never reaches here directly */);
-        }),
-    };
-});
-
-afterEach(() => {
-    delete global.Word;
-});
 
 // ============================================================================
 // Tests
 // ============================================================================
 
-describe('extractCommentsOnRange (Phase 05.2-R1)', () => {
+describe('extractCommentsOnRange', () => {
     it.each(TEST_INTERSECTING_RELATIONS)(
         'intersection filter: includes comments whose LocationRelation is %s (kept)',
         async (relation) => {
@@ -238,7 +193,7 @@ describe('extractCommentsOnRange (Phase 05.2-R1)', () => {
         expect(ids).toEqual(['r-early', 'r-mid', 'r-late']);
     });
 
-    it('does NOT load resolved on CommentReply (research correction #2)', async () => {
+    it('leaves the resolved field out of CommentReply loads', async () => {
         const reply = createMockReply({ id: 'r-only' });
         const comment = createMockComment({
             id: 'c-thread',
@@ -271,7 +226,7 @@ describe('extractCommentsOnRange (Phase 05.2-R1)', () => {
         expect(selectionRange.getComments).not.toHaveBeenCalled();
     });
 
-    it('reads compareLocationWith via .value AFTER context.sync() (research Pitfall 1)', async () => {
+    it('reads the compareLocationWith value after context.sync()', async () => {
         const comment = createMockComment({ id: 'c-1', locationRelation: 'Inside' });
         const { context, selectionRange, syncCalls } = createContext([comment]);
 
