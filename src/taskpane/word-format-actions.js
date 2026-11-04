@@ -442,7 +442,20 @@ async function _resolveFormatTargets(context, scopeRange, op) {
         const results = scopeRange.search(op.match, { matchCase: true, matchWholeWord: false });
         results.load('items');
         await context.sync();
-        return results.items;
+        if (!op.submatch) return results.items;
+        // Search inside each hit so only the requested part is formatted
+        // (e.g. the "k" of "k-mer"); a missing part never widens to the hit.
+        const parts = results.items.map((hit) => {
+            const found = hit.search(op.submatch, { matchCase: true, matchWholeWord: false });
+            found.load('items/text');
+            return found;
+        });
+        await context.sync();
+        const targets = parts.map((found) => found.items[0]).filter((part) => part?.text === op.submatch);
+        if (targets.length !== results.items.length) {
+            throw new Error(`Word could not isolate "${op.submatch}" inside every "${op.match}" match. No changes were applied for this operation.`);
+        }
+        return targets;
     }
     if (op.paragraphStyle) {
         const paragraphs = scopeRange.paragraphs;
