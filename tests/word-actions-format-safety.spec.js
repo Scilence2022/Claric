@@ -35,6 +35,27 @@ test('applies only the captured bookmark, never an equal-text current selection'
     await expect(applyFormatProposal(w.deps, proposal)).rejects.toThrow(/already been attempted/);
 });
 
+test('matches the submitted selection against current revision text, preserving the native bookmark baseline', async () => {
+    const w = world();
+    const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    w.range.text = 'OldCurrent\rSecond paragraph';
+    w.range.getOoxml = jest.fn(() => ({ value: `<w:body xmlns:w="${ns}"><w:p><w:del><w:r><w:delText>Old</w:delText></w:r></w:del><w:ins><w:r><w:t>Current</w:t></w:r></w:ins></w:p><w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p></w:body>` }));
+
+    const proposal = await prepareFormatProposal(w.deps, { instruction: 'bold', selectionText: 'Current\nSecond paragraph' });
+
+    expect(proposal.anchor.text).toBe(w.range.text);
+    await expect(applyFormatProposal(w.deps, proposal)).resolves.toMatchObject({ applied: true });
+    expect(w.range.font.bold).toBe(true);
+});
+
+test('rejects a changed live selection before inserting a formatting bookmark', async () => {
+    const w = world();
+    await expect(prepareFormatProposal(w.deps, { instruction: 'bold', selectionText: 'Previous selection' }))
+        .rejects.toThrow(/selection changed before formatting/);
+    expect(w.range.insertBookmark).not.toHaveBeenCalled();
+    expect(sendPrompt).not.toHaveBeenCalled();
+});
+
 test('captures and applies recovered bookmark OOXML, never compares the selection export to it', async () => {
     const w = world();
     const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';

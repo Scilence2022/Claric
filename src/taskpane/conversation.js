@@ -80,6 +80,16 @@ export const TURN_TYPE = Object.freeze({
 const EDIT_INTENT_RE = /\b(edit|revise|revision|polish|proofread|rewrite|redline|fix|amend|correct|improve|rephrase)\b|\bupdate\b.{0,20}\b(document|doc|content|text)\b|润色|修订|修改|批改|校对|改写|审改|修正|完善|(更新|充实|增补|扩写).{0,4}(文档|文章|内容|正文|文本|文字|段落|章节|故事|论文|报告)/i;
 const SELECTION_REWRITE_RE = /\b(shorten|lengthen|translate|simplify|condense|expand)\b|\bmake\b.{0,25}\b(formal|concise|clearer|shorter|longer|readable|professional)\b|翻译|精简|缩短|简化|口语化|学术化|改进|改一下|改好/i;
 
+const ZH_DATE_FORMAT_RE = /日期(?:的)?格式(?!\s*(?:示例|例子|的(?:字体|字号|颜色|样式)))/;
+const ZH_DATE_REWRITE_VERB_RE = /统一|规范|改为|改成|调整|更改|改变|修改|转换|替换|设置|设为/;
+const EN_DATE_FORMAT_CHANGE_RE = /\b(?:change|convert|normalize|standardize|rewrite|replace|update|switch|set|use|reformat)\s+(?:(?:the|all|current|existing|selected)\s+)*date\s+formats?\b/i;
+const EN_FORMAT_DATES_RE = /\bformat\s+(?:(?:all|the|these|selected)\s+)*dates?\b(?=[^,;.!?\n]*\b(?:as|to|using)\s+(?!\b(?:bold|italic|underlined)\b))/i;
+
+function requestsDateTextEdit(action) {
+    return EN_DATE_FORMAT_CHANGE_RE.test(action) || EN_FORMAT_DATES_RE.test(action)
+        || (ZH_DATE_FORMAT_RE.test(action) && ZH_DATE_REWRITE_VERB_RE.test(action));
+}
+
 /** Object commands must take precedence over the selected-text fallback. */
 function looksLikeCommentAction(text) {
     if (/\bcode comments?\b/i.test(text)) return false;
@@ -155,7 +165,8 @@ function hasActionIntent(text) {
  */
 export function looksLikeEditIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return EDIT_INTENT_RE.test(intentText(text));
+    const action = intentText(text);
+    return EDIT_INTENT_RE.test(action) || requestsDateTextEdit(action);
 }
 
 /**
@@ -372,7 +383,13 @@ const TABLE_STYLE_HINT_RE = /表格|表头|边框|底纹|斑马纹|条纹|列宽
  */
 export function looksLikeFormatIntent(text) {
     if (looksLikeQuestion(text)) return false;
-    return FORMAT_INTENT_RE.test(intentText(text));
+    const action = intentText(text);
+    // Changing how a date is written consumes the date-format phrase only.
+    // A separate styling instruction (e.g. bolding a heading) still counts.
+    const styling = requestsDateTextEdit(action)
+        ? action.replace(ZH_DATE_FORMAT_RE, '').replace(EN_DATE_FORMAT_CHANGE_RE, '').replace(EN_FORMAT_DATES_RE, '')
+        : action;
+    return FORMAT_INTENT_RE.test(styling);
 }
 
 /**
@@ -705,6 +722,13 @@ export function routeTurn(text, {
     // cannot target paragraphs that the parser omits as empty.
     if (looksLikeCleanupIntent(trimmed)) {
         return scopedCleanupTurn(trimmed, selectionPresent && textSelected && !hasMultiCellTableRegion);
+    }
+    // An explicitly selected date edit needs a text target even if the
+    // selection was cleared before submission. The amendment reader will
+    // report the missing selection without expanding the edit to the body.
+    if (requestScope === 'selection' && !textSelected && !hasMultiCellTableRegion
+        && requestsDateTextEdit(intentText(trimmed)) && !looksLikeQuestion(trimmed)) {
+        return { type: TURN_TYPE.SELECTION_EDIT, instruction: trimmed };
     }
     if (selectionPresent) {
         // Image-only selection: the selection enters as a controllable image

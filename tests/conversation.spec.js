@@ -2840,6 +2840,33 @@ describe('createConversation.submit', () => {
     expect(cardEl.querySelector('.diff-view ins').textContent).toBe('after');
   });
 
+  test('the reported date-format instruction stages and applies a selection amendment', async () => {
+    const instruction = '将选择部分的日期格式由 “2024年01月25日”调整为“2024-01-25”';
+    const proposal = {
+      selectionText: '1. 授权时间：2025年09月30日。\n2. 申请时间：2024年01月25日。',
+      amendedText: '1. 授权时间：2025-09-30。\n2. 申请时间：2024-01-25。',
+      commentText: null,
+      model: 'm',
+    };
+    const view = makeView();
+    const actions = makeActions({ prepareSelectionAmendment: jest.fn(async () => proposal) });
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => proposal.selectionText,
+    });
+
+    await conv.submit(instruction);
+
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(actions.prepareSelectionAmendment).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ promptTemplate: instruction }));
+    const [card, meta] = view._msg.attachProposal.mock.calls[0];
+    expect(meta.items).toEqual([expect.objectContaining({ before: proposal.selectionText, after: proposal.amendedText })]);
+    card.el.querySelector('.btn-primary').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(actions.applySelectionAmendment).toHaveBeenCalledWith(expect.anything(), proposal);
+  });
+
   test('onTurnCommitted fires after a turn completes with the live session', async () => {
     const appState = makeAppState();
     const view = makeView();
