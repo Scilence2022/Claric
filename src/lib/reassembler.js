@@ -24,6 +24,7 @@ import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, verifyMuta
   normalizeWordText, wordErrorDetail } from './word-revisions.js';
 import { validateWhitespaceCleanup } from './whitespace-cleanup.js';
 import { tryRevisionDiff } from './word-diff/revision-diff-loader.js';
+import { NATIVE_PARAGRAPH_BATCH_SIZE, readNativeParagraphs } from './native-paragraph-reader.js';
 
 /**
  * Thrown when an LLM amendment fails the content-length sanity check (the
@@ -96,29 +97,12 @@ function _normalizeLineEndings(text) {
 
 // Paragraph pairing is shared with the amendment guards (paragraph-alignment.js).
 const _alignParagraphs = alignParagraphs;
-const NATIVE_READ_BATCH_SIZE = 24;
 const _paragraphTargetText = (text, whitespaceOnly) => whitespaceOnly ? text : text.replace(/^[ \u00a0]+|[ \u00a0]+$/g, '');
 
 /** Full paragraph OOXML packages must stay bounded during apply as during parse. */
 async function _readParagraphStates(context, paraItems) {
-  const inTable = [];
-  const revisionStates = [];
-  for (let start = 0; start < paraItems.length; start += NATIVE_READ_BATCH_SIZE) {
-    const batch = paraItems.slice(start, start + NATIVE_READ_BATCH_SIZE);
-    const reads = batch.map((para) => {
-      para.load('text');
-      return queueRevisionRead(para, { paragraph: true, singleParagraphContent: true });
-    });
-    const tables = batch.map((para) => {
-      const table = para.parentTableOrNullObject;
-      table.load('isNullObject');
-      return table;
-    });
-    await context.sync();
-    inTable.push(...tables.map((table) => !table.isNullObject));
-    revisionStates.push(...batch.map((para, index) => resolveRevisionRead(para, reads[index], { paragraph: true, singleParagraphContent: true })));
-  }
-  return { inTable, revisionStates };
+  const records = await readNativeParagraphs(context, paraItems, { includeTable: true });
+  return { inTable: records.map((record) => record.inTable), revisionStates: records.map((record) => record.revisionState) };
 }
 
 /**
@@ -286,8 +270,8 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
     && comparableText(origTexts[op.origIdx]) !== comparableText(amendedLines[op.newIdx]));
   progress.stage = 'paragraph preflight';
   progress.report?.();
-  for (let start = 0; start < changedOps.length; start += NATIVE_READ_BATCH_SIZE) {
-    const batch = changedOps.slice(start, start + NATIVE_READ_BATCH_SIZE);
+  for (let start = 0; start < changedOps.length; start += NATIVE_PARAGRAPH_BATCH_SIZE) {
+    const batch = changedOps.slice(start, start + NATIVE_PARAGRAPH_BATCH_SIZE);
     for (const op of batch) {
       const paraRange = paraItems[op.origIdx].getRange('Content');
       paraRange.load('text');
@@ -467,9 +451,10 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
  * Bookmarks persist in the document and survive LLM processing time.
  *
  * @param {Array} chunks - DocumentChunk[] with startIndex/endIndex
+ * @param {{signal?: AbortSignal}} [options]
  * @returns {Promise<Map<string, string>>} Map of chunkId -> bookmarkName
  */
-export async function bookmarkChunkRanges(chunks) {
+export async function bookmarkChunkRanges(chunks, { signal } = {}) {
   const bookmarkMap = new Map();
 
   await Word.run(async (context) => {
@@ -497,17 +482,11 @@ export async function bookmarkChunkRanges(chunks) {
           `(document has ${paragraphs.items.length} paragraphs). Re-run the instruction.`
         );
       }
-      para.load('text');
       boundaryParagraphs.set(idx, para);
     }
-    const boundaryStates = new Map();
-    const boundaryEntries = [...boundaryParagraphs];
-    for (let start = 0; start < boundaryEntries.length; start += NATIVE_READ_BATCH_SIZE) {
-      const batch = boundaryEntries.slice(start, start + NATIVE_READ_BATCH_SIZE);
-      const reads = batch.map(([, para]) => queueRevisionRead(para, { paragraph: true, singleParagraphContent: true }));
-      await context.sync();
-      batch.forEach(([index, para], i) => boundaryStates.set(index, resolveRevisionRead(para, reads[i], { paragraph: true, singleParagraphContent: true })));
-    }
+    const indexes = [...boundaryParagraphs.keys()];
+    const boundaryRecords = await readNativeParagraphs(context, [...boundaryParagraphs.values()], { indexes, signal });
+    const boundaryStates = new Map(indexes.map((index, offset) => [index, boundaryRecords[offset].revisionState]));
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];

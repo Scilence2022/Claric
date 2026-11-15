@@ -3102,7 +3102,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
 
     // Step 1: Parse document
     log('Parsing document...', 'info');
-    const docModel = await parseDocument();
+    const docModel = await parseDocument({ signal });
     log(`Found ${docModel.paragraphs.length} paragraphs (~${docModel.totalTokens} tokens)`, 'info');
 
     // Step 2: Chunk document
@@ -3124,7 +3124,8 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     }
 
     // Step 4: Bookmark chunk ranges
-    const bookmarkMap = await bookmarkChunkRanges(chunks);
+    checkOperationSignal(signal);
+    const bookmarkMap = await bookmarkChunkRanges(chunks, { signal });
 
     // Step 5: Process chunks in parallel
     const backendConfig = getActiveBackendConfig(appState);
