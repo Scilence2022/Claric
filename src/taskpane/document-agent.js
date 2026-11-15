@@ -6,6 +6,7 @@ import {
 } from './word-actions.js';
 import { extractDocumentStructured, estimateTokenCount } from '../lib/comment-extractor.js';
 import { describeFormatOp } from '../lib/format-ops.js';
+import { queueRevisionRead, resolveRevisionRead } from '../lib/word-revisions.js';
 
 const DEFAULT_MAX_CHARS = 12000;
 const DEFAULT_MAX_TOKENS = 3000;
@@ -51,8 +52,9 @@ async function localSelection() {
     return Word.run(async (context) => {
         const selection = context.document.getSelection();
         selection.load('text');
+        const revisionRead = queueRevisionRead(selection);
         await context.sync();
-        return { text: selection.text || '' };
+        return { text: resolveRevisionRead(selection, revisionRead).text };
     });
 }
 

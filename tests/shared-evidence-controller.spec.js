@@ -16,7 +16,24 @@ beforeEach(() => {
     listeners = new AbortController();
 });
 afterEach(() => { listeners.abort(); workspace?.dispose(); });
-const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); await new Promise((resolve) => setTimeout(resolve, 10)); };
+async function clickAndWaitForStatus(buttonId, expected) {
+    const status = document.getElementById('sharedEvidenceStatus');
+    let observer;
+    let timeout;
+    try {
+        await new Promise((resolve, reject) => {
+            observer = new MutationObserver(() => {
+                if (status.textContent.includes(expected)) resolve();
+            });
+            observer.observe(status, { childList: true, characterData: true, subtree: true });
+            timeout = setTimeout(() => reject(new Error(`Expected "${expected}", got "${status.textContent}"`)), 2000);
+            document.getElementById(buttonId).click();
+        });
+    } finally {
+        observer?.disconnect();
+        clearTimeout(timeout);
+    }
+}
 const snap = (identity, text) => ({ sourceDocumentId: identity.documentId, sourceInstanceId: identity.instanceId, scope: 'selection', snapshotId: 'snap', documentRevision: 'r1', text });
 
 test('sharing is explicit, metadata-only, and withdrawing revokes the reader even on server failure', async () => {
@@ -25,7 +42,7 @@ test('sharing is explicit, metadata-only, and withdrawing revokes the reader eve
     const client = { identity: local, publishEnvelope: jest.fn(async () => ({})) };
     workspace = createSharedEvidenceController({ client, agent, store, signal: listeners.signal, getDocuments: () => new Map(), clock: () => 1000 });
     expect(agent.readContext).not.toHaveBeenCalled();
-    document.getElementById('sharedEvidenceShareBtn').click(); await flush();
+    await clickAndWaitForStatus('sharedEvidenceShareBtn', 'Shared 24 characters');
     expect(store.catalog()).toHaveLength(1);
     expect(client.publishEnvelope).toHaveBeenCalledWith(expect.objectContaining({ type: 'artifact.announced', target: local,
         payload: expect.objectContaining({ shared: true, textLength: 24 }) }));
@@ -34,7 +51,7 @@ test('sharing is explicit, metadata-only, and withdrawing revokes the reader eve
     const select = document.getElementById('sharedEvidenceLocal');
     select.value = meta.artifactId; select.dispatchEvent(new Event('change'));
     client.publishEnvelope.mockRejectedValue(new Error('Offline'));
-    document.getElementById('sharedEvidenceWithdrawBtn').click(); await flush();
+    await clickAndWaitForStatus('sharedEvidenceWithdrawBtn', 'Local access revoked');
     expect(() => store.metadata(meta.artifactId)).toThrow('withdrawn');
     expect(document.getElementById('sharedEvidenceStatus').textContent).toContain('Local access revoked');
 });
@@ -52,9 +69,9 @@ test('reads pages with provenance, rechecks them for planning and rejects a chan
     workspace.onSnapshot({ artifacts: [{ ...meta, summary: 'Excerpt', shared: true }] });
     const select = document.getElementById('sharedEvidenceRemote');
     select.value = meta.artifactId; select.dispatchEvent(new Event('change'));
-    document.getElementById('sharedEvidenceReadBtn').click(); await flush();
+    await clickAndWaitForStatus('sharedEvidenceReadBtn', 'Page read.');
     expect(addNote).toHaveBeenCalledWith(expect.stringContaining('characters 0–3000'));
-    document.getElementById('sharedEvidenceReadBtn').click(); await flush();
+    await clickAndWaitForStatus('sharedEvidenceReadBtn', 'Excerpt read.');
     expect(addNote).toHaveBeenCalledWith(expect.stringContaining('characters 3000–3109'));
     const planned = await workspace.getPlanEvidence();
     expect(planned).toHaveLength(2);

@@ -4,6 +4,7 @@ import { requestsBodyFormatting, explicitBodyAlignmentOp } from '../lib/format-t
 import { readFormatInventory, compileFormatTargetPlan, validateFormatTargetPlan, applyVerifiedFormatTargets } from './format-target-runtime.js';
 import { requestsEmptyParagraphCleanup, inspectEmptyParagraphXml } from '../lib/empty-paragraphs.js';
 import { rangeStructureFingerprint, rangeFingerprintDifference } from '../lib/ooxml-fingerprint.js';
+import { normalizeWordText, queueRevisionRead, resolveRevisionRead } from '../lib/word-revisions.js';
 import { extractJsonArray } from '../lib/json-utils.js';
 import { getActiveBackendConfig } from './app-state.js';
 import { sendMessagesStream } from '../lib/llm-client.js';
@@ -115,9 +116,13 @@ export async function prepareFormatProposal(deps, { instruction, originalInstruc
                 throw new Error('This Word host cannot anchor formatting safely. No changes were applied.');
             }
             range.load('text');
+            const expectedSelection = documentScope ? '' : normalizeWordText(selectionText).trim();
+            const selectionRead = expectedSelection ? queueRevisionRead(range) : null;
             await context.sync();
             checkOperationSignal(signal);
-            if (scope === 'selection' && selectionText && range.text.trim() !== selectionText.trim()) {
+            // Chat captures the current revision view. Range.text may include
+            // different paragraph separators or text from other revisions.
+            if (expectedSelection && normalizeWordText(resolveRevisionRead(range, selectionRead).text).trim() !== expectedSelection) {
                 throw new Error('The selection changed before formatting was prepared. Draft a new proposal.');
             }
             let anchoredRange = range;
