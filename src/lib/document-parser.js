@@ -18,7 +18,7 @@
  */
 
 import { estimateTokenCount } from './comment-extractor.js';
-import { queueRevisionRead, resolveRevisionRead } from './word-revisions.js';
+import { NATIVE_PARAGRAPH_BATCH_SIZE, readNativeParagraphs } from './native-paragraph-reader.js';
 
 /**
  * Extracts heading level from a built-in style name.
@@ -137,7 +137,7 @@ export function inferHeadingLevel(text) {
  */
 
 /** Paragraphs read per sync; matches the addressable-edit snapshot batches. */
-export const PARSE_BATCH_SIZE = 24;
+export const PARSE_BATCH_SIZE = NATIVE_PARAGRAPH_BATCH_SIZE;
 
 /**
  * Parses the active Word document into a structured, paragraph-indexed model.
@@ -153,9 +153,10 @@ export const PARSE_BATCH_SIZE = 24;
  *
  * Empty (whitespace-only) paragraphs are excluded from the output.
  *
+ * @param {{signal?: AbortSignal}} [options]
  * @returns {Promise<DocumentModel>} The parsed document model
  */
-export async function parseDocument() {
+export async function parseDocument({ signal } = {}) {
     const model = { paragraphs: [], totalTokens: 0 };
 
     await Word.run(async (context) => {
@@ -165,26 +166,9 @@ export async function parseDocument() {
 
         // Paragraph properties, revision-aware text and table membership, one
         // bounded batch per sync.
-        const revisionReads = [];
-        const tableChecks = [];
-        for (let start = 0; start < paragraphs.items.length; start += PARSE_BATCH_SIZE) {
-            const batch = paragraphs.items.slice(start, start + PARSE_BATCH_SIZE);
-            for (const para of batch) {
-                para.load('text,style,styleBuiltIn,isListItem');
-                revisionReads.push(queueRevisionRead(para, { paragraph: true, singleParagraphContent: true }));
-                const tc = para.parentTableOrNullObject;
-                tc.load('isNullObject');
-                tableChecks.push(tc);
-            }
-            try {
-                await context.sync();
-            } catch (error) {
-                const wrapped = new Error(`Word could not read paragraphs ${start + 1}–${start + batch.length}: ${error?.message || String(error)}`,
-                    { cause: error });
-                Object.assign(wrapped, { code: error?.code, debugInfo: error?.debugInfo });
-                throw wrapped;
-            }
-        }
+        const records = await readNativeParagraphs(context, paragraphs.items, {
+            properties: 'text,style,styleBuiltIn,isListItem', includeTable: true, signal,
+        });
 
         // Load list item details for list paragraphs
         const listParagraphs = [];
@@ -202,7 +186,7 @@ export async function parseDocument() {
         // Build in-memory model (no more sync calls)
         for (let i = 0; i < paragraphs.items.length; i++) {
             const para = paragraphs.items[i];
-            const revisionState = resolveRevisionRead(para, revisionReads[i], { paragraph: true, singleParagraphContent: true });
+            const { revisionState, inTable } = records[i];
             const text = revisionState.text;
             if (!text.trim()) continue;
 
@@ -218,7 +202,6 @@ export async function parseDocument() {
             if (headingLevel === 0 && (!para.style || para.style === 'Normal')) {
                 headingLevel = inferHeadingLevel(text);
             }
-            const inTable = !tableChecks[i].isNullObject;
             const tokenEst = estimateTokenCount(text);
 
             const parsedPara = {

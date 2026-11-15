@@ -11,8 +11,10 @@ const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const paragraphXml = (text) => `<w:document xmlns:w="${W}"><w:body>`
     + `<w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`;
 
-function mockDocument(texts, { failAtSync = null } = {}) {
-    const state = { syncs: 0, pendingExports: 0, largestBatch: 0 };
+function mockDocument(texts, { rejectBatch = () => false, reviewedFailure = -1 } = {}) {
+    const state = { syncs: 0, largestBatch: 0, failedBatches: [] };
+    const exports = [];
+    const reviewed = [];
     const items = texts.map((text, index) => ({
         text,
         style: 'Normal',
@@ -23,20 +25,26 @@ function mockDocument(texts, { failAtSync = null } = {}) {
         parentTableOrNullObject: { isNullObject: index % 2 === 0, load: jest.fn() },
         listItemOrNullObject: { isNullObject: true, load: jest.fn() },
         getOoxml: jest.fn(() => {
-            state.pendingExports++;
+            exports.push(index);
             return { value: paragraphXml(text) };
         }),
+        getRange: jest.fn(() => ({ getReviewedText: () => {
+            reviewed.push(index);
+            return { value: text };
+        } })),
     }));
     const paragraphs = { items: [], load: jest.fn() };
     const context = {
         document: { body: { paragraphs } },
         sync: jest.fn(async () => {
             state.syncs++;
-            if (state.syncs === failAtSync) {
+            const xmlBatch = exports.splice(0);
+            const reviewedBatch = reviewed.splice(0);
+            state.largestBatch = Math.max(state.largestBatch, xmlBatch.length);
+            if (rejectBatch(xmlBatch) || reviewedBatch.includes(reviewedFailure)) {
+                state.failedBatches.push(xmlBatch);
                 throw Object.assign(new Error('GeneralException'), { code: 'GeneralException' });
             }
-            state.largestBatch = Math.max(state.largestBatch, state.pendingExports);
-            state.pendingExports = 0;
             if (state.syncs === 1) paragraphs.items = items;
         }),
     };
@@ -63,12 +71,59 @@ test('no sync carries more than one batch of paragraph OOXML exports', async () 
     expect(items.every((item) => item.untrack.mock.calls.length === 1)).toBe(true);
 });
 
-test('a failed batch names the paragraph range and keeps the Word error code', async () => {
+test('retries the reported paragraphs 97–120 in smaller reads and keeps document indexes', async () => {
+    const texts = Array.from({ length: 125 }, (_, i) => `Paragraph ${i + 1}`);
+    const { state, items } = mockDocument(texts, { rejectBatch: (batch) => batch[0] === 96 && batch.length === 24 });
+
+    const model = await parseDocument();
+
+    expect(state.failedBatches.map((batch) => [batch[0], batch.at(-1)])).toEqual([[96, 119]]);
+    expect(model.paragraphs.map((p) => [p.index, p.text])).toEqual(texts.map((text, i) => [i, text]));
+    expect(items[95].getOoxml).toHaveBeenCalledTimes(1);
+    expect(items[96].getOoxml).toHaveBeenCalledTimes(2);
+});
+
+test('isolates an unavailable reviewed-text read and still uses OOXML revisions', async () => {
+    const texts = ['Introduction.', 'Current text.', 'Conclusion.'];
+    const { items } = mockDocument(texts, { reviewedFailure: 1 });
+    items[1].text = 'Deleted text.Current text.';
+    const originalExport = items[1].getOoxml.getMockImplementation();
+    items[1].getOoxml.mockImplementation(() => ({ value: originalExport().value.replace('<w:p>',
+        '<w:p><w:del><w:r><w:delText>Deleted text.</w:delText></w:r></w:del>') }));
+
+    const model = await parseDocument();
+
+    expect(model.paragraphs.map((p) => p.text)).toEqual(texts);
+    expect(model.paragraphs[1]).toMatchObject({ hasRevisions: true, revisionFingerprint: expect.any(String) });
+});
+
+test('a persistent read failure names the exact paragraph and keeps the Word error code', async () => {
     const texts = Array.from({ length: PARSE_BATCH_SIZE + 3 }, (_, i) => `Paragraph ${i + 1}`);
-    mockDocument(texts, { failAtSync: 3 });
+    mockDocument(texts, { rejectBatch: (batch) => batch.includes(PARSE_BATCH_SIZE + 1) });
 
     await expect(parseDocument()).rejects.toMatchObject({
-        message: expect.stringContaining(`paragraphs ${PARSE_BATCH_SIZE + 1}–${PARSE_BATCH_SIZE + 3}`),
+        message: expect.stringContaining(`paragraph ${PARSE_BATCH_SIZE + 2}`),
         code: 'GeneralException',
     });
+});
+
+test('refuses an unscoped XML export when reviewed text is unavailable', async () => {
+    const { items } = mockDocument(['First paragraph.'], { reviewedFailure: 0 });
+    const originalExport = items[0].getOoxml.getMockImplementation();
+    items[0].getOoxml.mockImplementation(() => ({ value: originalExport().value.replace('</w:body>',
+        '<w:p><w:r><w:t>Another paragraph.</w:t></w:r></w:p></w:body>') }));
+
+    await expect(parseDocument()).rejects.toThrow(/paragraph 1: Word did not return XML scoped to one paragraph/);
+});
+
+test('cancellation during a failed sync stops before retrying any paragraph', async () => {
+    const controller = new AbortController();
+    const { items } = mockDocument(['One.', 'Two.'], { rejectBatch: (batch) => {
+        if (!batch.length) return false;
+        controller.abort();
+        return true;
+    } });
+
+    await expect(parseDocument({ signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(items.every((item) => item.getOoxml.mock.calls.length === 1)).toBe(true);
 });

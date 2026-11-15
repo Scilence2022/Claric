@@ -47,7 +47,7 @@ function setupWord({ paragraphTexts = [], bookmarkNames = [] } = {}) {
         sync: jest.fn().mockResolvedValue(undefined),
     };
     global.Word = { run: async (fn) => fn(context), ChangeTrackingMode: { off: 'Off' } };
-    return { inserted, deleted };
+    return { inserted, deleted, sync: context.sync };
 }
 
 function makeChunk(id, startIndex, endIndex, texts) {
@@ -71,6 +71,17 @@ describe('bookmarkChunkRanges anchor validation', () => {
         const map = await bookmarkChunkRanges(chunks);
 
         expect(map.get('c1')).toMatch(/^_wdp/);
+    });
+
+    test('rechecks boundary paragraphs separately after a failed batch before inserting a bookmark', async () => {
+        const { inserted, sync } = setupWord({ paragraphTexts: ['First para.', 'Middle para.', 'Last para.'] });
+        sync.mockResolvedValueOnce(undefined).mockRejectedValueOnce(Object.assign(new Error('GeneralException'), { code: 'GeneralException' }));
+        const chunks = [makeChunk('c1', 0, 2, ['First para.', 'Middle para.', 'Last para.'])];
+
+        const map = await bookmarkChunkRanges(chunks);
+
+        expect(inserted).toEqual([map.get('c1')]);
+        expect(sync).toHaveBeenCalledTimes(5);
     });
 
     test('throws honestly when paragraph indexes shifted (document changed)', async () => {

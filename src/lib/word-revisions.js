@@ -347,6 +347,7 @@ export function queueRevisionRead(range, options = {}) {
     // host error. Native text still needs Content to exclude the paragraph
     // mark; expanded TOC XML is scoped using that independent text below.
     const xml = range.getOoxml();
+    if (options.includeReviewedText === false) return xml;
     const content = options.paragraph && typeof range.getRange === 'function' ? range.getRange('Content') : range;
     const currentText = queueCurrentTextRead(content);
     // Preserve the ClientResult value contract while pairing independent
