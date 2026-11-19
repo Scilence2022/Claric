@@ -378,6 +378,8 @@ export function describeStyleOp(op) {
                 .filter((location) => op.borders[location])
                 .map((location) => `${location} ${_describeBorder(op.borders[location])}`)
                 .join(', ')}`;
+        case 'threeLineBorders':
+            return 'Three-line table borders';
         case 'cellFormat': {
             const parts = [];
             if (op.shadingColor) parts.push(`shading ${op.shadingColor}`);

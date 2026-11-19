@@ -22,7 +22,7 @@ For “全文优化格式，例如不正确的字体加粗，多余的空格，�
 2. `edit`, document scope, after formatting Apply: clean body-text spaces while preserving meaningful spacing, content and structure.
 3. `table_management`, document scope, after body-edit Apply: re-read all native tables, clean cell spaces and set three-line borders. Both text tasks cover the space-cleanup requirement.
 
-Three-line border instructions clear all existing table borders, restore the top and bottom rules, then add the header-bottom rule. Clearing only inside borders leaves existing left/right outer borders. Row overrides also need native row-border cleanup when present; structural table data and merged-cell restrictions still apply.
+The `set_three_line_borders` tool stages one proposal item per table. It clears the table's side and inside borders, sets the top and bottom rules, and adds the header rule by setting only the bottom edge of the first row. Word shares the first row's top edge with the whole table, so a row-level top border change can erase the table's top rule.
 
 ## Verification limits
 

@@ -1841,6 +1841,28 @@ async function _applyTableStyleOp(context, table, op, log, warnings) {
                 await context.sync();
                 return true;
             }
+            case 'threeLineBorders': {
+                // Structure edits may have changed the row count since the
+                // table was loaded. In a one-row table the header bottom
+                // and the outer bottom are the same edge.
+                table.load('rowCount');
+                await context.sync();
+                const header = table.rowCount > 1 ? table.getCell(0, 0).parentRow : null;
+                const outerRule = { type: 'single', width: 1.5 };
+                for (const location of ['left', 'right', 'insideH', 'insideV']) {
+                    _setBorderSpec(table.getBorder(_borderLocation(location)), { type: 'none' }, log);
+                }
+                for (const location of ['top', 'bottom']) {
+                    _setBorderSpec(table.getBorder(_borderLocation(location)), outerRule, log);
+                }
+                // The first row shares its top edge with the whole table.
+                // Add only its bottom border, after clearing insideH.
+                if (header) {
+                    _setBorderSpec(header.getBorder(_borderLocation('bottom')), { type: 'single', width: 0.75 }, log);
+                }
+                await context.sync();
+                return true;
+            }
             case 'borders': {
                 if (op.row !== undefined) {
                     const row = table.getCell(op.row - 1, 0).parentRow;
