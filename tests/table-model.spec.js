@@ -143,7 +143,7 @@ describe('executeTableTool', () => {
     test('TABLE_TOOL_SPECS are registry-valid', () => {
         expect(TABLE_TOOL_SPECS.map((t) => t.name)).toEqual([
             'get_state', 'set_cell', 'insert_row', 'delete_row', 'merge_cells',
-            'set_table_style', 'set_borders', 'set_cell_format', 'set_font',
+            'set_table_style', 'set_borders', 'set_three_line_borders', 'set_cell_format', 'set_font',
             'set_header_row', 'set_layout', 'set_column_widths',
         ]);
     });
@@ -259,6 +259,16 @@ describe('table style tools', () => {
         const deleted = createTableModel(REGION);
         deleted.deleteRow(2);
         expect(deleted.setBorders({ row: 2, borders: { top: 'single' } }).error).toMatch(/pending delete/);
+    });
+
+    test('three-line preset stages a single whole-table change for each table', () => {
+        const model = createTableModel([REGION, REGION, REGION]);
+        expect(executeTableTool(model, 'set_three_line_borders', { tableIndex: 4 }).ok).toBe(false);
+        expect(executeTableTool(model, 'set_three_line_borders', { tableIndex: 'all' }).result.tables)
+            .toEqual([1, 2, 3]);
+        expect(model.toTablePatch().styleOps).toEqual([1, 2, 3].map((tableIndex) => ({
+            type: 'threeLineBorders', tool: 'set_three_line_borders', tableIndex,
+        })));
     });
 
     test('set_cell_format targets cells, bands, blocks, and the whole table', () => {

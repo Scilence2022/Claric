@@ -1033,6 +1033,31 @@ describe('applySelectionAmendment (style ops)', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  test.each([1, 3])('three-line preset restores a missing top border on a %i-row table', async (rowCount) => {
+    const mock = makeStyleApplyContext();
+    mock.table.rowCount = rowCount;
+    // Word uses one physical edge for the whole-table and first-row tops.
+    const top = { type: 'None', color: null, width: 0.75 };
+    mock.tableBorders.Top = top;
+    mock.rowBorders['0:Top'] = top;
+    setWordRunWithEnums(mock.context);
+
+    const proposal = styleProposal([{ type: 'threeLineBorders' }], { rowCount });
+    const result = await applySelectionAmendment(makeDeps('PC'), proposal);
+
+    expect(result.styleOpsApplied).toBe(1);
+    expect(result.warnings).toEqual([]);
+    expect(top).toEqual({ type: 'Single', color: null, width: 1.5 });
+    expect(mock.tableBorders.Bottom).toEqual({ type: 'Single', color: null, width: 1.5 });
+    for (const edge of ['Left', 'Right', 'InsideHorizontal', 'InsideVertical']) {
+      expect(mock.tableBorders[edge].type).toBe('None');
+    }
+    expect(mock.rows[0].getBorder.mock.calls).toEqual(rowCount === 1 ? [] : [['Bottom']]);
+    if (rowCount > 1) {
+      expect(mock.rowBorders['0:Bottom']).toEqual({ type: 'Single', color: null, width: 0.75 });
+    }
+  });
+
   test('table style + banding flags map onto styleBuiltIn', async () => {
     const mock = makeStyleApplyContext();
     setWordRunWithEnums(mock.context);

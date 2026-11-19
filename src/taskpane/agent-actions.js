@@ -260,7 +260,7 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep, 
         `Covered region: ${state.coveredRegion}. Row operations allowed: ${state.rowOpsAllowed ? 'yes' : 'no'}.\n\n` +
         'Current table style:\n' +
         `${state.style}\n\n` +
-        'Styling tools (set_table_style, set_borders, set_cell_format, set_font, set_header_row, set_layout, set_column_widths) operate on the table — table-level look changes apply to the WHOLE selected table; cell/row formats respect the covered region.\n' +
+        'Table-level styling applies to the WHOLE selected table; cell/row formats respect the covered region. Use set_three_line_borders for standard three-line tables (三线表 / 三线格), with {"tableIndex":"all"} for every table in a document task.\n' +
         (tableRegions.some((r) => r.mergedUnknown)
             ? 'A table contains merged cells whose layout could not be mapped — edits to merge-covered coordinates are skipped at apply time.\n'
             : '') +

@@ -574,6 +574,9 @@ describe('routeTurn', () => {
       hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
     });
     expect(selected.type).toBe(TURN_TYPE.TABLE_TOOL);
+    expect(routeTurn('设置为三线格格式', {
+      hasSelection: true, hasMultiCellTableRegion: true, skills: BUILTIN_SKILLS,
+    }).type).toBe(TURN_TYPE.TABLE_TOOL);
   });
 
   test('chained instruction detection', () => {
@@ -2395,12 +2398,10 @@ describe('createConversation.submit', () => {
           bounds: { startRow: 1, endRow: 2, startCol: 1, endCol: 1 }, merged: false, shadowKeys: new Set() }));
       }),
       prepareTableToolEdit: jest.fn(async (_deps, { regions }) => {
-        const { createTableModel, executeTableTool, TABLE_TOOL_SPECS } = require('../src/lib/table-model.js');
+        const { createTableModel, executeTableTool } = require('../src/lib/table-model.js');
         const model = createTableModel(regions);
-        const borderExample = TABLE_TOOL_SPECS.find((tool) => tool.name === 'set_borders').argsExample;
+        expect(executeTableTool(model, 'set_three_line_borders', { tableIndex: 'all' }).ok).toBe(true);
         for (const { tableIndex } of regions) {
-          expect(executeTableTool(model, 'set_borders', { ...borderExample, tableIndex }).ok).toBe(true);
-          expect(executeTableTool(model, 'set_borders', { tableIndex, row: 1, borders: { bottom: { type: 'single', width: 0.75 } } }).ok).toBe(true);
           expect(executeTableTool(model, 'set_cell', { tableIndex, row: 2, col: 1, text: 'Example cell' }).ok).toBe(true);
         }
         const tablePatch = model.toTablePatch();
@@ -2427,12 +2428,9 @@ describe('createConversation.submit', () => {
     await tableProposal.applyAll();
     const patch = actions.applySelectionAmendment.mock.calls[0][1].tablePatch;
     expect(patch.cells.map(({ tableIndex, text }) => ({ tableIndex, text }))).toEqual([{ tableIndex: 1, text: 'Example cell' }, { tableIndex: 2, text: 'Example cell' }]);
-    for (const tableIndex of [1, 2]) {
-      const border = patch.styleOps.find((op) => op.tableIndex === tableIndex && !op.row);
-      expect(border.borders).toMatchObject({ left: { type: 'none' }, right: { type: 'none' }, insideH: { type: 'none' }, insideV: { type: 'none' },
-        top: { type: 'single' }, bottom: { type: 'single' } });
-      expect(patch.styleOps.find((op) => op.tableIndex === tableIndex && op.row === 1).borders.bottom.type).toBe('single');
-    }
+    expect(patch.styleOps).toEqual([1, 2].map((tableIndex) => ({
+      type: 'threeLineBorders', tool: 'set_three_line_borders', tableIndex,
+    })));
     expect(view._msg.markError).not.toHaveBeenCalled();
   });
 

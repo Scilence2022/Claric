@@ -316,7 +316,7 @@ describe('prepareTableToolEdit', () => {
             ...REGION,
             style: { styleBuiltIn: 'TableGrid', headerRowCount: 0, font: { bold: false } },
         });
-        sendMessages.mockResolvedValueOnce('{"tool":"set_borders","args":{"borders":{"top":{"type":"single","width":1.5},"bottom":{"type":"single","width":1.5},"inside":"none"}}}')
+        sendMessages.mockResolvedValueOnce('{"tool":"set_three_line_borders","args":{}}')
             .mockResolvedValueOnce('{"tool":"set_header_row","args":{"rows":1,"font":{"bold":true}}}')
             .mockResolvedValueOnce('{"tool":"finish","args":{"summary":"three-line table applied"}}');
 
@@ -325,17 +325,17 @@ describe('prepareTableToolEdit', () => {
 
         expect(proposal.noOps).toBeUndefined();
         expect(proposal.tablePatch.cells).toEqual([]);
-        expect(proposal.tablePatch.styleOps).toHaveLength(2);
+        expect(proposal.tablePatch.styleOps.map((op) => op.type)).toEqual(['threeLineBorders', 'headerRow']);
         // Card items are label-only descriptions (no before/after diff).
         expect(proposal.tableItems).toHaveLength(2);
-        expect(proposal.tableItems[0].label).toMatch(/^Borders: top single 1\.5pt/);
+        expect(proposal.tableItems[0].label).toBe('Three-line table borders');
         expect(proposal.tableItems[0]).not.toHaveProperty('before');
         expect(proposal.tableItems[1].label).toBe('Header: 1 header row(s), bold');
         // The task prompt carries the style snapshot and tool guidance.
         const taskPrompt = sendMessages.mock.calls[0][1][1].content;
         expect(taskPrompt).toContain('Current table style:');
         expect(taskPrompt).toContain('TableGrid');
-        expect(taskPrompt).toContain('set_table_style');
+        expect(taskPrompt).toContain('Use set_three_line_borders for standard three-line tables');
     });
 });
 

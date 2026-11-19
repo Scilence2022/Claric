@@ -372,7 +372,7 @@ function looksLikePageLayoutIntent(text) {
  * tools (set_table_style / set_borders / set_cell_format / ...) own the
  * table's look. Without a table selection they are ordinary format intent.
  */
-const TABLE_STYLE_HINT_RE = /表格|表头|边框|底纹|斑马纹|条纹|列宽|单元格|三线表|隔行|行列|\btable\b|\bborders?\b|\bshading\b|\bcell\b|\bheader row/i;
+const TABLE_STYLE_HINT_RE = /表格|表头|边框|底纹|斑马纹|条纹|列宽|单元格|三线[表格]|隔行|行列|\btable\b|\bborders?\b|\bshading\b|\bcell\b|\bheader row/i;
 
 /**
  * True when free text asks for formatting/styling changes only. Questions

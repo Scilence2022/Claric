@@ -9,8 +9,8 @@
  * card and applySelectionAmendment are reused unchanged.
  *
  * Two op families: content/structure (set_cell, insert_row, delete_row,
- * merge_cells) and styling (set_table_style, set_borders, set_cell_format,
- * set_font, set_header_row, set_layout, set_column_widths — validated by
+ * merge_cells) and styling (set_table_style, set_borders, set_three_line_borders,
+ * set_cell_format, set_font, set_header_row, set_layout, set_column_widths — validated by
  * lib/table-style.js). Style ops with a `region` are coordinate-bound and
  * apply before row structure changes; table-level style ops apply after.
  *
@@ -49,7 +49,7 @@ import {
  * the model sees — constraints live here, enforcement lives in the model.
  * Multi-table coverage: tools addressing cells/rows/columns accept a
  * `tableIndex` (1-based, from the get_state listing) — omit it when the
- * session covers a single table.
+ * session covers a single table. The three-line preset also accepts "all".
  */
 export const TABLE_TOOL_SPECS = Object.freeze([
     defineTool({
@@ -84,8 +84,13 @@ export const TABLE_TOOL_SPECS = Object.freeze([
     }),
     defineTool({
         name: 'set_borders',
-        description: 'Set borders for ONE table (whole table), or one row\'s borders when "row" is given. "tableIndex" (optional, default 1) selects the table. "borders" keys: top, bottom, left, right, insideH, insideV, plus shorthands all / outside / inside. Each value is a border type string ("none", "single", "double", "dotted", "dashed", "dotDashed", "triple", "wave", ...) or {type, color?, width?} with color "#RRGGBB"/"auto"/a color name and width in points. Academic three-line table: set_borders({borders:{all:"none", top:{type:"single",width:1.5}, bottom:{type:"single",width:1.5}}}) then set_borders({row:1, borders:{bottom:{type:"single",width:0.75}}}). Clear existing row borders as well if get_state shows row overrides, then add the header-bottom rule. For every table, supply its tableIndex on each call.',
-        argsExample: { tableIndex: 1, borders: { all: 'none', top: { type: 'single', width: 1.5 }, bottom: { type: 'single', width: 1.5 } } },
+        description: 'Set custom borders for ONE table (whole table), or one row\'s borders when "row" is given. "tableIndex" (optional, default 1) selects the table. "borders" keys: top, bottom, left, right, insideH, insideV, plus shorthands all / outside / inside. Each value is a border type string ("none", "single", "double", "dotted", "dashed", "dotDashed", "triple", "wave", ...) or {type, color?, width?} with color "#RRGGBB"/"auto"/a color name and width in points. Setting a first-row top border also affects the table\'s top edge. For standard three-line tables, use set_three_line_borders.',
+        argsExample: { tableIndex: 1, borders: { outside: { type: 'double', width: 1.5 } } },
+    }),
+    defineTool({
+        name: 'set_three_line_borders',
+        description: 'Apply standard academic three-line borders (三线表 / 三线格) to the whole table: 1.5pt top and bottom, 0.75pt below the first row when there are at least two rows. Clears the other table borders. "tableIndex" is a 1-based table number (default 1) or "all" when the user requests every table in the session. This is the complete border operation; add custom border calls only for explicitly requested exceptions.',
+        argsExample: { tableIndex: 1 },
     }),
     defineTool({
         name: 'set_cell_format',
@@ -230,7 +235,7 @@ function _intersectsDeletedRow(draft, region) {
  *     style?: object|null (advisory style snapshot for get_state) }
  * @returns {{getState: Function, setCell: Function, insertRow: Function,
  *   deleteRow: Function, mergeCells: Function, setTableStyle: Function,
- *   setBorders: Function, setCellFormat: Function, setFont: Function,
+ *   setBorders: Function, setThreeLineBorders: Function, setCellFormat: Function, setFont: Function,
  *   setHeaderRow: Function, setLayout: Function, setColumnWidths: Function,
  *   toTablePatch: Function, opCount: number}}
  */
@@ -522,6 +527,24 @@ export function createTableModel(input) {
         return _ok({ staged: `table ${draft.tableIndex}${op.row ? ` row ${op.row}` : ''} borders: ${Object.keys(op.borders).join(', ')}` });
     }
 
+    /** Stages one complete three-line border change per targeted table. */
+    function setThreeLineBorders(args = {}) {
+        let targets = drafts;
+        if (args.tableIndex !== 'all') {
+            const resolved = _draft(args);
+            if (resolved.error) return { ok: false, error: resolved.error };
+            targets = [resolved.draft];
+        }
+        for (const draft of targets) {
+            const error = _styleBudgetError(draft);
+            if (error) return { ok: false, error: `Table ${draft.tableIndex}: ${error}` };
+        }
+        for (const draft of targets) {
+            draft.styleOps.push({ type: 'threeLineBorders', tool: 'set_three_line_borders', tableIndex: draft.tableIndex });
+        }
+        return _ok({ staged: 'Three-line table borders', tables: targets.map((draft) => draft.tableIndex) });
+    }
+
     /**
      * Stages cell shading / alignment for a target region (or the whole
      * table when no coordinates are given).
@@ -801,6 +824,7 @@ export function createTableModel(input) {
         mergeCells,
         setTableStyle,
         setBorders,
+        setThreeLineBorders,
         setCellFormat,
         setFont,
         setHeaderRow,
@@ -828,6 +852,7 @@ export function executeTableTool(model, name, args) {
         case 'merge_cells': return model.mergeCells(args || {});
         case 'set_table_style': return model.setTableStyle(args || {});
         case 'set_borders': return model.setBorders(args || {});
+        case 'set_three_line_borders': return model.setThreeLineBorders(args || {});
         case 'set_cell_format': return model.setCellFormat(args || {});
         case 'set_font': return model.setFont(args || {});
         case 'set_header_row': return model.setHeaderRow(args || {});
