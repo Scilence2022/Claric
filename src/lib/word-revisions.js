@@ -95,6 +95,35 @@ export function textMismatchDetail(wanted, actual) {
     return `expected ${wanted.length} chars, received ${actual.length}; first mismatch at ${offset}; expected ${code(wanted)}, received ${code(actual)}`;
 }
 
+/** Some Word paragraph reads include the deletion immediately after an opening
+ * tracked insertion. Accept that representation only if the complete reviewed
+ * string equals the visible XML text with that exact deletion at its XML offset. */
+export function matchesReviewedLeadingDeletion(state, value) {
+    const deletion = state.reviewedLeadingDeletion;
+    return !!deletion && typeof value === 'string' && normalizeWordText(value) ===
+        state.text.slice(0, deletion.offset) + deletion.text + state.text.slice(deletion.offset);
+}
+
+function reviewedLeadingDeletion(paragraph) {
+    const content = Array.from(paragraph.children).filter((node) => node.namespaceURI !== W
+        || !['pPr', 'bookmarkStart', 'bookmarkEnd', 'proofErr'].includes(node.localName));
+    const [insertion, deletion] = content;
+    if (insertion?.namespaceURI !== W || insertion.localName !== 'ins'
+        || deletion?.namespaceURI !== W || deletion.localName !== 'del') return null;
+
+    function plainRevisionText(revision, textElement) {
+        const runs = Array.from(revision.children);
+        if (runs.some((run) => run.namespaceURI !== W || run.localName !== 'r')) return '';
+        const children = runs.flatMap((run) => Array.from(run.children));
+        if (children.some((node) => node.namespaceURI !== W || !['rPr', textElement].includes(node.localName))) return '';
+        return children.filter((node) => node.localName === textElement).map((node) => node.textContent).join('');
+    }
+
+    const leadingText = plainRevisionText(insertion, 't');
+    const deletedText = plainRevisionText(deletion, 'delText');
+    return leadingText && deletedText ? { offset: leadingText.length, text: deletedText } : null;
+}
+
 export function wordErrorDetail(error) {
     const code = error?.code;
     const location = error?.debugInfo?.errorLocation || error?.errorLocation;
@@ -325,6 +354,8 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         ? new XMLSerializer().serializeToString(body) : ooxml);
     return { text, segments, nativeTokens, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
         inlineFingerprint: inlineObjects.length ? JSON.stringify([inlineObjects, linkedTargets]) : null,
+        reviewedLeadingDeletion: paragraph && paragraphCount === 1 && scopeParagraph && !protectedStructure && !protectedSpans.length
+            && hasHiddenContent ? reviewedLeadingDeletion(scopeParagraph) : null,
         protectedSpans, fieldOnlyProtection: protectedStructure && !nonFieldProtection,
         fingerprint: structure && linkedTargets.length ? JSON.stringify([structure, linkedTargets]) : structure };
 }

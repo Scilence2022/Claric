@@ -15,7 +15,7 @@ const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').r
 function world(parts, { padding = false, nativeReviewed = false, nativeParagraphs = false,
     stickyContent = false, revisedPadding = false, nativeControls = false, rejectEmptyOoxml = false,
     mathAbsorbsInsertBefore = false, mathAbsorbsInsertAfter = false,
-    externalLinks = false, reviewedTransform = (text) => text } = {}) {
+    externalLinks = false, reviewedTransform = (text) => text, exportContiguousRevisions = false } = {}) {
     let sequence = 0;
     // link: a Mac-style HYPERLINK field. Its reviewed text carries raw field
     // codes, a prefix ending inside its result exports the whole hyperlink,
@@ -39,7 +39,10 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
         const run = atom.symbol ? `<w:r><w:sym w:font="Symbol" w:char="${atom.symbol}"/></w:r>`
             : atom.text === '‑' && nativeControls ? '<w:r><w:noBreakHyphen/></w:r>'
                 : `<w:r>${style}<w:${atom.type === 'del' ? 'delText' : 't'}>${escape(atom.text)}</w:${atom.type === 'del' ? 'delText' : 't'}></w:r>`;
-        const visible = atom.type === 'plain' ? run : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">${run}</w:${atom.type}>`;
+        const sameRevision = (other) => exportContiguousRevisions && other?.type === atom.type && other.id === atom.id;
+        const visible = atom.type === 'plain' ? run :
+            (sameRevision(group[index - 1]) ? '' : `<w:${atom.type} w:id="${atom.id}" w:author="Reviewer">`)
+            + run + (sameRevision(group[index + 1]) ? '' : `</w:${atom.type}>`);
         const linked = (atom.linkStart ? externalLinks
             ? `<w:hyperlink xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId${atom.id}">`
             : `<w:hyperlink w:anchor="L${atom.id}">` : '') + visible
@@ -86,7 +89,8 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                         + atom.text + (atom.linkEnd ? '\u0015' : '');
                     const text = nativeControls && atom.symbol ? '(' : atom.text;
                     return nativeControls && atom.field ? '\u0013HYPERLINK example\u0014' + text + '\u0015' : text;
-                }).join('').replace(/\n/g, '\r').replace(/‑/g, nativeControls ? '\u001E' : '‑')) })) } : {}),
+                }).join('').replace(/\n/g, '\r').replace(/‑/g, nativeControls ? '\u001E' : '‑'),
+                { wholeParagraph: span.start === 0 && span.end === atoms.length }) })) } : {}),
             getRange: (location) => location === 'Start' ? makeRange(span.start, span.start)
                 : location === 'End' ? makeRange(span.end, span.end) : range,
             expandTo: (other) => makeRange(Math.min(span.start, other._span.start), Math.max(span.end, other._span.end)),
@@ -1042,3 +1046,39 @@ test('a substantial second-round rewrite stays inside the existing paragraph', a
     expect(w.paragraph.delete).not.toHaveBeenCalled();
     expect(w.atoms.filter((a) => a.id === 'history').map((a) => a.text).join('')).toBe('Earlier explanation.');
 });
+
+test.each(['leading deletion only', 'unexplained preflight difference', 'unexplained read-back difference'])(
+    'whole-document second-round polish verifies Mac reviewed text with %s', async (scenario) => {
+        const leading = '样本均';
+        const deleted = '已复测';
+        const remainder = '已复测，结果已记录。';
+        const amendment = `${leading}已复查，结果已记录。`;
+        const w = world([{ text: leading, type: 'ins' }, { text: deleted, type: 'del', id: 'previous-deletion' },
+            { text: remainder }], { nativeReviewed: true, padding: true, revisedPadding: true,
+            exportContiguousRevisions: true, rejectEmptyOoxml: true,
+            reviewedTransform(text, { wholeParagraph }) {
+                if (!wholeParagraph) return text;
+                const withDeletion = leading + deleted + text.slice(leading.length);
+                const corrupt = scenario === 'unexplained preflight difference'
+                    || (scenario === 'unexplained read-back difference' && w.writes.length > 0);
+                return corrupt ? withDeletion.replace('结果', '结论') : withDeletion;
+            } });
+        const parsed = await parseDocument();
+        w.bookmarks.set('chunk', w.scope);
+        const applied = await applyChunkResults([{ chunkId: 'c', status: 'fulfilled', amendment,
+            chunk: { paragraphs: parsed.paragraphs, endIndex: 0 } }], new Map([['c', 'chunk']]), { log: jest.fn() });
+        if (scenario === 'unexplained preflight difference') {
+            expect(applied.errors[0]).toMatch(/Native text and XML disagree.*paragraph preflight/);
+            expect(w.writes).toEqual([]);
+            return;
+        }
+        expect(w.state().text).toBe(amendment);
+        expect(w.writes.length).toBeGreaterThan(0);
+        expect(w.writes.every((write) => write.mode === 'TrackAll')).toBe(true);
+        expect(w.atoms.filter((atom) => atom.id === 'previous-deletion').map((atom) => atom.text).join('')).toBe(deleted);
+        if (scenario === 'unexplained read-back difference') {
+            expect(applied.amendmentsApplied).toBe(0);
+            expect(applied.uncertainChunkIds).toEqual(['c']);
+            expect(applied.errors[0]).toMatch(/read-back differs/);
+        } else expect(applied).toMatchObject({ amendmentsApplied: 1, errors: [] });
+    });

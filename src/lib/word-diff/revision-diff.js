@@ -5,7 +5,8 @@ import { diff_sentenceMode } from './sentence-diff.js';
 import { recordNativeTextMismatch } from '../native-text-diagnostics.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState, normalizeRevisionText,
     RevisionSafetyError, MutationSafetyError, verifyMutationText, loadMutationVerifier, hostSupportsTrackedChanges,
-    normalizeWordText, textMismatchDetail, queueCurrentTextRead, wordErrorDetail, projectNativeText } from '../word-revisions.js';
+    normalizeWordText, textMismatchDetail, queueCurrentTextRead, wordErrorDetail, projectNativeText,
+    matchesReviewedLeadingDeletion } from '../word-revisions.js';
 
 const MAX_TARGETS = 256;
 const MAX_CANDIDATES = 1024;
@@ -390,9 +391,11 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         const nativeProjection = read.currentText && projectNativeText(state,
             read.currentText.value, { trimEnd: !options.paragraph });
         if (read.currentText && !nativeProjection) recordNativeTextMismatch(read, state);
-        const xmlPositions = !!(read.currentText && !nativeProjection && options.paragraph && state.paragraphCount === 1
+        const opaqueObjects = !!(read.currentText && !nativeProjection && options.paragraph && state.paragraphCount === 1
             && state.inlineFingerprint && state.protectedSpans.length && (!state.protectedStructure || state.fieldOnlyProtection));
-        if (read.currentText && !nativeProjection && !xmlPositions) {
+        const leadingDeletion = readOptions.singleParagraphContent && !nativeProjection
+            && matchesReviewedLeadingDeletion(state, read.currentText?.value);
+        if (read.currentText && !nativeProjection && !opaqueObjects && !leadingDeletion) {
             throw new RevisionSafetyError(`Native text and XML disagree before writing (${textMismatchDetail(comparable(state.text), comparable(read.currentText.value))}). Draft a new proposal.`);
         }
         if (!state.hasRevisions && !options.nativeTargets && !state.protectedSpans.length) return null;
@@ -405,9 +408,14 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         if (!hunks.length) return { strategy: 'revision', insertions: 0, deletions: 0, replacements: 0 };
         const ownsTracking = options.trackChanges !== false;
         if (ownsTracking && !hostSupportsTrackedChanges()) throw new RevisionSafetyError('This Word host cannot enable tracked changes.');
-        if (xmlPositions) {
+        if (opaqueObjects) {
             await locate(context, range, [...proseProofTargets(state), ...targets], options, true, null, state.text);
             log('Verified all editable prose against native ranges and OOXML positions; native objects remain protected.', 'info');
+        } else if (leadingDeletion) {
+            // Shorter native prefixes can omit the extra deletion. Locate by
+            // XML offsets and still require each target's native text and XML.
+            await locate(context, range, targets, options, true, null, state.text);
+            log('Verified edit positions against OOXML after Word included a leading tracked deletion in its reviewed text.', 'info');
         } else await locate(context, range, targets, options, true, nativeProjection);
         await prepareWriteRanges(context, hunks);
         if (ownsTracking) context.document.load('changeTrackingMode');
