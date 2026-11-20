@@ -44,6 +44,7 @@ test('application failures retain their bookmarks together with model failures a
   applyChunkResults.mockResolvedValue(applicationResult);
   const dependencies = deps();
   const staged = await runDocumentSkill(dependencies, { category: 'amendment', promptTemplate: 'Polish the wording.', gateApply: true });
+  expect(parseDocument).toHaveBeenCalledWith(expect.objectContaining({ skipTableContent: true }));
   expect(applyChunkResults).not.toHaveBeenCalled();
   expect(await staged.apply()).toBe(applicationResult);
 

@@ -132,12 +132,35 @@ export function inferHeadingLevel(text) {
 
 /**
  * @typedef {Object} DocumentModel
- * @property {ParsedParagraph[]} paragraphs - All non-empty paragraphs with metadata
+ * @property {ParsedParagraph[]} paragraphs - Non-empty paragraphs and, for prose editing, table boundaries
  * @property {number} totalTokens - Sum of all paragraph token estimates
  */
 
 /** Paragraphs read per sync; matches the addressable-edit snapshot batches. */
 export const PARSE_BATCH_SIZE = NATIVE_PARAGRAPH_BATCH_SIZE;
+
+async function readProseParagraphs(context, paragraphs, properties, signal) {
+    const inTable = [];
+    for (let start = 0; start < paragraphs.length; start += PARSE_BATCH_SIZE) {
+        if (signal?.aborted) throw new DOMException('Document reading cancelled.', 'AbortError');
+        const tables = paragraphs.slice(start, start + PARSE_BATCH_SIZE).map((paragraph) => {
+            const table = paragraph.parentTableOrNullObject;
+            table.load('isNullObject');
+            return table;
+        });
+        await context.sync();
+        inTable.push(...tables.map((table) => !table.isNullObject));
+    }
+    if (signal?.aborted) throw new DOMException('Document reading cancelled.', 'AbortError');
+    const indexes = inTable.flatMap((inside, index) => inside ? [] : [index]);
+    const records = await readNativeParagraphs(context, indexes.map((index) => paragraphs[index]), {
+        properties, indexes, signal,
+    });
+    // Word for Mac can fail to export vertical-merge continuation cells.
+    // The edit chunker needs table boundaries but never edits their contents.
+    let proseIndex = 0;
+    return inTable.map((inside) => inside ? { inTable: true, revisionState: null } : records[proseIndex++]);
+}
 
 /**
  * Parses the active Word document into a structured, paragraph-indexed model.
@@ -151,12 +174,13 @@ export const PARSE_BATCH_SIZE = NATIVE_PARAGRAPH_BATCH_SIZE;
  *     (the failure the addressable-edit snapshot already batches around).
  *   Last sync: Load listItem details for list paragraphs (if any)
  *
- * Empty (whitespace-only) paragraphs are excluded from the output.
+ * Empty (whitespace-only) paragraphs are excluded. Prose editing retains
+ * table positions as boundaries without exporting their paragraph content.
  *
- * @param {{signal?: AbortSignal}} [options]
+ * @param {{signal?: AbortSignal, skipTableContent?: boolean}} [options]
  * @returns {Promise<DocumentModel>} The parsed document model
  */
-export async function parseDocument({ signal } = {}) {
+export async function parseDocument({ signal, skipTableContent = false } = {}) {
     const model = { paragraphs: [], totalTokens: 0 };
 
     await Word.run(async (context) => {
@@ -164,16 +188,15 @@ export async function parseDocument({ signal } = {}) {
         paragraphs.load('items');
         await context.sync();
 
-        // Paragraph properties, revision-aware text and table membership, one
-        // bounded batch per sync.
-        const records = await readNativeParagraphs(context, paragraphs.items, {
-            properties: 'text,style,styleBuiltIn,isListItem', includeTable: true, signal,
-        });
+        const properties = 'text,style,styleBuiltIn,isListItem';
+        const records = skipTableContent
+            ? await readProseParagraphs(context, paragraphs.items, properties, signal)
+            : await readNativeParagraphs(context, paragraphs.items, { properties, includeTable: true, signal });
 
         // Load list item details for list paragraphs
         const listParagraphs = [];
-        for (const para of paragraphs.items) {
-            if (para.isListItem) {
+        for (const [index, para] of paragraphs.items.entries()) {
+            if (records[index].revisionState && para.isListItem) {
                 const li = para.listItemOrNullObject;
                 li.load('level,listString');
                 listParagraphs.push({ para, li });
@@ -187,33 +210,35 @@ export async function parseDocument({ signal } = {}) {
         for (let i = 0; i < paragraphs.items.length; i++) {
             const para = paragraphs.items[i];
             const { revisionState, inTable } = records[i];
-            const text = revisionState.text;
-            if (!text.trim()) continue;
+            const text = revisionState?.text || '';
+            if (revisionState && !text.trim()) continue;
+            const style = revisionState ? para.style || '' : '';
+            const styleBuiltIn = revisionState ? para.styleBuiltIn || '' : '';
 
-            let headingLevel = getHeadingLevel(para.styleBuiltIn);
+            let headingLevel = getHeadingLevel(styleBuiltIn);
             // Fallback chain for documents with custom styles:
             // 1. Map custom style name to heading level
             // 2. Infer from text patterns (ALL-CAPS, ARTICLE/SCHEDULE, etc.)
             if (headingLevel === 0) {
-                headingLevel = mapStyleToHeadingLevel(para.style);
+                headingLevel = mapStyleToHeadingLevel(style);
             }
             // Only infer from text if no custom style applied (Normal or empty);
             // styled paragraphs are already handled by the style-based detectors
-            if (headingLevel === 0 && (!para.style || para.style === 'Normal')) {
+            if (headingLevel === 0 && (!style || style === 'Normal')) {
                 headingLevel = inferHeadingLevel(text);
             }
-            const tokenEst = estimateTokenCount(text);
+            const tokenEst = revisionState ? estimateTokenCount(text) : 0;
 
             const parsedPara = {
                 index: i,
                 text,
-                revisionFingerprint: revisionState.fingerprint,
-                hasRevisions: revisionState.hasRevisions,
-                protectedSpans: revisionState.protectedSpans || [],
+                revisionFingerprint: revisionState?.fingerprint ?? null,
+                hasRevisions: revisionState?.hasRevisions ?? false,
+                protectedSpans: revisionState?.protectedSpans || [],
                 headingLevel,
-                style: para.style || '',
-                styleBuiltIn: para.styleBuiltIn || '',
-                isListItem: para.isListItem,
+                style,
+                styleBuiltIn,
+                isListItem: revisionState ? para.isListItem : false,
                 listString: null,
                 listLevel: 0,
                 inTable,

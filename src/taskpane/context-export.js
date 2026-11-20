@@ -1,5 +1,5 @@
 import { parseDocument } from '../lib/document-parser.js';
-import { queueRevisionRead, resolveRevisionRead } from '../lib/word-revisions.js';
+import { queueRevisionRead, resolveRevisionRead, revisionTextState } from '../lib/word-revisions.js';
 import { getNativeTextDiagnostics } from '../lib/native-text-diagnostics.js';
 
 const secretKey = /(?:api.?key|authorization|password|secret|^(?:access|refresh|pairing)?_?token$|^headers$)/i;
@@ -32,6 +32,22 @@ function serializable(value) {
             ? '[binary attachment omitted]' : item, 2);
 }
 
+async function readReportDocumentText() {
+    try {
+        const model = await parseDocument();
+        return model.paragraphs.map((paragraph) => paragraph.text).join('\n');
+    } catch (error) {
+        if (error.code !== 'GeneralException' || error.debugInfo?.errorLocation !== 'Paragraph.getOoxml') throw error;
+        // A whole-body export does not address the failing cell individually.
+        // This text is diagnostic only and supplies no paragraph edit targets.
+        return Word.run(async (context) => {
+            const xml = context.document.body.getOoxml();
+            await context.sync();
+            return revisionTextState(xml.value).text;
+        });
+    }
+}
+
 export async function buildContextReport({ state, session, chatText, logs, draft, attachments, metadata }) {
     const parts = ['Claric context report', `Captured at: ${new Date().toISOString()}`,
         'Includes current document and chat content. Credentials are redacted; binary attachments are omitted.',
@@ -54,8 +70,7 @@ export async function buildContextReport({ state, session, chatText, logs, draft
         parts.push('\n## Current selection', selection || '(empty)');
     } catch (error) { parts.push('\n## Current selection', `Unavailable: ${error.message}`); }
     try {
-        const model = await parseDocument();
-        parts.push('\n## Current document (current revision view)', model.paragraphs.map((p) => p.text).join('\n'));
+        parts.push('\n## Current document (current revision view)', await readReportDocumentText());
     } catch (error) { parts.push('\n## Current document', `Unavailable: ${error.message}`); }
     parts.push('\n## Activity log', logs || '(empty)');
     const nativeDiagnostics = getNativeTextDiagnostics();

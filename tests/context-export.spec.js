@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 jest.mock('../src/lib/document-parser.js', () => ({ parseDocument: jest.fn() }));
-jest.mock('../src/lib/word-revisions.js', () => ({ queueRevisionRead: () => ({}), resolveRevisionRead: () => ({ text: 'Selected current text' }) }));
+jest.mock('../src/lib/word-revisions.js', () => ({ ...jest.requireActual('../src/lib/word-revisions.js'),
+    queueRevisionRead: () => ({}), resolveRevisionRead: () => ({ text: 'Selected current text' }) }));
 import { parseDocument } from '../src/lib/document-parser.js';
 import { buildContextReport, redactContext } from '../src/taskpane/context-export.js';
 import { copyText } from '../src/taskpane/ui/clipboard.js';
@@ -53,6 +54,23 @@ test('unavailable Word reads are identified while remaining context is still exp
     expect(report).toContain('Chat survives');
     expect(report).toContain('Logs survive');
     expect(report).toContain('Unavailable: Document unavailable');
+});
+
+test('the report reads the body OOXML when Word cannot export one native paragraph', async () => {
+    parseDocument.mockRejectedValue(Object.assign(new Error('Word could not read paragraph 21'), {
+        code: 'GeneralException', debugInfo: { errorLocation: 'Paragraph.getOoxml' },
+    }));
+    const value = '<w:body xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        + '<w:p><w:del><w:r><w:delText>Old wording</w:delText></w:r></w:del><w:ins><w:r><w:t>New wording</w:t></w:r></w:ins></w:p>'
+        + '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Table text</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body>';
+    const body = { getOoxml: jest.fn(() => ({ value })) };
+    global.Word = { run: async (fn) => fn({ document: { body, getSelection: () => ({ load: jest.fn() }) }, sync: async () => {} }) };
+
+    const report = await buildContextReport({ state: { config: {} } });
+
+    expect(body.getOoxml).toHaveBeenCalledTimes(1);
+    expect(report).toContain('## Current document (current revision view)\nNew wording\nTable text');
+    expect(report).not.toContain('Old wording');
 });
 
 test('redaction covers encoded configured keys, authorization, URL credentials and tokens', () => {

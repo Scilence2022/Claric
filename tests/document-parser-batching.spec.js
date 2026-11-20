@@ -6,12 +6,13 @@
  * queued for the whole document at once.
  */
 import { parseDocument, PARSE_BATCH_SIZE } from '../src/lib/document-parser.js';
+import { chunkDocument } from '../src/lib/document-chunker.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const paragraphXml = (text) => `<w:document xmlns:w="${W}"><w:body>`
     + `<w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`;
 
-function mockDocument(texts, { rejectBatch = () => false, reviewedFailure = -1 } = {}) {
+function mockDocument(texts, { rejectBatch = () => false, reviewedFailure = -1, inTable = (index) => index % 2 !== 0 } = {}) {
     const state = { syncs: 0, largestBatch: 0, failedBatches: [] };
     const exports = [];
     const reviewed = [];
@@ -22,7 +23,7 @@ function mockDocument(texts, { rejectBatch = () => false, reviewedFailure = -1 }
         isListItem: false,
         load: jest.fn(),
         untrack: jest.fn(),
-        parentTableOrNullObject: { isNullObject: index % 2 === 0, load: jest.fn() },
+        parentTableOrNullObject: { isNullObject: !inTable(index), load: jest.fn() },
         listItemOrNullObject: { isNullObject: true, load: jest.fn() },
         getOoxml: jest.fn(() => {
             exports.push(index);
@@ -105,6 +106,32 @@ test('a persistent read failure names the exact paragraph and keeps the Word err
         message: expect.stringContaining(`paragraph ${PARSE_BATCH_SIZE + 2}`),
         code: 'GeneralException',
     });
+});
+
+test('whole-document editing keeps a merged table boundary even when its empty paragraph cannot export OOXML', async () => {
+    const texts = [...Array.from({ length: 20 }, (_, i) => `Paragraph ${i + 1}.`), '', 'Text after the table.'];
+    const { items } = mockDocument(texts, {
+        inTable: (index) => index === 20,
+        rejectBatch: (batch) => batch.includes(20),
+    });
+    await expect(parseDocument()).rejects.toThrow(/paragraph 21: GeneralException/);
+    items[20].getOoxml.mockClear();
+    items[20].getRange.mockClear();
+
+    const model = await parseDocument({ skipTableContent: true });
+
+    expect(items[20].getOoxml).not.toHaveBeenCalled();
+    expect(items[20].getRange).not.toHaveBeenCalled();
+    expect(model.paragraphs[20]).toMatchObject({ index: 20, text: '', inTable: true });
+    expect(model.paragraphs[21]).toMatchObject({ index: 21, text: texts[21], revisionFingerprint: expect.any(String) });
+    expect(chunkDocument(model).map(({ startIndex, endIndex }) => [startIndex, endIndex])).toEqual([[0, 19], [21, 21]]);
+});
+
+test('prose parse preserves the original Word index of a failed body paragraph after a table', async () => {
+    mockDocument(['In a cell.', 'Body paragraph.'], { rejectBatch: (batch) => batch.includes(1),
+        inTable: (index) => index === 0 });
+
+    await expect(parseDocument({ skipTableContent: true })).rejects.toThrow(/paragraph 2: GeneralException/);
 });
 
 test('refuses an unscoped XML export when reviewed text is unavailable', async () => {
