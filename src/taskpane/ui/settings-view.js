@@ -30,6 +30,12 @@ import {
     getThinkingHint,
     getTemperatureHint,
 } from '../../lib/model-capabilities.js';
+import {
+    cachedModels,
+    cacheModels,
+    clearCachedModels,
+    modelConnectionIdentity,
+} from '../../lib/model-catalog.js';
 import { parseSkillPackage } from '../../lib/skill-package.js';
 import { connectMcpServer } from '../../lib/mcp-client.js';
 import { importServerPrompts } from '../../lib/mcp-tools.js';
@@ -47,7 +53,6 @@ let _releasePromptFocus = null;
 let _onConfigChanged = () => {};
 let _lastFocusedElement = null;
 let _availableModels = [];
-const _modelsByProvider = new Map();
 let _connectionSequence = 0;
 let _imageConnectionSequence = 0;
 let _chatFormProvider = null;
@@ -55,35 +60,19 @@ let _chatFormProvider = null;
 // changes before the three text inputs are re-rendered, so this separate
 // value lets a change handler commit the old form to the old provider first.
 let _imageFormProvider = null;
-// Both model caches are scoped to provider/profile and checked against the
-// endpoint and key. Editing credentials immediately hides the old catalog.
-const _imageModelsByProvider = new Map();
+// Both model caches live in lib/model-catalog.js, scoped to provider/profile
+// and checked against the endpoint and key. Editing credentials immediately
+// hides the old catalog. The chat scope is shared with the composer's model
+// popover so both surfaces list the same ids.
 let _imageModels = [];
 let _chatCombo = null;
 let _imageCombo = null;
 
-function modelCacheKey(provider, entry) {
-    return JSON.stringify([provider, entry.activeProfileId || 'default']);
-}
-
-function modelConnectionIdentity(provider, entry) {
-    return JSON.stringify([modelCacheKey(provider, entry), entry.url, entry.apiPath, entry.apiKey]);
-}
-
-function cachedModels(cache, provider, entry) {
-    const saved = cache.get(modelCacheKey(provider, entry));
-    return saved?.identity === modelConnectionIdentity(provider, entry) ? saved.models : [];
-}
-
-function cacheModels(cache, provider, entry, models) {
-    cache.set(modelCacheKey(provider, entry), { identity: modelConnectionIdentity(provider, entry), models });
-}
-
 function refreshCachedModels() {
     const config = appState.config;
-    _availableModels = cachedModels(_modelsByProvider, config.backend, config.providers[config.backend]);
+    _availableModels = cachedModels('chat', config.backend, config.providers[config.backend]);
     const image = config.imageGeneration;
-    if (image) _imageModels = cachedModels(_imageModelsByProvider, image.provider, image.providers[image.provider]);
+    if (image) _imageModels = cachedModels('image', image.provider, image.providers[image.provider]);
     _chatCombo?.refreshIfOpen();
     _imageCombo?.refreshIfOpen();
 }
@@ -134,8 +123,8 @@ function initProfileControls(prefix, image, onTextInput) {
     select.addEventListener('change', () => change((current) => selectProviderProfile(current, select.value)));
     document.getElementById(`${prefix}ProfileAddBtn`).addEventListener('click', () => change(addProviderProfile));
     document.getElementById(`${prefix}ProfileRemoveBtn`).addEventListener('click', () => change((current) => {
-        const id = modelCacheKey(image ? appState.config.imageGeneration.provider : appState.config.backend, current);
-        if (removeProviderProfile(current)) (image ? _imageModelsByProvider : _modelsByProvider).delete(id);
+        const provider = image ? appState.config.imageGeneration.provider : appState.config.backend;
+        if (removeProviderProfile(current)) clearCachedModels(image ? 'image' : 'chat', provider, current);
     }));
     document.getElementById(`${prefix}ProfileName`).addEventListener('input', () => {
         ensureProviderProfiles(entry());
@@ -474,6 +463,56 @@ function saveSettings() {
 }
 
 /**
+ * Commits a model and/or thinking level picked outside the settings form
+ * (the composer's model popover) to the active provider entry.
+ *
+ * Mirrors the settings save path but targets only these two fields, then
+ * syncs the settings form so a later form-driven save cannot resurrect the
+ * previous values, persists, and refreshes the model pill. No connection
+ * re-test: endpoint and key are unchanged, so the status dot still describes
+ * the provider accurately.
+ *
+ * @param {object} [changes]
+ * @param {string} [changes.model] - Model id to select
+ * @param {string} [changes.thinkingLevel] - Thinking level; resolved against
+ *   the model's capability profile exactly like the settings select
+ */
+export function applyChatSelection({ model, thinkingLevel } = {}) {
+    const config = appState.config;
+    const entry = config.providers[config.backend];
+    if (!entry) return;
+    const changed = [];
+    if (typeof model === 'string' && model.trim() && model.trim() !== entry.model) {
+        entry.model = model.trim();
+        changed.push(`Model set to ${entry.model}.`);
+    }
+    const profile = getModelCapabilities(config.backend, entry.model);
+    if (typeof thinkingLevel === 'string') {
+        const level = resolveThinkingLevel(profile, thinkingLevel);
+        if (level !== entry.thinkingLevel) {
+            entry.thinkingLevel = level;
+            const label = profile.options.find((option) => option.value === level)?.label || level;
+            changed.push(`Thinking level set to ${label}.`);
+        }
+    }
+    if (changed.length === 0) return;
+    // Mirror the selection into the form: syncChatFormToProvider treats the
+    // visible inputs as authoritative, so stale fields would overwrite this
+    // commit on the next settings edit.
+    const modelInput = document.getElementById('modelSelect');
+    if (modelInput) modelInput.value = entry.model || '';
+    updateGenerationControls(modelInput ? modelInput.value : entry.model, entry.thinkingLevel);
+    try {
+        persistSettings(appState);
+    } catch (e) {
+        addLog(`Failed to save selection: ${e.message}`, 'error');
+        return;
+    }
+    for (const message of changed) addLog(message, 'info');
+    _onConfigChanged();
+}
+
+/**
  * Shows a transient inline confirmation next to the Save button after an
  * explicit save attempt ("Saved ✓" / "Save failed"). Auto-hides after 2s.
  *
@@ -585,7 +624,7 @@ function updateImageUIFromConfig() {
     // Provider switched: show that provider's cached suggestions, if any —
     // Refresh still fetches fresh, but a cached list must not leak across
     // providers (a GLM model id is meaningless for OpenAI Images).
-    _imageModels = cachedModels(_imageModelsByProvider, image.provider, entry);
+    _imageModels = cachedModels('image', image.provider, entry);
     if (_imageCombo) _imageCombo.refreshIfOpen();
 
     updateImageProviderHints();
@@ -663,7 +702,7 @@ async function handleRefreshImageModels() {
         // The configured model stays selectable even when unlisted (or when
         // the heuristic filtered it out).
         if (entry.model && !ids.includes(entry.model)) ids.unshift(entry.model);
-        cacheModels(_imageModelsByProvider, requestedProvider, entry, ids);
+        cacheModels('image', requestedProvider, entry, ids);
         _imageModels = ids;
         addLog(`Found ${ids.length} image model(s) for ${label}.`, 'success');
         if (_imageCombo) _imageCombo.refreshIfOpen();
@@ -731,7 +770,7 @@ export function updateUIFromConfig() {
     document.getElementById('temperatureInput').value = String(Number.isFinite(backendConfig.temperature) ? backendConfig.temperature : 1);
     // Restore this provider's cached suggestions, then rebuild the
     // capability-aware thinking options before selecting the saved level.
-    _availableModels = cachedModels(_modelsByProvider, config.backend, config.providers[config.backend]);
+    _availableModels = cachedModels('chat', config.backend, config.providers[config.backend]);
     updateGenerationControls(modelSelect.value, backendConfig.thinkingLevel);
 
     const richnessSelect = document.getElementById('docRichnessSelect');
@@ -913,7 +952,7 @@ function populateModels(models) {
     if (current && !ids.has(current)) {
         _availableModels.unshift(current);
     }
-    cacheModels(_modelsByProvider, appState.config.backend, appState.config.providers[appState.config.backend], [..._availableModels]);
+    cacheModels('chat', appState.config.backend, appState.config.providers[appState.config.backend], [..._availableModels]);
 
     if (_chatCombo) _chatCombo.refreshIfOpen();
     // A newly listed model can activate a model-specific capability profile.

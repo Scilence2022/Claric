@@ -553,3 +553,136 @@ describe('file attachment chips', () => {
     });
 });
 
+describe('model pill popover', () => {
+    const MENU_STATE = () => ({
+        models: ['model-a', 'model-b'],
+        currentModel: 'model-a',
+        thinking: {
+            options: [{ value: 'default', label: 'Default' }, { value: 'high', label: 'High', description: 'Deep reasoning' }],
+            current: 'high',
+            hint: 'Options adapt to the selected model.',
+        },
+    });
+
+    function setupPopover(state = MENU_STATE) {
+        document.body.innerHTML = `
+            <textarea id="chatInput"></textarea>
+            <button id="sendBtn"></button>
+            <div id="skillPicker" hidden></div>
+            <div id="skillsMenu" hidden></div>
+            <div id="modelMenu" hidden></div>
+            <button id="addSkillBtn"></button>
+            <input type="checkbox" id="autoApplyToggle">
+            <button id="modelPill"></button>`;
+        const deps = {
+            onSubmit: jest.fn(), onCancel: jest.fn(), getSkills: () => [], onOpenSettings: jest.fn(),
+            getModelMenuState: state,
+            onPickModel: jest.fn(),
+            onPickThinkingLevel: jest.fn(),
+        };
+        initInputBar(deps);
+        return deps;
+    }
+
+    test('pill click renders models and thinking levels with the current picks checked', () => {
+        setupPopover();
+        const pill = document.getElementById('modelPill');
+        pill.click();
+        const menu = document.getElementById('modelMenu');
+        expect(menu.hasAttribute('hidden')).toBe(false);
+        expect(pill.getAttribute('aria-expanded')).toBe('true');
+        expect([...menu.querySelectorAll('.model-menu-section')].map((el) => el.textContent)).toEqual(['Model', 'Thinking']);
+        const options = [...menu.querySelectorAll('[role="option"]')];
+        expect(options.map((el) => el.textContent)).toEqual(['✓model-a', 'model-b', 'Default', '✓High']);
+        const checked = options.filter((el) => el.classList.contains('current'));
+        expect(checked).toHaveLength(2);
+        expect(checked[0].getAttribute('aria-selected')).toBe('false'); // keyboard selection drives aria-selected
+        expect(options[2].title).toBe('Options adapt to the selected model.');
+        expect(options[3].title).toBe('Deep reasoning');
+        expect(menu.querySelector('.model-menu-footer button').textContent).toBe('Open settings…');
+
+        pill.click(); // toggle closes
+        expect(menu.hasAttribute('hidden')).toBe(true);
+        expect(pill.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    test('picking a model or a thinking level reports the pick and closes', () => {
+        const deps = setupPopover();
+        const menu = document.getElementById('modelMenu');
+        document.getElementById('modelPill').click();
+        const options = [...menu.querySelectorAll('[role="option"]')];
+        options[1].click(); // model-b
+        expect(deps.onPickModel).toHaveBeenCalledWith('model-b');
+        expect(deps.onPickThinkingLevel).not.toHaveBeenCalled();
+        expect(menu.hasAttribute('hidden')).toBe(true);
+
+        document.getElementById('modelPill').click();
+        [...menu.querySelectorAll('[role="option"]')][3].click(); // High
+        expect(deps.onPickThinkingLevel).toHaveBeenCalledWith('high');
+        expect(menu.hasAttribute('hidden')).toBe(true);
+    });
+
+    test('an empty catalog shows the empty state but keeps thinking and settings', () => {
+        setupPopover(() => ({ models: [], currentModel: '', thinking: MENU_STATE().thinking }));
+        document.getElementById('modelPill').click();
+        const menu = document.getElementById('modelMenu');
+        expect(document.querySelector('.model-menu-empty').textContent).toContain('No models loaded');
+        const options = [...menu.querySelectorAll('[role="option"]')];
+        expect(options).toHaveLength(2); // thinking only
+        expect(menu.querySelector('.model-menu-footer button')).not.toBeNull();
+    });
+
+    test('Escape closes and refocuses the pill; an outside click closes too', () => {
+        setupPopover();
+        const pill = document.getElementById('modelPill');
+        const menu = document.getElementById('modelMenu');
+        pill.focus();
+        pill.click();
+        expect(menu.hasAttribute('hidden')).toBe(false);
+        pill.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        expect(menu.hasAttribute('hidden')).toBe(true);
+        expect(document.activeElement).toBe(pill);
+
+        pill.click();
+        document.getElementById('chatInput').click();
+        expect(menu.hasAttribute('hidden')).toBe(true);
+    });
+
+    test('Arrow keys highlight options and Enter picks the highlighted one', () => {
+        const deps = setupPopover();
+        const pill = document.getElementById('modelPill');
+        const menu = document.getElementById('modelMenu');
+        pill.focus();
+        pill.click();
+        pill.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        const options = [...menu.querySelectorAll('[role="option"]')];
+        expect(options[0].classList.contains('active')).toBe(true);
+        expect(pill.getAttribute('aria-activedescendant')).toBe(options[0].id);
+        pill.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        expect(options[1].classList.contains('active')).toBe(true);
+        const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+        pill.dispatchEvent(enter);
+        expect(enter.defaultPrevented).toBe(true); // not a toggle-close
+        expect(deps.onPickModel).toHaveBeenCalledWith('model-b');
+        expect(menu.hasAttribute('hidden')).toBe(true);
+        expect(pill.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    test('without a popover state provider the pill falls back to Settings', () => {
+        document.body.innerHTML = `
+            <textarea id="chatInput"></textarea>
+            <button id="sendBtn"></button>
+            <div id="skillPicker" hidden></div>
+            <div id="skillsMenu" hidden></div>
+            <div id="modelMenu" hidden></div>
+            <button id="addSkillBtn"></button>
+            <input type="checkbox" id="autoApplyToggle">
+            <button id="modelPill"></button>`;
+        const onOpenSettings = jest.fn();
+        initInputBar({ onSubmit: jest.fn(), onCancel: jest.fn(), getSkills: () => [], onOpenSettings });
+        document.getElementById('modelPill').click();
+        expect(onOpenSettings).toHaveBeenCalledTimes(1);
+        expect(document.getElementById('modelMenu').hasAttribute('hidden')).toBe(true);
+    });
+});
+

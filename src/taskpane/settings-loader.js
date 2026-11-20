@@ -40,5 +40,19 @@ export function createSettingsLoader({
                 log(`Open settings failed: ${error.message}`, 'error');
             }
         },
+        /**
+         * Commits a model and/or thinking level picked in the composer's
+         * model popover ({model, thinkingLevel}). Resolves the settings
+         * chunk first — it is loaded at startup anyway, and the commit
+         * shares the saveSettings path so the form stays consistent.
+         */
+        async applyChatSelection(changes) {
+            try {
+                const view = await ready();
+                view.applyChatSelection(changes);
+            } catch (error) {
+                log(`Could not apply model selection: ${error.message}`, 'error');
+            }
+        },
     };
 }

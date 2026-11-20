@@ -22,6 +22,13 @@ test('real taskpane markup integrates IME send, DOM confirmation and Settings en
     const onSubmit = jest.fn();
     initInputBar({
         onSubmit, onCancel: jest.fn(), getSkills: () => [], onOpenSettings: openSettings,
+        getModelMenuState: () => ({
+            models: ['alpha', 'beta'],
+            currentModel: 'alpha',
+            thinking: { options: [{ value: 'default', label: 'Default' }, { value: 'high', label: 'High' }], current: 'high' },
+        }),
+        onPickModel: jest.fn(),
+        onPickThinkingLevel: jest.fn(),
         getAutoApply: () => appState.config.autoApplyChanges,
         getTrackChanges: () => appState.config.trackChangesEnabled,
         setAutoApply: (enabled) => { appState.config.autoApplyChanges = enabled; },
@@ -47,6 +54,18 @@ test('real taskpane markup integrates IME send, DOM confirmation and Settings en
     const model = document.getElementById('modelPill');
     model.focus();
     model.click();
+    const menu = document.getElementById('modelMenu');
+    expect(menu.hidden).toBe(false);
+    expect(menu.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
+    expect(menu.querySelector('.skill-picker-item.current')).not.toBeNull();
+    // Escape closes the popover and restores focus to the pill.
+    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(menu.hidden).toBe(true);
+    expect(document.activeElement).toBe(model);
+    // Settings stays reachable from the popover footer.
+    model.click();
+    expect(menu.hidden).toBe(false);
+    menu.querySelector('.model-menu-footer button').click();
     expect(document.activeElement.id).toBe('settingsCloseBtn');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(document.getElementById('settingsOverlay').hidden).toBe(true);

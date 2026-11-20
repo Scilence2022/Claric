@@ -45,6 +45,10 @@ src/
                                #   mappings (reasoning_effort, thinking.type,
                                #   output_config.effort, budget_tokens, ...),
                                #   temperature support rules, UI option lists
+    model-catalog.js           # Cached per-provider/profile /models results
+                               #   shared by the settings combobox and the
+                               #   composer model popover; keyed to endpoint
+                               #   identity (url/apiPath/key)
     providers.js               # Provider catalog: Ollama, vLLM, OpenAI,
                                #   Claude (Anthropic), DeepSeek, Zhipu GLM,
                                #   Moonshot Kimi, MiniMax (intl + CN),
@@ -207,7 +211,10 @@ src/
                                #   progress bar, citation pills
       input-bar.js             # Composer: textarea, skill picker popup + "+"
                                #   skills menu, macOS-style auto-apply toggle,
-                               #   send/cancel, model pill, selection preview
+                               #   send/cancel, model pill + model/thinking
+                               #   popover (catalog + capability levels,
+                               #   commits via settings applyChatSelection),
+                               #   selection preview
                                #   chip (text + image thumbnails + +N badge),
                                #   file-upload button + attachment chips
                                #   (parse/remove/clear, validation via
@@ -290,7 +297,14 @@ tests/                         # Jest unit tests (current counts in test output)
   input-bar.spec.js           # @jest-environment jsdom — selection preview
                                #   chip (text + thumbnails + +N badge), file-
                                #   attachment chips (add/remove/submit/clear,
-                               #   validation logging)
+                               #   validation logging), model pill popover
+                               #   (render/pick/empty state/keyboard/fallback)
+  model-catalog.spec.js       # Shared model cache: scope isolation,
+                               #   endpoint-identity invalidation, per-profile
+                               #   entries, clearing
+  settings-chat-selection.spec.js  # applyChatSelection commit path: config +
+                               #   form sync + persistence, thinking-level
+                               #   resolution, no connection probe
   file-attachments.spec.js     # Type detection, size/count caps, text/image/
                                #   docx/pdf parsing (mammoth + pdf.js mocked),
                                #   context assembly + truncation, persist meta
