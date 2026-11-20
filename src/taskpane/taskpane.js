@@ -108,7 +108,7 @@ async function initialize() {
         }
     }
 
-    const settings = createSettingsLoader({ onConfigChanged: updateModelPill, log: addLog });
+    const settings = createSettingsLoader({ onConfigChanged: updateComposerPills, log: addLog });
     document.getElementById('settingsBtn').addEventListener('click', settings.open);
     initScreenSharingView({ log: addLog });
 
@@ -119,6 +119,7 @@ async function initialize() {
         getSkills: () => listSkills(appState.promptManager),
         onOpenSettings: settings.open,
         getModelMenuState,
+        getThinkingMenuState,
         onPickModel: (id) => settings.applyChatSelection({ model: id }),
         onPickThinkingLevel: (value) => settings.applyChatSelection({ thinkingLevel: value }),
         onLog: addLog,
@@ -194,7 +195,7 @@ async function initialize() {
         input.focus();
     });
 
-    updateModelPill();
+    updateComposerPills();
     const recent = listSessions();
     if (recent.length) {
         const restored = loadStoredSession(recent[0].id);
@@ -267,9 +268,12 @@ async function initialize() {
 }
 
 /**
- * Updates the model pill in the input bar from the active provider config.
+ * Updates the composer pills from the active provider config: the model pill
+ * (provider/profile + model) and the thinking pill (resolved level label).
+ * Wired as the settings onConfigChanged callback so every config change
+ * refreshes both.
  */
-function updateModelPill() {
+function updateComposerPills() {
     const preset = getProviderPreset(appState.config.backend);
     const backendConfig = getActiveBackendConfig(appState);
     const label = preset ? preset.label : appState.config.backend;
@@ -279,27 +283,54 @@ function updateModelPill() {
     const pill = document.getElementById('modelPill');
     if (pill) {
         pill.textContent = `${label}${profileLabel}: ${backendConfig.model || '(no model)'}`;
-        pill.title = 'Switch model or thinking level';
+        pill.title = 'Switch model';
     }
+    updateThinkingPill();
+}
+
+/** Trims the parenthetical note from a level label ("Default (High)" → "Default"). */
+function trimLevelNote(label) {
+    return String(label || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
+
+/** Updates the thinking pill label from the active model's capability profile. */
+function updateThinkingPill() {
+    const pill = document.getElementById('thinkingPill');
+    if (!pill) return;
+    const entry = appState.config.providers[appState.config.backend];
+    const capabilities = getModelCapabilities(appState.config.backend, entry.model || '');
+    const level = resolveThinkingLevel(capabilities, entry.thinkingLevel);
+    const option = capabilities.options.find((candidate) => candidate.value === level);
+    const label = option ? option.label : level;
+    const labelEl = document.getElementById('thinkingPillLabel');
+    if (labelEl) labelEl.textContent = trimLevelNote(label) || level;
+    pill.title = `Thinking level: ${label}`;
 }
 
 /**
  * Builds the model pill popover content for the active provider: its cached
- * model catalog (empty until the connection probe filled it) and the
- * capability-aware thinking options for the configured model.
+ * model catalog (empty until the connection probe filled it).
  */
 function getModelMenuState() {
     const config = appState.config;
     const entry = config.providers[config.backend];
-    const model = entry.model || '';
-    const capabilities = getModelCapabilities(config.backend, model);
     return {
         models: cachedModels('chat', config.backend, entry),
-        currentModel: model,
-        thinking: {
-            options: capabilities.options,
-            current: resolveThinkingLevel(capabilities, entry.thinkingLevel),
-            hint: getThinkingHint(capabilities),
-        },
+        currentModel: entry.model || '',
+    };
+}
+
+/**
+ * Builds the thinking pill popover content: the configured model's
+ * capability-aware level options and the resolved current level.
+ */
+function getThinkingMenuState() {
+    const config = appState.config;
+    const entry = config.providers[config.backend];
+    const capabilities = getModelCapabilities(config.backend, entry.model || '');
+    return {
+        options: capabilities.options,
+        current: resolveThinkingLevel(capabilities, entry.thinkingLevel),
+        hint: getThinkingHint(capabilities),
     };
 }

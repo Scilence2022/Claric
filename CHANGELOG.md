@@ -8,16 +8,16 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
-- **Model switching and thinking levels from the composer** — clicking the
-  model pill now opens a popover instead of jumping to Settings: the
-  provider's model list (cached from the connection probe) plus the
-  capability-aware thinking-level options for the configured model, with an
-  Open settings entry at the bottom. Picks commit immediately (persisted,
-  pill refreshed, applied from the next message) and are mirrored into the
-  Settings form so later edits there cannot resurrect the previous values.
-  Keyboard navigation (arrows + Enter), Escape/outside-click closing, and a
-  fallback to Settings when no catalog is wired keep the old behavior
-  available.
+- **Model switching and thinking levels from the composer** — two composer
+  pills replace the jump to Settings. The model pill opens a popover with the
+  provider's model list (cached from the connection probe) plus an Open
+  settings entry; a separate thinking pill shows the current level and opens
+  the capability-aware thinking-level options for the configured model.
+  Picks commit immediately (persisted, pills refreshed, applied from the
+  next message) and are mirrored into the Settings form so later edits there
+  cannot resurrect the previous values. Keyboard navigation (arrows + Enter),
+  Escape/outside-click closing, and a fallback to Settings when no catalog is
+  wired keep the old behavior available.
 - **Chat questions can see the shared Word window** — while sharing is on,
   each Q&A turn attaches one fresh frame to its normal streaming request.
   A message such as "拉起窗口共享请求" or "What is on my screen?" answers in

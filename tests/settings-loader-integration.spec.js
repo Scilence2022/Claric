@@ -22,7 +22,10 @@ test('lazy settings initializes the real panel once, probes connection, and open
         getModelMenuState: () => ({
             models: ['alpha'],
             currentModel: appState.config.providers[appState.config.backend].model,
-            thinking: { options: [{ value: 'default', label: 'Default' }, { value: 'high', label: 'High' }], current: 'default' },
+        }),
+        getThinkingMenuState: () => ({
+            options: [{ value: 'default', label: 'Default' }, { value: 'high', label: 'High' }],
+            current: 'default',
         }),
         onPickModel: (id) => settings.applyChatSelection({ model: id }),
         onPickThinkingLevel: (value) => settings.applyChatSelection({ thinkingLevel: value }),
