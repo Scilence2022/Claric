@@ -173,7 +173,7 @@ export async function prepareFormatProposal(deps, { instruction, originalInstruc
             }
         });
         checkOperationSignal(signal);
-        const backendConfig = getActiveBackendConfig(appState);
+        const backendConfig = cleanupOnly ? null : getActiveBackendConfig(appState);
         let rawResponse = '[]';
         let rendering = null;
         const explicitAlignment = !cleanupOnly && !cleanupRequested ? originalAlignment || explicitBodyAlignmentOp(instruction) : null;
@@ -226,7 +226,7 @@ export async function prepareFormatProposal(deps, { instruction, originalInstruc
             log(`Formatting targets verified: ${targetSummary.verifiedParagraphs} paragraph(s); ${targetSummary.excludedParagraphs} excluded; ${targetSummary.uncertainParagraphs} uncertain.`, 'info');
         }
         if (!ops.length) await discardFormatProposal(deps, { anchor });
-        return { instruction, scope, ops, anchor, rendering, targetSummary, cleanupSummary: anchor.cleanupSummary, model: backendConfig.model };
+        return { instruction, scope, ops, anchor, rendering, targetSummary, cleanupSummary: anchor.cleanupSummary, model: backendConfig?.model ?? null };
     } catch (error) {
         try { await discardFormatProposal(deps, { anchor }); }
         catch (cleanupError) { log(`Formatting anchor cleanup failed: ${cleanupError.message}`, 'warning'); }
@@ -318,7 +318,7 @@ export async function applyFormatProposal(deps, proposal, { signal } = {}) {
                 throw new Error('Empty paragraph targets changed. Draft a new proposal.');
             }
         }
-        const previousMode = context.document.changeTrackingMode;
+        const previousMode = Word.ChangeTrackingMode ? context.document.changeTrackingMode : null;
         if (Word.ChangeTrackingMode) {
             context.document.changeTrackingMode = appState.config.trackChangesEnabled
                 ? Word.ChangeTrackingMode.trackAll : Word.ChangeTrackingMode.off;

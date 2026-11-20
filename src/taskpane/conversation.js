@@ -584,7 +584,8 @@ export function routeTurn(text, {
         ? (!!hasSelection && !imageSelected)
         : !!hasTextSelection;
     const selectionPresent = !!hasSelection || imageSelected || textSelected || !!hasMultiCellTableRegion;
-    const requestScope = resolveTaskScope({ instruction: trimmed }, { hasSelection: selectionPresent });
+    const explicitScope = requestedTaskScope(trimmed);
+    const requestScope = explicitScope || resolveTaskScope({ instruction: trimmed }, { hasSelection: selectionPresent });
     const figureIntent = looksLikeFigureLegendIntent(trimmed);
 
     const resolved = resolveSkill(trimmed, skills);
@@ -715,7 +716,8 @@ export function routeTurn(text, {
         return {
             type: TURN_TYPE.FORMAT,
             instruction: trimmed,
-            scope: requestScope === 'selection' && textSelected && !hasMultiCellTableRegion ? 'selection' : 'document',
+            scope: requestScope === 'selection' && (explicitScope === 'selection' || (textSelected && !hasMultiCellTableRegion))
+                ? 'selection' : 'document',
         };
     }
     // Native cleanup honors the selection when present; text rewriting
@@ -1944,27 +1946,34 @@ export function createConversation(deps) {
         const myController = _beginChatTurn(turnController);
         try {
             msg.setStatus('Scanning for empty paragraphs...');
-            const proposal = await actions.prepareEmptyParagraphCleanup(turnDeps);
+            const proposal = await actions.prepareEmptyParagraphCleanup(turnDeps, { signal: myController.signal });
+            if (myController.signal.aborted || !turnDeps.isCurrentSession()) return;
             if (!proposal.emptyCount) {
-                msg.setStatus('No empty paragraphs found.');
+                msg.setStatus(proposal.preservedCount
+                    ? `${proposal.preservedCount} blank-looking paragraph(s) were preserved. See the activity log.`
+                    : 'No empty paragraphs found.');
                 return;
             }
             msg.setStatus('');
+            const countsText = `Delete ${proposal.emptyCount} empty paragraph(s)`
+                + (proposal.preservedCount ? ` · ${proposal.preservedCount} preserved` : '');
             const card = makeProposalCard({
                 title: 'Proposed cleanup',
-                countsText: `Delete ${proposal.emptyCount} empty paragraph(s)`,
+                countsText,
                 comment: null,
-                onApply: async () => {
+                onApply: async (_ids, { signal } = {}) => {
                     try {
-                        const result = await actions.applyEmptyParagraphCleanup(turnDeps);
-                        if (!result || result.deleted === 0) {
+                        const result = await actions.applyEmptyParagraphCleanup(turnDeps, proposal, { signal });
+                        if (result?.partial || result?.interrupted) {
+                            card.markWarning('Cleanup stopped. Inspect the document before drafting a new proposal.');
+                        } else if (!result || result.deleted === 0) {
                             card.markWarning('Nothing applied — no empty paragraphs remained.');
                         } else {
                             card.markApplied();
                         }
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
+                        card.markError(error.message, { retryable: false });
                     }
                 },
                 onReject: () => {
@@ -1974,7 +1983,7 @@ export function createConversation(deps) {
             msg.attachProposal(card, {
                 title: 'Proposed cleanup',
                 state: 'pending',
-                countsText: `Delete ${proposal.emptyCount} empty paragraph(s)`,
+                countsText,
                 items: [],
             });
         } catch (error) {
@@ -2236,6 +2245,8 @@ export function createConversation(deps) {
         const textSelected = !!hasTextSelection;
         const selectionPresent = !!hasSelection || imageSelected || textSelected || !!hasMultiCellTableRegion;
         const scope = resolveTaskScope(task, { hasSelection: selectionPresent }, originalRequest);
+        const formatScope = requestedTaskScope(originalRequest) === 'selection' || requestedTaskScope(instruction) === 'selection'
+            ? 'selection' : scope;
         if (task.type === 'comment_management' || (task.type !== 'qa' && looksLikeCommentAction(instruction))) {
             return { type: TURN_TYPE.COMMENT_MANAGEMENT, instruction, planned: true };
         }
@@ -2244,8 +2255,8 @@ export function createConversation(deps) {
         // paragraphs, so only the deterministic cleanup can serve it,
         // regardless of the planner's own type label (usually "edit").
         if (task.type !== 'qa' && task.type !== 'format' && !looksLikeFormatIntent(instruction) && looksLikeCleanupIntent(instruction)) {
-            return scope === 'selection' && textSelected
-                ? { type: TURN_TYPE.FORMAT, instruction, scope, cleanupOnly: true }
+            return formatScope === 'selection'
+                ? { type: TURN_TYPE.FORMAT, instruction, scope: formatScope, cleanupOnly: true }
                 : { type: TURN_TYPE.CLEANUP, instruction };
         }
         switch (task.type) {
@@ -2256,12 +2267,12 @@ export function createConversation(deps) {
                 // inserting a title into a selection would misplace it.
                 return { type: TURN_TYPE.FORMAT, instruction, scope: 'document' };
             case 'format':
-                if (scope === 'selection' && hasMultiCellTableRegion) return { type: TURN_TYPE.TABLE_TOOL, instruction };
+                if (formatScope === 'selection' && hasMultiCellTableRegion) return { type: TURN_TYPE.TABLE_TOOL, instruction };
                 return {
                     type: TURN_TYPE.FORMAT,
                     instruction,
                     originalInstruction: originalRequest,
-                    scope: scope === 'selection' && textSelected ? 'selection' : 'document',
+                    scope: formatScope,
                 };
             case 'page_layout':
                 return { type: TURN_TYPE.PAGE_LAYOUT, instruction,
@@ -2613,6 +2624,13 @@ export function createConversation(deps) {
         if (appState.supportsTrackedChanges === false && requiresTrackedWrites(turn)) {
             msg.markError(TRACKED_WRITES_UNAVAILABLE);
             return { status: 'failed', error: new Error(TRACKED_WRITES_UNAVAILABLE) };
+        }
+        if ((turn.type === TURN_TYPE.FORMAT && turn.scope === 'selection' && !selectionText)
+            || (turn.type === TURN_TYPE.COMPOUND && requestedTaskScope(turn.instruction) === 'selection'
+                && !selectionText && !selectionImages.length && !hasMultiCellTableRegion)) {
+            const error = new Error('Select the target in Word and resubmit your request.');
+            msg.markError(error.message);
+            return { status: 'failed', error };
         }
         if (turn.type === TURN_TYPE.FORMAT) {
             // Reference documents can inform styling but cannot authorize

@@ -1915,6 +1915,41 @@ describe('createConversation.submit', () => {
     expect(appState.isProcessingSummary).toBe(false);
   });
 
+  test.each([
+    ['empty', async () => ''],
+    ['unreadable', async () => { throw new Error('Word selection read failed'); }],
+  ])('selection-only formatting stops when the selection is %s', async (_state, getSelectionText) => {
+    const view = makeView();
+    const actions = makeActions();
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions, getSelectionText,
+    });
+
+    await conv.submit('Make the selected text bold');
+    expect(view._msg.markError).toHaveBeenCalledWith('Select the target in Word and resubmit your request.');
+    expect(actions.prepareFormatProposal).not.toHaveBeenCalled();
+    expect(actions.planDocumentTasks).not.toHaveBeenCalled();
+    expect(view._msg.attachProposal).not.toHaveBeenCalled();
+  });
+
+  test('compound formatting respects a selection request when the planner says document scope', async () => {
+    const view = makeView();
+    const actions = makeActions({
+      planDocumentTasks: jest.fn(async () => ({
+        tasks: [{ type: 'format', scope: 'document', instruction: 'Bold the headings' }],
+      })),
+    });
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions,
+      getSelectionText: async () => 'Selected passage',
+    });
+
+    await conv.submit('Bold the headings and rewrite the selected text');
+    expect(actions.planDocumentTasks).toHaveBeenCalledTimes(1);
+    expect(actions.prepareFormatProposal).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ scope: 'selection', selectionText: 'Selected passage' }));
+  });
+
   test('format intent stages a format proposal (no direct write, apply on click)', async () => {
     const appState = makeAppState();
     const view = makeView();

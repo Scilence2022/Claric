@@ -199,8 +199,16 @@ export function createDocumentAgent({ identity, actions = {}, appState = {}, log
             if (!authorize(record.source, 'requestEdits')) throw fail('ACCESS_DENIED', 'Edit permission was revoked before the Word write');
             prepared.attempted = true;
             const apply = { edit: applySelection, append: applyAppend, format: applyFormat, table: applyTable }[prepared.kind];
-            const result = await apply(deps, prepared.proposal);
-            if (result?.skipped || result?.interrupted || result?.errors?.length) throw fail('WRITE_NOT_COMPLETED', result.reason || 'Word did not finish applying the proposal');
+            const result = await apply(deps, prepared.proposal, { signal });
+            const verifiedNoChange = result?.alreadySatisfied === true && result.verifiedParagraphs > 0;
+            const incompleteFormat = prepared.kind === 'format' && (
+                (!result?.applied && !verifiedNoChange) || prepared.proposal.targetSummary?.uncertainParagraphs > 0
+                || prepared.proposal.cleanupSummary?.unverifiable > 0
+            );
+            if (result?.skipped || result?.interrupted || result?.partial || result?.errors?.length || incompleteFormat) {
+                const error = fail('WRITE_NOT_COMPLETED', result?.reason || 'Word did not confirm the complete proposal. Inspect the target document.');
+                throw Object.assign(error, { localResult: result });
+            }
             return { appliedItemIds: [prepared.itemId], documentRevision: await getDocumentRevision(prepared.scope), result };
         }, signal);
     }

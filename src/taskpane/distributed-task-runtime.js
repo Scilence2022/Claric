@@ -143,7 +143,8 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
         // Never let that release dependencies that require an applied change.
         const next = { 'task.claim': 'claimed', 'task.progress': 'running',
             'task.succeeded': task.proposal?.state === 'rejected' ? 'rejected' : 'succeeded', 'task.rejected': 'rejected',
-            'task.failed': 'failed', 'task.cancel': 'cancelled', 'proposal.announced': 'awaiting_review', 'proposal.updated': 'awaiting_review',
+            'task.failed': ['write-outcome-unknown', 'apply-unknown'].includes(event.payload.errorCode) ? 'unknown' : 'failed',
+            'task.cancel': 'cancelled', 'proposal.announced': 'awaiting_review', 'proposal.updated': 'awaiting_review',
             'proposal.decision': event.payload.decision === 'accepted' ? 'applying' : 'review_rejected', 'proposal.applied': 'applied' }[event.type];
         if (next) task.state = next;
         task.lastEvent = clone(event);

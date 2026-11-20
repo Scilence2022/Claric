@@ -103,8 +103,7 @@ export function createRemoteTaskRunner({
         if (!accepted || accepted.type !== type || !accepted.result || !sameParty(accepted.source, localIdentity)) throw failure('invalid-response', 'Server did not acknowledge the operation');
         return accepted.result;
     }
-    async function reportFailure(task, error, record) {
-        const code = codeFor(error);
+    async function reportFailure(task, code, record) {
         try {
             if (record) await publish(task, 'proposal.conflict', { ...proposalTerminalPayload(record), reason: code }, 'conflict');
             await publish(task, 'task.failed', { taskId: task.event.payload.taskId, errorCode: code }, 'failed');
@@ -169,10 +168,11 @@ export function createRemoteTaskRunner({
                     return { ...result, record: base.getRecord(), localResult: base.getLocalResult() };
                 } catch (error) {
                     const wrote = base.getRecord().state === 'applied' || base.getRecord().state === 'unknown';
+                    const code = wrote ? 'write-outcome-unknown' : codeFor(error);
                     base.markConflict(wrote ? 'unknown' : 'conflict');
-                    await reportFailure(task, error, record);
+                    await reportFailure(task, code, record);
                     status({ type: wrote ? 'proposal.unknown' : 'proposal.conflict', proposalId: record.proposalId, error });
-                    return { ok: false, record: base.getRecord(), localResult: base.getLocalResult(), conflict: { code: wrote ? 'write-outcome-unknown' : codeFor(error), message: String(error.message || error) } };
+                    return { ok: false, record: base.getRecord(), localResult: base.getLocalResult(), conflict: { code, message: String(error.message || error) } };
                 } finally { await release(); }
             })();
             return operation.finally(() => { operation = null; });
@@ -209,7 +209,7 @@ export function createRemoteTaskRunner({
                 try { onProposal(clone(record), runtime); } catch (error) { status({ type: 'proposal.observer-error', error }); }
                 status({ type: 'proposal.announced', taskId, proposalId: record.proposalId });
             } catch (error) {
-                if (claimed) await reportFailure(task, error);
+                if (claimed) await reportFailure(task, codeFor(error));
                 status({ type: 'task.failed', taskId, error });
             }
             return true;

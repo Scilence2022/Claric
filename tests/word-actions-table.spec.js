@@ -193,10 +193,10 @@ function makeApplyContext({ tableRowCount = 3, currentValues = TABLE_VALUES } = 
   const selection = { parentTableOrNullObject: table };
 
   const context = {
-    document: { getSelection: () => selection },
+    document: { getSelection: () => selection, load: jest.fn() },
     sync: jest.fn().mockResolvedValue(undefined),
   };
-  let mode = null;
+  let mode = 'Off';
   Object.defineProperty(context.document, 'changeTrackingMode', {
     get: () => mode,
     set: (v) => { mode = v; trackingModes.push(v); },
@@ -727,10 +727,10 @@ function makeMixedApplyContext(spec = [
     paragraphs: { items: paras, load: jest.fn() },
   };
   const context = {
-    document: { getSelection: () => selection },
+    document: { getSelection: () => selection, load: jest.fn() },
     sync: jest.fn().mockResolvedValue(undefined),
   };
-  let mode = null;
+  let mode = 'Off';
   Object.defineProperty(context.document, 'changeTrackingMode', {
     get: () => mode,
     set: (v) => { mode = v; trackingModes.push(v); },
@@ -917,10 +917,10 @@ function makeStyleApplyContext() {
   };
   const selection = { parentTableOrNullObject: table };
   const context = {
-    document: { getSelection: () => selection },
+    document: { getSelection: () => selection, load: jest.fn() },
     sync: jest.fn().mockResolvedValue(undefined),
   };
-  let mode = null;
+  let mode = 'Off';
   const trackingModes = [];
   Object.defineProperty(context.document, 'changeTrackingMode', {
     get: () => mode,
@@ -1357,10 +1357,11 @@ function makeMultiTableApplyContext() {
     document: {
       body: { tables: { items: tables, load: jest.fn() } },
       getSelection: () => selection,
+      load: jest.fn(),
     },
     sync: jest.fn().mockResolvedValue(undefined),
   };
-  let mode = null;
+  let mode = 'Off';
   Object.defineProperty(context.document, 'changeTrackingMode', {
     get: () => mode, set: (v) => { mode = v; },
   });

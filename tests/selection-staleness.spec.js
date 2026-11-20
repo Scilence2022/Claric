@@ -37,7 +37,8 @@ function setupWord(selectionText) {
     const context = {
         document: {
             getSelection: () => selection,
-            changeTrackingMode: null,
+            load: jest.fn(),
+            changeTrackingMode: 'Off',
         },
         sync: jest.fn().mockResolvedValue(undefined),
     };

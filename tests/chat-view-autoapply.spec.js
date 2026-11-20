@@ -92,6 +92,36 @@ describe('auto-apply pipeline', () => {
         expect(next.applyAll).not.toHaveBeenCalled();
     });
 
+    test.each([{ autoApply: false }, { reviewRequired: true }])('keeps a review-required card pending with %j', async (policy) => {
+        const { createProposalCard } = require('../src/taskpane/ui/proposal-card.js');
+        appState.config.autoApplyChanges = true;
+        const msg = createAssistantMessage();
+        const onApply = jest.fn();
+        const card = createProposalCard({ title: 'Linked document edit', onApply });
+        msg.attachProposal(card, { title: 'Linked document edit', items: [], state: 'pending', ...policy });
+        msg.finalizeForHistory();
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(onApply).not.toHaveBeenCalled();
+        expect(getCurrentSession().messages[0].proposals[0].state).toBe('pending');
+
+        card.el.querySelector('.btn-primary').click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(onApply).toHaveBeenCalledTimes(1);
+    });
+
+    test('rechecks the review policy before a queued card applies', async () => {
+        appState.config.autoApplyChanges = true;
+        const msg = createAssistantMessage();
+        const card = makeCard();
+        const meta = { title: 'Edit', state: 'pending', items: [] };
+        msg.attachProposal(card, meta);
+        msg.finalizeForHistory();
+        meta.autoApply = false;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(card.applyAll).not.toHaveBeenCalled();
+    });
+
     test('detached DOM alone does not change the session identity', async () => {
         appState.config.autoApplyChanges = true;
         const msg = createAssistantMessage();
