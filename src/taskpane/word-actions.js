@@ -3124,7 +3124,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
 
     // Step 1: Parse document
     log('Parsing document...', 'info');
-    const docModel = await parseDocument({ signal });
+    const docModel = await parseDocument({ signal, skipTableContent: true });
     log(`Found ${docModel.paragraphs.length} paragraphs (~${docModel.totalTokens} tokens)`, 'info');
 
     // Step 2: Chunk document
