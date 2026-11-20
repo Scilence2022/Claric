@@ -120,6 +120,26 @@ describe('document agent', () => {
         expect(agent.getCapabilities().taskTypes).toEqual(['edit', 'append', 'format', 'table']);
     });
 
+    test.each([
+        { applied: true, partial: true, interrupted: false },
+        { applied: false, partial: false, interrupted: false },
+    ])('requires a completed formatting result with %j', async (outcome) => {
+        const applyFormatProposal = jest.fn(async () => outcome);
+        const agent = create({ actions: {
+            readSelectionContent: async () => ({ text: 'Heading' }),
+            prepareFormatProposal: async () => ({ ops: [{ font: { bold: true } }] }),
+            applyFormatProposal,
+        } });
+        const proposal = await agent.prepareTask({ taskId: 'partial', taskType: 'format', instruction: 'Bold the heading' });
+        const record = { ...proposal, target: identity };
+        const { signal } = new AbortController();
+        await expect(agent.applyProposal(['format-1'], record, { signal })).rejects.toMatchObject({
+            code: 'WRITE_NOT_COMPLETED', localResult: outcome,
+        });
+        expect(applyFormatProposal).toHaveBeenCalledWith(expect.anything(), expect.anything(), { signal });
+        await expect(agent.applyProposal(['format-1'], record)).rejects.toMatchObject({ code: 'ALREADY_ATTEMPTED' });
+    });
+
     test('prepares and applies a remote table task with a bounded preview', async () => {
         const spec = { position: 'after', headerRowCount: 1, autoFit: true, rows: [['Name', 'Amount'], ['Alice', '10'], ['Bob', '20']] };
         const prepare = jest.fn(async () => ({ instruction: 'budget table', spec, model: 'm', warnings: [] }));

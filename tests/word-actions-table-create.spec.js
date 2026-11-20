@@ -80,10 +80,10 @@ function makeApplyContext() {
     }),
   };
   const context = {
-    document: { body, getSelection: () => selection },
+    document: { body, getSelection: () => selection, load: jest.fn() },
     sync: jest.fn().mockResolvedValue(undefined),
   };
-  let mode = null;
+  let mode = 'Off';
   Object.defineProperty(context.document, 'changeTrackingMode', {
     get: () => mode,
     set: (v) => { mode = v; trackingModes.push(v); },

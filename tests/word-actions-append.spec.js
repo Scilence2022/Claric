@@ -5,7 +5,7 @@
  * Covers:
  * - Generated text becomes one end-of-body paragraph per non-empty line
  * - Empty or whitespace-only model output is refused and nothing is inserted
- * - Change tracking follows the setting during the write and is restored off
+ * - Change tracking follows the setting during the write and preserves the original Word mode
  */
 
 jest.mock('../src/lib/llm-client.js', () => ({
@@ -25,18 +25,19 @@ function makeDeps({ trackChangesEnabled = true } = {}) {
 }
 
 /** Word.run mock whose body records end insertions and tracking-mode writes. */
-function makeAppendContext() {
+function makeAppendContext(initialMode = 'Off') {
   const inserted = [];
   const trackingModes = [];
   const context = {
     document: {
+      load: jest.fn(),
       body: {
         insertParagraph: jest.fn((text, location) => inserted.push({ text, location })),
       },
     },
     sync: jest.fn().mockResolvedValue(undefined),
   };
-  let mode = null;
+  let mode = initialMode;
   Object.defineProperty(context.document, 'changeTrackingMode', {
     get: () => mode,
     set: (v) => { mode = v; trackingModes.push(v); },
@@ -79,10 +80,19 @@ describe('applyDocumentAppend', () => {
     expect(trackingModes).toEqual([]);
   });
 
-  test('tracks the write when change tracking is on and restores it off', async () => {
-    const { trackingModes } = makeAppendContext();
+  test('tracks the append and restores the original Word tracking mode', async () => {
+    const { trackingModes, context } = makeAppendContext('TrackMineOnly');
     await applyDocumentAppend(makeDeps({ trackChangesEnabled: true }), { generatedText: 'Text.' });
-    expect(trackingModes).toEqual(['TrackAll', 'Off']);
+    expect(context.document.load).toHaveBeenCalledWith('changeTrackingMode');
+    expect(trackingModes).toEqual(['TrackAll', 'TrackMineOnly']);
+  });
+
+  test('restores the original Word tracking mode after a failed write sync', async () => {
+    const { context, trackingModes } = makeAppendContext('TrackMineOnly');
+    context.sync.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('Append failed'));
+    await expect(applyDocumentAppend(makeDeps(), { generatedText: 'Text.' })).rejects.toThrow('Append failed');
+    expect(trackingModes).toEqual(['TrackAll', 'TrackMineOnly']);
+    expect(context.sync).toHaveBeenCalledTimes(3);
   });
 
   test('writes untracked when change tracking is off', async () => {

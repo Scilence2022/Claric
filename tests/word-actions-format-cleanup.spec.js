@@ -1,7 +1,10 @@
 /** @jest-environment jsdom */
 jest.mock('../src/lib/llm-client.js', () => ({ sendPrompt: jest.fn(), sendPromptStream: jest.fn() }));
 const { sendPrompt } = require('../src/lib/llm-client.js');
-const { prepareFormatProposal, applyFormatProposal } = require('../src/taskpane/word-actions.js');
+const {
+    prepareFormatProposal, applyFormatProposal,
+    prepareEmptyParagraphCleanup, applyEmptyParagraphCleanup,
+} = require('../src/taskpane/word-actions.js');
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const pXml = (inner = '') => `<w:p xmlns:w="${W}">${inner}</w:p>`;
 
@@ -152,6 +155,28 @@ test('new nonempty revision data before Apply blocks cleanup and formatting', as
     w.scope.getOoxml.mockReturnValue(baseline);
     w.paragraphs[1].xml = pXml('<w:ins><w:r><w:t>New prose</w:t></w:r></w:ins>');
     await expect(applyFormatProposal(w.deps, proposal)).rejects.toThrow(/targets changed/);
+    expect(w.events).toEqual([]);
+});
+
+test('standalone document cleanup preserves structure and only deletes reviewed blanks', async () => {
+    const w = world();
+    delete w.deps.appState.config.providers;
+    const proposal = await prepareEmptyParagraphCleanup(w.deps);
+
+    expect(sendPrompt).not.toHaveBeenCalled();
+    expect(proposal.emptyCount).toBe(1);
+    expect(proposal.cleanupSummary.reasons).toHaveProperty(['protected or unsupported markup (w:sectPr)'], 1);
+    await expect(applyEmptyParagraphCleanup(w.deps, proposal)).resolves.toMatchObject({ deleted: 1, partial: false });
+    expect(w.events).toEqual(['delete:blank']);
+    expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
+});
+
+test('standalone document cleanup becomes stale when a blank is added after review', async () => {
+    const w = world();
+    const proposal = await prepareEmptyParagraphCleanup(w.deps);
+    w.paragraphs.splice(2, 0, w.makeParagraph('new blank'));
+
+    await expect(applyEmptyParagraphCleanup(w.deps, proposal)).rejects.toThrow(/baseline changed/);
     expect(w.events).toEqual([]);
 });
 

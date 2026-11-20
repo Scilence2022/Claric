@@ -1317,6 +1317,7 @@ export async function applySelectionAmendment(deps, proposal) {
             const selection = context.document.getSelection();
             selection.load('text');
             const revisionRead = queueRevisionRead(selection);
+            if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
             await context.sync();
             const current = resolveRevisionRead(selection, revisionRead);
             if (_normalizeSelectionText(current.text) !== _normalizeSelectionText(selectionText)
@@ -1324,8 +1325,7 @@ export async function applySelectionAmendment(deps, proposal) {
                 stale = true;
                 return;
             }
-            // Baseline mode per config; the strategies manage tracking from
-            // here (and always restore off when they enabled it).
+            const previousMode = Word.ChangeTrackingMode ? context.document.changeTrackingMode : null;
             if (Word.ChangeTrackingMode) {
                 context.document.changeTrackingMode = trackChanges
                     ? Word.ChangeTrackingMode.trackAll
@@ -1358,9 +1358,8 @@ export async function applySelectionAmendment(deps, proposal) {
                 selection.insertText(amendedText, Word.InsertLocation.replace);
                 await context.sync();
             } finally {
-                // Comments and later turns must not inherit tracking state.
                 if (Word.ChangeTrackingMode) {
-                    context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                    context.document.changeTrackingMode = previousMode;
                     await context.sync();
                 }
             }
@@ -1502,6 +1501,7 @@ async function _applyTablePatch(deps, proposal) {
 
         const selection = context.document.getSelection();
         const table = selection.parentTableOrNullObject;
+        if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
         if (multiTablePatch) {
             // Document-scope patch: no selection anchor; validate the table
             // map is loadable and each referenced table exists.
@@ -1562,6 +1562,7 @@ async function _applyTablePatch(deps, proposal) {
             );
         }
 
+        const previousMode = Word.ChangeTrackingMode ? context.document.changeTrackingMode : null;
         try {
             // Phase 1: cell text patches (coordinates still original).
             if (tablePatch.cells.length > 0) {
@@ -1697,9 +1698,8 @@ async function _applyTablePatch(deps, proposal) {
                 }
             }
         } finally {
-            // Later turns and comments must not inherit tracking state.
             if (Word.ChangeTrackingMode) {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                context.document.changeTrackingMode = previousMode;
                 await context.sync();
             }
         }
@@ -2091,6 +2091,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
         const selection = context.document.getSelection();
         const paragraphs = selection.paragraphs;
         paragraphs.load('items');
+        if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
         await context.sync();
 
         const allParaItems = paragraphs.items;
@@ -2151,6 +2152,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
             throw new RevisionSafetyError('Cannot delete a paragraph with unresolved revisions. Revise its text in place.');
         }
 
+        const previousMode = Word.ChangeTrackingMode ? context.document.changeTrackingMode : null;
         if (Word.ChangeTrackingMode) {
             context.document.changeTrackingMode = trackChangesEnabled
                 ? Word.ChangeTrackingMode.trackAll
@@ -2218,7 +2220,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
             await context.sync();
         } finally {
             if (Word.ChangeTrackingMode) {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                context.document.changeTrackingMode = previousMode;
                 await context.sync();
             }
         }
@@ -2296,18 +2298,25 @@ export async function applyDocumentAppend(deps, proposal) {
 
     await Word.run(async (context) => {
         if (Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = appState.config.trackChangesEnabled
-                ? Word.ChangeTrackingMode.trackAll
-                : Word.ChangeTrackingMode.off;
-        }
-        const body = context.document.body;
-        for (const paragraph of paragraphs) {
-            body.insertParagraph(paragraph, Word.InsertLocation.end);
-        }
-        await context.sync();
-        if (Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+            context.document.load('changeTrackingMode');
             await context.sync();
+        }
+        const previousMode = Word.ChangeTrackingMode ? context.document.changeTrackingMode : null;
+        try {
+            if (Word.ChangeTrackingMode) {
+                context.document.changeTrackingMode = appState.config.trackChangesEnabled
+                    ? Word.ChangeTrackingMode.trackAll
+                    : Word.ChangeTrackingMode.off;
+            }
+            for (const paragraph of paragraphs) {
+                context.document.body.insertParagraph(paragraph, Word.InsertLocation.end);
+            }
+            await context.sync();
+        } finally {
+            if (Word.ChangeTrackingMode) {
+                context.document.changeTrackingMode = previousMode;
+                await context.sync();
+            }
         }
     });
     log(`Appended ${paragraphs.length} paragraph(s) to the document end.`, 'success');
@@ -2459,6 +2468,11 @@ export async function applyTableProposal(deps, proposal) {
     await Word.run(async (context) => {
         const trackingApiAvailable = !!Word.ChangeTrackingMode;
         if (trackingApiAvailable) {
+            context.document.load('changeTrackingMode');
+            await context.sync();
+        }
+        const previousMode = Word.ChangeTrackingMode ? context.document.changeTrackingMode : null;
+        if (trackingApiAvailable) {
             context.document.changeTrackingMode = canTrackInsert
                 ? Word.ChangeTrackingMode.trackAll
                 : Word.ChangeTrackingMode.off;
@@ -2489,9 +2503,8 @@ export async function applyTableProposal(deps, proposal) {
             }
             await context.sync();
         } finally {
-            // Later turns must not inherit tracking state.
             if (trackingApiAvailable) {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
+                context.document.changeTrackingMode = previousMode;
                 await context.sync();
             }
         }
@@ -2501,104 +2514,29 @@ export async function applyTableProposal(deps, proposal) {
     return { inserted: true, rowCount, columnCount, tracked: canTrackInsert, warnings };
 }
 
-/**
- * Collects the body paragraphs that are safe to delete as redundant empty
- * paragraphs: whitespace-only text, not the body's final paragraph (Word
- * requires a trailing paragraph mark), not inside a table cell, and carrying
- * no inline pictures (an image lives in an otherwise "empty" paragraph —
- * deleting it would destroy the image).
- *
- * @param {Word.RequestContext} context - An open Word.run context
- * @returns {Promise<{ paragraphs: Word.ParagraphCollection, indexes: number[] }>}
- *   Indexes into the collection's items.
- */
-async function _collectEmptyParagraphs(context) {
-    const paragraphs = context.document.body.paragraphs;
-    paragraphs.load('items');
-    await context.sync();
+/** Draft a cleanup using the same native scope and OOXML guards as formatting. */
+export async function prepareEmptyParagraphCleanup(deps, { signal } = {}) {
+    const proposal = await prepareFormatProposal(deps, {
+        instruction: 'Remove empty paragraphs',
+        scope: 'document',
+        cleanupOnly: true,
+        cleanupRequested: true,
+        signal,
+    });
+    return {
+        ...proposal,
+        emptyCount: proposal.cleanupSummary.verified,
+        preservedCount: proposal.cleanupSummary.preserved,
+    };
+}
 
-    const items = paragraphs.items;
-    for (const para of items) {
-        para.load('text');
-        const tableCheck = para.parentTableOrNullObject;
-        tableCheck.load('isNullObject');
-        const pictures = para.inlinePictures;
-        pictures.load('items');
+/** Apply only the cleanup that was reviewed, after revalidating its targets. */
+export async function applyEmptyParagraphCleanup(deps, proposal, { signal } = {}) {
+    if (proposal?.scope !== 'document' || proposal.ops?.length !== 1 || !proposal.ops[0].cleanup) {
+        throw new Error('Draft a verified document cleanup proposal first.');
     }
-    await context.sync();
-
-    const lastIndex = items.length - 1;
-    const indexes = [];
-    items.forEach((para, index) => {
-        const isEmpty = (para.text || '').trim() === '';
-        const isLast = index === lastIndex;
-        const inTable = para.parentTableOrNullObject && !para.parentTableOrNullObject.isNullObject;
-        const hasPicture = para.inlinePictures && para.inlinePictures.items.length > 0;
-        if (isEmpty && !isLast && !inTable && !hasPicture) {
-            indexes.push(index);
-        }
-    });
-    return { paragraphs, indexes };
-}
-
-/**
- * Scans the document for deletable empty paragraphs — the prepare half of the
- * staged empty-paragraph cleanup flow. No LLM is involved: blank paragraphs
- * are invisible to the document parser and excluded from text-pipeline
- * alignment, so only a deterministic Word.js scan can serve this instruction.
- * The result is staged in a proposal card and deleted by
- * applyEmptyParagraphCleanup.
- *
- * @param {object} deps - { appState, log }
- * @returns {Promise<{ emptyCount: number }>}
- */
-export async function prepareEmptyParagraphCleanup(deps) {
-    const { log } = deps;
-    log('Scanning for empty paragraphs...', 'info');
-    const { indexes } = await Word.run((context) => _collectEmptyParagraphs(context));
-    log(`Found ${indexes.length} empty paragraph(s).`, 'info');
-    return { emptyCount: indexes.length };
-}
-
-/**
- * Applies the staged empty-paragraph cleanup. Re-scans at apply time (the
- * document may have changed since staging — honest feedback reports the
- * actual deletions) and deletes the empty paragraphs as tracked changes per
- * config.trackChangesEnabled.
- *
- * @param {object} deps - { appState, log }
- * @returns {Promise<{ deleted: number }>}
- */
-export async function applyEmptyParagraphCleanup(deps) {
-    const { appState, log } = deps;
-    let deleted = 0;
-    await Word.run(async (context) => {
-        const { paragraphs, indexes } = await _collectEmptyParagraphs(context);
-        if (indexes.length === 0) {
-            return;
-        }
-        if (Word.ChangeTrackingMode) {
-            context.document.changeTrackingMode = appState.config.trackChangesEnabled
-                ? Word.ChangeTrackingMode.trackAll
-                : Word.ChangeTrackingMode.off;
-        }
-        try {
-            // Delete in reverse document order via object references held
-            // from the same context; index shifts can't affect later deletes.
-            for (let i = indexes.length - 1; i >= 0; i--) {
-                paragraphs.items[indexes[i]].delete();
-            }
-            deleted = indexes.length;
-            await context.sync();
-        } finally {
-            if (Word.ChangeTrackingMode) {
-                context.document.changeTrackingMode = Word.ChangeTrackingMode.off;
-                await context.sync();
-            }
-        }
-    });
-    log(`Deleted ${deleted} empty paragraph(s).`, 'success');
-    return { deleted };
+    const result = await applyFormatProposal(deps, proposal, { signal });
+    return { deleted: result.deletedParagraphs, partial: result.partial, interrupted: result.interrupted };
 }
 
 /**

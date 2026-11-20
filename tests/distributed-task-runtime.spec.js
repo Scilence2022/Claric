@@ -92,6 +92,15 @@ describe('review-aware distributed dependencies', () => {
         expect(runtime.getSnapshot('g').tasks.map((task) => task.state)).toEqual(['rejected', 'blocked']);
         expect(client.submitTask).toHaveBeenCalledTimes(1);
     });
+    test('an uncertain remote write stays visible and blocks dependent tasks', async () => {
+        const { runtime, client, send } = await setup();
+        send('proposal.decision', { proposalId: 'p', revision: 0, decision: 'accepted' });
+        send('proposal.conflict', { proposalId: 'p', revision: 0, reason: 'write-outcome-unknown' });
+        expect(send('task.failed', { taskId: 'a', errorCode: 'write-outcome-unknown' })).toBe(true);
+
+        expect(runtime.getSnapshot('g').tasks.map((task) => task.state)).toEqual(['unknown', 'blocked']);
+        expect(client.submitTask).toHaveBeenCalledTimes(1);
+    });
     test('expiry before review differs from uncertain writes and never retries', async () => {
         const waiting = await setup();
         waiting.advance(); waiting.runtime.expireTasks();

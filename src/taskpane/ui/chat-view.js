@@ -587,6 +587,10 @@ export function renderStaticProposalCard(p) {
     return el;
 }
 
+function requiresManualReview(meta) {
+    return meta.autoApply === false || meta.reviewRequired === true;
+}
+
 /**
  * Creates an assistant message and returns a handle for updating it through
  * the turn lifecycle (status → streaming text/progress → final state).
@@ -754,7 +758,7 @@ export function createAssistantMessage() {
                 // model work. Finalizing that cancelled turn must not start
                 // the deferred native writes that the user just stopped.
                 if (!isCurrentSession() || /^Cancelled\b/.test(lastStatus) || el.classList.contains('chat-message-error') || appState.config.autoApplyChanges !== true || appState.config.trackChangesEnabled === false) break;
-                if (meta.state !== 'pending') continue;
+                if (meta.state !== 'pending' || requiresManualReview(meta)) continue;
                 try { await cardToApply.applyAll(); } catch (_err) { /* The card reports its own failure. */ }
                 // Several disjoint drafts can share one turn. A failed,
                 // unverified or paused write stops further automatic writes;
@@ -954,7 +958,7 @@ export function createAssistantMessage() {
             if (
                 appState.config.autoApplyChanges === true &&
                 appState.config.trackChangesEnabled !== false &&
-                meta && meta.state === 'pending' &&
+                meta?.state === 'pending' && !requiresManualReview(meta) &&
                 typeof card.applyAll === 'function'
             ) {
                 pendingAutoApplyCards.push({ card, meta });

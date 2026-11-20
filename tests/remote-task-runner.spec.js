@@ -77,6 +77,25 @@ describe('remote task runner', () => {
         expect((await onProposal.mock.calls[0][1].apply()).ok).toBe(true);
         expect(published.map((item) => item.type)).toEqual(['task.claim', 'proposal.announced', 'lease.acquire', 'proposal.decision', 'lease.renew', 'proposal.applied', 'task.succeeded', 'lease.release']);
     });
+    test('a partial write reports failure and never publishes task success', async () => {
+        const { runner, onProposal, published, event, documentAgent } = setup();
+        documentAgent.applyProposal.mockRejectedValue(Object.assign(new Error('Incomplete write'), {
+            code: 'WRITE_NOT_COMPLETED', localResult: { partial: true },
+        }));
+        await runner.handleEvent(event);
+
+        const result = await onProposal.mock.calls[0][1].apply();
+        expect(result).toMatchObject({
+            ok: false, record: { state: 'unknown' }, localResult: { partial: true },
+        });
+        const types = published.map((item) => item.type);
+        expect(published).toContainEqual(expect.objectContaining({
+            type: 'task.failed', payload: expect.objectContaining({ errorCode: 'write-outcome-unknown' }),
+        }));
+        expect(types).not.toContain('proposal.applied');
+        expect(types).not.toContain('task.succeeded');
+    });
+
     test('does not expose a proposal when server announcement is rejected', async () => {
         const { runner, client, onProposal, event } = setup();
         const publish = client.publishEnvelope.getMockImplementation();
