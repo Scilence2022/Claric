@@ -211,9 +211,9 @@ src/
                                #   progress bar, citation pills
       input-bar.js             # Composer: textarea, skill picker popup + "+"
                                #   skills menu, macOS-style auto-apply toggle,
-                               #   send/cancel, model pill + model/thinking
-                               #   popover (catalog + capability levels,
-                               #   commits via settings applyChatSelection),
+                               #   send/cancel, model pill popover (catalog,
+                               #   commits via settings applyChatSelection) +
+                               #   thinking pill popover (capability levels),
                                #   selection preview
                                #   chip (text + image thumbnails + +N badge),
                                #   file-upload button + attachment chips

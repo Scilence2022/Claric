@@ -527,8 +527,10 @@ module.exports = (env, argv) => {
       hints: 'error',
       maxAssetSize: 700 * 1024,
       // Allow the small per-ChangeSet completion/serialization hooks. The
-      // native undo command and maintenance UI are loaded on demand.
-      maxEntrypointSize: 562 * 1024,
+      // native undo command and maintenance UI are loaded on demand. The
+      // composer thinking pill (separate popover + live level label) moved
+      // this from 562 KiB.
+      maxEntrypointSize: 566 * 1024,
       assetFilter: (name) => !/pdf\.worker\.min\.mjs$/.test(name)
     },
     devtool: isDev ? 'eval-source-map' : false

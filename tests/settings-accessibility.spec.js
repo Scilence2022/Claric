@@ -22,10 +22,10 @@ test('real taskpane markup integrates IME send, DOM confirmation and Settings en
     const onSubmit = jest.fn();
     initInputBar({
         onSubmit, onCancel: jest.fn(), getSkills: () => [], onOpenSettings: openSettings,
-        getModelMenuState: () => ({
-            models: ['alpha', 'beta'],
-            currentModel: 'alpha',
-            thinking: { options: [{ value: 'default', label: 'Default' }, { value: 'high', label: 'High' }], current: 'high' },
+        getModelMenuState: () => ({ models: ['alpha', 'beta'], currentModel: 'alpha' }),
+        getThinkingMenuState: () => ({
+            options: [{ value: 'default', label: 'Default' }, { value: 'high', label: 'High' }],
+            current: 'high',
         }),
         onPickModel: jest.fn(),
         onPickThinkingLevel: jest.fn(),
@@ -56,13 +56,26 @@ test('real taskpane markup integrates IME send, DOM confirmation and Settings en
     model.click();
     const menu = document.getElementById('modelMenu');
     expect(menu.hidden).toBe(false);
-    expect(menu.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
+    expect(menu.querySelectorAll('[role="option"]').length).toBe(2);
     expect(menu.querySelector('.skill-picker-item.current')).not.toBeNull();
     // Escape closes the popover and restores focus to the pill.
     model.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(menu.hidden).toBe(true);
     expect(document.activeElement).toBe(model);
-    // Settings stays reachable from the popover footer.
+    // The thinking pill opens its own level picker; opening it closes the
+    // model menu when both are wired.
+    const thinking = document.getElementById('thinkingPill');
+    model.click();
+    thinking.click();
+    const thinkingMenu = document.getElementById('thinkingMenu');
+    expect(menu.hidden).toBe(true);
+    expect(thinkingMenu.hidden).toBe(false);
+    expect(thinkingMenu.querySelectorAll('[role="option"]')).toHaveLength(2);
+    expect(thinkingMenu.querySelector('.skill-picker-item.current')).not.toBeNull();
+    thinking.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(thinkingMenu.hidden).toBe(true);
+    // Settings stays reachable from the model popover footer.
+    model.focus();
     model.click();
     expect(menu.hidden).toBe(false);
     menu.querySelector('.model-menu-footer button').click();
