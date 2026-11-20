@@ -2277,6 +2277,96 @@ textarea.form-control {
     width: 100%;
 }
 
+/* Model menu anchored to the model pill (right end of the composer toolbar):
+   model list on top, thinking-level options below, settings entry last. */
+.model-menu {
+    position: absolute;
+    bottom: 92px;
+    right: 16px;
+    z-index: 20;
+    min-width: 240px;
+    max-width: 320px;
+    max-height: min(340px, 45vh);
+    overflow-y: auto;
+    background: var(--primary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+    padding: var(--spacing-xs);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+
+.model-menu::-webkit-scrollbar {
+    width: 6px;
+}
+
+.model-menu::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
+.model-menu::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.model-menu-section {
+    padding: var(--spacing-xs) var(--spacing-sm) 2px;
+    color: var(--secondary-text);
+    font-size: var(--font-size-xs, 11px);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.model-menu-section:not(:first-child) {
+    margin-top: var(--spacing-xs);
+    border-top: 1px solid var(--border-color);
+    padding-top: var(--spacing-sm);
+}
+
+.model-menu .skill-picker-item {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--spacing-xs);
+    border-radius: 8px;
+}
+
+.model-menu-check {
+    flex: 0 0 auto;
+    width: 14px;
+    color: var(--accent-color);
+    font-weight: 700;
+}
+
+.model-menu .skill-picker-item .model-menu-label {
+    color: var(--primary-text);
+    font-weight: 400;
+}
+
+.model-menu .skill-picker-item.current .model-menu-label,
+.model-menu .skill-picker-item.current .model-menu-check {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.model-menu-empty {
+    padding: var(--spacing-sm);
+    color: var(--secondary-text);
+    font-size: var(--font-size-sm);
+}
+
+.model-menu-footer {
+    margin-top: var(--spacing-xs);
+    border-top: 1px solid var(--border-color);
+    padding-top: var(--spacing-xs);
+}
+
+.model-menu-footer .skill-picker-item {
+    color: var(--secondary-text);
+}
+
 /* Document-first workspace: independent of the chat scroll and composer. */
 .workspace-trigger { position: relative; }
 .workspace-count {

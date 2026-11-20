@@ -34,6 +34,8 @@ import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleL
 import { initHistoryView, openHistory } from './ui/history-view.js';
 import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession, setSessionScope } from './sessions.js';
 import { getProviderPreset } from '../lib/providers.js';
+import { cachedModels } from '../lib/model-catalog.js';
+import { getModelCapabilities, resolveThinkingLevel, getThinkingHint } from '../lib/model-capabilities.js';
 import { getHostPlatform } from '../lib/platform.js';
 import { resolveDocumentIdentity } from './document-identity.js';
 import { loadLazyModule } from '../lib/lazy-module-loader.js';
@@ -116,6 +118,9 @@ async function initialize() {
         onCancel: () => conversation.cancel(),
         getSkills: () => listSkills(appState.promptManager),
         onOpenSettings: settings.open,
+        getModelMenuState,
+        onPickModel: (id) => settings.applyChatSelection({ model: id }),
+        onPickThinkingLevel: (value) => settings.applyChatSelection({ thinkingLevel: value }),
         onLog: addLog,
         getAutoApply: () => appState.config.autoApplyChanges === true,
         getTrackChanges: () => appState.config.trackChangesEnabled,
@@ -274,6 +279,27 @@ function updateModelPill() {
     const pill = document.getElementById('modelPill');
     if (pill) {
         pill.textContent = `${label}${profileLabel}: ${backendConfig.model || '(no model)'}`;
-        pill.title = 'Open settings';
+        pill.title = 'Switch model or thinking level';
     }
+}
+
+/**
+ * Builds the model pill popover content for the active provider: its cached
+ * model catalog (empty until the connection probe filled it) and the
+ * capability-aware thinking options for the configured model.
+ */
+function getModelMenuState() {
+    const config = appState.config;
+    const entry = config.providers[config.backend];
+    const model = entry.model || '';
+    const capabilities = getModelCapabilities(config.backend, model);
+    return {
+        models: cachedModels('chat', config.backend, entry),
+        currentModel: model,
+        thinking: {
+            options: capabilities.options,
+            current: resolveThinkingLevel(capabilities, entry.thinkingLevel),
+            hint: getThinkingHint(capabilities),
+        },
+    };
 }

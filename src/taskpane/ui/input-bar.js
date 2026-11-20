@@ -3,7 +3,9 @@
  *
  * Bottom chat input: auto-growing textarea, slash-command skill picker popup,
  * send button that morphs into Cancel while a turn is processing, and the
- * model pill (click opens Settings).
+ * model pill whose click opens a popover with the provider's model list plus
+ * capability-aware thinking levels (falls back to opening Settings when no
+ * popover state provider is wired).
  *
  * @module ui/input-bar
  */
@@ -35,6 +37,12 @@ const ATTACHMENT_ICONS = Object.freeze({
  * @param {function()} deps.onCancel - Called when the morphed Cancel button is clicked
  * @param {function(): Array<object>} deps.getSkills - Returns the current skill list
  * @param {function()} deps.onOpenSettings - Opens the settings slide-over
+ * @param {function(): {models: string[], currentModel: string, thinking: {options: Array<{value: string, label: string, description?: string}>, current: string, hint?: string}}} [deps.getModelMenuState] - Popover content
+ *   for the model pill: the provider's cached model catalog, the configured
+ *   model, and the capability-aware thinking options. When omitted the pill
+ *   falls back to opening Settings directly.
+ * @param {function(string)} [deps.onPickModel] - Model id picked in the popover
+ * @param {function(string)} [deps.onPickThinkingLevel] - Thinking level value picked
  * @param {function(): boolean} [deps.getAutoApply] - Current auto-apply setting
  * @param {function(): boolean} [deps.getTrackChanges] - Current tracking setting
  * @param {function(boolean)} [deps.setAutoApply] - Persists an auto-apply change
@@ -42,11 +50,12 @@ const ATTACHMENT_ICONS = Object.freeze({
  *   attachment validation/parse failures
  * @returns {{ setProcessing: function(boolean), setValue: function(string), focus: function(), setSelectionPreview: function(object|string), clearAttachments: function(), addAttachment: function(object): boolean }}
  */
-export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getAutoApply, getTrackChanges, setAutoApply, onLog }) {
+export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, getModelMenuState, onPickModel, onPickThinkingLevel, getAutoApply, getTrackChanges, setAutoApply, onLog }) {
     const textarea = document.getElementById('chatInput');
     const sendBtn = document.getElementById('sendBtn');
     const picker = document.getElementById('skillPicker');
     const modelPill = document.getElementById('modelPill');
+    const modelMenu = document.getElementById('modelMenu');
     const addSkillBtn = document.getElementById('addSkillBtn');
     const skillsMenu = document.getElementById('skillsMenu');
     const autoApplyToggle = document.getElementById('autoApplyToggle');
@@ -698,7 +707,176 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
         });
     }
 
-    modelPill.addEventListener('click', () => onOpenSettings());
+    // Model pill: opens a popover with the provider's model list and the
+    // capability-aware thinking levels (both commit for the next turn), plus
+    // a Settings shortcut. Built on every open so provider/model switches are
+    // always reflected; without a state provider the pill keeps its old
+    // Settings shortcut behavior.
+    let modelMenuOptions = [];
+    let modelMenuIndex = -1;
+
+    function closeModelMenu() {
+        if (!modelMenu) return;
+        modelMenu.setAttribute('hidden', '');
+        modelMenuOptions = [];
+        modelMenuIndex = -1;
+        modelPill.removeAttribute('aria-activedescendant');
+        modelPill.setAttribute('aria-expanded', 'false');
+    }
+
+    /** Highlights the keyboard-focused option and keeps it in view. */
+    function highlightModelMenuOption() {
+        modelMenu.querySelectorAll('[role="option"]').forEach((el, i) => {
+            const active = i === modelMenuIndex;
+            el.classList.toggle('active', active);
+            el.setAttribute('aria-selected', String(active));
+        });
+        const current = modelMenuOptions[modelMenuIndex];
+        if (current) {
+            modelPill.setAttribute('aria-activedescendant', current.el.id);
+            if (typeof current.el.scrollIntoView === 'function') {
+                current.el.scrollIntoView({ block: 'nearest' });
+            }
+        }
+    }
+
+    function moveModelMenu(delta) {
+        if (modelMenuOptions.length === 0) return;
+        modelMenuIndex = (modelMenuIndex + delta + modelMenuOptions.length) % modelMenuOptions.length;
+        highlightModelMenuOption();
+    }
+
+    function addModelMenuSection(label) {
+        const heading = document.createElement('div');
+        heading.className = 'model-menu-section';
+        heading.textContent = label;
+        modelMenu.appendChild(heading);
+    }
+
+    function addModelMenuOption({ label, description, checked, onPick }) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.id = `model-menu-option-${modelMenuOptions.length}`;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', 'false');
+        item.className = 'skill-picker-item' + (checked ? ' current' : '');
+        if (description) item.title = description;
+
+        const check = document.createElement('span');
+        check.className = 'model-menu-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.textContent = checked ? '✓' : '';
+        const name = document.createElement('span');
+        name.className = 'model-menu-label';
+        name.textContent = label;
+        item.appendChild(check);
+        item.appendChild(name);
+        // One pick path for click and keyboard (Enter) so the menu always
+        // closes before the commit runs.
+        const pick = () => {
+            closeModelMenu();
+            onPick();
+        };
+        item.addEventListener('click', pick);
+        modelMenu.appendChild(item);
+        modelMenuOptions.push({ el: item, pick });
+    }
+
+    function openModelMenu() {
+        const state = getModelMenuState() || {};
+        const thinking = state.thinking || { options: [], current: '' };
+        modelMenu.innerHTML = '';
+        modelMenuOptions = [];
+        modelMenuIndex = -1;
+        closePicker();
+        closeSkillsMenu();
+
+        addModelMenuSection('Model');
+        const models = state.models || [];
+        if (models.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'model-menu-empty';
+            empty.textContent = 'No models loaded — refresh the list in Settings.';
+            modelMenu.appendChild(empty);
+        }
+        for (const id of models) {
+            addModelMenuOption({
+                label: id,
+                description: id === state.currentModel ? 'Current model' : '',
+                checked: id === state.currentModel,
+                onPick: () => onPickModel?.(id),
+            });
+        }
+
+        addModelMenuSection('Thinking');
+        for (const option of thinking.options || []) {
+            addModelMenuOption({
+                label: option.label,
+                description: option.description || thinking.hint || '',
+                checked: option.value === thinking.current,
+                onPick: () => onPickThinkingLevel?.(option.value),
+            });
+        }
+
+        const footer = document.createElement('div');
+        footer.className = 'model-menu-footer';
+        const settingsItem = document.createElement('button');
+        settingsItem.type = 'button';
+        settingsItem.className = 'skill-picker-item';
+        settingsItem.textContent = 'Open settings…';
+        settingsItem.addEventListener('click', () => {
+            closeModelMenu();
+            onOpenSettings();
+        });
+        footer.appendChild(settingsItem);
+        modelMenu.appendChild(footer);
+
+        modelMenu.removeAttribute('hidden');
+        modelPill.setAttribute('aria-expanded', 'true');
+    }
+
+    if (modelPill && modelMenu) {
+        modelPill.addEventListener('click', () => {
+            if (typeof getModelMenuState !== 'function') {
+                onOpenSettings();
+                return;
+            }
+            if (modelMenu.hasAttribute('hidden')) openModelMenu();
+            else closeModelMenu();
+        });
+        modelPill.addEventListener('keydown', (e) => {
+            if (e.isComposing || e.keyCode === 229) return;
+            if (modelMenu.hasAttribute('hidden')) return;
+            // Enter on a focused button would click the pill (toggle-close);
+            // it picks the highlighted option instead.
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const current = modelMenuOptions[modelMenuIndex];
+                if (current) current.pick();
+                else closeModelMenu();
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                moveModelMenu(1);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                moveModelMenu(-1);
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (!modelMenu.hasAttribute('hidden') &&
+                !modelMenu.contains(e.target) && e.target !== modelPill) {
+                closeModelMenu();
+            }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !modelMenu.hasAttribute('hidden')) {
+                closeModelMenu();
+                modelPill.focus();
+            }
+        });
+    } else if (modelPill) {
+        modelPill.addEventListener('click', () => onOpenSettings());
+    }
 
     return {
         addAttachment,
