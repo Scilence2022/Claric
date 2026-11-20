@@ -1,6 +1,7 @@
 /** Read-back of written Word content, loaded before the first mutation. */
 import { queueCurrentTextRead, queueRevisionRead, resolveRevisionRead, normalizeRevisionText,
-    normalizeWordText, textMismatchDetail, MutationSafetyError, projectNativeText, hasNativeFieldCodes } from './word-revisions.js';
+    normalizeWordText, textMismatchDetail, MutationSafetyError, projectNativeText, hasNativeFieldCodes,
+    matchesReviewedLeadingDeletion } from './word-revisions.js';
 import { rangeFingerprintDifference } from './ooxml-fingerprint.js';
 import { recordNativeTextMismatch } from './native-text-diagnostics.js';
 
@@ -50,18 +51,20 @@ export async function verifyMutationText(context, range, expected, options = {},
     // copied revision properties can masquerade as an extra line break.
     let actual = comparable(current ? current.value : resolveRevisionRead(target, read, options).text);
     const wanted = comparable(expected);
-    if (current && actual !== wanted && (hasNativeFieldCodes(current.value)
+    const singleParagraphContent = options.paragraph
+        && (options.nativeTargets || options.verificationParagraph || options.singleParagraphContent);
+    if (current && actual !== wanted && (singleParagraphContent || hasNativeFieldCodes(current.value)
         || /[(\uF000-\uF0FF\r\n\uD835]/.test(current.value) || /\uD835/.test(wanted))) {
-        // Fields, symbols and structured equations need fresh XML evidence. Never
-        // use the pre-write projection to bless changed field results/glyphs.
-        // A supplementary math glyph can serialize as a BMP letterlike symbol,
-        // so inspect the expected text as well as Word's native representation.
-        const xml = queueRevisionRead(target, options);
+        // Use fresh XML to explain native serialization differences, including
+        // a leading deletion that can appear for the first time after writing.
+        const readOptions = singleParagraphContent ? { ...options, singleParagraphContent: true } : options;
+        const xml = queueRevisionRead(target, readOptions);
         if (xml) {
             await context.sync();
-            const state = resolveRevisionRead(target, xml, options);
+            const state = resolveRevisionRead(target, xml, readOptions);
             const projection = projectNativeText(state, current.value, { trimEnd: !options.paragraph });
             if (projection) actual = comparable(projection.text);
+            else if (singleParagraphContent && matchesReviewedLeadingDeletion(state, current.value)) actual = comparable(state.text);
         }
     }
     if (actual !== wanted) {
