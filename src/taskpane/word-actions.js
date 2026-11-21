@@ -58,7 +58,7 @@ import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
-import { loadTaskPlanner, loadFormatActions, loadPageLayoutActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation, loadTablePatch } from './task-module-loader.js';
+import { loadTaskPlanner, loadFormatActions, loadPageLayoutActions, loadHeaderFooterActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation, loadTablePatch } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 import { withWritingSettings } from '../lib/document-writing-settings.js';
 import { preserveNonBreakingSpaces, requestsNbspChange } from '../lib/nbsp-preservation.js';
@@ -914,6 +914,7 @@ export async function readSelectionContent() {
     try {
         let text = '';
         let paragraphContext = '';
+        let storyType;
         let images = [];
         let totalImages = 0;
         let hasMultiCellTableRegion = false;
@@ -921,6 +922,8 @@ export async function readSelectionContent() {
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
             selection.load('text');
+            const story = selection.parentBody;
+            story?.load('type');
             const revisionRead = queueRevisionRead(selection);
             const pictures = selection.inlinePictures;
             pictures.load('items');
@@ -938,6 +941,7 @@ export async function readSelectionContent() {
 
             await context.sync();
             text = resolveRevisionRead(selection, revisionRead).text;
+            storyType = story?.type;
 
             const items = pictures.items || [];
             totalImages = items.length;
@@ -994,6 +998,7 @@ export async function readSelectionContent() {
             paragraphContext = await selectionParagraphContext(context, selection, text);
         });
         return { text, images, totalImages, hasMultiCellTableRegion, tableRegion,
+            ...(storyType === 'Header' || storyType === 'Footer' ? { storyType } : {}),
             ...(paragraphContext ? { paragraphContext } : {}) };
     } catch (_err) {
         return { text: '', images: [], totalImages: 0, hasMultiCellTableRegion: false, tableRegion: null };
@@ -2688,6 +2693,26 @@ export async function readPageLayout(deps, args = {}) {
 export async function discardPageLayoutProposal(deps, proposal) {
     const actions = await loadPageLayoutActions();
     return actions.discardPageLayoutProposal(deps, proposal);
+}
+
+export async function prepareHeaderFooterProposal(deps, args) {
+    const actions = await loadHeaderFooterActions({ signal: args.signal });
+    return actions.prepareHeaderFooterProposal({ ...deps, sendActionRequest: _sendActionRequest }, args);
+}
+
+export async function readHeaderFooter(deps, args) {
+    const actions = await loadHeaderFooterActions({ signal: args.signal });
+    return actions.readHeaderFooter(deps, args);
+}
+
+export async function discardHeaderFooterProposal(deps, proposal) {
+    const actions = await loadHeaderFooterActions();
+    return actions.discardHeaderFooterProposal(deps, proposal);
+}
+
+export async function applyHeaderFooterProposal(deps, proposal, options = {}) {
+    const actions = await loadHeaderFooterActions({ signal: options.signal });
+    return actions.applyHeaderFooterProposal(deps, proposal, options);
 }
 
 export async function applyPageLayoutProposal(deps, proposal, options = {}) {
