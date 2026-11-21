@@ -672,6 +672,22 @@ describe('model and thinking pill popovers', () => {
         expect(modelMenu.hasAttribute('hidden')).toBe(true);
     });
 
+    test('clicks on a pill\'s inner spans toggle the menu like pill clicks', () => {
+        setupPopover();
+        const pill = document.getElementById('thinkingPill');
+        const label = document.createElement('span');
+        label.id = 'thinkingPillLabel';
+        label.textContent = 'High';
+        pill.appendChild(label);
+        const menu = document.getElementById('thinkingMenu');
+        label.click(); // must open, not open-and-instantly-close
+        expect(menu.hasAttribute('hidden')).toBe(false);
+        expect(pill.getAttribute('aria-expanded')).toBe('true');
+        label.click(); // a second click on the label toggles closed again
+        expect(menu.hasAttribute('hidden')).toBe(true);
+        expect(pill.getAttribute('aria-expanded')).toBe('false');
+    });
+
     test('Arrow keys highlight options and Enter picks the highlighted one', () => {
         const deps = setupPopover();
         const pill = document.getElementById('modelPill');

@@ -1360,12 +1360,7 @@ body {
 .thinking-pill {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
     flex: 0 0 auto;
-}
-.thinking-pill-icon {
-    font-size: var(--font-size-xs);
-    line-height: 1;
 }
 
 /* Bottom row next to the input: model pill + connection status dot. */
