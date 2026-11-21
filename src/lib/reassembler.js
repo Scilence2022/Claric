@@ -143,7 +143,7 @@ async function _readParagraphStates(context, paraItems) {
  * @private
  */
 async function _applyParagraphLevelAmendment(context, range, amendedText, trackChangesEnabled, lineDiffEnabled, log, preloaded = null,
-  { whitespaceOnly = false, expectedTexts = null,
+  { whitespaceOnly = false, expectedTexts = null, contextScope = undefined,
     progress = { report: () => {}, appliedParagraphs: 0, mutationAttempted: false, pendingVerification: false, pendingStructuralWrites: false,
       stage: 'paragraph read' } } = {}) {
   let allParaItems;
@@ -298,7 +298,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
       const op = alignment.find((op) => op.type === 'keep' && op.origIdx === index);
       const after = _paragraphTargetText(amendedLines[op.newIdx], whitespaceOnly);
       await tryRevisionDiff(context, changedParaRanges.get(index), origTexts[index], after, log,
-        { trackChanges: false, paragraph: true, preflightOnly: true, nativeTargets: true,
+        { trackChanges: false, paragraph: true, preflightOnly: true, nativeTargets: true, contextScope,
           diffGranularity: whitespaceOnly ? 'character' : lineDiffEnabled ? 'sentence'
             : hasCjk(origTexts[index]) || hasCjk(after) ? 'character' : 'word' });
     }
@@ -354,7 +354,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           // The outer scope already owns the tracking mode (set above, restored
           // below), so the strategy must not clobber it mid-loop.
           try {
-            const diffOptions = { trackChanges: false, paragraph: true, nativeTargets: true, verificationParagraph: paraItems[op.origIdx] };
+            const diffOptions = { trackChanges: false, paragraph: true, nativeTargets: true, verificationParagraph: paraItems[op.origIdx], contextScope };
             if (whitespaceOnly) {
               await applyCharDiffStrategy(context, paraRange, origText, targetText, log, diffOptions);
             } else if (lineDiffEnabled) {
@@ -384,7 +384,7 @@ async function _applyParagraphLevelAmendment(context, range, amendedText, trackC
           // these inline objects. Preserve that evidence for the outer check;
           // raw reviewed text alone may use a different equation serializer.
           await verifyMutationText(context, paraRange, targetText,
-            { paragraph: true, verificationParagraph: paraItems[op.origIdx],
+            { paragraph: true, verificationParagraph: paraItems[op.origIdx], contextScope,
               verifiedInlineFingerprint: contentStates.get(op.origIdx)?.inlineFingerprint });
           progress.pendingVerification = false;
           progress.appliedParagraphs++;
@@ -775,6 +775,7 @@ function _multiParagraphFallbackError(paraErr) {
  * @param {boolean} options.trackChangesEnabled
  * @param {boolean} options.lineDiffEnabled - use sentence-diff vs token-map for fallback
  * @param {function} options.log
+ * @param {number} [options.contextScope] - Chat scope for native text diagnostics
  * @param {Map<string, string[]>} [options.chunkOriginals] - chunkId -> staged
  *   paragraph texts, used to re-anchor ranges that drifted since staging
  * @param {Map<string, string[]>} [options.chunkRevisionFingerprints] - revision/formatting baselines by chunk
@@ -796,6 +797,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
     trackChangesEnabled = true,
     lineDiffEnabled = false,
     log = () => {},
+    contextScope,
     chunkOriginals = null,
     chunkRevisionFingerprints = null,
     signal = null,
@@ -917,7 +919,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
           applied = await _applyParagraphLevelAmendment(
             context, workRange, result.amendment,
             trackChangesEnabled, lineDiffEnabled, log, preloaded,
-            { whitespaceOnly: !!result.whitespaceOnly, expectedTexts: storedTexts, progress }
+            { whitespaceOnly: !!result.whitespaceOnly, expectedTexts: storedTexts, progress, contextScope }
           ) !== false;
         } catch (paraErr) {
           if (progress.mutationAttempted || paraErr.mutationAttempted || result.whitespaceOnly
@@ -966,7 +968,7 @@ export async function applyChunkResults(results, bookmarkMap, options) {
             }
             const normalizedAmendment = _normalizeLineEndings(result.amendment);
 
-            const strategyOptions = { trackChanges: false };
+            const strategyOptions = { trackChanges: false, contextScope };
             if (lineDiffEnabled) {
               await applySentenceDiffStrategy(context, workRange, originalText, normalizedAmendment, log, strategyOptions);
             } else if (hasCjk(originalText) || hasCjk(normalizedAmendment)) {

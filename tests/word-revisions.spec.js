@@ -192,13 +192,15 @@ test.each(['prose', 'object', 'paragraph', 'structure'])(
     const range = { getReviewedText: () => ({ value: 'Native reviewed evidence' }), getOoxml: () => ({ value: xml }) };
     const detail = { prose: /prose: expected .*first mismatch at/, object: /native objects:/,
         paragraph: /paragraph count: expected 1, received 2/, structure: /unsupported protected structure/ }[change];
+    const contextScope = 7;
     const error = await verifyMutationText({ sync: async () => {} }, range, baseline.text,
-        { paragraph: true, verifiedInlineFingerprint: baseline.inlineFingerprint }).catch((error) => error);
+        { paragraph: true, verifiedInlineFingerprint: baseline.inlineFingerprint, contextScope }).catch((error) => error);
     expect(error).toBeInstanceOf(MutationSafetyError);
     expect(error.mutationAttempted).toBe(true);
     expect(error.message).toMatch(detail);
     expect(error.message).not.toMatch(/Use|See|Extra|Native reviewed evidence/);
-    const record = getNativeTextDiagnostics().at(-1);
+    const record = getNativeTextDiagnostics(contextScope).at(-1);
+    expect(getNativeTextDiagnostics(contextScope + 1)).toEqual([]);
     expect(record).toMatchObject({ phase: 'post-write', expectedText: baseline.text,
         actualText: revisionTextState(xml).text, reviewedText: 'Native reviewed evidence' });
     expect(record.mismatch).toMatch(detail);

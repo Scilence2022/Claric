@@ -865,6 +865,7 @@ export function routeTurn(text, {
  * @param {object} deps.input - Input bar API (setProcessing, setValue, focus)
  * @param {function} deps.log - Activity log callback
  * @param {function} [deps.logWithRetry] - Log-with-retry-link callback
+ * @param {function} [deps.getSessionLogging] - Bind log callbacks to a chat scope
  * @param {function} [deps.updateStatusBar] - Comment pending-count callback
  * @param {object} [deps.actions] - word-actions overrides (tests)
  * @param {function} [deps.getSelectionContent] - async () => ({ text, images })
@@ -875,10 +876,11 @@ export function routeTurn(text, {
  * @param {function} [deps.confirmToolCall] - async (call, {signal}) => MCP_APPROVAL
  *   value; approves MCP tool calls not declared read-only (defaults to the
  *   approval dialog)
- * @returns {{ submit: Function, cancel: Function, newChat: Function }}
+ * @returns {{ submit: Function, cancel: Function, newChat: Function, getContextScope: Function }}
  */
 export function createConversation(deps) {
     const { appState, view, input, log, logWithRetry, updateStatusBar, documentWriting } = deps;
+    const getSessionLogging = deps.getSessionLogging || (() => ({ log, logWithRetry }));
     const actions = deps.actions || { ...defaultActions, ...Object.fromEntries(
         ['prepareTableToolEdit', 'prepareImageToolEdit', 'applyImageOps'].map((name) => [name, async (...args) => {
             const module = await loadAgentActions({ signal: args[2]?.signal || args[1]?.signal });
@@ -898,9 +900,14 @@ export function createConversation(deps) {
     const confirmToolCall = typeof deps.confirmToolCall === 'function' ? deps.confirmToolCall : confirmMcpToolCall;
     let sessionEpoch = 0;
     let submissionOwner = null;
+    const scopesBySessionId = new Map();
     const stagedResources = new Set();
 
-    function stagedResource(cleanup) {
+    function getContextScope() {
+        return scopesBySessionId.get(view.getCurrentSession?.()?.id) ?? sessionEpoch;
+    }
+
+    function stagedResource(cleanup, activityLog) {
         const resource = {
             writing: false, requested: false, cleaned: false, promise: null,
             async dispose() {
@@ -908,7 +915,7 @@ export function createConversation(deps) {
                 if (resource.writing || resource.cleaned) return resource.promise;
                 resource.cleaned = true;
                 resource.promise = Promise.resolve().then(cleanup).catch((error) => {
-                    log(`Proposal cleanup failed: ${error.message}`, 'warning');
+                    activityLog(`Proposal cleanup failed: ${error.message}`, 'warning');
                 }).finally(() => stagedResources.delete(resource));
                 return resource.promise;
             },
@@ -949,13 +956,17 @@ export function createConversation(deps) {
      * @param {object} msg - Assistant message handle
      * @param {Array<{role: 'user'|'assistant', content: string}>} conversationHistory
      * @param {function(): boolean} isCurrentSession
+     * @param {number} contextScope
      * @returns {object} action deps for one turn
      */
-    function actionDepsFor(msg, conversationHistory, isCurrentSession) {
+    function actionDepsFor(msg, conversationHistory, isCurrentSession, contextScope) {
+        const logging = getSessionLogging(contextScope);
         return {
             appState,
             conversationHistory,
-            logWithRetry: typeof logWithRetry === 'function' ? (message, type, retry) => logWithRetry(message, type, () => {
+            contextScope,
+            activityLog: logging.log,
+            logWithRetry: typeof logging.logWithRetry === 'function' ? (message, type, retry) => logging.logWithRetry(message, type, () => {
                 if (!isCurrentSession() || isBusy()) return;
                 return retry({ setBusy: (busy) => input.setProcessing(busy || isBusy()) });
             }) : undefined,
@@ -963,10 +974,10 @@ export function createConversation(deps) {
             isCurrentSession,
             stageRetryProposal: async (outcome) => {
                 if (!isCurrentSession()) return;
-                await stageDocumentProposal(outcome, msg, actionDepsFor(msg, conversationHistory, isCurrentSession));
+                await stageDocumentProposal(outcome, msg, actionDepsFor(msg, conversationHistory, isCurrentSession, contextScope));
             },
             log: (message, type) => {
-                log(message, type);
+                logging.log(message, type);
                 msg.appendLogLine(message);
             },
         };
@@ -1042,12 +1053,13 @@ export function createConversation(deps) {
      */
     function makeProposalCard(args) {
         const epoch = sessionEpoch;
+        const logging = getSessionLogging(getContextScope());
         let ownRegisteredController = null;
         return _createProposalCardRaw({
             onChangeSetApplied: async () => {
                 if (appState.config.clearUndoHistoryAfterApply !== true) return null;
                 const { clearUndoHistoryAfterChangeSet } = await import(/* webpackChunkName: "undo-history" */ './undo-history.js');
-                return clearUndoHistoryAfterChangeSet(appState.config, log);
+                return clearUndoHistoryAfterChangeSet(appState.config, logging.log);
             },
             isBlocked: () => (epoch !== sessionEpoch ? 'This proposal belongs to a previous chat. Draft a new proposal.' : isBusy()
                 ? 'A run is currently processing — wait for it to finish before applying.'
@@ -1200,17 +1212,11 @@ export function createConversation(deps) {
                     `${cancelledNote} No changes were applied.` +
                     (firstError ? ` Last error: ${firstError}` : '')
                 );
-                if (typeof outcome.retryFailed === 'function' && typeof logWithRetry === 'function') {
-                    logWithRetry(
+                if (typeof outcome.retryFailed === 'function' && turnDeps.logWithRetry) {
+                    turnDeps.logWithRetry(
                         `${outcome.failedCount} section(s) failed to process. Click to retry.`,
                         'warning',
-                        // The retry fires from the activity log long after this
-                        // turn returned, so it owns its own input lock — hand it
-                        // the setter, since word-actions cannot reach the input.
-                        () => {
-                            if (!turnDeps.isCurrentSession() || isBusy()) return;
-                            return outcome.retryFailed({ setBusy: (busy) => input.setProcessing(busy || isBusy()) });
-                        }
+                        outcome.retryFailed
                     );
                 }
                 return { status: 'failed', error: new Error(firstError || 'Document sections could not be processed.') };
@@ -1273,7 +1279,7 @@ export function createConversation(deps) {
                 try {
                     const applicationResult = await outcome.apply(selectedChunkIds, applyCtx);
                     const applyErrors = applicationResult.errors || [];
-                    for (const applyError of applyErrors) log(`Apply: ${applyError}`, 'warning');
+                    for (const applyError of applyErrors) turnDeps.activityLog(`Apply: ${applyError}`, 'warning');
                     const partialCount = applicationResult.partialChunkIds?.length || 0;
                     const uncertainCount = applicationResult.uncertainChunkIds?.length || 0;
                     let incompleteMessage = '';
@@ -1333,7 +1339,7 @@ export function createConversation(deps) {
                         actions.revealTextSnippet(turnDeps, searchText);
                     });
                 } catch (error) {
-                    log(`Apply failed: ${error.message}`, 'error');
+                    turnDeps.activityLog(`Apply failed: ${error.message}`, 'error');
                     if (error.mutationAttempted) {
                         card.markWarning(`Application could not be verified; Word may contain changes. Inspect Word before drafting a fresh proposal. ${error.message}`);
                     } else {
@@ -1345,7 +1351,7 @@ export function createConversation(deps) {
                 try {
                     await outcome.discard();
                 } catch (error) {
-                    log(`Discard failed: ${error.message}`, 'warning');
+                    turnDeps.activityLog(`Discard failed: ${error.message}`, 'warning');
                 }
                 msg.setStatus('Proposed edits discarded.');
             },
@@ -1379,7 +1385,7 @@ export function createConversation(deps) {
                     msg.appendModelToken({ id: 'document-edit' }, 'content', step.text ? `${step.text}\n` : '');
                 },
             });
-            const resource = stagedResource(() => editActions.discardDocumentEdit(turnDeps, proposal));
+            const resource = stagedResource(() => editActions.discardDocumentEdit(turnDeps, proposal), turnDeps.activityLog);
             if (controller.signal.aborted || !turnDeps.isCurrentSession()) {
                 await resource.dispose();
                 throw new DOMException('Document editing cancelled.', 'AbortError');
@@ -1455,7 +1461,7 @@ export function createConversation(deps) {
                     // parse gets one structured retry via the tool loop —
                     // step-wise validation recovers what one-shot couldn't.
                     if (/no JSON object/i.test(err.message)) {
-                        log(`Single-shot table patch failed (${err.message}); retrying via the tool loop.`, 'warning');
+                        turnDeps.activityLog(`Single-shot table patch failed (${err.message}); retrying via the tool loop.`, 'warning');
                         proposal = await actions.prepareTableToolEdit(turnDeps, {
                             instruction: promptTemplate,
                             signal: myController.signal,
@@ -1532,12 +1538,12 @@ export function createConversation(deps) {
                             card.markApplied();
                         }
                     } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
+                        turnDeps.activityLog(`Apply failed: ${error.message}`, 'error');
                         card.markError(error.message, { retryable: !error.mutationAttempted });
                     }
                 },
                 onReject: () => {
-                    log('Proposal rejected by user.', 'info');
+                    turnDeps.activityLog('Proposal rejected by user.', 'info');
                 },
             });
             msg.attachProposal(card, {
@@ -1585,12 +1591,12 @@ export function createConversation(deps) {
                         await actions.applyDocumentAppend(turnDeps, proposal);
                         card.markApplied();
                     } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
+                        turnDeps.activityLog(`Apply failed: ${error.message}`, 'error');
                         card.markError(error.message);
                     }
                 },
                 onReject: () => {
-                    log('Proposal rejected by user.', 'info');
+                    turnDeps.activityLog('Proposal rejected by user.', 'info');
                 },
             });
             msg.attachProposal(card, {
@@ -1617,8 +1623,9 @@ export function createConversation(deps) {
         const myController = _beginChatTurn(turnController);
         try {
             const { stageFormatProposal } = await loadFormatProposalStage({ signal: myController.signal });
-            return await stageFormatProposal({ turn, msg, turnDeps, selectionText, actions, stagedResource,
-                makeProposalCard, log, signal: myController.signal });
+            return await stageFormatProposal({ turn, msg, turnDeps, selectionText, actions,
+                stagedResource: (cleanup) => stagedResource(cleanup, turnDeps.activityLog),
+                makeProposalCard, log: turnDeps.activityLog, signal: myController.signal });
         } catch (error) {
             _reportTurnError(msg, error);
         } finally {
@@ -1649,7 +1656,7 @@ export function createConversation(deps) {
                 onToken: (t) => msg.appendModelToken({ id: 'table' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'table' }, 'reasoning', t),
             });
-            const resource = stagedResource(() => actions.discardTableProposal?.(turnDeps, proposal));
+            const resource = stagedResource(() => actions.discardTableProposal?.(turnDeps, proposal), turnDeps.activityLog);
             if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
                 await resource.dispose();
                 return;
@@ -1684,13 +1691,13 @@ export function createConversation(deps) {
                             card.markApplied();
                         }
                     } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
+                        turnDeps.activityLog(`Apply failed: ${error.message}`, 'error');
                         card.markError(error.message, { retryable: false });
                     }
                 },
                 onReject: async () => {
                     await resource.dispose();
-                    log('Proposal rejected by user.', 'info');
+                    turnDeps.activityLog('Proposal rejected by user.', 'info');
                 },
             });
             msg.attachProposal(card, {
@@ -1724,7 +1731,7 @@ export function createConversation(deps) {
                 onToken: (t) => msg.appendModelToken({ id: 'illustration' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'illustration' }, 'reasoning', t),
             });
-            const resource = stagedResource(() => actions.discardIllustrationProposal?.(turnDeps, proposal));
+            const resource = stagedResource(() => actions.discardIllustrationProposal?.(turnDeps, proposal), turnDeps.activityLog);
             if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
                 await resource.dispose();
                 return;
@@ -1758,13 +1765,13 @@ export function createConversation(deps) {
                             card.markApplied();
                         }
                     } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
+                        turnDeps.activityLog(`Apply failed: ${error.message}`, 'error');
                         card.markError(error.message, { retryable: false });
                     }
                 },
                 onReject: async () => {
                     await resource.dispose();
-                    log('Proposal rejected by user.', 'info');
+                    turnDeps.activityLog('Proposal rejected by user.', 'info');
                 },
             });
             msg.attachProposal(card, {
@@ -1877,12 +1884,12 @@ export function createConversation(deps) {
                         card.markApplied();
                     }
                 } catch (error) {
-                    log(`Apply failed: ${error.message}`, 'error');
+                    turnDeps.activityLog(`Apply failed: ${error.message}`, 'error');
                     card.markError(error.message);
                 }
             },
             onReject: () => {
-                log(labels.rejectLog, 'info');
+                turnDeps.activityLog(labels.rejectLog, 'info');
             },
         });
         msg.attachProposal(card, {
@@ -1948,12 +1955,12 @@ export function createConversation(deps) {
                         card.markApplied();
                     }
                 } catch (error) {
-                    log(`Apply failed: ${error.message}`, 'error');
+                    turnDeps.activityLog(`Apply failed: ${error.message}`, 'error');
                     card.markError(error.message);
                 }
             },
             onReject: () => {
-                log(labels.rejectLog, 'info');
+                turnDeps.activityLog(labels.rejectLog, 'info');
             },
         });
         msg.attachProposal(card, {
@@ -2033,12 +2040,12 @@ export function createConversation(deps) {
                             card.markApplied();
                         }
                     } catch (error) {
-                        log(`Apply failed: ${error.message}`, 'error');
+                        turnDeps.activityLog(`Apply failed: ${error.message}`, 'error');
                         card.markError(error.message, { retryable: false });
                     }
                 },
                 onReject: () => {
-                    log('Proposal rejected by user.', 'info');
+                    turnDeps.activityLog('Proposal rejected by user.', 'info');
                 },
             });
             msg.attachProposal(card, {
@@ -2170,6 +2177,7 @@ export function createConversation(deps) {
      * @private
      */
     async function runMcpToolsTurn(args, msg, turnDeps, selectionText, turnController) {
+        const { activityLog: log } = turnDeps;
         const instruction = (args || '').trim() ||
             'List the tools available to you and summarize what you can do with them.';
         const servers = (appState.config.mcpServers || [])
@@ -2433,7 +2441,7 @@ export function createConversation(deps) {
                 return target.scope === 'selection' || target.type === TURN_TYPE.SELECTION_EDIT
                     || target.type === TURN_TYPE.TABLE_TOOL || (target.type === TURN_TYPE.IMAGE_TOOL && target.hasSelection);
             });
-            log(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
+            turnDeps.activityLog(`Executing ${plan.tasks.length} planned task(s): ${plan.tasks.map((t) => t.type).join(' → ')}`, 'info');
             const { executeTaskGraph, validateTaskGraph } = await loadTaskGraph({ signal: myController.signal });
             let graphResults = null;
             let resumeTimer = null;
@@ -2595,7 +2603,7 @@ export function createConversation(deps) {
                         // between a body draft and a table task).
                         if (event.value?.status === 'staged'
                             || (event.type === 'task.blocked' && taskTurns.get(event.taskId)?.type !== TURN_TYPE.DOC_QA)) pendingWrites.add(event.taskId);
-                        if (event.error) log(`Task [${event.taskId}]: ${event.error}`, event.type === 'task.failed' ? 'error' : 'info');
+                        if (event.error) turnDeps.activityLog(`Task [${event.taskId}]: ${event.error}`, event.type === 'task.failed' ? 'error' : 'info');
                         const { value, ...details } = event;
                         msg.appendModelToken({ id: 'task-runtime-events' }, 'content',
                             `${JSON.stringify({ ...details, ...(value ? { status: value.status } : {}) })}\n`);
@@ -2791,13 +2799,14 @@ export function createConversation(deps) {
         const effective = trimmed || 'What do the attached file(s) say?';
 
         if (isBusy()) {
-            log('Already processing. Cancel the current run first.', 'warning');
+            getSessionLogging(getContextScope()).log('Already processing. Cancel the current run first.', 'warning');
             return;
         }
         const session = view.getCurrentSession?.();
+        const contextScope = getContextScope();
         const owner = {
-            controller: new AbortController(), epoch: sessionEpoch, sessionId: session?.id,
-            conversationHistory: buildConversationHistory(session?.messages, { log, config: appState.config }),
+            controller: new AbortController(), epoch: sessionEpoch, sessionId: session?.id, contextScope,
+            conversationHistory: buildConversationHistory(session?.messages, { log: getSessionLogging(contextScope).log, config: appState.config }),
         };
         owner.isCurrentSession = () => owner.epoch === sessionEpoch
             && owner.sessionId === view.getCurrentSession?.()?.id;
@@ -2884,6 +2893,7 @@ export function createConversation(deps) {
         view.hideWelcome();
         view.addUserMessage(effective, attachmentMeta(list));
         owner.sessionId = view.getCurrentSession?.()?.id;
+        if (owner.sessionId) scopesBySessionId.set(owner.sessionId, owner.contextScope);
         input.setValue('');
 
         const rawMessage = view.createAssistantMessage();
@@ -2898,7 +2908,7 @@ export function createConversation(deps) {
                 };
             },
         });
-        const turnDeps = actionDepsFor(msg, owner.conversationHistory, owner.isCurrentSession);
+        const turnDeps = actionDepsFor(msg, owner.conversationHistory, owner.isCurrentSession, owner.contextScope);
         turnDeps.fileReferences = fileReferences;
         turnDeps.selectionParagraphContext = selectionParagraphContext;
 
@@ -2909,7 +2919,7 @@ export function createConversation(deps) {
                 const signal = owner.controller.signal;
                 if (documentWriting.settings.mode === 'automatic') {
                     await documentWriting.detect({
-                        automatic: true, signal,
+                        automatic: true, signal, log: turnDeps.log,
                         onStart: () => msg.setStatus('Detecting document writing settings…'),
                     });
                 }
@@ -2944,7 +2954,7 @@ export function createConversation(deps) {
             appState.chatController.abort();
             aborted = true;
         }
-        if (aborted) log('Cancelled.', 'warning');
+        if (aborted) getSessionLogging(submissionOwner?.contextScope ?? getContextScope()).log('Cancelled.', 'warning');
     }
 
     /**
@@ -2965,7 +2975,7 @@ export function createConversation(deps) {
         input.focus();
     }
 
-    return { submit, cancel, newChat };
+    return { submit, cancel, newChat, getContextScope };
 }
 
 /**

@@ -1,9 +1,10 @@
 import { documentPartRoot } from './ooxml-text.js';
 
 const records = [];
+
 /** Retain only document XML and its relationships, never package binaries.
  * Included only when the user explicitly copies the complete context. */
-export function recordNativeTextMismatch(read, state, { expectedText = state.text, phase = '', mismatch = '' } = {}) {
+export function recordNativeTextMismatch(read, state, { expectedText = state.text, phase = '', mismatch = '', contextScope = undefined } = {}) {
     const root = documentPartRoot(read.value);
     if (!root) return;
     const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -13,11 +14,13 @@ export function recordNativeTextMismatch(read, state, { expectedText = state.tex
     const xml = new XMLSerializer();
     const parts = Array.from(root.ownerDocument.getElementsByTagNameNS('http://schemas.microsoft.com/office/2006/xmlPackage', 'part'));
     const relationships = parts.find((p) => p.getAttributeNS('http://schemas.microsoft.com/office/2006/xmlPackage', 'name') === '/word/_rels/document.xml.rels');
-    records.push({ capturedAt: new Date().toISOString(), expectedText,
+    records.push({ contextScope, capturedAt: new Date().toISOString(), expectedText,
         ...(phase ? { phase, actualText: state.text, mismatch } : {}),
         reviewedText: read.currentText?.value, documentXml: xml.serializeToString(content).slice(0, 128000),
         relationshipsXml: relationships ? xml.serializeToString(relationships).slice(0, 32000) : null });
     while (records.length > 8) records.shift();
 }
 
-export function getNativeTextDiagnostics() { return records.map((record) => ({ ...record })); }
+export function getNativeTextDiagnostics(contextScope) {
+    return records.filter((record) => record.contextScope === contextScope).map(({ contextScope: _scope, ...record }) => record);
+}

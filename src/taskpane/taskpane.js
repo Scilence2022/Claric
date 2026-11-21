@@ -40,6 +40,7 @@ import { resolveDocumentIdentity } from './document-identity.js';
 import { extractDocumentStructured } from '../lib/comment-extractor.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { loadLazyModule } from '../lib/lazy-module-loader.js';
+import { getNativeTextDiagnostics } from '../lib/native-text-diagnostics.js';
 
 if (typeof Office !== 'undefined') {
     Office.onReady((info) => {
@@ -64,14 +65,6 @@ async function initialize() {
     const exportConfig = () => ({ ...appState.config,
         pairingToken: document.getElementById('crossDocumentToken')?.value || '' });
     initStatusBar({ getConfig: exportConfig });
-    initContextCopy({ getReport: async () => {
-        const { buildContextReport } = await loadLazyModule('context-export', () => import(/* webpackChunkName: "context-export" */ './context-export.js'));
-        const text = (id) => document.getElementById(id)?.textContent || '';
-        return buildContextReport({ state: { ...appState, config: exportConfig() }, session: chatView.getCurrentSession(),
-            chatText: text('chatMessages'), logs: getActivityLogText(), draft: document.getElementById('chatInput').value,
-            attachments: text('attachmentChips'), metadata: { version: text('aboutVersion'), build: text('aboutBuild'),
-                builtAt: text('aboutBuiltAt'), wordApi: text('aboutWordApi') } });
-    } });
 
     // Chat view
     chatView.initChatView();
@@ -85,14 +78,14 @@ async function initialize() {
     // History slide-over (sessions saved to localStorage; survives reloads).
     initHistoryView({
         onLoadSession: (session) => {
-            conversation.newChat();
+            newChat();
             chatView.setCurrentSession(session);
             input.focus();
         },
         onDeleteSession: (id) => {
             try { deleteSession(id); } catch (e) { addLog(`Delete session failed: ${e.message}`, 'error'); }
         },
-        onNewChat: () => conversation.newChat(),
+        onNewChat: newChat,
     });
 
     /**
@@ -114,8 +107,8 @@ async function initialize() {
     const documentWriting = createDocumentWritingController({
         identity: localIdentity,
         readText: () => extractDocumentStructured({ richness: 'plain' }),
-        classify: (messages, signal) => sendMessages(
-            { ...getActiveBackendConfig(), maxRetries: 0 }, messages, addLog, signal, 20000),
+        classify: (messages, signal, log) => sendMessages(
+            { ...getActiveBackendConfig(), maxRetries: 0 }, messages, log, signal, 20000),
         log: addLog,
     });
     const settings = createSettingsLoader({ onConfigChanged: updateComposerPills, log: addLog, documentWriting });
@@ -182,9 +175,38 @@ async function initialize() {
         input,
         log: addLog,
         logWithRetry: addLogWithRetry,
+        getSessionLogging: (scope) => ({
+            log: (message, type) => addLog(message, type, scope),
+            logWithRetry: (message, type, retry) => addLogWithRetry(message, type, retry, scope),
+        }),
         updateStatusBar: updateCommentStatusBar,
         onTurnCommitted: persistCurrentSession,
     });
+
+    const resetContextCopy = initContextCopy({ getReport: async () => {
+        const scope = conversation.getContextScope();
+        const text = (id) => document.getElementById(id)?.textContent || '';
+        const report = {
+            state: { ...appState, config: exportConfig() },
+            session: chatView.getCurrentSession(),
+            chatText: Array.from(document.querySelectorAll('#chatMessages > .chat-message'), (el) => el.textContent).join('\n\n'),
+            logs: getActivityLogText(scope),
+            nativeDiagnostics: getNativeTextDiagnostics(scope),
+            draft: document.getElementById('chatInput').value,
+            attachments: text('attachmentChips'),
+            metadata: {
+                version: text('aboutVersion'), build: text('aboutBuild'), builtAt: text('aboutBuiltAt'),
+                wordApi: text('aboutWordApi'), writingSettings: documentWriting.settings,
+            },
+        };
+        const { buildContextReport } = await loadLazyModule('context-export', () => import(/* webpackChunkName: "context-export" */ './context-export.js'));
+        return buildContextReport(report);
+    } });
+
+    function newChat() {
+        conversation.newChat();
+        resetContextCopy?.();
+    }
 
     // Proposal cards settle after their turn has already been finalized
     // (Apply/Reject clicks), so late state changes must re-persist the
@@ -196,7 +218,7 @@ async function initialize() {
     // Header buttons
     document.getElementById('historyBtn').addEventListener('click', openHistory);
     document.getElementById('logBtn').addEventListener('click', toggleLogDrawer);
-    document.getElementById('newChatBtn').addEventListener('click', () => conversation.newChat());
+    document.getElementById('newChatBtn').addEventListener('click', newChat);
 
     // Welcome skill chips fill the input with the slash command. The
     // built-ins only (hardcoded before) hid the reserved /mcp skill and

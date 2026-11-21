@@ -51,5 +51,7 @@ export async function copyGeneratedText(generate, options = {}) {
             return;
         } catch { /* Reuse the prepared report for the legacy path. */ }
     }
-    await copyText(await text(), options);
+    const value = await text();
+    if (options.isCurrent && !options.isCurrent()) return;
+    await copyText(value, options);
 }
