@@ -86,3 +86,32 @@ test('report generation failure does not show stale prepared text or claim copy 
     expect(document.getElementById('contextCopyStatus').textContent).toContain('Asset unavailable');
     expect(document.getElementById('copyContextBtn').disabled).toBe(false);
 });
+
+test('switching chats invalidates both an in-flight report and prepared retry text', async () => {
+    let finish;
+    const getReport = jest.fn()
+        .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+        .mockResolvedValue('Current chat report');
+    document.execCommand = jest.fn(() => false);
+    const reset = initContextCopy({ getReport });
+    const button = document.getElementById('copyContextBtn');
+    const preview = document.getElementById('contextCopyText');
+    const retry = document.getElementById('retryContextCopyBtn');
+
+    button.click();
+    await flush();
+    reset();
+    finish('Previous chat report');
+    await flush();
+    expect(document.execCommand).not.toHaveBeenCalled();
+    expect(preview.value).toBe('');
+
+    button.click();
+    await flush();
+    expect(preview.value).toBe('Current chat report');
+    reset();
+    retry.click();
+    expect(preview.value).toBe('');
+    expect(document.getElementById('contextCopyFallback').hidden).toBe(true);
+    expect(document.execCommand).toHaveBeenCalledTimes(1);
+});

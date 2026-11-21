@@ -128,7 +128,7 @@
                         <span class="status-indicator" id="statusIndicator"></span>
                         <span id="statusText" class="status-text">Connecting...</span>
                     </div>
-                    <button id="thinkingPill" class="model-pill thinking-pill" title="Thinking level" aria-haspopup="listbox" aria-expanded="false" aria-controls="thinkingMenu"><span class="thinking-pill-icon" aria-hidden="true">🧠</span><span id="thinkingPillLabel">Default</span></button>
+                    <button id="thinkingPill" class="model-pill thinking-pill" title="Thinking level" aria-haspopup="listbox" aria-expanded="false" aria-controls="thinkingMenu"><span id="thinkingPillLabel">Default</span></button>
                     <button id="modelPill" class="model-pill" title="Switch model" aria-haspopup="listbox" aria-expanded="false" aria-controls="modelMenu"></button>
                     <button id="sendBtn" class="send-btn" title="Send" aria-label="Send">&uarr;</button>
                 </div>
@@ -210,7 +210,7 @@
                     <dt>Word platform</dt><dd id="aboutPlatform"></dd>
                     <dt>Word API</dt><dd id="aboutWordApi"></dd>
                 </dl>
-                <p class="help-text">Copy all context includes document text, chat, proposals, selection, input, settings and logs. API keys are removed.</p>
+                <p class="help-text">Copies the current chat, its proposals and logs, document text, selection, draft, attachments, and system settings. API keys are removed.</p>
                 <p id="contextCopyStatus" class="help-text" role="status"></p>
                 <div id="contextCopyFallback" hidden>
                     <label for="contextCopyText">Prepared context</label>

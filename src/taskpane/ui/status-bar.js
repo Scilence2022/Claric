@@ -13,10 +13,13 @@ import { copyGeneratedText } from './clipboard.js';
 
 /** Drawer DOM entries kept before the oldest are dropped. */
 const MAX_LOG_ENTRIES = 200;
-// Keep the full session text for export while limiting expensive DOM nodes.
+// Keep full activity for the drawer and track which chat owns each entry.
 const activityEntries = [];
 
-export function getActivityLogText() { return activityEntries.join('\n'); }
+export function getActivityLogText(scope) {
+    const entries = scope === undefined ? activityEntries : activityEntries.filter((entry) => entry.scope === scope);
+    return entries.map((entry) => entry.text).join('\n');
+}
 
 /**
  * Module state for the dev-server log endpoint probe. The POST is dev-only
@@ -50,9 +53,10 @@ function postToDevLog(body) {
  *
  * @param {string} message - Log message text
  * @param {string} [type='info'] - One of 'info' | 'success' | 'warning' | 'error'
+ * @param {number} [scope] - The chat that produced the entry
  */
-export function addLog(message, type = 'info') {
-    activityEntries.push(`[${new Date().toLocaleTimeString()}] [${type.toUpperCase()}] ${message}`);
+export function addLog(message, type = 'info', scope) {
+    activityEntries.push({ scope, text: `[${new Date().toLocaleTimeString()}] [${type.toUpperCase()}] ${message}` });
     const logsDiv = typeof document !== 'undefined' ? document.getElementById('logs') : null;
     if (logsDiv) {
         const entry = document.createElement('div');
@@ -83,14 +87,15 @@ export function addLog(message, type = 'info') {
  * @param {string} message - The log message text
  * @param {string} type - Log type: 'info', 'success', 'warning', 'error'
  * @param {Function} retryCallback - Function to call when Retry is clicked
+ * @param {number} [scope] - The chat that produced the entry
  */
-export function addLogWithRetry(message, type, retryCallback) {
+export function addLogWithRetry(message, type, retryCallback, scope) {
     const logsDiv = typeof document !== 'undefined' ? document.getElementById('logs') : null;
     if (!logsDiv) {
-        addLog(message, type);
+        addLog(message, type, scope);
         return;
     }
-    activityEntries.push(`[${new Date().toLocaleTimeString()}] [${type.toUpperCase()}] ${message}`);
+    activityEntries.push({ scope, text: `[${new Date().toLocaleTimeString()}] [${type.toUpperCase()}] ${message}` });
 
     const entry = document.createElement('div');
     const timestamp = new Date().toLocaleTimeString();

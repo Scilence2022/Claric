@@ -6,6 +6,19 @@ that drive the GHCR image publish in CI.
 
 ## [Unreleased]
 
+### Changed
+
+- Composer pills read cleaner: the model pill shows only the model id (no
+  provider/profile prefix) and the thinking pill drops its icon, leaving the
+  level name alone.
+
+### Fixed
+
+- Clicking the thinking pill again (or anywhere on it) now reliably toggles
+  its level menu. Clicks landing on the pill's inner label span were counted
+  as outside clicks, closing the menu in the same event that opened it, so
+  the pill appeared unresponsive.
+
 ### Added
 
 - **Model switching and thinking levels from the composer** — two composer

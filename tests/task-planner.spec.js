@@ -142,7 +142,7 @@ describe('buildPlanMessages', () => {
     // corresponding compound sub-tasks misrouted.
     const [{ content }] = buildPlanMessages('x', { hasSelection: false });
     const contract = content.slice(content.indexOf('OUTPUT CONTRACT'));
-    expect(contract).toContain('document_edit|insert|format|page_layout|edit|append|table|illustration|image_management|table_management|qa');
+    expect(contract).toContain('document_edit|insert|format|page_layout|header_footer|edit|append|table|illustration|image_management|table_management|qa');
     // And no type known to the parser is missing from the enum.
     for (const type of [
       'insert', 'format', 'edit', 'append', 'table', 'illustration', 'qa',

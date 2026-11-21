@@ -58,7 +58,7 @@ import { getActiveBackendConfig, getActiveImageConfig } from './app-state.js';
 import { sendMessages } from '../lib/llm-client.js';
 import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
-import { loadTaskPlanner, loadFormatActions, loadPageLayoutActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation, loadTablePatch } from './task-module-loader.js';
+import { loadTaskPlanner, loadFormatActions, loadPageLayoutActions, loadHeaderFooterActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation, loadTablePatch } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
 import { withWritingSettings } from '../lib/document-writing-settings.js';
 import { preserveNonBreakingSpaces, requestsNbspChange } from '../lib/nbsp-preservation.js';
@@ -914,6 +914,7 @@ export async function readSelectionContent() {
     try {
         let text = '';
         let paragraphContext = '';
+        let storyType;
         let images = [];
         let totalImages = 0;
         let hasMultiCellTableRegion = false;
@@ -921,6 +922,8 @@ export async function readSelectionContent() {
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
             selection.load('text');
+            const story = selection.parentBody;
+            story?.load('type');
             const revisionRead = queueRevisionRead(selection);
             const pictures = selection.inlinePictures;
             pictures.load('items');
@@ -938,6 +941,7 @@ export async function readSelectionContent() {
 
             await context.sync();
             text = resolveRevisionRead(selection, revisionRead).text;
+            storyType = story?.type;
 
             const items = pictures.items || [];
             totalImages = items.length;
@@ -994,6 +998,7 @@ export async function readSelectionContent() {
             paragraphContext = await selectionParagraphContext(context, selection, text);
         });
         return { text, images, totalImages, hasMultiCellTableRegion, tableRegion,
+            ...(storyType === 'Header' || storyType === 'Footer' ? { storyType } : {}),
             ...(paragraphContext ? { paragraphContext } : {}) };
     } catch (_err) {
         return { text: '', images: [], totalImages: 0, hasMultiCellTableRegion: false, tableRegion: null };
@@ -1334,7 +1339,7 @@ export async function applySelectionAmendment(deps, proposal) {
                     : Word.ChangeTrackingMode.off;
             }
             try {
-                const strategyOptions = { trackChanges };
+                const strategyOptions = { trackChanges, contextScope: deps.contextScope };
                 if (appState.config.lineDiffEnabled) {
                     await applySentenceDiffStrategy(context, selection, selectionText, amendedText, log, strategyOptions);
                 } else if (hasCjk(selectionText) || hasCjk(amendedText)) {
@@ -1576,7 +1581,7 @@ async function _applyTablePatch(deps, proposal) {
                 for (const cellPatch of tablePatch.cells) {
                     const t = await tableFor(cellPatch);
                     if (!t) continue;
-                    const applied = await _patchCell(context, t, cellPatch, log);
+                    const applied = await _patchCell(context, t, cellPatch, log, deps.contextScope);
                     if (applied) cellsApplied++; else cellsSkipped++;
                 }
             }
@@ -1989,7 +1994,7 @@ function _setBorderSpec(border, spec, log) {
  *
  * @private
  */
-async function _patchCell(context, table, cellPatch, log) {
+async function _patchCell(context, table, cellPatch, log, contextScope) {
     const label = `R${cellPatch.row}C${cellPatch.col}`;
     let cell;
     try {
@@ -2014,7 +2019,7 @@ async function _patchCell(context, table, cellPatch, log) {
         if (current.text.trim() === cellPatch.text.trim()) return false;
         try {
             // The outer scope owns the tracking mode for the whole patch.
-            const diffOptions = { trackChanges: false, paragraph: true, verificationParagraph: items[0] };
+            const diffOptions = { trackChanges: false, paragraph: true, verificationParagraph: items[0], contextScope };
             if (hasCjk(current.text) || hasCjk(cellPatch.text)) {
                 await applyCharDiffStrategy(context, range, current.text, cellPatch.text, log, diffOptions);
             } else {
@@ -2049,7 +2054,7 @@ async function _patchCell(context, table, cellPatch, log) {
                 if (states[i].hasRevisions) {
                     const strategy = hasCjk(before) || hasCjk(newLines[i]) ? applyCharDiffStrategy : applyTokenMapStrategy;
                     await strategy(context, paraRange, before, newLines[i], log,
-                        { trackChanges: false, paragraph: true, verificationParagraph: items[i] });
+                        { trackChanges: false, paragraph: true, verificationParagraph: items[i], contextScope });
                 } else paraRange.insertText(newLines[i], Word.InsertLocation.replace);
             }
         }
@@ -2173,7 +2178,7 @@ async function _applyMixedTableAmendment(deps, proposal) {
                     paraRange.load('text');
                     await context.sync();
                     try {
-                        const diffOptions = { trackChanges: false, paragraph: true, verificationParagraph: paraItems[op.origIdx] };
+                        const diffOptions = { trackChanges: false, paragraph: true, verificationParagraph: paraItems[op.origIdx], contextScope: deps.contextScope };
                         if (hasCjk(origText) || hasCjk(newText)) {
                             await applyCharDiffStrategy(context, paraRange, origText, newText.trim(), log, diffOptions);
                         } else {
@@ -2690,6 +2695,26 @@ export async function discardPageLayoutProposal(deps, proposal) {
     return actions.discardPageLayoutProposal(deps, proposal);
 }
 
+export async function prepareHeaderFooterProposal(deps, args) {
+    const actions = await loadHeaderFooterActions({ signal: args.signal });
+    return actions.prepareHeaderFooterProposal({ ...deps, sendActionRequest: _sendActionRequest }, args);
+}
+
+export async function readHeaderFooter(deps, args) {
+    const actions = await loadHeaderFooterActions({ signal: args.signal });
+    return actions.readHeaderFooter(deps, args);
+}
+
+export async function discardHeaderFooterProposal(deps, proposal) {
+    const actions = await loadHeaderFooterActions();
+    return actions.discardHeaderFooterProposal(deps, proposal);
+}
+
+export async function applyHeaderFooterProposal(deps, proposal, options = {}) {
+    const actions = await loadHeaderFooterActions({ signal: options.signal });
+    return actions.applyHeaderFooterProposal(deps, proposal, options);
+}
+
 export async function applyPageLayoutProposal(deps, proposal, options = {}) {
     const actions = await loadPageLayoutActions({ signal: options.signal });
     return actions.applyPageLayoutProposal(deps, proposal, options);
@@ -3197,6 +3222,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
         const applicationResult = await applyChunkResults(selected, bookmarkMap, {
             trackChangesEnabled: appState.config.trackChangesEnabled,
             lineDiffEnabled: appState.config.lineDiffEnabled,
+            contextScope: deps.contextScope,
             log,
             chunkRevisionFingerprints: new Map(chunks.map((c) => [c.id, c.paragraphs.map((p) => p.revisionFingerprint)])),
             ...(signal ? { signal } : {}),
@@ -3296,7 +3322,7 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
             if (onProposal) onProposal(preview);
             result = await applyChunkResults([{ ...proposal, comment: null }], new Map([[id, bookmarkMap.get(id)]]), {
                 trackChangesEnabled: appState.config.trackChangesEnabled,
-                lineDiffEnabled: appState.config.lineDiffEnabled, log, signal, onChunkApplied, onProgress: onApplyProgress,
+                lineDiffEnabled: appState.config.lineDiffEnabled, contextScope: deps.contextScope, log, signal, onChunkApplied, onProgress: onApplyProgress,
                 chunkOriginals: new Map([[id, proposal.chunk.paragraphs.map((p) => p.text)]]),
                 chunkRevisionFingerprints: new Map([[id, proposal.chunk.paragraphs.map((p) => p.revisionFingerprint)]]),
             });
@@ -3452,6 +3478,7 @@ export async function retryFailedChunks(deps, {
                     const result = await applyChunkResults(selected, retryBookmarks, {
                         trackChangesEnabled: appState.config.trackChangesEnabled,
                         lineDiffEnabled: appState.config.lineDiffEnabled,
+                        contextScope: deps.contextScope,
                         log, signal,
                         onChunkApplied: async (id, detail) => {
                             state.consumed.add(id);

@@ -390,7 +390,7 @@ export async function tryRevisionDiff(context, range, before, after, log = () =>
         }
         const nativeProjection = read.currentText && projectNativeText(state,
             read.currentText.value, { trimEnd: !options.paragraph });
-        if (read.currentText && !nativeProjection) recordNativeTextMismatch(read, state);
+        if (read.currentText && !nativeProjection) recordNativeTextMismatch(read, state, { contextScope: options.contextScope });
         const opaqueObjects = !!(read.currentText && !nativeProjection && options.paragraph && state.paragraphCount === 1
             && state.inlineFingerprint && state.protectedSpans.length && (!state.protectedStructure || state.fieldOnlyProtection));
         const leadingDeletion = readOptions.singleParagraphContent && !nativeProjection

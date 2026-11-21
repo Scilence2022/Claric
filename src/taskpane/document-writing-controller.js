@@ -59,7 +59,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
         notify();
     }
 
-    function applyDetection(detection) {
+    function applyDetection(detection, activityLog = log) {
         const entries = Object.entries(detection.values)
             .filter(([field, value]) => !settings.locked[field] && value !== settings.values[field]);
         if (!entries.length) {
@@ -70,7 +70,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
         const summary = `Updated ${entries.map(([field]) => field).join(', ')} from the document.`;
         save({ ...settings, values: { ...settings.values, ...Object.fromEntries(entries) } },
             [summary, detection.reason].filter(Boolean).join(' '));
-        log?.(`Document writing settings updated (${entries.map(([field, value]) => `${field}: ${WRITING_OPTIONS[field][value]}`).join(', ')}).`, 'info');
+        activityLog?.(`Document writing settings updated (${entries.map(([field, value]) => `${field}: ${WRITING_OPTIONS[field][value]}`).join(', ')}).`, 'info');
     }
 
     function clearTypeSuggestion() {
@@ -79,7 +79,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
         suggestion = Object.keys(values).length ? { ...suggestion, values } : null;
     }
 
-    async function detect({ automatic = false, typeOnly = false, signal, onStart } = {}) {
+    async function detect({ automatic = false, typeOnly = false, signal, onStart, log: activityLog = log } = {}) {
         refresh();
         if (detecting || signal?.aborted || (automatic && settings.mode !== 'automatic')) return;
         if (!typeOnly && (settings.mode === 'manual' || WRITING_FIELDS.every((field) => settings.locked[field]))) return;
@@ -107,16 +107,16 @@ export function createDocumentWritingController({ identity, readText, classify, 
                 return;
             }
             onStart?.();
-            const result = parseWritingDetection(await classify(writingDetectionMessages(sample, { typeOnly }), signal), { typeOnly });
+            const result = parseWritingDetection(await classify(writingDetectionMessages(sample, { typeOnly }), signal, activityLog), { typeOnly });
             if (!isCurrent()) return;
             settings = { ...settings, detectedType: result.values.type || '' };
             if (automatic) {
                 lastSample = sample;
-                applyDetection(result);
+                applyDetection(result, activityLog);
             } else if (typeOnly) {
                 clearTypeSuggestion();
                 if (settings.mode === 'automatic' && !settings.locked.type && result.values.type) {
-                    applyDetection(result);
+                    applyDetection(result, activityLog);
                 } else {
                     save(settings, result.reason || (settings.detectedType ? 'Document type refreshed.' : 'No clear document type detected.'));
                 }
@@ -130,7 +130,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
             if (isCurrent()) {
                 status = 'Writing settings could not be detected.';
                 detectionFailed = true;
-                log?.(`Writing settings detection failed: ${error.message}`, 'warning');
+                activityLog?.(`Writing settings detection failed: ${error.message}`, 'warning');
             }
         } finally {
             detecting = false;
