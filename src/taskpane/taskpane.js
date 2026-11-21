@@ -111,6 +111,9 @@ async function initialize() {
             { ...getActiveBackendConfig(), maxRetries: 0 }, messages, log, signal, 20000),
         log: addLog,
     });
+    void loadLazyModule('document-type-view', () => import(/* webpackChunkName: "document-type-view" */ './ui/document-type-view.js'))
+        .then(({ initDocumentTypeView }) => initDocumentTypeView(documentWriting))
+        .catch((error) => addLog(`Could not load the document type controls: ${error.message}`, 'warning'));
     const settings = createSettingsLoader({ onConfigChanged: updateComposerPills, log: addLog, documentWriting });
     document.getElementById('settingsBtn').addEventListener('click', settings.open);
     initScreenSharingView({ log: addLog });

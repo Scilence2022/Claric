@@ -2113,6 +2113,33 @@ textarea.form-control {
     box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.15);
 }
 
+.chat-document-type {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--spacing-xs) var(--spacing-sm);
+    padding: 0 var(--spacing-xs) var(--spacing-xs);
+}
+.chat-document-type[hidden] { display: none; }
+.chat-document-type details { min-width: 0; max-width: 100%; }
+.chat-document-type summary { list-style-position: inside; }
+.chat-document-type details:not([open]) .chat-document-type-panel { display: none; }
+.chat-document-type-panel {
+    position: absolute;
+    inset-inline-start: 0;
+    bottom: calc(100% + 4px);
+    z-index: 20;
+    width: min(100%, 18rem);
+    padding: var(--spacing-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-lg);
+    background: var(--primary-bg);
+    box-shadow: 0 4px 14px rgb(0 0 0 / 14%);
+}
+.chat-document-type-panel .form-control { margin-block: var(--spacing-xs); }
+.chat-document-type-panel .btn { margin-top: var(--spacing-sm); }
+
 .composer .chat-input {
     border: none;
     background: transparent;

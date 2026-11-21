@@ -16,15 +16,15 @@ export function createDocumentWritingController({ identity, readText, classify, 
     let settings = readStored() || normalizeWritingSettings();
     let storedSettings = JSON.stringify(settings);
     let suggestion = null;
-    let previousValues = null;
+    let previousSettings = null;
     let lastSample = null;
     let detecting = false;
+    let detectionFailed = false;
     let revision = 0;
     let status = '';
-    let lastDetectionStatus = '';
     const listeners = new Set();
     const snapshot = () => ({
-        settings: normalizeWritingSettings(settings), detecting, suggestion, canUndo: previousValues !== null, status,
+        settings: normalizeWritingSettings(settings), detecting, detectionFailed, suggestion, canUndo: previousSettings !== null, status,
     });
     const notify = () => listeners.forEach((listener) => listener(snapshot()));
 
@@ -36,8 +36,10 @@ export function createDocumentWritingController({ identity, readText, classify, 
         revision++;
         lastSample = null;
         suggestion = null;
-        previousValues = null;
+        previousSettings = null;
         status = '';
+        detectionFailed = false;
+        notify();
     }
 
     function save(next, message = '') {
@@ -60,27 +62,32 @@ export function createDocumentWritingController({ identity, readText, classify, 
     function applyDetection(detection, activityLog = log) {
         const entries = Object.entries(detection.values)
             .filter(([field, value]) => !settings.locked[field] && value !== settings.values[field]);
-        suggestion = null;
         if (!entries.length) {
-            status = 'No changes to unlocked settings were suggested.';
-            notify();
+            save(settings, 'No changes to unlocked settings were suggested.');
             return;
         }
-        previousValues = { ...settings.values };
+        previousSettings = { values: settings.values, locked: settings.locked };
         const summary = `Updated ${entries.map(([field]) => field).join(', ')} from the document.`;
         save({ ...settings, values: { ...settings.values, ...Object.fromEntries(entries) } },
             [summary, detection.reason].filter(Boolean).join(' '));
         activityLog?.(`Document writing settings updated (${entries.map(([field, value]) => `${field}: ${WRITING_OPTIONS[field][value]}`).join(', ')}).`, 'info');
     }
 
-    async function detect({ automatic = false, signal, onStart, log: activityLog = log } = {}) {
+    function clearTypeSuggestion() {
+        if (!suggestion?.values.type) return;
+        const { type: _obsoleteType, ...values } = suggestion.values;
+        suggestion = Object.keys(values).length ? { ...suggestion, values } : null;
+    }
+
+    async function detect({ automatic = false, typeOnly = false, signal, onStart, log: activityLog = log } = {}) {
         refresh();
-        if (detecting || signal?.aborted || settings.mode === 'manual'
-            || (automatic && settings.mode !== 'automatic')
-            || WRITING_FIELDS.every((field) => settings.locked[field])) return;
+        if (detecting || signal?.aborted || (automatic && settings.mode !== 'automatic')) return;
+        if (!typeOnly && (settings.mode === 'manual' || WRITING_FIELDS.every((field) => settings.locked[field]))) return;
         const startedAt = revision;
+        const previousStatus = status;
         detecting = true;
-        suggestion = null;
+        detectionFailed = false;
+        if (!typeOnly) suggestion = null;
         status = 'Checking the document…';
         notify();
         const isCurrent = () => {
@@ -90,26 +97,39 @@ export function createDocumentWritingController({ identity, readText, classify, 
         try {
             const sample = sampleWritingText(await readText());
             if (!isCurrent()) return;
-            if (!sample || (automatic && sample === lastSample)) {
-                status = sample ? lastDetectionStatus : 'Add text to the document to detect writing settings.';
+            if (!sample) {
+                clearTypeSuggestion();
+                save({ ...settings, detectedType: '' }, 'Add text to the document to detect writing settings.');
+                return;
+            }
+            if (automatic && sample === lastSample) {
+                status = previousStatus;
                 return;
             }
             onStart?.();
-            const result = parseWritingDetection(await classify(writingDetectionMessages(sample), signal, activityLog));
+            const result = parseWritingDetection(await classify(writingDetectionMessages(sample, { typeOnly }), signal, activityLog), { typeOnly });
             if (!isCurrent()) return;
+            settings = { ...settings, detectedType: result.values.type || '' };
             if (automatic) {
                 lastSample = sample;
                 applyDetection(result, activityLog);
-                lastDetectionStatus = status;
+            } else if (typeOnly) {
+                clearTypeSuggestion();
+                if (settings.mode === 'automatic' && !settings.locked.type && result.values.type) {
+                    applyDetection(result, activityLog);
+                } else {
+                    save(settings, result.reason || (settings.detectedType ? 'Document type refreshed.' : 'No clear document type detected.'));
+                }
             } else {
                 const values = Object.fromEntries(Object.entries(result.values)
                     .filter(([field, value]) => !settings.locked[field] && value !== settings.values[field]));
                 suggestion = Object.keys(values).length ? { ...result, values } : null;
-                status = suggestion ? (result.reason || 'Review the detected settings.') : 'No changes to unlocked settings were suggested.';
+                save(settings, suggestion ? (result.reason || 'Review the detected settings.') : 'No changes to unlocked settings were suggested.');
             }
         } catch (error) {
             if (isCurrent()) {
                 status = 'Writing settings could not be detected.';
+                detectionFailed = true;
                 activityLog?.(`Writing settings detection failed: ${error.message}`, 'warning');
             }
         } finally {
@@ -128,12 +148,21 @@ export function createDocumentWritingController({ identity, readText, classify, 
             listeners.add(listener);
             listener(snapshot());
         },
+        useDetectedType() {
+            refresh();
+            const type = settings.detectedType;
+            if (!type || (!settings.locked.type && type === settings.values.type)) return;
+            previousSettings = { values: settings.values, locked: settings.locked };
+            save({ ...settings, values: { ...settings.values, type }, locked: { ...settings.locked, type: false } },
+                'Using the detected document type.');
+        },
         update(change) {
             refresh();
             lastSample = null;
             suggestion = null;
-            previousValues = null;
+            previousSettings = null;
             save({
+                ...settings,
                 mode: change.mode ?? settings.mode,
                 values: { ...settings.values, ...change.values },
                 locked: { ...settings.locked, ...change.locked },
@@ -142,15 +171,17 @@ export function createDocumentWritingController({ identity, readText, classify, 
         detect,
         applySuggestion() {
             refresh();
-            if (suggestion) applyDetection(suggestion);
+            if (!suggestion) return;
+            const detection = suggestion;
+            suggestion = null;
+            applyDetection(detection);
         },
         undo() {
             refresh();
-            if (!previousValues) return;
-            const values = previousValues;
-            previousValues = null;
-            lastDetectionStatus = 'Previous writing settings restored.';
-            save({ ...settings, values }, lastDetectionStatus);
+            if (!previousSettings) return;
+            const previous = previousSettings;
+            previousSettings = null;
+            save({ ...settings, ...previous }, 'Previous writing settings restored.');
         },
     };
 }
