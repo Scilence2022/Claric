@@ -31,7 +31,7 @@ const OUTPUT_LANGUAGE = {
         'Keep Simplified or Traditional Chinese as used in the source.',
     comment: 'Write comment prose in the language of the passage under review.',
     summary: 'Write the summary and its headings in the primary language of the source document.',
-    chat: 'Answer in the primary language of the supplied document context. If it has no discernible language, use the language of the user’s additional instructions when available.',
+    chat: 'Answer in the primary language of the supplied document context.',
 };
 
 function builtinSkill(skill) {
@@ -41,7 +41,7 @@ function builtinSkill(skill) {
         rules.push(skill.category === 'amendment'
             ? 'Translate only if the additional instructions for this command explicitly request a language change.'
             : 'Follow an output language explicitly requested in the additional instructions for this command. ' +
-              'Keep exact quotations, response markers, and schema keys verbatim.');
+              'Preserve quotes and protocol tokens.');
     }
     return Object.freeze({ ...skill, defaultTemplate: rules.join(' ') + '\n\n' + skill.defaultTemplate });
 }
@@ -143,18 +143,17 @@ export const BUILTIN_SKILLS = Object.freeze([
     builtinSkill({
         name: 'simplify',
         slash: '/simplify',
-        description: 'Make selected writing easier to understand without losing important meaning or necessary detail',
+        description: 'Improve readability while preserving meaning',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
             'Simplify {selection} for a busy, intelligent reader. Use plain, direct language, shorter sentences, and clear ' +
-            'transitions. Preserve all material facts, qualifications, numbers, citations, and intended meaning. Do not ' +
-            'remove necessary technical terms; explain one only when the context requires it.',
+            'transitions. Preserve all material facts, qualifications, numbers, citations, and meaning. Keep necessary technical terms.',
     }),
     builtinSkill({
         name: 'shorten',
         slash: '/shorten',
-        description: 'Make selected writing more concise while preserving its key message, evidence, and qualifications',
+        description: 'Make writing concise while preserving its key message, evidence, and qualifications',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
@@ -165,7 +164,7 @@ export const BUILTIN_SKILLS = Object.freeze([
     builtinSkill({
         name: 'expand',
         slash: '/expand',
-        description: 'Expand selected writing with useful explanation and transitions while avoiding unsupported claims',
+        description: 'Expand writing with supported explanations and transitions',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
@@ -177,7 +176,7 @@ export const BUILTIN_SKILLS = Object.freeze([
     builtinSkill({
         name: 'translate',
         slash: '/translate',
-        description: 'Translate selected writing into a requested language while preserving meaning, terminology, and tone',
+        description: 'Translate writing while preserving meaning, terminology, and tone',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
@@ -189,7 +188,7 @@ export const BUILTIN_SKILLS = Object.freeze([
     builtinSkill({
         name: 'check-clarity',
         slash: '/check-clarity',
-        description: 'Review writing for unclear wording, ambiguity, weak transitions, and unexplained references',
+        description: 'Review wording, transitions, and references for clarity',
         category: 'comment',
         scope: 'selection-first',
         defaultTemplate:
