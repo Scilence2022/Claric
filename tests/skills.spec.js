@@ -52,7 +52,7 @@ describe('BUILTIN_SKILLS registry', () => {
       }
     }
     expect(resolveSkill('/polish', BUILTIN_SKILLS).skill.defaultTemplate)
-      .toContain('genre and register unless the user explicitly requests a style change');
+      .toContain('genre and register by default');
   });
 
   test('contains exactly the built-in skills with unique slashes', () => {

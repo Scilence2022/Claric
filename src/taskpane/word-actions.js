@@ -60,6 +60,7 @@ import { withConversationHistory } from '../lib/conversation-history.js';
 import { enumValue as _enumValue, applyFontOps as _applyFontOps } from './word-format-helpers.js';
 import { loadTaskPlanner, loadFormatActions, loadPageLayoutActions, loadFileQuestion, loadEditScope, loadChunkProcessor, loadTableCreation, loadTablePatch } from './task-module-loader.js';
 import { validateWhitespaceCleanup, hasRedundantSpaceCandidates } from '../lib/whitespace-cleanup.js';
+import { withWritingSettings } from '../lib/document-writing-settings.js';
 import { preserveNonBreakingSpaces, requestsNbspChange } from '../lib/nbsp-preservation.js';
 
 async function _sendActionRequest(deps, config, prompt, { onToken, onReasoning, signal } = {}) {
@@ -1085,9 +1086,10 @@ export async function prepareSelectionAmendment(deps, { promptTemplate, commentI
     log(`Processing selection (${selectionText.length} chars) via ${backendConfig.model}...`, 'info');
 
     const merged = !!(commentInstructions && commentInstructions.trim());
+    const template = withWritingSettings(promptTemplate, deps.writingSettings, 'edit');
     const messages = merged
-        ? appState.promptManager.composeMergedMessages(selectionText, commentInstructions, promptTemplate)
-        : appState.promptManager.composeMessages(selectionText, 'amendment', promptTemplate);
+        ? appState.promptManager.composeMergedMessages(selectionText, commentInstructions, template)
+        : appState.promptManager.composeMessages(selectionText, 'amendment', template);
 
     if (messages.length === 0) {
         throw new Error('No prompt composed — check the skill template');
@@ -1202,7 +1204,7 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
     if (contextPrompt) {
         messages.push({ role: 'system', content: contextPrompt.template });
     }
-    messages.push({ role: 'user', content: buildTableUserPrompt(baseInstruction, cells, { rowCount, colCount }) });
+    messages.push({ role: 'user', content: buildTableUserPrompt(withWritingSettings(baseInstruction, deps.writingSettings, 'edit'), cells, { rowCount, colCount }) });
 
     const rawResponse = await _sendActionRequest(deps, backendConfig, messages, { onToken, onReasoning, signal });
     log(`LLM response received [${backendConfig.model}]`, 'success');
@@ -2252,7 +2254,7 @@ export async function prepareDocumentAppend(deps, { instruction, selectionText, 
 
     let prompt =
         'You are a writing assistant embedded in a Word document. The user wants NEW content generated and appended to the END of the document.\n' +
-        'Continue the document in its own language, style, and tone, following the user instruction below.\n\n' +
+        'Follow the user instruction below. Use any configured document writing settings, or otherwise continue the document in its own language, style, and tone.\n\n' +
         'CRITICAL OUTPUT RULES:\n' +
         '- Output ONLY the new content to append, as PLAIN TEXT.\n' +
         '- Do NOT repeat, quote, or paraphrase the existing document text.\n' +
@@ -2267,7 +2269,8 @@ export async function prepareDocumentAppend(deps, { instruction, selectionText, 
 
     const backendConfig = getActiveBackendConfig(appState);
     log(`Drafting content to append [${backendConfig.model}]...`, 'info');
-    const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
+    const rawResponse = await _sendActionRequest(deps, backendConfig,
+        withWritingSettings(prompt, deps.writingSettings, 'output'), { onToken, onReasoning, signal });
     log(`LLM response received [${backendConfig.model}]`, 'success');
 
     return {
@@ -2420,7 +2423,7 @@ async function draftTableContents(deps, text, inferred, tableCreation, { onToken
             `${expectedDimensions.columnCount} columns. ${text}`;
     }
 
-    const prompt = buildTableCreationPrompt(promptInstruction, scopeText);
+    const prompt = buildTableCreationPrompt(withWritingSettings(promptInstruction, deps.writingSettings, 'output'), scopeText);
     const backendConfig = getActiveBackendConfig(appState);
     log(`Generating table content [${backendConfig.model}]...`, 'info');
     const rawResponse = await _sendActionRequest(deps, backendConfig, prompt, { onToken, onReasoning, signal });
@@ -3054,7 +3057,8 @@ export async function fireSelectionComment(deps, { promptTemplate, signal } = {}
         sendPromptFn: sendPrompt,
         sendMessagesFn: sendMessages,
         conversationHistory: deps.conversationHistory,
-        promptManager: makePromptShim(appState.promptManager, 'comment', promptTemplate),
+        promptManager: makePromptShim(appState.promptManager, 'comment',
+            withWritingSettings(promptTemplate, deps.writingSettings, 'output')),
         commentQueue: appState.commentQueue,
         log,
         addLogWithRetryFn: logWithRetry,
@@ -3088,7 +3092,8 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     // Honor the caller's signal; fall back to the shared processing slot for
     // legacy callers that rely on it having been set before invocation.
     const signal = signalArg || (appState.processDocController ? appState.processDocController.signal : undefined);
-    const promptShim = makePromptShim(appState.promptManager, category, promptTemplate);
+    const template = withWritingSettings(promptTemplate, deps.writingSettings, category === 'amendment' ? 'edit' : 'output');
+    const promptShim = makePromptShim(appState.promptManager, category, template);
 
     // Step 1: Parse document
     log('Parsing document...', 'info');
@@ -3522,7 +3527,7 @@ export async function runSummarySkill(deps, { promptTemplate, onToken, onReasoni
         log('No review comments found — summarizing from document text only.', 'info');
     }
 
-    const summaryOpts = { templateOverride: promptTemplate };
+    const summaryOpts = { templateOverride: withWritingSettings(promptTemplate, deps.writingSettings, 'output') };
 
     if (promptTemplate.includes('{whole document}')) {
         const richness = (appState.config.docExtraction || {}).richness || 'structured';
@@ -3681,6 +3686,7 @@ export async function answerQuestion(deps, { question, skillTemplate, selectionT
     if (skillTemplate) {
         prompt += skillTemplate + '\n\n';
     }
+    prompt = withWritingSettings(prompt, deps.writingSettings, 'output');
     prompt += '--- USER QUESTION ---\n' + question;
     // Image metadata for MIXED text+image selections: object references in
     // the prompt, never the bytes (visual reading belongs to the image tool

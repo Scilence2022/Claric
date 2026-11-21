@@ -40,8 +40,7 @@ function builtinSkill(skill) {
         rules.push(OUTPUT_LANGUAGE[skill.category]);
         rules.push(skill.category === 'amendment'
             ? 'Translate only if the additional instructions for this command explicitly request a language change.'
-            : 'Follow an output language explicitly requested in the additional instructions for this command. ' +
-              'Preserve quotes and protocol tokens.');
+            : 'Use the configured output language unless this command specifies another. Preserve quotes and protocol tokens.');
     }
     return Object.freeze({ ...skill, defaultTemplate: rules.join(' ') + '\n\n' + skill.defaultTemplate });
 }
@@ -135,8 +134,8 @@ export const BUILTIN_SKILLS = Object.freeze([
         scope: 'selection-first',
         defaultTemplate:
             'Polish the following text. Improve clarity, precision, flow, and grammar. Preserve the document’s ' +
-            'genre and register unless the user explicitly requests a style change. Preserve the author\'s meaning, ' +
-            'claims, citations, technical terminology, and level of certainty. ' +
+            'genre and register by default. Follow a writing style set for this document or explicitly requested for this command. ' +
+            'Preserve the author\'s meaning, claims, citations, technical terminology, and level of certainty. ' +
             'Do not invent evidence or add substantive content. Keep paragraph structure unless a small change is necessary ' +
             'for coherence.\n\n{selection}',
     }),

@@ -31,6 +31,7 @@ import { withConversationHistory } from '../lib/conversation-history.js';
 import { createTableModel, executeTableTool, TABLE_TOOL_SPECS } from '../lib/table-model.js';
 import { describeStyleOp } from '../lib/table-style.js';
 import { createImageModel, IMAGE_TOOL_SPECS, imageIdentityKey } from '../lib/image-model.js';
+import { withWritingSettings } from '../lib/document-writing-settings.js';
 import { sendMessages, sendPrompt } from '../lib/llm-client.js';
 import {
     buildIllustrationPrompt, buildIllustrationRedesignPrompt, parseIllustration, sanitizeSvg, ensureSvgDimensions,
@@ -267,7 +268,8 @@ export async function prepareTableToolEdit(deps, { instruction, signal, onStep, 
         'Work through the task with the table tools. Verify with get_state when unsure.';
 
     const loop = await _runLoop(deps, {
-        systemPrompt: buildToolLoopSystemPrompt(TABLE_TOOL_SPECS, { maxSteps: STEP_BUDGETS.table }),
+        systemPrompt: withWritingSettings(
+            buildToolLoopSystemPrompt(TABLE_TOOL_SPECS, { maxSteps: STEP_BUDGETS.table }), deps.writingSettings, 'mixed'),
         taskPrompt,
         tools: TABLE_TOOL_SPECS,
         execute: (name, args) => executeTableTool(model, name, args),

@@ -1577,6 +1577,7 @@ body {
 
 .settings-tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--spacing-xs);
     padding: 0 var(--spacing-md);
     border-bottom: 1px solid var(--border-color);
@@ -1601,6 +1602,13 @@ body {
     color: var(--primary-text);
     font-weight: 600;
     border-bottom-color: var(--accent-color);
+}
+
+.document-writing-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-sm);
 }
 
 .settings-page[hidden] {
