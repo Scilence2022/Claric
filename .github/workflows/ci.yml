@@ -11,19 +11,15 @@ concurrency:
 
 jobs:
   verify:
-    name: Lint, test, coverage, build
+    name: Lint, test, coverage, build (22)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [22]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js ${{ matrix.node-version }}
+      - name: Use pinned Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies

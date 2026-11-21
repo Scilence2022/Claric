@@ -23,6 +23,19 @@ describe('distributed task runtime', () => {
         expect(JSON.stringify(coordination.submitTask.mock.calls[0])).not.toContain('Range');
     });
 
+    test('evicts a terminal graph at capacity and preserves active graphs', async () => {
+        const coordination = client();
+        const target = { ...coordination.identity, documentId: 'b', instanceId: 'two' };
+        const runtime = createDistributedTaskRuntime({ client: coordination, maxGraphs: 1, resolveTarget: () => target });
+        await runtime.submitGraph({ graphId: 'first', tasks: [{ taskId: 'one' }] });
+        const next = { graphId: 'next', tasks: [{ taskId: 'two' }] };
+        await expect(runtime.submitGraph(next)).rejects.toThrow('capacity');
+        await runtime.cancelGraph('first');
+
+        await expect(runtime.submitGraph(next)).resolves.toMatchObject({ graphId: 'next' });
+        expect(runtime.getSnapshot('first')).toBeNull();
+    });
+
     test('accepts only workspace-scoped target events and deduplicates them', () => {
         const coordination = client();
         const statuses = [];

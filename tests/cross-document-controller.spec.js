@@ -182,12 +182,13 @@ test('plans a cross-document task graph using read context as reference', async 
         instruction: 'Format then polish the target',
         documents: [expect.objectContaining({ documentId: 'b', contextText: 'Target data' })],
     }));
-    expect(runtime.submitGraph).toHaveBeenCalledWith(expect.objectContaining({
-        tasks: [
-            expect.objectContaining({ taskId: 't1', type: 'format', target }),
-            expect.objectContaining({ taskId: 't2', type: 'edit', dependsOn: ['t1'], target }),
-        ],
-    }));
+    const [first, second] = runtime.submitGraph.mock.calls[0][0].tasks;
+    expect(first).toMatchObject({ taskId: expect.stringMatching(/^task-/), type: 'format', target });
+    expect(second).toMatchObject({ taskId: expect.stringMatching(/^task-/), type: 'edit', dependsOn: [first.taskId], target });
+    planButton.click(); await flush();
+    const nextTasks = runtime.submitGraph.mock.calls[1][0].tasks;
+    expect(nextTasks.map((task) => task.taskId)).not.toEqual([first.taskId, second.taskId]);
+    expect(nextTasks[1].dependsOn).toEqual([nextTasks[0].taskId]);
     expect(chatView.addSystemNote).toHaveBeenCalledWith(expect.stringContaining('Planned 2 cross-document task(s)'));
     document.getElementById('crossDocumentConnectBtn').click(); await flush();
 });

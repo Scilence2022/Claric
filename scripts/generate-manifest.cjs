@@ -59,9 +59,20 @@ function buildAppDomainsBlock(raw) {
   const domains = String(raw || '')
     .split(',')
     .map((d) => d.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((domain, index) => {
+      const candidate = /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
+      if (!/^https?:\/\/[^\s/?#@*\\%]+$/i.test(candidate)) {
+        throw new Error(`APP_DOMAINS entry ${index + 1} must be an HTTP(S) origin with no trailing slash`);
+      }
+      try {
+        return new URL(candidate).origin;
+      } catch {
+        throw new Error(`APP_DOMAINS entry ${index + 1} is not a valid HTTP(S) origin`);
+      }
+    });
   if (domains.length === 0) return '';
-  const lines = domains.map((d) => `    <AppDomain>${escapeXml(d)}</AppDomain>`);
+  const lines = [...new Set(domains)].map((d) => `    <AppDomain>${escapeXml(d)}</AppDomain>`);
   return `<AppDomains>\n${lines.join('\n')}\n  </AppDomains>\n  `;
 }
 

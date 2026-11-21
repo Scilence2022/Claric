@@ -1,5 +1,7 @@
+/** @jest-environment jsdom */
 import { resolveDocumentIdentity, persistDocumentIdentity } from '../src/taskpane/document-identity.js';
 const { webcrypto } = require('crypto');
+global.TextEncoder = require('util').TextEncoder;
 
 const ORIGIN = { origin: 'https://localhost:3000' };
 const resolve = (url, cryptoImpl = webcrypto, extra = {}) => resolveDocumentIdentity({
@@ -8,15 +10,23 @@ const resolve = (url, cryptoImpl = webcrypto, extra = {}) => resolveDocumentIden
 
 function makeParts(initialXml = null) {
     let xml = initialXml;
+    const node = {
+        setTextAsync: jest.fn((text, cb) => {
+            const dom = new DOMParser().parseFromString(xml, 'application/xml');
+            dom.documentElement.textContent = text;
+            xml = new XMLSerializer().serializeToString(dom);
+            cb({ status: 'succeeded' });
+        }),
+    };
     const part = {
         getXmlAsync: (cb) => cb({ status: 'succeeded', value: xml }),
-        setXmlAsync: jest.fn((next, cb) => { xml = next; cb({ status: 'succeeded' }); }),
+        getNodesAsync: jest.fn((_path, cb) => cb({ status: 'succeeded', value: [node] })),
     };
     const parts = {
         getByNamespaceAsync: jest.fn((ns, cb) => cb({ status: 'succeeded', value: xml ? [part] : [] })),
         addAsync: jest.fn((next, cb) => { xml = next; cb({ status: 'succeeded', value: { id: 'part-1' } }); }),
     };
-    return { parts, getXml: () => xml, part };
+    return { parts, getXml: () => xml, part, node };
 }
 
 async function urlHash(url) {
@@ -68,7 +78,7 @@ test('derives a deterministic fork identity on Save As without rewriting the fil
     const originalUrl = 'file:///docs/Contract.docx';
     const forkUrl = 'file:///docs/Contract-v2.docx';
     const storedId = 'document-stored-identity';
-    const { parts, part } = makeParts(identityXml(storedId, await urlHash(originalUrl)));
+    const { parts, node } = makeParts(identityXml(storedId, await urlHash(originalUrl)));
     const a = await resolve(forkUrl, webcrypto, { customXmlParts: parts });
     const b = await resolve(forkUrl, webcrypto, { customXmlParts: parts });
     expect(a.identityKind).toBe('fork');
@@ -76,7 +86,7 @@ test('derives a deterministic fork identity on Save As without rewriting the fil
     expect(a.documentId).toBe(b.documentId);
     expect(a.documentId).not.toBe(storedId);
     expect(a.documentId).toMatch(/^document-[a-f0-9]{64}$/);
-    expect(part.setXmlAsync).not.toHaveBeenCalled();
+    expect(node.setTextAsync).not.toHaveBeenCalled();
     expect(parts.addAsync).not.toHaveBeenCalled();
     // The original file identity is untouched and differs from the fork.
     const original = await resolve(originalUrl, webcrypto, { customXmlParts: parts });
@@ -122,10 +132,11 @@ test('persists a url identity lazily without leaking the path', async () => {
 test('rewrites the stored part after persisting a fork identity', async () => {
     const originalUrl = 'file:///docs/Contract.docx';
     const forkUrl = 'file:///docs/Contract-v2.docx';
-    const { parts, getXml, part } = makeParts(identityXml('document-stored-identity', await urlHash(originalUrl)));
+    const { parts, getXml, part, node } = makeParts('<?xml version="1.0"?>' + identityXml('document-stored-identity', await urlHash(originalUrl)));
     const fork = await resolve(forkUrl, webcrypto, { customXmlParts: parts });
     await expect(persistDocumentIdentity(fork, { office: { context: { document: { url: forkUrl, customXmlParts: parts } } }, cryptoImpl: webcrypto })).resolves.toBe(true);
-    expect(part.setXmlAsync).toHaveBeenCalledTimes(1);
+    expect(part.getNodesAsync).toHaveBeenCalledWith('/*', expect.any(Function));
+    expect(node.setTextAsync).toHaveBeenCalledTimes(1);
     expect(getXml()).toContain(fork.documentId);
     expect(getXml()).toContain(await urlHash(forkUrl));
     const reloaded = await resolve(forkUrl, webcrypto, { customXmlParts: parts });

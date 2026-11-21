@@ -77,6 +77,6 @@
   },
   "homepage": "https://github.com/Scilence2022/Claric#readme",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   }
 }

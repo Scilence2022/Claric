@@ -8,8 +8,8 @@
  * The trimmer now degrades gracefully: strip previews → truncate proposal
  * diffs → drop proposals → truncate pathological message text.
  *
- * Also covered: a failed index write must surface (the caller logs it)
- * instead of silently leaving the index and blobs inconsistent.
+ * History commits share one storage write so failed writes preserve the
+ * last saved state, even when the new chat would evict older chats.
  */
 
 // localStorage mock (node test environment has no DOM)
@@ -26,8 +26,8 @@ const localStorageMock = (() => {
 })();
 global.localStorage = localStorageMock;
 
-const { saveSession, __testing } = require('../src/taskpane/sessions.js');
-const { MAX_SESSION_BYTES, SESSION_KEY_PREFIX, INDEX_KEY } = __testing;
+const { loadSession, listSessions, saveSession, __testing } = require('../src/taskpane/sessions.js');
+const { MAX_SESSION_BYTES, INDEX_KEY } = __testing;
 
 function hugeProposal(beforeChars, afterChars) {
     return {
@@ -56,7 +56,7 @@ describe('session quota hardening', () => {
         ];
 
         const session = saveSession(messages, { id: 's-quota-1' });
-        const raw = localStorage.getItem(`${SESSION_KEY_PREFIX}${session.id}`);
+        const raw = JSON.stringify(loadSession(session.id));
 
         expect(raw.length).toBeLessThanOrEqual(MAX_SESSION_BYTES);
         // The message survives (metadata preserved) even though the diffs
@@ -73,7 +73,7 @@ describe('session quota hardening', () => {
         ];
 
         const session = saveSession(messages, { id: 's-quota-2' });
-        const stored = JSON.parse(localStorage.getItem(`${SESSION_KEY_PREFIX}${session.id}`));
+        const stored = loadSession(session.id);
 
         expect(stored.messages[1].proposals[0].previewSrc).toBeNull();
         // No diff truncation needed — the proposal items array is untouched.
@@ -87,79 +87,36 @@ describe('session quota hardening', () => {
         ];
 
         const session = saveSession(messages, { id: 's-quota-3' });
-        const raw = localStorage.getItem(`${SESSION_KEY_PREFIX}${session.id}`);
+        const raw = JSON.stringify(loadSession(session.id));
 
         expect(raw).not.toBeNull();
         expect(raw.length).toBeLessThanOrEqual(MAX_SESSION_BYTES);
     });
 
-    test('a failed index write surfaces as a saveSession error (index/blob consistency)', () => {
-        const original = localStorage.setItem.bind(localStorage);
+    test('evicts the oldest sessions within the atomic write and respects a tight origin quota', () => {
+        const original = localStorage.setItem;
         localStorage.setItem = (key, value) => {
-            if (key === 'wordAI.sessions.index') {
-                const err = new Error('QuotaExceededError');
-                err.name = 'QuotaExceededError';
-                throw err;
-            }
+            if (String(value).length > 4_000_000) throw new Error('QuotaExceededError');
             return original(key, value);
         };
         try {
-            expect(() => saveSession([{ role: 'user', text: 'hi' }], { id: 's-quota-4' }))
-                .toThrow(/index could not be updated/i);
-        } finally {
-            localStorage.setItem = original;
-        }
-    });
-
-    test('evicts stale sessions BEFORE writing the new blob (quota-order regression)', () => {
-        // Regression: saveSession used to write the new blob FIRST and evict
-        // under the total cap AFTER — so with stale blobs near the cap the
-        // write blew the localStorage quota before the eviction (which was
-        // about to free that very space) ever ran, and the CURRENT session
-        // was lost. Eviction must come first.
-        const QUOTA = 5_000_000;
-        const original = localStorage.setItem.bind(localStorage);
-        localStorage.setItem = (key, value) => {
-            let total = 0;
-            for (let i = 0; i < localStorage.length; i++) {
-                const k = localStorage.key(i);
-                if (k !== key) total += (localStorage.getItem(k) || '').length;
+            for (const id of ['oldest', 'retained']) {
+                saveSession([{ role: 'assistant', proposals: [hugeProposal(700_000, 700_000)] }], { id });
             }
-            total += String(value).length;
-            if (total > QUOTA) {
-                const err = new Error('QuotaExceededError');
-                err.name = 'QuotaExceededError';
-                throw err;
-            }
-            return original(key, value);
-        };
+            const index = localStorage.getItem(INDEX_KEY);
+            localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
+            expect(() => saveSession([{ role: 'assistant', proposals: [hugeProposal(700_000, 700_000)] }], { id: 'new' }))
+                .toThrow('QuotaExceededError');
+            expect(localStorage.getItem(INDEX_KEY)).toBe(index);
 
-        try {
-            // Three stale ~1.4 MB blobs registered in the history index:
-            // 4.2 MB total, under the simulated quota but over the
-            // MAX_TOTAL_BYTES (4 MB) soft cap once the new session lands.
-            const blob = '{"id":"old","messages":[]}' + 'x'.repeat(1_400_000);
-            const idx = [];
-            for (const id of ['s-old-1', 's-old-2', 's-old-3']) {
-                localStorage.setItem(`${SESSION_KEY_PREFIX}${id}`, blob);
-                idx.push({ id, title: `old ${id}`, createdAt: 1, updatedAt: 1, messageCount: 1, preview: 'p' });
-            }
-            localStorage.setItem(INDEX_KEY, JSON.stringify(idx));
-
-            // A fresh ~1.4 MB session.
-            const messages = [
-                { role: 'user', text: 'Polish the document' },
-                { role: 'assistant', text: 'Staged.', proposals: [hugeProposal(700_000, 700_000)] },
-            ];
-
-            const session = saveSession(messages, { id: 's-new-1' });
-
-            // The new session survived (old order: saveSession threw here).
-            expect(localStorage.getItem(`${SESSION_KEY_PREFIX}${session.id}`)).toBeTruthy();
-            // At least one stale blob was evicted to make room.
-            const remaining = ['s-old-1', 's-old-2', 's-old-3'].filter((sid) =>
-                localStorage.getItem(`${SESSION_KEY_PREFIX}${sid}`) !== null);
-            expect(remaining.length).toBeLessThan(3);
+            localStorage.setItem = (key, value) => {
+                if (String(value).length > 4_000_000) throw new Error('QuotaExceededError');
+                return original(key, value);
+            };
+            const session = saveSession([{ role: 'assistant', proposals: [hugeProposal(700_000, 700_000)] }], { id: 'new' });
+            expect(loadSession(session.id)).toEqual(session);
+            expect(listSessions().map(({ id }) => id)).toEqual(['new', 'retained']);
+            expect(loadSession('oldest')).toBeNull();
         } finally {
             localStorage.setItem = original;
         }

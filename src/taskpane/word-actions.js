@@ -2351,24 +2351,52 @@ const TABLE_CONTENT_HINT_RE = /填充|填写|填入|内容|数据|资料|根据|
  *   warnings: string[] }>} `model` is null on the deterministic empty-table path
  */
 export async function prepareTableProposal(deps, { instruction, onToken, onReasoning, signal } = {}) {
-    const { appState, log } = deps;
+    const { log } = deps;
     const text = String(instruction || '').trim();
     if (!text) {
         throw new Error('No table instruction given.');
     }
 
-    // Table creation runs only for table requests, so its protocol loads on demand.
-    const {
-        inferTableCreationSpec, buildTableCreationPrompt, parseTableCreationResponse,
-    } = await loadTableCreation({ signal });
-    const inferred = inferTableCreationSpec(text);
+    const tableCreation = await loadTableCreation({ signal });
+    const inferred = tableCreation.inferTableCreationSpec(text);
     if (inferred && !TABLE_CONTENT_HINT_RE.test(text)) {
         const rowCount = inferred.rows.length;
         const columnCount = inferred.rows[0].length;
         log(`Table request has explicit dimensions (${rowCount}×${columnCount}) — drafting an empty table without the model.`, 'info');
-        return { instruction: text, spec: inferred, model: null, warnings: [] };
+        const anchor = isSelectionTablePosition(inferred.position) ? await tableCreation.captureTableAnchor(deps, signal) : null;
+        if (isSelectionTablePosition(inferred.position) && !anchor) throw new Error('Word could not anchor the table placement.');
+        return { instruction: text, spec: inferred, model: null, warnings: [], anchor };
     }
 
+    // The model may choose a selection-relative position. Capture it before generating the table.
+    const anchor = await tableCreation.captureTableAnchor(deps, signal);
+    let retainAnchor = false;
+    try {
+        const proposal = await draftTableContents(deps, text, inferred, tableCreation, { onToken, onReasoning, signal });
+        checkOperationSignal(signal);
+        if (isSelectionTablePosition(proposal.spec.position)) {
+            if (!anchor) throw new Error('Word could not anchor the table placement.');
+            retainAnchor = true;
+        }
+        return { ...proposal, anchor: retainAnchor ? anchor : null };
+    } finally {
+        if (!retainAnchor) await discardTableProposal(deps, { anchor });
+    }
+}
+
+function isSelectionTablePosition(position) {
+    return position === 'before' || position === 'after';
+}
+
+export async function discardTableProposal(deps, proposal) {
+    if (!proposal?.anchor?.bookmark || proposal.anchor.cleaned) return;
+    const tableCreation = await loadTableCreation();
+    await tableCreation.discardTableProposal(deps, proposal);
+}
+
+async function draftTableContents(deps, text, inferred, tableCreation, { onToken, onReasoning, signal }) {
+    const { appState, log } = deps;
+    const { buildTableCreationPrompt, parseTableCreationResponse } = tableCreation;
     // Content-bearing or dimensionless request: the model fills the grid.
     // Selection is the preferred context — a selected table renders as a
     // markdown grid (structure survives), plain selections pass through as
@@ -2442,11 +2470,18 @@ export async function prepareTableProposal(deps, { instruction, onToken, onReaso
  * @returns {Promise<{ inserted: boolean, rowCount: number, columnCount: number,
  *   tracked: boolean, warnings: string[] }>}
  */
-export async function applyTableProposal(deps, proposal) {
+export async function applyTableProposal(deps, proposal, { signal } = {}) {
+    if (proposal?.attempted) throw new Error('This table insertion was already attempted. Review Word and draft a new proposal.');
+    if (proposal) proposal.attempted = true;
+    try { return await insertProposedTable(deps, proposal, signal); }
+    finally { await discardTableProposal(deps, proposal); }
+}
+
+async function insertProposedTable(deps, proposal, signal) {
+    checkOperationSignal(signal);
     const { appState, log } = deps;
-    // Re-validate at apply time: the proposal may have round-tripped through
-    // session persistence, so its spec is treated as untrusted input again.
-    const { validateTableCreationSpec } = await loadTableCreation();
+    // Revalidate the spec at the native write boundary.
+    const { validateTableCreationSpec, resolveTableAnchor } = await loadTableCreation({ signal });
     const validation = validateTableCreationSpec(proposal && proposal.spec);
     if (!validation.spec) {
         const first = validation.errors[0];
@@ -2466,10 +2501,15 @@ export async function applyTableProposal(deps, proposal) {
     }
 
     await Word.run(async (context) => {
+        checkOperationSignal(signal);
         const trackingApiAvailable = !!Word.ChangeTrackingMode;
-        if (trackingApiAvailable) {
-            context.document.load('changeTrackingMode');
+        if (trackingApiAvailable) context.document.load('changeTrackingMode');
+        let range = context.document.body;
+        if (isSelectionTablePosition(spec.position)) {
+            range = await resolveTableAnchor(context, proposal.anchor, signal);
+        } else if (trackingApiAvailable) {
             await context.sync();
+            checkOperationSignal(signal);
         }
         const previousMode = Word.ChangeTrackingMode ? context.document.changeTrackingMode : null;
         if (trackingApiAvailable) {
@@ -2481,17 +2521,7 @@ export async function applyTableProposal(deps, proposal) {
         }
 
         try {
-            let table;
-            if (spec.position === 'start' || spec.position === 'end') {
-                table = context.document.body.insertTable(
-                    rowCount, columnCount, Word.InsertLocation[spec.position], spec.rows
-                );
-            } else {
-                // before/after anchor on the current selection.
-                table = context.document.getSelection().insertTable(
-                    rowCount, columnCount, Word.InsertLocation[spec.position], spec.rows
-                );
-            }
+            const table = range.insertTable(rowCount, columnCount, Word.InsertLocation[spec.position], spec.rows);
             if (Word.BuiltInStyleName && Word.BuiltInStyleName.tableGrid !== undefined) {
                 table.styleBuiltIn = Word.BuiltInStyleName.tableGrid;
             }
@@ -2628,7 +2658,7 @@ export async function planDocumentTasks(deps, {
     return { tasks: null, requirements: [], unsupported: [], review: null, failure, model: backendConfig.model };
 }
 
-function checkOperationSignal(signal) {
+export function checkOperationSignal(signal) {
     if (signal?.aborted) {
         const error = new Error('Operation cancelled.');
         error.name = 'AbortError';

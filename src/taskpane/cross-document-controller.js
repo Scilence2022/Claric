@@ -203,6 +203,7 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
             for (const [id, item] of remoteContexts) if (!knownDocuments.has(id) || item.expiresAt <= Date.now()) remoteContexts.delete(id);
             evidenceWorkspace?.onSnapshot(snapshot);
             distributed?.expireTasks?.();
+            remoteTaskRunner?.expireTasks?.();
             renderCrossDocumentTargets(knownDocuments);
         },
         onEvents: async (events) => {
@@ -405,13 +406,14 @@ async function startCoordination(connectionOptions, onUnavailable = null) {
                 if (candidates.length !== 1) throw new Error('A planned document instance disconnected or became ambiguous; plan again');
                 return [task.taskId, candidates[0]];
             }));
+            const taskIds = new Map(tasks.map(({ taskId }) => [taskId, `task-${crypto.randomUUID()}`]));
             await distributed.submitGraph({
                 graphId: `graph-${crypto.randomUUID()}`,
                 tasks: tasks.map((task) => ({
-                    taskId: task.taskId,
+                    taskId: taskIds.get(task.taskId),
                     type: task.type,
                     instruction: task.instruction,
-                    dependsOn: task.dependsOn,
+                    dependsOn: (task.dependsOn || []).map((id) => taskIds.get(id)),
                     inputRefs: task.evidenceIds || [],
                     target: targets.get(task.taskId),
                     ttlMs: 900000,

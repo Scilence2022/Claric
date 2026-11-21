@@ -151,17 +151,20 @@ describe('store identity generation', () => {
     }
   }
 
-  test('buildAppDomainsBlock renders an escaped AppDomains element', () => {
+  test('buildAppDomainsBlock normalizes and deduplicates HTTP(S) origins', () => {
     expect(buildAppDomainsBlock(null)).toBe('');
     expect(buildAppDomainsBlock('')).toBe('');
-    expect(buildAppDomainsBlock('api.example.com, llm.example.org')).toBe(
+    expect(buildAppDomainsBlock('api.example.com, http://llm.example.org:8080, https://api.example.com')).toBe(
       '<AppDomains>\n' +
-      '    <AppDomain>api.example.com</AppDomain>\n' +
-      '    <AppDomain>llm.example.org</AppDomain>\n' +
+      '    <AppDomain>https://api.example.com</AppDomain>\n' +
+      '    <AppDomain>http://llm.example.org:8080</AppDomain>\n' +
       '  </AppDomains>\n  '
     );
-    // Env values must not be able to break out of the element.
-    expect(buildAppDomainsBlock('a</AppDomain><script>')).toContain('&lt;/AppDomain&gt;');
+  });
+
+  test.each(['ftp://example.com', 'https://a.example.com/', 'https://a.example.com/path',
+    'https://a.example.com?query=1', 'https://user@a.example.com', '*.example.com', 'a</AppDomain><script>'])('rejects an unsupported AppDomain value %s', (origin) => {
+    expect(() => buildAppDomainsBlock(origin)).toThrow(/APP_DOMAINS entry 1/);
   });
 
   test('APP_DOMAINS env produces the AppDomains element; unset omits it entirely', () => {
@@ -169,7 +172,7 @@ describe('store identity generation', () => {
       generateManifest({ rootDir: projectDir });
       const xml = fs.readFileSync(path.join(projectDir, 'manifest.xml'), 'utf8');
       expect(xml).toContain('<AppDomains>');
-      expect(xml).toContain('<AppDomain>api.example.com</AppDomain>');
+      expect(xml).toContain('<AppDomain>https://api.example.com</AppDomain>');
       expect(xml).not.toContain('${APP_DOMAINS_BLOCK}');
     });
     withEnv({}, () => {
