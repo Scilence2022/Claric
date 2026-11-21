@@ -854,8 +854,12 @@ export function initInputBar({ onSubmit, onCancel, getSkills, onOpenSettings, ge
             }
         });
         document.addEventListener('click', (e) => {
+            // Contains, not equality: clicks landing on a pill's inner spans
+            // (e.g. the thinking level label) bubble here too, and counting
+            // them as outside clicks would close the menu in the same event
+            // that just opened it.
             if (!menu.hasAttribute('hidden') &&
-                !menu.contains(e.target) && e.target !== pill) {
+                !menu.contains(e.target) && !pill.contains(e.target)) {
                 close();
             }
         });

@@ -33,7 +33,6 @@ import { createSettingsLoader } from './settings-loader.js';
 import { initStatusBar, addLog, addLogWithRetry, updateCommentStatusBar, toggleLogDrawer, getActivityLogText } from './ui/status-bar.js';
 import { initHistoryView, openHistory } from './ui/history-view.js';
 import { listSessions, loadSession as loadStoredSession, saveSession, deleteSession, setSessionScope } from './sessions.js';
-import { getProviderPreset } from '../lib/providers.js';
 import { cachedModels } from '../lib/model-catalog.js';
 import { getModelCapabilities, resolveThinkingLevel, getThinkingHint } from '../lib/model-capabilities.js';
 import { getHostPlatform } from '../lib/platform.js';
@@ -286,15 +285,10 @@ async function initialize() {
  * refreshes both.
  */
 function updateComposerPills() {
-    const preset = getProviderPreset(appState.config.backend);
     const backendConfig = getActiveBackendConfig(appState);
-    const label = preset ? preset.label : appState.config.backend;
-    const entry = appState.config.providers[appState.config.backend];
-    const profile = entry.profiles?.find((p) => p.id === entry.activeProfileId);
-    const profileLabel = entry.profiles?.length > 1 && profile ? ` / ${profile.name}` : '';
     const pill = document.getElementById('modelPill');
     if (pill) {
-        pill.textContent = `${label}${profileLabel}: ${backendConfig.model || '(no model)'}`;
+        pill.textContent = backendConfig.model || '(no model)';
         pill.title = 'Switch model';
     }
     updateThinkingPill();
