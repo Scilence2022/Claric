@@ -2,6 +2,7 @@ import { loadLazyModule } from '../lib/lazy-module-loader.js';
 
 export function createSettingsLoader({
     onConfigChanged,
+    documentWriting,
     log,
     load = () => loadLazyModule('settings', () => import(/* webpackChunkName: "settings" */ './ui/settings-view.js')),
 }) {
@@ -9,7 +10,7 @@ export function createSettingsLoader({
     const ready = () => {
         if (!pending) {
             pending = Promise.resolve().then(load).then((view) => {
-                view.initSettings({ onConfigChanged, bindOpenButton: false });
+                view.initSettings({ onConfigChanged, bindOpenButton: false, ...(documentWriting ? { documentWriting } : {}) });
                 return view;
             }).catch((error) => {
                 pending = null;

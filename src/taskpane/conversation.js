@@ -70,6 +70,11 @@ export const TURN_TYPE = Object.freeze({
     DOC_QA: 'doc-qa',
 });
 
+const WRITING_TURNS = new Set([
+    TURN_TYPE.SELECTION_EDIT, TURN_TYPE.DOC_EDIT, TURN_TYPE.DOCUMENT_EDIT, TURN_TYPE.DOC_APPEND,
+    TURN_TYPE.DOC_QA, TURN_TYPE.TABLE, TURN_TYPE.TABLE_TOOL, TURN_TYPE.DOCUMENT_TABLE_TOOL, TURN_TYPE.COMPOUND,
+]);
+
 /**
  * English edit-intent verbs (word-boundary matched) and Chinese edit-intent
  * substrings. Free text without a selection carrying one of these is an
@@ -824,7 +829,7 @@ export function routeTurn(text, {
  * @returns {{ submit: Function, cancel: Function, newChat: Function }}
  */
 export function createConversation(deps) {
-    const { appState, view, input, log, logWithRetry, updateStatusBar } = deps;
+    const { appState, view, input, log, logWithRetry, updateStatusBar, documentWriting } = deps;
     const actions = deps.actions || { ...defaultActions, ...Object.fromEntries(
         ['prepareTableToolEdit', 'prepareImageToolEdit', 'applyImageOps'].map((name) => [name, async (...args) => {
             const module = await loadAgentActions({ signal: args[2]?.signal || args[1]?.signal });
@@ -2835,6 +2840,19 @@ export function createConversation(deps) {
         turnDeps.selectionParagraphContext = selectionParagraphContext;
 
         try {
+            const usesWritingSettings = WRITING_TURNS.has(turn.type)
+                || (turn.type === TURN_TYPE.SKILL && turn.skill.category !== 'tools');
+            if (documentWriting && usesWritingSettings) {
+                const signal = owner.controller.signal;
+                if (documentWriting.settings.mode === 'automatic') {
+                    await documentWriting.detect({
+                        automatic: true, signal,
+                        onStart: () => msg.setStatus('Detecting document writing settings…'),
+                    });
+                }
+                if (signal.aborted || !owner.isCurrentSession()) return;
+                turnDeps.writingSettings = documentWriting.settings;
+            }
             await dispatchTurn(
                 turn, msg, turnDeps, selectionText, selectionImages,
                 hasMultiCellTableRegion

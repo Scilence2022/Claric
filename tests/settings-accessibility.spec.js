@@ -114,6 +114,9 @@ test('Settings tabs and nested prompt modal remain keyboard accessible', () => {
     const general = document.getElementById('settingsTabGeneral');
     general.focus();
     general.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(document.activeElement.id).toBe('settingsTabDocument');
+    expect(document.getElementById('settingsPageDocument').hidden).toBe(false);
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(document.activeElement.id).toBe('settingsTabPrompts');
     expect(general.tabIndex).toBe(-1);
     const select = document.getElementById('promptSelect-amendment');

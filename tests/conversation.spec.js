@@ -1855,6 +1855,23 @@ describe('createConversation.submit', () => {
     expect(gateApply).toBe(true);
   });
 
+  test('automatic document writing settings are resolved before the writing request', async () => {
+    const actions = makeActions();
+    const initial = { mode: 'automatic', values: { type: '', style: '', language: '' } };
+    const detected = { ...initial, values: { type: 'report', style: 'technical', language: 'zh-Hans' } };
+    const documentWriting = {
+      settings: initial,
+      detect: jest.fn(async () => { documentWriting.settings = detected; }),
+    };
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(), actions, documentWriting,
+      getSelectionText: async () => '',
+    });
+    await conv.submit('/executive-summary');
+    expect(documentWriting.detect).toHaveBeenCalledWith(expect.objectContaining({ automatic: true, signal: expect.any(AbortSignal) }));
+    expect(actions.runSummarySkill).toHaveBeenCalledWith(expect.objectContaining({ writingSettings: detected }), expect.any(Object));
+  });
+
   test('chat skill answers in chat via the Q&A path', async () => {
     const appState = makeAppState();
     const actions = makeActions();

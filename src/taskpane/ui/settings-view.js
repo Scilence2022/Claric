@@ -13,6 +13,7 @@
  * @module ui/settings-view
  */
 
+import { initDocumentWritingView } from './document-writing-view.js';
 import './settings-view.css';
 import { testConnection as llmTestConnection } from '../../lib/llm-client.js';
 import { CATEGORIES } from '../../lib/prompt-manager.js';
@@ -139,7 +140,7 @@ function initProfileControls(prefix, image, onTextInput) {
  * @param {function()} [deps.onConfigChanged] - Called after config changes (model pill refresh)
  * @param {boolean} [deps.bindOpenButton] - False when bootstrap owns the lazy open handler
  */
-export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
+export function initSettings({ onConfigChanged, documentWriting, bindOpenButton = true } = {}) {
     _onConfigChanged = onConfigChanged || (() => {});
 
     if (bindOpenButton) document.getElementById('settingsBtn').addEventListener('click', openSettings);
@@ -333,6 +334,7 @@ export function initSettings({ onConfigChanged, bindOpenButton = true } = {}) {
     document.getElementById('savePromptCancelBtn').addEventListener('click', hideSavePromptModal);
 
     updateUIFromConfig();
+    initDocumentWritingView(documentWriting);
     initSkillImport();
     initMcpServers();
     initMcpStepBudget();

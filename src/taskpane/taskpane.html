@@ -224,6 +224,7 @@
                 </div>
                 <div class="settings-tabs" role="tablist" aria-label="Settings sections">
                     <button id="settingsTabGeneral" class="settings-tab active" role="tab" aria-selected="true" data-tab="general">General</button>
+                    <button id="settingsTabDocument" class="settings-tab" role="tab" aria-selected="false" data-tab="document">Document</button>
                     <button id="settingsTabPrompts" class="settings-tab" role="tab" aria-selected="false" data-tab="prompts">Prompts</button>
                     <button id="settingsTabSkills" class="settings-tab" role="tab" aria-selected="false" data-tab="skills">Skills</button>
                     <button id="settingsTabWorkspace" class="settings-tab" role="tab" aria-selected="false" data-tab="workspace">Workspace</button>
@@ -446,6 +447,47 @@
                         </select>
                     </div>
                     </div><!-- /settingsPageGeneral -->
+
+                    <div id="settingsPageDocument" class="settings-page" role="tabpanel" aria-labelledby="settingsTabDocument" hidden>
+                        <div class="form-group">
+                            <label for="documentWritingMode">Detection</label>
+                            <select id="documentWritingMode" class="form-control" aria-describedby="documentWritingHelp">
+                                <option value="suggest">Suggest on request</option>
+                                <option value="manual">Manual</option>
+                                <option value="automatic">Automatically update unlocked settings</option>
+                            </select>
+                            <small id="documentWritingHelp" class="help-text">Detection sends short excerpts to your configured model. Settings are saved for this document in this add-in. They guide future drafts and replies.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="documentWriting-type">Document type</label>
+                            <select id="documentWriting-type" class="form-control" data-writing-value="type">
+                                <option value="">Use document context</option>
+                            </select>
+                            <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="type"> Lock document type</label></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="documentWriting-style">Writing style</label>
+                            <select id="documentWriting-style" class="form-control" data-writing-value="style">
+                                <option value="">Follow the source style</option>
+                            </select>
+                            <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="style"> Lock writing style</label></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="documentWriting-language">Output language</label>
+                            <select id="documentWriting-language" class="form-control" data-writing-value="language">
+                                <option value="">Follow the source language</option>
+                            </select>
+                            <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="language"> Lock output language</label></div>
+                        </div>
+                        <small class="help-text">Output language applies to new text. To translate existing text, use /translate or explicitly request translation.</small>
+                        <div class="document-writing-actions">
+                            <button id="detectDocumentWriting" type="button" class="btn btn-compact">Detect settings</button>
+                            <button id="applyDocumentWriting" type="button" class="btn btn-compact" hidden>Use detected settings</button>
+                            <button id="undoDocumentWriting" type="button" class="btn btn-compact" hidden>Undo detection change</button>
+                        </div>
+                        <ul id="documentWritingSuggestion" hidden></ul>
+                        <p id="documentWritingStatus" class="help-text" role="status"></p>
+                    </div>
 
                     <div id="settingsPageWorkspace" class="settings-page" role="tabpanel" aria-labelledby="settingsTabWorkspace" hidden>
                         <p class="settings-section-label">Cross-document connection</p>

@@ -526,11 +526,9 @@ module.exports = (env, argv) => {
       // and exempt from the per-asset limit, not from artifact verification.
       hints: 'error',
       maxAssetSize: 700 * 1024,
-      // Allow the small per-ChangeSet completion/serialization hooks. The
-      // native undo command and maintenance UI are loaded on demand. The
-      // composer thinking pill (separate popover + live level label) moved
-      // this from 562 KiB.
-      maxEntrypointSize: 566 * 1024,
+      // Allow document writing settings to reach the main writing paths.
+      // The settings panel and detection controller remain separate chunks.
+      maxEntrypointSize: 572 * 1024,
       assetFilter: (name) => !/pdf\.worker\.min\.mjs$/.test(name)
     },
     devtool: isDev ? 'eval-source-map' : false

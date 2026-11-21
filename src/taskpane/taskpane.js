@@ -38,6 +38,8 @@ import { cachedModels } from '../lib/model-catalog.js';
 import { getModelCapabilities, resolveThinkingLevel, getThinkingHint } from '../lib/model-capabilities.js';
 import { getHostPlatform } from '../lib/platform.js';
 import { resolveDocumentIdentity } from './document-identity.js';
+import { extractDocumentStructured } from '../lib/comment-extractor.js';
+import { sendMessages } from '../lib/llm-client.js';
 import { loadLazyModule } from '../lib/lazy-module-loader.js';
 
 if (typeof Office !== 'undefined') {
@@ -108,7 +110,16 @@ async function initialize() {
         }
     }
 
-    const settings = createSettingsLoader({ onConfigChanged: updateComposerPills, log: addLog });
+    const { createDocumentWritingController } = await loadLazyModule('document-writing',
+        () => import(/* webpackChunkName: "document-writing" */ './document-writing-controller.js'));
+    const documentWriting = createDocumentWritingController({
+        identity: localIdentity,
+        readText: () => extractDocumentStructured({ richness: 'plain' }),
+        classify: (messages, signal) => sendMessages(
+            { ...getActiveBackendConfig(), maxRetries: 0 }, messages, addLog, signal, 20000),
+        log: addLog,
+    });
+    const settings = createSettingsLoader({ onConfigChanged: updateComposerPills, log: addLog, documentWriting });
     document.getElementById('settingsBtn').addEventListener('click', settings.open);
     initScreenSharingView({ log: addLog });
 
@@ -159,6 +170,7 @@ async function initialize() {
 
     const conversation = createConversation({
         appState,
+        documentWriting,
         view: {
             addUserMessage: chatView.addUserMessage,
             createAssistantMessage: chatView.createAssistantMessage,

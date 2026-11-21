@@ -275,6 +275,7 @@ export async function prepareDocumentEdit(deps, { instruction, selectionText = '
     let result;
     try { result = await runDocumentEditSession({
         snapshot, instruction, selectionText, signal, onStep, conversationHistory: deps.conversationHistory,
+        writingSettings: deps.writingSettings,
         sourceTools: [...(references.length ? FILE_RESOURCE_TOOL_SPECS : []), ...(temporary.length ? TEMP_SOURCE_SPECS : []), ...(renderer?.tools || [])],
         sourceContext: JSON.stringify({ library: references.map(({ fileId, versionId, name }) => ({ fileId, versionId, name })),
             temporary: temporary.map(({ sourceId, name, text }) => ({ sourceId, name, chars: text.length })) }),
