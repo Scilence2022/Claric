@@ -119,7 +119,7 @@ describe('saveSession', () => {
             },
         ]);
 
-        const raw = JSON.parse(localStorage.getItem(`${SESSION_KEY_PREFIX}${session.id}`));
+        const raw = loadSession(session.id);
         expect(raw.messages[0]._internal).toBeUndefined();
         expect(raw.messages[0].dom).toBeUndefined();
     });
@@ -141,7 +141,7 @@ describe('saveSession', () => {
             { name: 'a.txt', kind: 'text', size: 5 },
             { name: 'p.png', kind: 'image', size: 9 },
         ]);
-        const raw = localStorage.getItem(`${SESSION_KEY_PREFIX}${session.id}`);
+        const raw = localStorage.getItem(INDEX_KEY);
         expect(raw).not.toContain('extracted body');
         expect(raw).not.toContain('data:image');
     });

@@ -95,9 +95,9 @@ describe('document agent', () => {
 
     test('prepares and applies a remote format task and cleans its anchor on discard', async () => {
         const proposal = { ops: [{ match: 'Quarterly', font: { bold: true } }], anchor: { bookmark: '_claric_fmt_x', text: 'Quarterly report' } };
-        const prepare = jest.fn(async () => proposal);
+        const prepare = jest.fn(async () => ({ ...proposal, anchor: { ...proposal.anchor } }));
         const apply = jest.fn(async () => ({ applied: true, appliedRanges: 1, insertedParagraphs: 0 }));
-        const discard = jest.fn(async () => {});
+        const discard = jest.fn(async (_deps, draft) => { draft.anchor.cleaned = true; });
         const agent = create({ actions: {
             readSelectionContent: async () => ({ text: 'Quarterly report' }),
             prepareFormatProposal: prepare, applyFormatProposal: apply, discardFormatProposal: discard,
@@ -111,12 +111,11 @@ describe('document agent', () => {
         const result = await agent.applyProposal(['format-1'], record);
         expect(result.appliedItemIds).toEqual(['format-1']);
         expect(apply).toHaveBeenCalledTimes(1);
-        expect(discard).not.toHaveBeenCalled();
+        expect(discard).toHaveBeenCalledTimes(1);
 
         const second = await agent.prepareTask({ taskId: 'fmt-2', taskType: 'format', instruction: 'Italicize' });
-        agent.discardProposal(second);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(discard).toHaveBeenCalledTimes(1);
+        await agent.discardProposal(second);
+        expect(discard).toHaveBeenCalledTimes(2);
         expect(agent.getCapabilities().taskTypes).toEqual(['edit', 'append', 'format', 'table']);
     });
 
@@ -138,6 +137,25 @@ describe('document agent', () => {
         });
         expect(applyFormatProposal).toHaveBeenCalledWith(expect.anything(), expect.anything(), { signal });
         await expect(agent.applyProposal(['format-1'], record)).rejects.toMatchObject({ code: 'ALREADY_ATTEMPTED' });
+    });
+
+    test('completed and expired proposals release their slots', async () => {
+        let now = 1000;
+        const agent = create({ clock: () => now, actions: {
+            readSelectionContent: async () => ({ text: 'Before' }),
+            prepareSelectionAmendment: async () => ({ selectionText: 'Before', amendedText: 'After' }),
+            applySelectionAmendment: async () => {},
+        } });
+        const task = (index) => ({ taskId: `edit-${index}`, taskType: 'edit', instruction: 'Polish text' });
+        for (let index = 0; index <= 50; index++) {
+            const record = await agent.prepareTask(task(index));
+            await agent.applyProposal(['text-1'], { ...record, target: identity });
+        }
+        await expect(agent.prepareTask(task(50))).rejects.toMatchObject({ code: 'DUPLICATE_TASK' });
+        for (let index = 51; index <= 100; index++) await agent.prepareTask(task(index));
+        await expect(agent.prepareTask(task(101))).rejects.toMatchObject({ code: 'CAPACITY' });
+        now += 15 * 60 * 1000;
+        await expect(agent.prepareTask(task(101))).resolves.toMatchObject({ taskId: 'edit-101' });
     });
 
     test('prepares and applies a remote table task with a bounded preview', async () => {

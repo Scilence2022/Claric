@@ -1595,7 +1595,13 @@ export function createConversation(deps) {
                 onToken: (t) => msg.appendModelToken({ id: 'table' }, 'content', t),
                 onReasoning: (t) => msg.appendModelToken({ id: 'table' }, 'reasoning', t),
             });
+            const resource = stagedResource(() => actions.discardTableProposal?.(turnDeps, proposal));
+            if (myController.signal.aborted || !turnDeps.isCurrentSession()) {
+                await resource.dispose();
+                return;
+            }
             if (!proposal.spec) {
+                await resource.dispose();
                 msg.setStatus('No table could be drafted from this instruction.');
                 return;
             }
@@ -1615,9 +1621,9 @@ export function createConversation(deps) {
                 countsText,
                 tablePreview,
                 comment: null,
-                onApply: async () => {
+                onApply: async (_ids, applyCtx) => {
                     try {
-                        const result = await actions.applyTableProposal(turnDeps, proposal);
+                        const result = await resource.apply(() => actions.applyTableProposal(turnDeps, proposal, applyCtx));
                         if (result && result.warnings && result.warnings.length > 0) {
                             card.markWarning(`Table inserted with warning: ${result.warnings[0]}`);
                         } else {
@@ -1625,10 +1631,11 @@ export function createConversation(deps) {
                         }
                     } catch (error) {
                         log(`Apply failed: ${error.message}`, 'error');
-                        card.markError(error.message);
+                        card.markError(error.message, { retryable: false });
                     }
                 },
-                onReject: () => {
+                onReject: async () => {
+                    await resource.dispose();
                     log('Proposal rejected by user.', 'info');
                 },
             });

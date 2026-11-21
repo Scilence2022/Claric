@@ -20,46 +20,33 @@ function seed(id) {
 }
 
 describe('session recovery consistency', () => {
-    test('quota fallback drops evicted entries along with their blobs', () => {
-        seed('old-a');
-        seed('old-b');
-        localStorage.setItem.mockImplementationOnce(() => { throw new Error('QuotaExceededError'); });
-        const session = seed('current');
-        expect(listSessions().map((entry) => entry.id)).toEqual(['current']);
-        expect(loadSession('current')).toEqual(session);
-        expect(loadSession('old-a')).toBeNull();
-        expect(loadSession('old-b')).toBeNull();
-    });
-
-    test.each([false, true])('failed retry keeps no dangling index (updating existing: %s)', (updating) => {
-        seed('old');
+    test.each([false, true])('failed write keeps the previous index and chats intact (updating: %s)', (updating) => {
+        const older = seed('old');
         const prior = updating ? seed('current') : null;
-        localStorage.setItem.mockImplementation((key, value) => {
-            if (key === `${PREFIX}current`) throw new Error('QuotaExceededError');
-            store.set(key, String(value));
-        });
-        expect(() => seed('current')).toThrow('QuotaExceededError');
-        const entries = listSessions();
-        expect(entries.map((entry) => entry.id)).toEqual(updating ? ['current'] : []);
-        for (const entry of entries) expect(loadSession(entry.id)).not.toBeNull();
+        const index = store.get(INDEX);
+        localStorage.setItem.mockImplementationOnce(() => { throw new Error('QuotaExceededError'); });
+
+        expect(() => saveSession([{ role: 'user', text: 'new content' }], { id: 'current' })).toThrow('QuotaExceededError');
+        expect(store.get(INDEX)).toBe(index);
+        expect(loadSession('old')).toEqual(older);
         expect(loadSession('current')).toEqual(prior);
-        expect(loadSession('old')).toBeNull();
     });
 
-    test('fallback index write failure is surfaced instead of reporting a saved session', () => {
-        seed('old');
-        localStorage.setItem.mockImplementation(() => { throw new Error('storage disabled'); });
-        expect(() => seed('current')).toThrow(/history index could not be updated/);
-        expect(loadSession('current')).toBeNull();
-    });
+    test('commits an updated legacy chat before dropping its old blob', () => {
+        const oldSession = { id: 'old', title: 'Previous version', messages: [] };
+        store.set(INDEX, JSON.stringify([{ id: 'old', title: oldSession.title }, { id: 'other' }]));
+        store.set(`${PREFIX}old`, JSON.stringify(oldSession));
+        store.set(`${PREFIX}other`, JSON.stringify({ id: 'other', messages: [] }));
 
-    test('ordinary final index write failure remains visible', () => {
-        localStorage.setItem.mockImplementation((key, value) => {
-            if (key === INDEX) throw new Error('QuotaExceededError');
-            store.set(key, String(value));
-        });
-        expect(() => seed('current')).toThrow(/history index could not be updated/);
-        expect(loadSession('current')).not.toBeNull();
+        localStorage.setItem.mockImplementationOnce(() => { throw new Error('QuotaExceededError'); });
+        expect(() => seed('old')).toThrow('QuotaExceededError');
+        expect(loadSession('old')).toEqual(oldSession);
+
+        const updated = seed('old');
+        expect(updated.title).toBe(oldSession.title);
+        expect(loadSession('old')).toEqual(updated);
+        expect(loadSession('other')).toMatchObject({ id: 'other' });
+        expect(store.has(`${PREFIX}old`)).toBe(false);
     });
 
     test('mixed bad index entries do not crash sorting or subsequent saves', () => {

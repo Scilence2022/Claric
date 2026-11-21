@@ -60,22 +60,17 @@ function escapeXml(text) {
     return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function identityXml(documentId, urlHash, createdAt) {
-    const payload = { version: 1, documentId, urlHash, createdAt };
+function identityXml(payload) {
     return `<claricIdentity xmlns="${PART_XMLNS}" version="1">${escapeXml(JSON.stringify(payload))}</claricIdentity>`;
 }
 
-function unescapeXml(text) {
-    return String(text).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-}
-
-const PART_WRAPPER = /^<claricIdentity xmlns="urn:claric:identity" version="1">([\s\S]{0,4096})<\/claricIdentity>$/;
-
 function parseIdentityXml(xml) {
-    const match = PART_WRAPPER.exec(String(xml || ''));
-    if (!match) return null;
+    if (typeof xml !== 'string' || xml.length > 8192 || /<!DOCTYPE/i.test(xml)) return null;
+    const root = new DOMParser().parseFromString(xml, 'application/xml').documentElement;
+    if (root.namespaceURI !== PART_XMLNS || root.localName !== 'claricIdentity'
+        || root.getAttribute('version') !== '1' || root.children.length) return null;
     let payload;
-    try { payload = JSON.parse(unescapeXml(match[1])); } catch { return null; }
+    try { payload = JSON.parse(root.textContent); } catch { return null; }
     if (!payload || payload.version !== 1 || !ID_PATTERN.test(payload.documentId || '')) return null;
     if (payload.urlHash !== null && !/^[a-f0-9]{64}$/.test(payload.urlHash || '')) return null;
     if (!Number.isSafeInteger(payload.createdAt) || payload.createdAt < 0) return null;
@@ -195,15 +190,21 @@ export async function persistDocumentIdentity(identity, { office = globalThis.Of
     let urlHash;
     try { urlHash = await digest(url, cryptoImpl); } catch { urlHash = null; }
     if (!urlHash) return false;
-    const xml = identityXml(identity.documentId, urlHash, Date.now());
+    const payload = { version: 1, documentId: identity.documentId, urlHash, createdAt: Date.now() };
     if (identity.identityKind === 'url') {
-        const added = await callAsync(parts, 'addAsync', xml);
+        if (identity.documentId !== `document-${urlHash}` || documentUrl(office) !== url) return false;
+        const added = await callAsync(parts, 'addAsync', identityXml(payload));
         return succeeded(added);
     }
     if (identity.identityKind === 'fork') {
         const stored = await readIdentityPart(parts);
         if (!stored?.part) return false;
-        const updated = await callAsync(stored.part, 'setXmlAsync', xml);
+        if (stored.urlHash === urlHash) return stored.documentId === identity.documentId;
+        const forkHash = await digest(`${stored.documentId}:${url}`, cryptoImpl).catch(() => null);
+        if (!forkHash || `document-${forkHash}` !== identity.documentId) return false;
+        const nodes = await callAsync(stored.part, 'getNodesAsync', '/*');
+        if (!succeeded(nodes) || nodes.value?.length !== 1 || documentUrl(office) !== url) return false;
+        const updated = await callAsync(nodes.value[0], 'setTextAsync', JSON.stringify(payload));
         return succeeded(updated);
     }
     return false;

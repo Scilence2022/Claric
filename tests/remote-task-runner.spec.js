@@ -16,7 +16,7 @@ function setup(overrides = {}) {
         }),
         getSnapshot: async () => state.snapshot(receiver.credential, binding),
     };
-    const documentAgent = { getDocumentRevision: jest.fn(async () => 'rev-1'), applyProposal: jest.fn(async () => ({ ok: true })) };
+    const documentAgent = { getDocumentRevision: jest.fn(async () => 'rev-1'), applyProposal: jest.fn(async () => ({ ok: true })), discardProposal: jest.fn(async () => {}) };
     const onProposal = jest.fn();
     const runner = createRemoteTaskRunner({
         client, identity, documentAgent,
@@ -111,6 +111,21 @@ describe('remote task runner', () => {
         await runner.handleEvent(event);
         expect((await onProposal.mock.calls[0][1].reject()).ok).toBe(true);
         expect(published.map((item) => item.type)).toEqual(['task.claim', 'proposal.announced', 'proposal.decision', 'task.rejected']);
+        expect(documentAgent.applyProposal).not.toHaveBeenCalled();
+        expect(documentAgent.discardProposal).toHaveBeenCalledWith('t1');
+    });
+
+    test('releases expired local drafts and blocks attempts from retained cards', async () => {
+        let now = 1000;
+        const { runner, event, documentAgent, onProposal } = setup({ clock: () => now });
+        await runner.handleEvent(event);
+        const [record, review] = onProposal.mock.calls[0];
+        now += event.ttlMs;
+        runner.expireTasks();
+
+        expect(documentAgent.discardProposal).toHaveBeenCalledWith('t1');
+        expect(runner.getProposal(record.proposalId)).toBeNull();
+        expect(await review.apply()).toMatchObject({ ok: false });
         expect(documentAgent.applyProposal).not.toHaveBeenCalled();
     });
 });

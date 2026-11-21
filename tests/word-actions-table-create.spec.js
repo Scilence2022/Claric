@@ -1,3 +1,4 @@
+/** @jest-environment jsdom */
 /**
  * Unit tests for the table-creation route in src/taskpane/word-actions.js
  * (prepareTableProposal / applyTableProposal, backed by lib/table-ops.js).
@@ -28,6 +29,7 @@ const { extractDocumentStructured } = require('../src/lib/comment-extractor.js')
 const {
   prepareTableProposal,
   applyTableProposal,
+  discardTableProposal,
 } = require('../src/taskpane/word-actions.js');
 
 // --- Mock helpers ---
@@ -72,7 +74,10 @@ function makeApplyContext() {
     }),
   };
   const selection = {
-    text: '',
+    text: 'Original placement',
+    isNullObject: false,
+    insertBookmark: jest.fn(),
+    getOoxml: jest.fn(() => ({ value: '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:t>Original placement</w:t></w:r></w:p>' })),
     load: jest.fn(),
     insertTable: jest.fn((r, c, loc, rows) => {
       inserted.push({ where: 'selection', r, c, loc, rows });
@@ -80,7 +85,10 @@ function makeApplyContext() {
     }),
   };
   const context = {
-    document: { body, getSelection: () => selection, load: jest.fn() },
+    document: {
+      body, getSelection: jest.fn(() => selection), load: jest.fn(),
+      getBookmarkRangeOrNullObject: jest.fn(() => selection), deleteBookmark: jest.fn(),
+    },
     sync: jest.fn().mockResolvedValue(undefined),
   };
   let mode = 'Off';
@@ -88,7 +96,7 @@ function makeApplyContext() {
     get: () => mode,
     set: (v) => { mode = v; trackingModes.push(v); },
   });
-  return { context, table, inserted, trackingModes };
+  return { context, table, inserted, trackingModes, selection };
 }
 
 function setWordRun(context, { withTrackingApi = true } = {}) {
@@ -231,13 +239,45 @@ describe('applyTableProposal', () => {
     expect(result).toMatchObject({ inserted: true, rowCount: 3, columnCount: 3, tracked: true });
   });
 
+  test('inserts at the reviewed bookmark after the live selection moves', async () => {
+    const { context, selection } = makeApplyContext();
+    setWordRun(context);
+    const deps = makeDeps();
+    const proposal = await prepareTableProposal(deps, { instruction: 'Insert a 3x3 table after the selection' });
+    const elsewhere = { insertTable: jest.fn() };
+    context.document.getSelection.mockReturnValue(elsewhere);
+
+    await applyTableProposal(deps, proposal);
+
+    expect(selection.insertTable).toHaveBeenCalledTimes(1);
+    expect(elsewhere.insertTable).not.toHaveBeenCalled();
+    expect(context.document.deleteBookmark).toHaveBeenCalledWith(proposal.anchor.bookmark);
+  });
+
+  test('refuses a changed or discarded placement before writing', async () => {
+    const { context, selection } = makeApplyContext();
+    setWordRun(context);
+    const deps = makeDeps();
+    const args = { instruction: 'Insert a 3x3 table after the selection' };
+    const proposal = await prepareTableProposal(deps, args);
+    selection.text = 'Changed placement';
+    await expect(applyTableProposal(deps, proposal)).rejects.toThrow(/placement changed/);
+
+    const discarded = await prepareTableProposal(deps, args);
+    await discardTableProposal(deps, discarded);
+    await expect(applyTableProposal(deps, discarded)).rejects.toThrow(/not anchored/);
+    expect(selection.insertTable).not.toHaveBeenCalled();
+  });
+
   test('start/before/after positions pick the matching anchor and location', async () => {
     const { context, inserted } = makeApplyContext();
     setWordRun(context);
 
     await applyTableProposal(makeDeps('PC'), { instruction: 'x', spec: emptySpec({ position: 'start' }) });
-    await applyTableProposal(makeDeps('PC'), { instruction: 'x', spec: emptySpec({ position: 'before' }) });
-    await applyTableProposal(makeDeps('PC'), { instruction: 'x', spec: emptySpec({ position: 'after' }) });
+    for (const position of ['before', 'after']) {
+      const proposal = await prepareTableProposal(makeDeps('PC'), { instruction: `Insert a 3x3 table ${position} the selection` });
+      await applyTableProposal(makeDeps('PC'), proposal);
+    }
 
     expect(inserted.map((i) => [i.where, i.loc])).toEqual([
       ['body', 'Start'],

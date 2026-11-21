@@ -75,32 +75,27 @@ export function getSessionScope() {
 }
 
 /**
- * Reads the index array. Always returns an array (empty on missing/corrupt).
- * @returns {Array<object>}
+ * v2 stores metadata and new session bodies together in one atomic write.
+ * Entries without a body still point to their original v1 blob until updated.
  */
-function readIndex() {
-    try {
-        const raw = localStorage.getItem(indexKey());
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed.filter((entry) => entry
-            && typeof entry === 'object' && !Array.isArray(entry)
-            && typeof entry.id === 'string' && entry.id.trim()).map((entry) => ({
-            ...entry,
-            updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
-        })) : [];
-    } catch (_err) {
-        return [];
-    }
+function readHistory() {
+    const raw = localStorage.getItem(indexKey());
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { /* Ignore a corrupt index. */ }
+    const current = parsed?.version === 2 && Array.isArray(parsed.entries);
+    const entries = current ? parsed.entries : Array.isArray(parsed) ? parsed : [];
+    return {
+        current,
+        entries: entries.filter((entry) => entry && typeof entry.id === 'string' && entry.id.trim())
+            .map((entry) => ({ ...entry, updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '' })),
+    };
 }
 
-function writeIndex(idx) {
-    try {
-        localStorage.setItem(indexKey(), JSON.stringify(idx));
-        return true;
-    } catch (_err) {
-        // Quota exceeded — the caller decides whether this is fatal.
-        return false;
+function commitHistory(entries, removedIds) {
+    // setItem replaces the entire index or throws and leaves it intact.
+    localStorage.setItem(indexKey(), JSON.stringify({ version: 2, entries }));
+    for (const id of removedIds) {
+        try { localStorage.removeItem(sessionKey(id)); } catch { /* Unreferenced legacy blob. */ }
     }
 }
 
@@ -110,11 +105,11 @@ function writeIndex(idx) {
  * @param {string} id
  * @returns {object|null}
  */
-function readSession(id) {
+function readSession(id, history) {
     try {
-        const raw = localStorage.getItem(sessionKey(id));
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
+        const entry = history.entries.find((item) => item.id === id);
+        if (history.current && !entry) return null;
+        const parsed = entry?.session ?? JSON.parse(localStorage.getItem(sessionKey(id)));
         if (!parsed || typeof parsed !== 'object') return null;
         if (!Array.isArray(parsed.messages)) return null;
         if (activeScope && (parsed.scope?.workspaceId !== activeScope.workspaceId || parsed.scope?.documentId !== activeScope.documentId)) return null;
@@ -122,14 +117,6 @@ function readSession(id) {
     } catch (_err) {
         return null;
     }
-}
-
-/**
- * Best-effort write; throws only when localStorage is fundamentally broken.
- * @param {object} session
- */
-function writeSession(session) {
-    localStorage.setItem(sessionKey(session.id), JSON.stringify(session));
 }
 
 /**
@@ -234,7 +221,12 @@ function makePreview(messages) {
  * @returns {object}
  */
 function stripMessage(m) {
-    return normalizeMessage(m);
+    const message = normalizeMessage(m);
+    message.proposals = message.proposals.map((proposal) => proposal && ({
+        ...proposal,
+        ...(Array.isArray(proposal.items) ? { items: proposal.items.map((item) => item && { ...item }) } : {}),
+    }));
+    return message;
 }
 
 /**
@@ -259,8 +251,13 @@ export function generateTitle(messages) {
  * @returns {Array<{id: string, title: string, createdAt: string, updatedAt: string, messageCount: number, preview: string}>}
  */
 export function listSessions() {
-    const idx = readIndex();
-    return [...idx].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    try {
+        const { entries } = readHistory();
+        return entries.map(({ session: _session, ...meta }) => meta)
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    } catch {
+        return [];
+    }
 }
 
 /**
@@ -270,7 +267,7 @@ export function listSessions() {
  */
 export function loadSession(id) {
     if (!id) return null;
-    return readSession(id);
+    try { return readSession(id, readHistory()); } catch { return null; }
 }
 
 /**
@@ -290,7 +287,8 @@ export function saveSession(messages, opts = {}) {
 
     const now = nowIso();
     const id = opts.id || generateId();
-    const existing = opts.id ? readSession(opts.id) : null;
+    const history = readHistory();
+    const existing = opts.id ? readSession(opts.id, history) : null;
     const title = (opts.title && String(opts.title).trim())
         || (existing && existing.title)
         || generateTitle(messages);
@@ -315,76 +313,17 @@ export function saveSession(messages, opts = {}) {
         preview: makePreview(session.messages),
     };
 
-    const idx = readIndex();
-    const existingIdx = idx.findIndex((m) => m.id === id);
-    if (existingIdx >= 0) {
-        idx.splice(existingIdx, 1);
+    const entries = [{ ...meta, session }, ...history.entries.filter((entry) => entry.id !== id)];
+    const removed = entries.splice(MAX_SESSIONS);
+    // Include referenced legacy blobs in the same budget as embedded sessions.
+    const entrySizes = entries.map((entry) => estimateBytes(entry) + 1
+        + (entry.session ? 0 : (localStorage.getItem(sessionKey(entry.id)) || '').length));
+    let totalBytes = estimateBytes({ version: 2, entries: [] }) + entrySizes.reduce((sum, size) => sum + size, 0);
+    while (totalBytes > MAX_TOTAL_BYTES && entries.length > 1) {
+        removed.push(entries.pop());
+        totalBytes -= entrySizes.pop();
     }
-    idx.unshift(meta);
-
-    // Cap by count: drop the oldest metadata entries (and their blobs).
-    while (idx.length > MAX_SESSIONS) {
-        const dropped = idx.pop();
-        try { localStorage.removeItem(sessionKey(dropped.id)); } catch (_err) { /* ignore */ }
-    }
-
-    // Total-size cap: drop oldest non-current sessions until the index +
-    // every remaining blob fits under MAX_TOTAL_BYTES. Eviction runs BEFORE
-    // the new blob is written: writing first could blow the localStorage
-    // quota while stale blobs were still holding the very space the eviction
-    // was about to free — the current session was lost in exactly the case
-    // the cap was meant to protect against. Reads raw stored string lengths
-    // instead of JSON.parsing each blob — estimateBytes is a stringify-length
-    // count, so the result is identical without re-serializing up to
-    // MAX_SESSIONS blobs on every committed turn.
-    let totalBytes = estimateBytes(idx);
-    for (const m of idx) {
-        if (m.id === id) {
-            totalBytes += estimateBytes(session);
-        } else {
-            const raw = localStorage.getItem(sessionKey(m.id));
-            if (raw) totalBytes += raw.length;
-        }
-    }
-    // Walk from oldest (tail) toward newest, dropping until under cap.
-    while (totalBytes > MAX_TOTAL_BYTES && idx.length > 1) {
-        const dropped = idx.pop();
-        if (dropped.id === id) {
-            // Current session alone is over the cap — keep it; the per-session
-            // trim above already cut the largest field. Bail out.
-            idx.push(dropped);
-            break;
-        }
-        const raw = localStorage.getItem(sessionKey(dropped.id));
-        const bytes = raw ? raw.length : 0;
-        try { localStorage.removeItem(sessionKey(dropped.id)); } catch (_err) { /* ignore */ }
-        totalBytes -= bytes + estimateBytes(dropped);
-    }
-
-    // The cap math has now made room when it could. If the write STILL fails
-    // (encoding overhead, other-origin inflation), the last resort is
-    // dropping every other session rather than losing the current one.
-    try {
-        writeSession(session);
-    } catch (_err) {
-        for (const m of idx) {
-            if (m.id !== id) {
-                try { localStorage.removeItem(sessionKey(m.id)); } catch (_err2) { /* ignore */ }
-            }
-        }
-        idx.splice(1);
-        if (!writeIndex(existing ? [meta] : [])) {
-            throw new Error('Session recovery failed: the history index could not be updated (storage quota).');
-        }
-        writeSession(session);
-    }
-
-    if (!writeIndex(idx)) {
-        // The blob is saved but the history index is now stale/inconsistent.
-        // Surface it — the caller logs to the activity log — instead of
-        // silently dropping the failure on the floor.
-        throw new Error('Session saved, but the history index could not be updated (storage quota). History may be stale.');
-    }
+    commitHistory(entries, new Set([id, ...removed.map((entry) => entry.id)]));
     return session;
 }
 
@@ -394,9 +333,10 @@ export function saveSession(messages, opts = {}) {
  */
 export function deleteSession(id) {
     if (!id) return;
-    try { localStorage.removeItem(sessionKey(id)); } catch (_err) { /* ignore */ }
-    const idx = readIndex().filter((m) => m.id !== id);
-    writeIndex(idx);
+    try {
+        const { entries } = readHistory();
+        commitHistory(entries.filter((entry) => entry.id !== id), [id]);
+    } catch { /* Preserve the last committed history. */ }
 }
 
 /**

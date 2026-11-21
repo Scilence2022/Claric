@@ -437,7 +437,7 @@ proxies, control over the served build, or development tools:
 | Method | Best for | Requirements |
 |--------|----------|--------------|
 | [Docker](#option-a-docker-recommended-for-quick-setup) | Self-hosting without local Node.js | Docker, Docker Compose, trusted HTTPS |
-| [npm](#option-b-npm-for-development) | Development and customization | Node.js 22+, trusted HTTPS |
+| [npm](#option-b-npm-for-development) | Development and customization | Node.js 22.13+, trusted HTTPS |
 
 Both self-hosted methods require a reachable server and certificates trusted
 by the machine running Word. Production proxy routes must be enabled explicitly.
@@ -664,7 +664,7 @@ This is the quick **self-hosting** option, not a requirement for hosted use.
 
 ### Prerequisites
 
-- Node.js 22+ (see [.nvmrc](.nvmrc) and [package.json](package.json))
+- Node.js 22.13+ (see [.nvmrc](.nvmrc) and [package.json](package.json))
 - [Trusted HTTPS certificate files](#create-https-certificates)
 
 ### Step-by-Step
@@ -931,7 +931,7 @@ provider paths by default; example files may opt into routes explicitly.
 | `ADDIN_GUID` | generated | Identity persisted in `.manifest-guid`; pin for container recreation |
 | `DISPLAY_NAME` | `Claric — AI Writing & Editing Assistant for Word` | Manifest display name |
 | `SUPPORT_URL` | add-in root URL | Manifest support page; set a real support URL |
-| `APP_DOMAINS` | none | Comma-separated extra manifest domains |
+| `APP_DOMAINS` | none | Comma-separated trusted HTTP(S) origins |
 | `OLLAMA_PROXY_PATH` | disabled / `/ollama` (dev) | Enable Ollama proxy |
 | `OLLAMA_PROXY_TARGET` | `http://localhost:11434` | Docker example uses `http://host.docker.internal:11434` |
 | `VLLM_PROXY_PATH` | disabled / `/vllm` (dev) | Enable vLLM proxy |

@@ -46,6 +46,7 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
         }
     }
     async function dispatchReady(graph) {
+        let firstFailure;
         for (const task of graph.tasks.values()) {
             if (disposed || graph.state === 'cancelled') break;
             if (task.state !== 'pending' || task.issued || !task.dependsOn.every((id) => graph.tasks.get(id)?.state === 'succeeded')) continue;
@@ -53,8 +54,8 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
             task.state = 'submitted';
             task.createdAt = clock();
             const payload = { graphId: graph.graphId, taskId: task.taskId, attemptId: task.attemptId, taskType: task.type, instruction: task.instruction, artifactIds: task.inputRefs, reviewRequired: true };
-            task.submitting = client.submitTask(task.target, payload, { correlationId: task.correlationId, idempotencyKey: task.submitKey, createdAt: task.createdAt, ttlMs: task.ttlMs });
             try {
+                task.submitting = client.submitTask(task.target, payload, { correlationId: task.correlationId, idempotencyKey: task.submitKey, createdAt: task.createdAt, ttlMs: task.ttlMs });
                 await task.submitting;
                 onStatus({ type: 'task.submitted', graphId: graph.graphId, taskId: task.taskId, target: clone(task.target) });
             } catch (error) {
@@ -63,10 +64,11 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
                 graph.state = 'failed';
                 onResult({ type: 'task.failed', graphId: graph.graphId, taskId: task.taskId, payload: clone(task.error) });
                 settleGraph(graph);
-                throw error;
+                firstFailure ??= error;
             } finally { task.submitting = null; }
         }
         settleGraph(graph);
+        if (firstFailure) throw firstFailure;
     }
     async function submitGraph(input, resolver = resolveTarget) {
         if (disposed) throw new Error('Distributed runtime is disposed');
@@ -75,7 +77,8 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
         const graph = checked.graph;
         if (!validId(graph.graphId)) throw new Error('Invalid graphId');
         if (graphs.has(graph.graphId)) throw new Error('Graph already exists');
-        if (graphs.size >= maxGraphs || graph.tasks.length > maxTasks) throw new Error('Distributed graph capacity reached');
+        if (graph.tasks.length > maxTasks) throw new Error('Distributed graph capacity reached');
+        expireTasks();
         const state = { graphId: graph.graphId, state: 'submitted', tasks: new Map(), events: [] };
         for (const task of graph.tasks) {
             if (![task.taskId, task.attemptId, task.type].every(validId) || task.instruction.length > 2048 || task.inputRefs.length > 100 || !task.inputRefs.every(validId)) throw new Error('Invalid distributed task');
@@ -84,6 +87,12 @@ export function createDistributedTaskRuntime({ client, identity = client?.identi
             const ttlMs = task.ttlMs ?? 60000;
             if (!Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > 86400000) throw new Error('Invalid task TTL');
             state.tasks.set(task.taskId, { ...clone(task), target, state: 'pending', issued: false, ttlMs, correlationId: createId('correlation'), submitKey: createId('submit'), cancelKey: createId('cancel'), proposal: null });
+        }
+        if (graphs.size >= maxGraphs) {
+            const completed = [...graphs.values()].find(({ tasks }) =>
+                [...tasks.values()].every((task) => TERMINAL.has(task.state) && !task.submitting));
+            if (!completed) throw new Error('Distributed graph capacity reached');
+            graphs.delete(completed.graphId);
         }
         graphs.set(graph.graphId, state);
         await dispatchReady(state);

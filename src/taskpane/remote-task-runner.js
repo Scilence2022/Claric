@@ -109,6 +109,23 @@ export function createRemoteTaskRunner({
             await publish(task, 'task.failed', { taskId: task.event.payload.taskId, errorCode: code }, 'failed');
         } catch (publishError) { status({ type: 'task.failed.publish-error', taskId: task.event.payload.taskId, error: publishError }); }
     }
+    async function discardLocalDraft(task) {
+        try { await documentAgent.discardProposal?.(taskIdFor(task.event)); }
+        catch (error) { status({ type: 'proposal.cleanup-error', error }); }
+    }
+    function expireTasks() {
+        for (const [key, task] of tasks) {
+            const expiresAt = task.event.createdAt + task.event.ttlMs;
+            if (task.reviewing || (task.expiresAt ?? expiresAt) > clock()) continue;
+            if (!task.controller.signal.aborted) {
+                task.controller.abort();
+                void discardLocalDraft(task);
+            }
+            if (expiresAt > clock()) continue; // keep deduplication until the submission expires
+            tasks.delete(key);
+            if (task.proposalId) proposals.delete(task.proposalId);
+        }
+    }
     function makeRuntime(record, task) {
         let lease;
         let operation = null;
@@ -149,6 +166,7 @@ export function createRemoteTaskRunner({
             if (operation) return operation;
             if (finished) return Promise.resolve({ ok: false, record: base.getRecord(), conflict: { code: 'terminal', message: 'Review is already complete; retry is blocked' }, localResult: base.getLocalResult() });
             finished = true;
+            task.reviewing = true;
             operation = (async () => {
                 let result;
                 try {
@@ -173,7 +191,11 @@ export function createRemoteTaskRunner({
                     await reportFailure(task, code, record);
                     status({ type: wrote ? 'proposal.unknown' : 'proposal.conflict', proposalId: record.proposalId, error });
                     return { ok: false, record: base.getRecord(), localResult: base.getLocalResult(), conflict: { code, message: String(error.message || error) } };
-                } finally { await release(); }
+                } finally {
+                    await discardLocalDraft(task);
+                    await release();
+                    task.reviewing = false;
+                }
             })();
             return operation.finally(() => { operation = null; });
         }
@@ -205,11 +227,16 @@ export function createRemoteTaskRunner({
                 await publish(task, 'proposal.announced', proposalEventPayload(record), 'announced');
                 guard(task);
                 const runtime = makeRuntime(record, task);
+                task.proposalId = record.proposalId;
+                task.expiresAt = expiresAt;
                 proposals.set(record.proposalId, { runtime, taskId });
                 try { onProposal(clone(record), runtime); } catch (error) { status({ type: 'proposal.observer-error', error }); }
                 status({ type: 'proposal.announced', taskId, proposalId: record.proposalId });
             } catch (error) {
-                if (claimed) await reportFailure(task, codeFor(error));
+                if (claimed) {
+                    await discardLocalDraft(task);
+                    await reportFailure(task, codeFor(error));
+                }
                 status({ type: 'task.failed', taskId, error });
             }
             return true;
@@ -218,10 +245,12 @@ export function createRemoteTaskRunner({
     }
     async function handleEvent(event) {
         if (disposed || !matchesTarget(event, localIdentity)) return false;
+        expireTasks();
         if (event.type === 'task.cancel') {
             const task = tasks.get(`${event.source.instanceId}:${event.payload?.taskId}`);
             if (!task || task.event.correlationId !== event.correlationId || !sameParty(task.event.source, event.source)) return false;
             task.controller.abort();
+            if (!task.reviewing) await discardLocalDraft(task);
             return true;
         }
         if (event.type !== 'task.submit') return false;
@@ -236,8 +265,10 @@ export function createRemoteTaskRunner({
     function dispose() {
         disposed = true;
         for (const task of tasks.values()) task.controller.abort();
+        tasks.clear();
+        proposals.clear();
     }
-    return Object.freeze({ handleEvent, getProposal, dispose });
+    return Object.freeze({ handleEvent, getProposal, expireTasks, dispose });
 }
 
 export { validateProposalInput };
