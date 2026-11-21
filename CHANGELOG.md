@@ -6,6 +6,8 @@ that drive the GHCR image publish in CI.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-11-21
+
 ### Changed
 
 - Composer pills read cleaner: the model pill shows only the model id (no
@@ -21,6 +23,11 @@ that drive the GHCR image publish in CI.
 
 ### Added
 
+- **Document writing settings** — choose and lock a document type, writing style,
+  and output language. Users can request detection suggestions or opt in to
+  automatic updates of unlocked settings.
+- **Document type in ChatBox** — see the current and detected types, set the
+  type manually, or refresh detection without overwriting a locked choice.
 - **Model switching and thinking levels from the composer** — two composer
   pills replace the jump to Settings. The model pill opens a popover with the
   provider's model list (cached from the connection probe) plus an Open
