@@ -1814,23 +1814,45 @@ describe('createConversation.submit', () => {
     expect(actions.prepareSelectionAmendment).not.toHaveBeenCalled();
   });
 
-  test('parameterized new amendment skill stages a selection proposal with its instructions', async () => {
+  test('parameterized polish passes the source language requirement and user arguments for a selection', async () => {
     const appState = makeAppState();
     const view = makeView();
     const actions = makeActions();
     const conv = createConversation({
       appState, view, input: makeInput(), log: jest.fn(),
-      actions, getSelectionText: async () => 'This selected passage needs editing.',
+      actions, getSelectionText: async () => '这段话需要润色。',
     });
 
     await conv.submit('/polish preserve field-specific terminology');
 
     expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
     const { promptTemplate } = actions.prepareSelectionAmendment.mock.calls[0][1];
-    expect(promptTemplate).toContain('Revise {selection} into polished academic English');
+    expect(promptTemplate).toContain('Polish the following text in its original language.');
     expect(promptTemplate).toContain('Additional instructions from the user: preserve field-specific terminology');
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
+  });
+
+  test('whole-document polish keeps the source language requirement after an earlier translation request', async () => {
+    const view = makeView();
+    const actions = makeActions();
+    view.getCurrentSession.mockReturnValue({ id: 's-test', messages: [
+      { role: 'user', text: '请把全文翻译成英文。' },
+    ] });
+    const conv = createConversation({
+      appState: makeAppState(), view, input: makeInput(), log: jest.fn(),
+      actions, getSelectionText: async () => '',
+    });
+
+    await conv.submit('/polish');
+
+    expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
+    const [deps, { promptTemplate, gateApply }] = actions.runDocumentSkill.mock.calls[0];
+    expect(deps.conversationHistory).toEqual([{ role: 'user', content: '请把全文翻译成英文。' }]);
+    expect(promptTemplate).toContain('Polish the following text in its original language.');
+    expect(promptTemplate).toContain('Translate only if the additional instructions for this command explicitly request a language change.');
+    expect(promptTemplate).toContain('Treat earlier translation requests as context only.');
+    expect(gateApply).toBe(true);
   });
 
   test('chat skill answers in chat via the Q&A path', async () => {

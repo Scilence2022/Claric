@@ -110,14 +110,18 @@ export const BUILTIN_SKILLS = Object.freeze([
     Object.freeze({
         name: 'polish',
         slash: '/polish',
-        description: 'Polish selected writing into clear, precise, formal academic English while preserving meaning',
+        description: 'Polish writing for clarity, precision, and flow in its original language',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
-            'Revise {selection} into polished academic English. Improve clarity, precision, flow, grammar, and scholarly ' +
-            'tone while preserving the author\'s meaning, claims, citations, technical terminology, and level of certainty. ' +
+            'Polish the following text in its original language. In multilingual text, preserve the language of ' +
+            'individual passages. Keep Simplified or Traditional Chinese as used in the source. ' +
+            'Translate only if the additional instructions for this command explicitly request a language change. ' +
+            'Treat earlier translation requests as context only. ' +
+            'Improve clarity, precision, flow, grammar, and scholarly tone while preserving the author\'s meaning, ' +
+            'claims, citations, technical terminology, and level of certainty. ' +
             'Do not invent evidence or add substantive content. Keep paragraph structure unless a small change is necessary ' +
-            'for coherence.',
+            'for coherence.\n\n{selection}',
     }),
     Object.freeze({
         name: 'simplify',
