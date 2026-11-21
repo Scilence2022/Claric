@@ -43,6 +43,7 @@
   "dependencies": {
     "dompurify": "^3.4.16",
     "dotenv": "^17.2.3",
+    "jszip": "^3.10.2",
     "mammoth": "^1.12.2",
     "marked": "^17.0.4",
     "pdfjs-dist": "^6.3.289"

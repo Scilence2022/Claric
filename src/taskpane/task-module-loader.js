@@ -1,5 +1,5 @@
 import { loadLazyModule } from '../lib/lazy-module-loader.js';
-import { canReadWordVisuals } from './word-render-tools.js';
+import { canReadWordVisuals } from './word-visual-availability.js';
 
 // Retry imports, never the native actions exported by those modules.
 export const loadAgentActions = (options) => loadLazyModule('agent-actions',
@@ -12,6 +12,8 @@ export const loadFormatActions = (options) => loadLazyModule('format-actions',
     () => import(/* webpackChunkName: "format-actions" */ './word-format-actions.js'), { label: 'native formatting tools', ...options });
 export const loadPageLayoutActions = (options) => loadLazyModule('page-layout-actions',
     () => import(/* webpackChunkName: "page-layout-actions" */ './page-layout-actions.js'), { label: 'native page layout tools', ...options });
+export const loadHeaderFooterActions = (options) => loadLazyModule('header-footer-actions',
+    () => import(/* webpackChunkName: "header-footer-actions" */ './header-footer-actions.js'), { label: 'native header and footer tools', ...options });
 export const loadFormatProposalStage = (options) => loadLazyModule('format-proposals',
     () => import(/* webpackChunkName: "format-proposals" */ './format-proposal-stage.js'), { label: 'format and layout proposals', ...options });
 export const loadTaskPlanner = (options) => loadLazyModule('task-planner',
@@ -45,6 +47,7 @@ export async function preloadTaskModules(tasks, options = {}) {
     }
     if (types.has('comment_management')) loads.push(loadCommentActions(options));
     if (types.has('page_layout')) loads.push(loadPageLayoutActions(options));
-    if (types.has('page_layout') || types.has('format') || types.has('insert')) loads.push(loadFormatProposalStage(options));
+    if (types.has('header_footer')) loads.push(loadHeaderFooterActions(options));
+    if (types.has('header_footer') || types.has('page_layout') || types.has('format') || types.has('insert')) loads.push(loadFormatProposalStage(options));
     await Promise.all(loads);
 }

@@ -247,8 +247,23 @@ an explicit selection or current-section request affects entire containing
 sections. Proposals show before/after values per section, check for stale
 content/settings before Apply, and read back the result. Word may not track
 these layout changes. Unsupported hosts report the missing API before
-layout drafting or writing. Creating/deleting sections, editing header/footer
-content and inserting page numbers are outside this capability.
+layout drafting or writing. Section creation/deletion and page numbering
+styles and restart rules remain outside the layout capability.
+
+Header and footer content editing is available on desktop Word for Mac and
+Windows with native DOCX export and WordApi 1.3. Ask “将第 2 节页眉设为项目报告”,
+“将页脚中的 Draft 替换为 Final”, “检查当前节页眉”, or “Add a right-aligned
+Page X of Y in every footer”. Claric can edit selected or exactly matched
+text, prepend or append paragraphs, replace plain content, clear a header or
+footer, and set alignment, font, size, color, bold and italic. Dynamic
+current-page, total-page and section-page fields need WordApi 1.5.
+For a current-section request, place the cursor in that section. Use
+“first-page” or “even-page” to target those variants after enabling them in
+Page Setup. The proposal lists affected sections, including shared headers
+and footers. To edit one section independently, turn off Word’s Link to
+Previous where needed. Images, tables and other rich objects within these
+areas can be preserved while surrounding text is edited. To edit the
+objects themselves, use Word.
 
 Built-in skills include `/copy-edit`, `/check-doc`, `/flag-issues`,
 `/summarize-contract`, `/industry-overview`, and `/storylining`.

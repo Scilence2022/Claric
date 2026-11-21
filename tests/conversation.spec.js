@@ -4095,3 +4095,65 @@ describe('native section/page layout', () => {
     expect(actions.prepareFormatProposal).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('native header and footer content', () => {
+  test.each([
+    ['将当前节页眉设为项目报告', TURN_TYPE.HEADER_FOOTER, 'selection'],
+    ['清空第2节的首页页眉', TURN_TYPE.HEADER_FOOTER, 'document'],
+    ['Could you add centered page numbers to the footer?', TURN_TYPE.HEADER_FOOTER, 'document'],
+    ['把页脚设为 Arial 并右对齐', TURN_TYPE.HEADER_FOOTER, 'document'],
+    ['将页脚中选中的文本改成内部使用', TURN_TYPE.HEADER_FOOTER, 'selection'],
+    ['把页眉距离改为 2 cm', TURN_TYPE.PAGE_LAYOUT, 'document'],
+    ['启用奇偶页不同', TURN_TYPE.PAGE_LAYOUT, 'document'],
+    ['启用首页不同，并把首页页眉设为项目报告', TURN_TYPE.COMPOUND, undefined],
+    ['编辑页眉并润色正文', TURN_TYPE.COMPOUND, undefined],
+    ['如何修改页脚？', TURN_TYPE.DOC_QA, undefined],
+  ])('routes %s to the correct document capability', (instruction, type, scope) => {
+    expect(routeTurn(instruction, { skills: BUILTIN_SKILLS, hasSelection: true })).toMatchObject({ type, ...(scope ? { scope } : {}) });
+  });
+
+  test('an implicit edit to selected header text uses the header/footer scope', () => {
+    expect(routeTurn('改为内部使用', { skills: BUILTIN_SKILLS, hasSelection: true, selectionStory: 'Header' }))
+      .toMatchObject({ type: TURN_TYPE.HEADER_FOOTER, scope: 'selection', selectionOnly: true });
+    expect(routeTurn('不要改页眉，只润色正文', { skills: BUILTIN_SKILLS, hasSelection: true }).type)
+      .not.toBe(TURN_TYPE.HEADER_FOOTER);
+  });
+
+  test('stages header/footer changes and applies only the checked story', async () => {
+    const view = makeView();
+    const ops = [{ storyId: 's1:header:default', label: 'Section 1 header: Draft → Internal' },
+      { storyId: 's1:footer:default', label: 'Section 1 footer: (empty) → Page {{PAGE}}' }];
+    const actions = makeActions({
+      prepareHeaderFooterProposal: jest.fn(async () => ({ ops, notice: 'Changes affect the listed sections.' })),
+      discardHeaderFooterProposal: jest.fn(),
+      applyHeaderFooterProposal: jest.fn(async () => ({ verified: true, verifiedStories: 1 })),
+    });
+    const conv = createConversation({ appState: makeAppState({ supportsTrackedChanges: false }),
+      view, input: makeInput(), log: jest.fn(), actions, getSelectionText: async () => 'Incidental selected text' });
+    await conv.submit('设置页眉为 Internal，同时给页脚添加页码');
+    expect(actions.prepareHeaderFooterProposal).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'document' }));
+    expect(actions.applyHeaderFooterProposal).not.toHaveBeenCalled();
+    const card = view._msg.attachProposal.mock.calls[0][0];
+    expect(card.el.textContent).toContain('Page {{PAGE}}');
+    const checkbox = card.el.querySelectorAll('input[type="checkbox"]')[0];
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    card.el.querySelector('.btn-primary').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(actions.applyHeaderFooterProposal.mock.calls[0][1].ops).toEqual([ops[1]]);
+    expect(card.el.textContent).toContain('1 header/footer change(s) verified');
+  });
+
+  test('reads native header content for a question without staging a change', async () => {
+    const view = makeView();
+    const actions = makeActions({
+      readHeaderFooter: jest.fn(async () => [{ id: 's1:header:default', paragraphs: 'Latest source text' }]),
+      prepareHeaderFooterProposal: jest.fn(),
+    });
+    const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), log: jest.fn(), actions });
+    await conv.submit('当前节页眉是什么？');
+    expect(actions.readHeaderFooter).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'selection' }));
+    expect(actions.answerQuestion.mock.calls[0][1].question).toContain('Latest source text');
+    expect(actions.prepareHeaderFooterProposal).not.toHaveBeenCalled();
+  });
+});

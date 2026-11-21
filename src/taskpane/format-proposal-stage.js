@@ -1,24 +1,31 @@
 import { describeFormatOp } from '../lib/format-ops.js';
 
-/** Shared, lazy proposal UI for native text formatting and section layout. */
+/** Shared, lazy proposal UI for native formatting, section layout and header/footer content. */
 export async function stageFormatProposal({ turn, msg, turnDeps, selectionText, actions, stagedResource, makeProposalCard, log, signal }) {
     const layout = turn.type === 'page-layout';
-    const prepare = layout ? actions.preparePageLayoutProposal : actions.prepareFormatProposal;
-    const discard = layout ? actions.discardPageLayoutProposal : actions.discardFormatProposal;
-    const apply = layout ? actions.applyPageLayoutProposal : actions.applyFormatProposal;
-    const describe = layout ? (op) => op.label : describeFormatOp;
-    const title = layout ? `Proposed page layout (${turn.scope === 'selection' ? 'whole sections containing selection' : 'document'} scope)` : `Proposed changes (${turn.scope} scope)`;
+    const headerFooter = turn.type === 'header-footer';
+    const native = layout || headerFooter;
+    const [prepare, discard, apply] = headerFooter
+        ? [actions.prepareHeaderFooterProposal, actions.discardHeaderFooterProposal, actions.applyHeaderFooterProposal]
+        : layout ? [actions.preparePageLayoutProposal, actions.discardPageLayoutProposal, actions.applyPageLayoutProposal]
+            : [actions.prepareFormatProposal, actions.discardFormatProposal, actions.applyFormatProposal];
+    const describe = native ? (op) => op.label : describeFormatOp;
+    const title = headerFooter ? 'Proposed header and footer changes'
+        : layout ? `Proposed page layout (${turn.scope === 'selection' ? 'whole sections containing selection' : 'document'} scope)`
+            : `Proposed changes (${turn.scope} scope)`;
+    const label = headerFooter ? 'header/footer' : 'page layout';
     msg.setStatus('Planning document changes...');
     const proposal = await prepare(turnDeps, {
         instruction: turn.instruction,
         ...(turn.originalInstruction ? { originalInstruction: turn.originalInstruction } : {}),
         scope: turn.scope,
         selectionText,
+        ...(headerFooter && turn.selectionOnly ? { selectionOnly: true } : {}),
         cleanupOnly: turn.cleanupOnly === true,
         cleanupRequested: turn.cleanupRequested,
         signal,
-        onToken: (t) => msg.appendModelToken({ id: layout ? 'page-layout' : 'format' }, 'content', t),
-        onReasoning: (t) => msg.appendModelToken({ id: layout ? 'page-layout' : 'format' }, 'reasoning', t),
+        onToken: (t) => msg.appendModelToken({ id: turn.type }, 'content', t),
+        onReasoning: (t) => msg.appendModelToken({ id: turn.type }, 'reasoning', t),
     });
     const resource = stagedResource(() => discard?.(turnDeps, proposal));
     if (signal.aborted || !turnDeps.isCurrentSession()) {
@@ -29,9 +36,9 @@ export async function stageFormatProposal({ turn, msg, turnDeps, selectionText, 
         await resource.dispose();
         msg.setStatus(proposal.cleanupSummary?.preserved
             ? `${proposal.cleanupSummary.preserved} empty paragraph(s) could not be safely removed. See the activity log.`
-            : layout ? proposal.alreadySatisfied ? 'The requested page layout is already satisfied.' : 'No page layout changes proposed.'
+            : native ? proposal.alreadySatisfied ? `The requested ${label} is already satisfied.` : `No ${label} changes proposed.`
                 : turn.cleanupOnly ? 'No verified empty paragraphs found in the selection.' : 'The model proposed no changes.');
-        if (layout) return { status: 'no_op', satisfied: proposal.alreadySatisfied === true };
+        if (native) return { status: 'no_op', satisfied: proposal.alreadySatisfied === true };
         return;
     }
     msg.setStatus('');
@@ -39,23 +46,28 @@ export async function stageFormatProposal({ turn, msg, turnDeps, selectionText, 
         ? ` · ${proposal.cleanupSummary.preserved} empty paragraph(s) preserved` : '')
         + (proposal.targetSummary ? ` · ${proposal.targetSummary.verifiedParagraphs} verified paragraph(s)` : '')
         + (proposal.targetSummary?.uncertainParagraphs ? ` · ${proposal.targetSummary.uncertainParagraphs} uncertain paragraph(s) preserved` : '');
+    const items = proposal.ops.map((op, index) => ({
+        id: index,
+        label: describe(op),
+        searchText: op.match ? op.match.trim().slice(0, 60) : undefined,
+        ...(headerFooter && op.before !== undefined ? { before: op.before, after: op.after } : {}),
+    }));
     const card = makeProposalCard({
         title,
-        ...(layout ? { notice: proposal.notice, applyLabel: 'Apply page layout' } : {}),
+        ...(native ? { notice: proposal.notice, applyLabel: `Apply ${label}` } : {}),
         countsText,
         comment: null,
         // One selectable change per op; Apply runs only the checked ops.
-        items: proposal.ops.map((op, index) => ({
-            id: index,
-            label: describe(op),
-            searchText: op.match ? op.match.trim().slice(0, 60) : undefined,
-        })),
+        items,
         onLocate: (text) => actions.revealTextSnippet(turnDeps, text),
         onApply: async (selectedIds, applyCtx = {}) => {
             try {
                 const ops = proposal.ops.filter((_, index) => selectedIds.includes(index));
                 const fmtResult = await resource.apply(() => apply(turnDeps, { ...proposal, ops }, applyCtx));
-                if (layout) {
+                if (headerFooter) {
+                    if (fmtResult?.verified) card.markApplied(`${fmtResult.verifiedStories} header/footer change(s) verified.`);
+                    else card.markWarning('Header/footer content could not be verified. Inspect Word before retrying.');
+                } else if (layout) {
                     if (fmtResult?.verified) card.markApplied(`${fmtResult.verifiedSections} section(s) verified.`, { noChange: fmtResult.alreadySatisfied === true });
                     else card.markWarning('Page layout could not be verified. Inspect Word before retrying.');
                 } else if (fmtResult?.interrupted || fmtResult?.partial) {
@@ -78,7 +90,8 @@ export async function stageFormatProposal({ turn, msg, turnDeps, selectionText, 
                 }
             } catch (error) {
                 log(`Apply failed: ${error.message}`, 'error');
-                card.markError(error.message, { retryable: false });
+                if (headerFooter && error.mutationAttempted) card.markWarning(error.message);
+                else card.markError(error.message, { retryable: false });
             }
         },
         onReject: async () => {
@@ -90,10 +103,6 @@ export async function stageFormatProposal({ turn, msg, turnDeps, selectionText, 
         title,
         state: 'pending',
         countsText,
-        items: proposal.ops.map((op, index) => ({
-            id: index,
-            label: describe(op),
-            searchText: op.match ? op.match.trim().slice(0, 60) : undefined,
-        })),
+        items,
     });
 }
