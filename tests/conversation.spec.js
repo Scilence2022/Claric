@@ -1827,7 +1827,7 @@ describe('createConversation.submit', () => {
 
     expect(actions.prepareSelectionAmendment).toHaveBeenCalledTimes(1);
     const { promptTemplate } = actions.prepareSelectionAmendment.mock.calls[0][1];
-    expect(promptTemplate).toContain('Polish the following text in its original language.');
+    expect(promptTemplate).toContain('Preserve the original language of the text being edited');
     expect(promptTemplate).toContain('Additional instructions from the user: preserve field-specific terminology');
     expect(view._msg.attachProposal).toHaveBeenCalledTimes(1);
     expect(actions.runDocumentSkill).not.toHaveBeenCalled();
@@ -1849,7 +1849,7 @@ describe('createConversation.submit', () => {
     expect(actions.runDocumentSkill).toHaveBeenCalledTimes(1);
     const [deps, { promptTemplate, gateApply }] = actions.runDocumentSkill.mock.calls[0];
     expect(deps.conversationHistory).toEqual([{ role: 'user', content: '请把全文翻译成英文。' }]);
-    expect(promptTemplate).toContain('Polish the following text in its original language.');
+    expect(promptTemplate).toContain('Preserve the original language of the text being edited');
     expect(promptTemplate).toContain('Translate only if the additional instructions for this command explicitly request a language change.');
     expect(promptTemplate).toContain('Treat earlier translation requests as context only.');
     expect(gateApply).toBe(true);

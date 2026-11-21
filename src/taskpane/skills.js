@@ -26,12 +26,32 @@
 import { CATEGORIES } from '../lib/prompt-manager.js';
 import { loadImportedSkills } from '../lib/skill-store.js';
 
+const OUTPUT_LANGUAGE = {
+    amendment: 'Preserve the original language of the text being edited, including the language of individual passages in multilingual text. ' +
+        'Keep Simplified or Traditional Chinese as used in the source.',
+    comment: 'Write comment prose in the language of the passage under review.',
+    summary: 'Write the summary and its headings in the primary language of the source document.',
+    chat: 'Answer in the primary language of the supplied document context.',
+};
+
+function builtinSkill(skill) {
+    const rules = ['Treat earlier translation requests as context only.'];
+    if (skill.name !== 'translate') {
+        rules.push(OUTPUT_LANGUAGE[skill.category]);
+        rules.push(skill.category === 'amendment'
+            ? 'Translate only if the additional instructions for this command explicitly request a language change.'
+            : 'Follow an output language explicitly requested in the additional instructions for this command. ' +
+              'Preserve quotes and protocol tokens.');
+    }
+    return Object.freeze({ ...skill, defaultTemplate: rules.join(' ') + '\n\n' + skill.defaultTemplate });
+}
+
 /**
  * The built-in skills.
  * @type {ReadonlyArray<{name: string, slash: string, description: string, category: string, defaultTemplate: string, scope: string}>}
  */
 export const BUILTIN_SKILLS = Object.freeze([
-    Object.freeze({
+    builtinSkill({
         name: 'check-doc',
         slash: '/check-doc',
         description: 'Check the whole document for evidence-backed spelling, grammar, terminology, reference and numbering issues',
@@ -45,7 +65,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'Style preferences, repeated citations, selected question lists and definitions located in another section are not errors. ' +
             'Follow the structured evidence output policy.\n\n{selection}',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'copy-edit',
         slash: '/copy-edit',
         description: 'Fix spelling, grammar, and punctuation as tracked changes (uses your selection if one exists)',
@@ -56,7 +76,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'Do not rewrite for style, do not change meaning, do not add or remove content. ' +
             'Make the minimal set of corrections.\n\n{selection}',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'summarize-contract',
         slash: '/summarize-contract',
         description: 'Generate a contract summary with key terms, parties, dates, and obligations in a new document',
@@ -72,7 +92,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'Base the summary on the document text and any extracted review comments below.\n\n' +
             'DOCUMENT:\n{whole document}\n\nREVIEW COMMENTS:\n{comments}',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'flag-issues',
         slash: '/flag-issues',
         description: 'Flag provisions that deviate from market-standard practice, with suggested fixes',
@@ -85,7 +105,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'For each flag, quote the exact provision text, explain why it is off-market, and suggest a concrete fix. ' +
             'If the section is market-standard, reply with exactly: NO ISSUES FOUND.\n\n{selection}',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'industry-overview',
         slash: '/industry-overview',
         description: 'Answer in chat: industry background and market context relevant to this document',
@@ -96,7 +116,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'industry: market structure, key players, standard commercial practices, and current trends that bear on ' +
             'this document. Answer the user\'s question in that context.',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'storylining',
         slash: '/storylining',
         description: 'Answer in chat: structure and storyline advice for this document (SCQA / pyramid principle)',
@@ -107,37 +127,33 @@ export const BUILTIN_SKILLS = Object.freeze([
             'help the user sharpen its storyline: governing thought, key line, argument order, and gaps in the logic. ' +
             'Answer the user\'s question with concrete, actionable structure advice.',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'polish',
         slash: '/polish',
         description: 'Polish writing for clarity, precision, and flow in its original language',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
-            'Polish the following text in its original language. In multilingual text, preserve the language of ' +
-            'individual passages. Keep Simplified or Traditional Chinese as used in the source. ' +
-            'Translate only if the additional instructions for this command explicitly request a language change. ' +
-            'Treat earlier translation requests as context only. ' +
-            'Improve clarity, precision, flow, grammar, and scholarly tone while preserving the author\'s meaning, ' +
+            'Polish the following text. Improve clarity, precision, flow, and grammar. Preserve the document’s ' +
+            'genre and register unless the user explicitly requests a style change. Preserve the author\'s meaning, ' +
             'claims, citations, technical terminology, and level of certainty. ' +
             'Do not invent evidence or add substantive content. Keep paragraph structure unless a small change is necessary ' +
             'for coherence.\n\n{selection}',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'simplify',
         slash: '/simplify',
-        description: 'Make selected writing easier to understand without losing important meaning or necessary detail',
+        description: 'Improve readability while preserving meaning',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
             'Simplify {selection} for a busy, intelligent reader. Use plain, direct language, shorter sentences, and clear ' +
-            'transitions. Preserve all material facts, qualifications, numbers, citations, and intended meaning. Do not ' +
-            'remove necessary technical terms; explain one only when the context requires it.',
+            'transitions. Preserve all material facts, qualifications, numbers, citations, and meaning. Keep necessary technical terms.',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'shorten',
         slash: '/shorten',
-        description: 'Make selected writing more concise while preserving its key message, evidence, and qualifications',
+        description: 'Make writing concise while preserving its key message, evidence, and qualifications',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
@@ -145,10 +161,10 @@ export const BUILTIN_SKILLS = Object.freeze([
             'wording; combine overlapping sentences and prefer economical phrasing. Preserve the key message, evidence, ' +
             'necessary context, qualifications, citations, and any required formatting or list structure.',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'expand',
         slash: '/expand',
-        description: 'Expand selected writing with useful explanation and transitions while avoiding unsupported claims',
+        description: 'Expand writing with supported explanations and transitions',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
@@ -157,22 +173,22 @@ export const BUILTIN_SKILLS = Object.freeze([
             'sources, results, or citations. Preserve the original position and level of certainty, and keep the writing ' +
             'focused and well organized.',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'translate',
         slash: '/translate',
-        description: 'Translate selected writing into a requested language while preserving meaning, terminology, and tone',
+        description: 'Translate writing while preserving meaning, terminology, and tone',
         category: 'amendment',
         scope: 'selection-first',
         defaultTemplate:
-            'Translate {selection} into the target language specified by the user. Preserve the exact meaning, intent, ' +
+            'Translate {selection} into the target language specified in the additional instructions for this command. Preserve the exact meaning, intent, ' +
             'technical terms, names, numbers, citations, formatting, and degree of certainty. Use natural, idiomatic ' +
             'language appropriate to the source text, but do not summarize, explain, or add content. If no target language ' +
             'is specified, translate English into Simplified Chinese and other languages into English.',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'check-clarity',
         slash: '/check-clarity',
-        description: 'Review writing for unclear wording, ambiguity, weak transitions, and unexplained references',
+        description: 'Review wording, transitions, and references for clarity',
         category: 'comment',
         scope: 'selection-first',
         defaultTemplate:
@@ -182,7 +198,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'explaining the concern, and suggesting a concrete revision. Do not praise, rewrite the text, or flag matters of ' +
             'mere preference. If there are no issues, reply with exactly: NO ISSUES FOUND.',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'check-consistency',
         slash: '/check-consistency',
         description: 'Review the document for inconsistent terminology, facts, formatting, and internal conventions',
@@ -195,7 +211,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'one concrete fix. Do not impose an external style guide or flag harmless variation. If the section is clean, ' +
             'reply with exactly: NO ISSUES FOUND.',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'action-items',
         slash: '/action-items',
         description: 'Create an actionable list of decisions, tasks, owners, deadlines, and open questions from the document',
@@ -208,7 +224,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'Not specified rather than guessing. Deduplicate overlapping items and preserve the document\'s terminology.\n\n' +
             'DOCUMENT:\n{whole document}\n\nREVIEW COMMENTS:\n{comments}',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'executive-summary',
         slash: '/executive-summary',
         description: 'Generate a concise executive summary of the document, implications, risks, and decisions needed',
@@ -221,7 +237,7 @@ export const BUILTIN_SKILLS = Object.freeze([
             'invent information. Keep it concise but specific, preserving material numbers, dates, owners, and caveats.\n\n' +
             'DOCUMENT:\n{whole document}\n\nREVIEW COMMENTS:\n{comments}',
     }),
-    Object.freeze({
+    builtinSkill({
         name: 'key-points',
         slash: '/key-points',
         description: 'Extract the document\'s most important points in a concise, well-organized chat response',
