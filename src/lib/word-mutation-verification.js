@@ -31,7 +31,11 @@ export async function verifyMutationText(context, range, expected, options = {},
             // Previously only pre-write serializer mismatches were captured,
             // leaving the actual failed mutation without read-back evidence.
             // Full text/XML stays in the explicitly exported context report.
-            try { recordNativeTextMismatch(read, state, { phase: 'post-write', expectedText: wanted, mismatch }); }
+            try {
+                recordNativeTextMismatch(read, state, {
+                    phase: 'post-write', expectedText: wanted, mismatch, contextScope: options.contextScope,
+                });
+            }
             catch { /* diagnostics must not mask an uncertain write */ }
             throw new MutationSafetyError(new Error(`Native object or prose read-back differs from the proposal (${mismatch}). Inspect Word before retrying.`));
         }

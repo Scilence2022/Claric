@@ -389,7 +389,7 @@ export async function applyDocumentEdit(deps, proposal, { signal } = {}) {
                     const strategy = deps.appState.config.lineDiffEnabled ? applySentenceDiffStrategy
                         : (hasCjk(change.before) || hasCjk(change.after) ? applyCharDiffStrategy : applyTokenMapStrategy);
                     await strategy(context, range, currentText, change.after, deps.log || (() => {}),
-                        { trackChanges: false, paragraph: true, verificationParagraph: paragraph });
+                        { trackChanges: false, paragraph: true, verificationParagraph: paragraph, contextScope: deps.contextScope });
                     written.push({ paragraph, expected: change.after });
                 } else {
                     const left = anchor.anchors[change.afterId];

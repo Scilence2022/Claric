@@ -1,6 +1,5 @@
 import { parseDocument } from '../lib/document-parser.js';
 import { queueRevisionRead, resolveRevisionRead, revisionTextState } from '../lib/word-revisions.js';
-import { getNativeTextDiagnostics } from '../lib/native-text-diagnostics.js';
 
 const secretKey = /(?:api.?key|authorization|password|secret|^(?:access|refresh|pairing)?_?token$|^headers$)/i;
 const binaryKey = /^(?:dataUrl|base64|blob|imageData)$/i;
@@ -48,9 +47,9 @@ async function readReportDocumentText() {
     }
 }
 
-export async function buildContextReport({ state, session, chatText, logs, draft, attachments, metadata }) {
+export async function buildContextReport({ state, session, chatText, logs, draft, attachments, metadata, nativeDiagnostics = [] }) {
     const parts = ['Claric context report', `Captured at: ${new Date().toISOString()}`,
-        'Includes current document and chat content. Credentials are redacted; binary attachments are omitted.',
+        'Includes current chat, document, settings, and diagnostics for this chat. Credentials are redacted; binary attachments are omitted.',
         '\n## Environment and settings', serializable({ ...metadata, platform: state.platform,
             processing: state.isProcessing || state.isProcessingDoc || state.isProcessingSummary,
             config: state.config, prompts: state.promptManager?.getState() }),
@@ -72,8 +71,7 @@ export async function buildContextReport({ state, session, chatText, logs, draft
     try {
         parts.push('\n## Current document (current revision view)', await readReportDocumentText());
     } catch (error) { parts.push('\n## Current document', `Unavailable: ${error.message}`); }
-    parts.push('\n## Activity log', logs || '(empty)');
-    const nativeDiagnostics = getNativeTextDiagnostics();
+    parts.push('\n## Activity log (current chat)', logs || '(empty)');
     if (nativeDiagnostics.length) parts.push('\n## Native Word text diagnostics', serializable(nativeDiagnostics));
     return redactContext(parts.join('\n'), state.config);
 }

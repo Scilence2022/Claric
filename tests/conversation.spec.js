@@ -3568,20 +3568,34 @@ describe('turn lifecycle guards', () => {
     expect(appState.isProcessing).toBe(false);
   });
 
-  test('late model output after newChat cannot finalize into the new session', async () => {
+  test('late model output and activity after newChat belong to the outgoing session', async () => {
     let resolveAnswer;
-    const actions = makeActions({ answerQuestion: jest.fn(() => new Promise((resolve) => { resolveAnswer = resolve; })) });
+    const actions = makeActions({ answerQuestion: jest.fn((deps) => new Promise((resolve) => {
+      resolveAnswer = () => {
+        deps.log('late activity', 'info');
+        resolve('late answer');
+      };
+    })) });
     const view = makeView(); const onTurnCommitted = jest.fn();
+    const oldSession = view.getCurrentSession();
+    view.clearChat.mockImplementation(() => view.getCurrentSession.mockReturnValue({ id: null, messages: [] }));
+    const logByScope = jest.fn();
     const conv = createConversation({ appState: makeAppState(), view, input: makeInput(), actions,
-      getSelectionText: async () => '', onTurnCommitted, log: jest.fn() });
+      getSelectionText: async () => '', onTurnCommitted, log: jest.fn(),
+      getSessionLogging: (scope) => ({ log: (message, type) => logByScope(scope, message, type) }) });
+    const outgoingScope = conv.getContextScope();
     const first = conv.submit('what is this?');
     await Promise.resolve();
     conv.newChat();
-    resolveAnswer('late answer');
+    resolveAnswer();
     await first;
+    expect(conv.getContextScope()).not.toBe(outgoingScope);
+    expect(logByScope).toHaveBeenCalledWith(outgoingScope, 'late activity', 'info');
     expect(view._msg.setText).not.toHaveBeenCalledWith('late answer');
     expect(view._msg.finalizeForHistory).not.toHaveBeenCalled();
     expect(onTurnCommitted).toHaveBeenCalledTimes(1);
+    view.getCurrentSession.mockReturnValue(oldSession);
+    expect(conv.getContextScope()).toBe(outgoingScope);
   });
 
   test.each(['format', 'image'])('%s card forwards its signal and holds the write lock until settlement', async (kind) => {

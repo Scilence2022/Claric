@@ -57,7 +57,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
         notify();
     }
 
-    function applyDetection(detection) {
+    function applyDetection(detection, activityLog = log) {
         const entries = Object.entries(detection.values)
             .filter(([field, value]) => !settings.locked[field] && value !== settings.values[field]);
         suggestion = null;
@@ -70,10 +70,10 @@ export function createDocumentWritingController({ identity, readText, classify, 
         const summary = `Updated ${entries.map(([field]) => field).join(', ')} from the document.`;
         save({ ...settings, values: { ...settings.values, ...Object.fromEntries(entries) } },
             [summary, detection.reason].filter(Boolean).join(' '));
-        log?.(`Document writing settings updated (${entries.map(([field, value]) => `${field}: ${WRITING_OPTIONS[field][value]}`).join(', ')}).`, 'info');
+        activityLog?.(`Document writing settings updated (${entries.map(([field, value]) => `${field}: ${WRITING_OPTIONS[field][value]}`).join(', ')}).`, 'info');
     }
 
-    async function detect({ automatic = false, signal, onStart } = {}) {
+    async function detect({ automatic = false, signal, onStart, log: activityLog = log } = {}) {
         refresh();
         if (detecting || signal?.aborted || settings.mode === 'manual'
             || (automatic && settings.mode !== 'automatic')
@@ -95,11 +95,11 @@ export function createDocumentWritingController({ identity, readText, classify, 
                 return;
             }
             onStart?.();
-            const result = parseWritingDetection(await classify(writingDetectionMessages(sample), signal));
+            const result = parseWritingDetection(await classify(writingDetectionMessages(sample), signal, activityLog));
             if (!isCurrent()) return;
             if (automatic) {
                 lastSample = sample;
-                applyDetection(result);
+                applyDetection(result, activityLog);
                 lastDetectionStatus = status;
             } else {
                 const values = Object.fromEntries(Object.entries(result.values)
@@ -110,7 +110,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
         } catch (error) {
             if (isCurrent()) {
                 status = 'Writing settings could not be detected.';
-                log?.(`Writing settings detection failed: ${error.message}`, 'warning');
+                activityLog?.(`Writing settings detection failed: ${error.message}`, 'warning');
             }
         } finally {
             detecting = false;
