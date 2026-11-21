@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { withWritingSettings } from '../src/lib/document-writing-settings.js';
 import { createDocumentWritingController } from '../src/taskpane/document-writing-controller.js';
+import { initDocumentTypeView } from '../src/taskpane/ui/document-type-view.js';
 import { initDocumentWritingView } from '../src/taskpane/ui/document-writing-view.js';
 
 const FILE = { documentId: 'document-example' };
@@ -115,4 +116,86 @@ test('the settings tab selects and locks preferences, then applies and undoes a 
     expect(language.value).toBe('fr');
     document.getElementById('undoDocumentWriting').click();
     expect(document.getElementById('documentWriting-type').value).toBe('');
+});
+
+test('automatic detection reports the detected type even when a different type is locked', async () => {
+    const { controller, deps, view } = setup();
+    controller.update({ mode: 'automatic', values: { type: 'contract' }, locked: { type: true } });
+    await controller.detect({ automatic: true });
+    expect(view().settings).toMatchObject({ detectedType: 'report', values: { type: 'contract' } });
+    expect(createDocumentWritingController(deps).settings).toMatchObject({
+        detectedType: 'report', values: { type: 'contract' }, locked: { type: true },
+    });
+});
+
+test('an explicit refresh in automatic mode updates only the unlocked type and bypasses the cached sample', async () => {
+    const { controller, deps } = setup();
+    controller.update({ mode: 'automatic' });
+    await controller.detect({ automatic: true });
+    deps.classify.mockResolvedValueOnce('{"type":"proposal","style":"formal","language":"fr"}');
+    await controller.detect({ typeOnly: true });
+    expect(deps.classify).toHaveBeenCalledTimes(2);
+    expect(deps.classify.mock.lastCall[0][0].content).toContain('Return JSON with type and reason.');
+    expect(controller.settings).toMatchObject({
+        detectedType: 'proposal', values: { type: 'proposal', style: 'technical', language: 'zh-Hans' },
+    });
+});
+
+test('refreshing type replaces stale type advice without applying or discarding other suggestions', async () => {
+    const { controller, deps, view } = setup();
+    await controller.detect();
+    expect(view().suggestion.values.type).toBe('report');
+    deps.classify.mockResolvedValueOnce('{"type":"proposal"}');
+    await controller.detect({ typeOnly: true });
+    controller.useDetectedType();
+    controller.applySuggestion();
+    expect(controller.settings.values).toEqual({ type: 'proposal', style: 'technical', language: 'zh-Hans' });
+});
+
+test('ChatBox can refresh a locked type in manual mode and explicitly use the detected result', async () => {
+    const html = readFileSync('src/taskpane/taskpane.html', 'utf8');
+    document.body.innerHTML = html.slice(html.indexOf('<div class="composer">'), html.indexOf('<div id="skillsMenu"'));
+    const { controller, deps } = setup();
+    controller.update({ mode: 'manual', locked: { style: true, language: true } });
+    initDocumentTypeView(controller);
+    const current = document.getElementById('chatDocumentTypeCurrent');
+    const picker = document.getElementById('chatDocumentTypePicker');
+    const select = document.getElementById('chatDocumentTypeSelect');
+    const detected = document.getElementById('chatDocumentTypeDetected');
+    const refresh = document.getElementById('chatDocumentTypeRefresh');
+    picker.open = true;
+    select.value = 'contract';
+    select.dispatchEvent(new Event('change'));
+    expect(current.textContent).toBe('Type: Contract or legal document (locked)');
+    expect(detected.textContent).toBe('Detected: Not checked');
+    expect(deps.classify).not.toHaveBeenCalled();
+    refresh.click();
+    expect(detected.textContent).toBe('Checking type…');
+    expect(refresh.disabled).toBe(true);
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(detected.textContent).toBe('Detected: Report');
+    expect(controller.settings).toMatchObject({ mode: 'manual', values: { type: 'contract', style: '', language: '' } });
+    document.getElementById('chatDocumentTypeUseDetected').click();
+    expect(picker.open).toBe(false);
+    expect(document.activeElement).toBe(current);
+    expect(current.textContent).toBe('Type: Report');
+    expect(controller.settings.locked.type).toBe(false);
+    controller.undo();
+    expect(current.textContent).toBe('Type: Contract or legal document (locked)');
+    expect(detected.textContent).toBe('Detected: Report');
+    deps.classify.mockRejectedValueOnce(new Error('Provider unavailable'));
+    refresh.click();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(detected.textContent).toBe('Detected: Report · Refresh failed');
+    expect(refresh.disabled).toBe(false);
+});
+
+test('refreshing an empty document clears the prior detected type and type suggestion', async () => {
+    const { controller, deps, view } = setup();
+    await controller.detect();
+    deps.readText.mockResolvedValueOnce('  ');
+    await controller.detect({ typeOnly: true });
+    expect(controller.settings.detectedType).toBe('');
+    expect(view().suggestion.values).toEqual({ style: 'technical', language: 'zh-Hans' });
+    expect(deps.classify).toHaveBeenCalledTimes(1);
 });

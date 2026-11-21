@@ -95,6 +95,21 @@
             <div id="attachmentChips" class="attachment-chips" hidden></div>
             <div id="inputError" class="input-error" role="alert" aria-live="assertive" hidden></div>
             <div class="composer">
+                <div id="chatDocumentTypeControls" class="chat-document-type" hidden>
+                    <details id="chatDocumentTypePicker">
+                        <summary id="chatDocumentTypeCurrent" class="model-pill">Type: Document context</summary>
+                        <div class="chat-document-type-panel">
+                            <label for="chatDocumentTypeSelect">Document type</label>
+                            <select id="chatDocumentTypeSelect" class="form-control" aria-describedby="chatDocumentTypeHelp">
+                                <option value="">Use document context</option>
+                            </select>
+                            <small id="chatDocumentTypeHelp" class="help-text"></small>
+                            <button id="chatDocumentTypeUseDetected" type="button" class="btn btn-compact" hidden>Use detected type</button>
+                        </div>
+                    </details>
+                    <button id="chatDocumentTypeRefresh" type="button" class="model-pill" title="Send short excerpts to your configured model to refresh the detected type">Refresh type</button>
+                    <span id="chatDocumentTypeDetected" class="help-text" role="status"></span>
+                </div>
                 <textarea id="chatInput" class="chat-input" rows="1"
                     placeholder="Ask for help, or / for commands"
                     aria-label="Chat input"></textarea>
