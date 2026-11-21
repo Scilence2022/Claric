@@ -35,6 +35,26 @@ const EXPECTED_SLASHES = [
 ];
 
 describe('BUILTIN_SKILLS registry', () => {
+  test('built-ins use a source-aware language policy for their output type', () => {
+    const languageByCategory = {
+      amendment: 'Preserve the original language of the text being edited',
+      comment: 'Write comment prose in the language of the passage under review',
+      summary: 'Write the summary and its headings in the primary language of the source document',
+      chat: 'Answer in the primary language of the supplied document context',
+    };
+    for (const skill of BUILTIN_SKILLS) {
+      expect(skill.defaultTemplate).toContain('Treat earlier translation requests as context only.');
+      if (skill.name === 'translate') {
+        expect(skill.defaultTemplate).toContain('target language specified in the additional instructions for this command');
+        expect(skill.defaultTemplate).not.toContain(languageByCategory.amendment);
+      } else {
+        expect(skill.defaultTemplate).toContain(languageByCategory[skill.category]);
+      }
+    }
+    expect(resolveSkill('/polish', BUILTIN_SKILLS).skill.defaultTemplate)
+      .toContain('genre and register unless the user explicitly requests a style change');
+  });
+
   test('contains exactly the built-in skills with unique slashes', () => {
     expect(BUILTIN_SKILLS.length).toBe(16);
     const slashes = BUILTIN_SKILLS.map((s) => s.slash);
