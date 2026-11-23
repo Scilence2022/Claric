@@ -49,6 +49,11 @@ export function rangeStructureFingerprint(ooxml) {
     return JSON.stringify(nodes.map((node) => formatNode(stableNode(node))).filter(Boolean));
 }
 
+/** Compare one already parsed body element, including its paragraph and run formatting. */
+export function bodyElementFingerprint(element) {
+    return JSON.stringify(formatNode(stableNode(element)));
+}
+
 function isNode(node, name) { return Array.isArray(node) && node[0] === W_NS && node[1] === name; }
 
 /** Only plain text runs merge; fields, drawings, references and revisions keep boundaries. */

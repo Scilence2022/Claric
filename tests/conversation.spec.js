@@ -147,6 +147,24 @@ function makeActions(overrides = {}) {
 }
 
 describe('routeTurn', () => {
+  test.each([
+    '重排文章章节，再修改前后段落的衔接。',
+    '把讨论移到结果之前，并修改前后文的转折。',
+    'Move the Discussion before the Results and revise the transitions.',
+    'Reorder the selected paragraphs and fix the transitions.',
+  ])('routes restructuring and transition edits together (%s)', (instruction) => {
+    expect(routeTurn(instruction, { hasSelection: true, hasTextSelection: true })).toMatchObject({
+      type: TURN_TYPE.DOCUMENT_EDIT, instruction,
+    });
+  });
+
+  test('constrains a selected-paragraph restructuring while keeping object moves in their own route', () => {
+    expect(routeTurn('重排选中段落的顺序并调整衔接', { hasSelection: true })).toMatchObject({
+      type: TURN_TYPE.DOCUMENT_EDIT, scope: 'selection',
+    });
+    expect(routeTurn('Move all the tables to the end of the document').type).not.toBe(TURN_TYPE.DOCUMENT_EDIT);
+  });
+
   test.each(['delete all comments', 'Can you delete all comments?', '请删除所有批注', '把全部批注删除'])(
   'comment action %s overrides text, image and table selections', (instruction) => {
     for (const facts of [{}, { hasSelection: true }, { hasImageSelection: true }, { hasMultiCellTableRegion: true }]) {

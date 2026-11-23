@@ -1,4 +1,6 @@
-/** Addressable, Word-free document draft. Original block identities never move. */
+/** Addressable, Word-free document draft with stable original block identities. */
+import { resolveDocumentMove } from './document-move.js';
+
 export const DOCUMENT_EDIT_LIMITS = Object.freeze({
     blocks: 20000, paragraphChars: 24000, changes: 24, patchChars: 48000, readChars: 32000,
     outlineBlocks: 100, readBlocks: 12,
@@ -43,7 +45,7 @@ function elide(value, limit, { head, tail }) {
 }
 
 /**
- * @param {{id: string, blocks: Array<{id: string, text: string, [key: string]: any}>}} snapshot
+ * @param {{id: string, authorizedIds?: string[], blocks: Array<{id: string, text: string, [key: string]: any}>}} snapshot
  */
 export function createDocumentModel(snapshot) {
     if (!snapshot?.id || !Array.isArray(snapshot.blocks) || !snapshot.blocks.length
@@ -52,8 +54,11 @@ export function createDocumentModel(snapshot) {
     const original = snapshot.blocks.map((b) => ({ ...b,
         readOnly: !!b.readOnly || !!b.headingLevel || !!b.structureUnavailable || !!b.inTable || !!b.isListItem, original: true }));
     const originals = new Map(original.map((b) => [b.id, b]));
+    const originalPositions = new Map(original.map((b, index) => [b.id, index]));
+    const authorized = snapshot.authorizedIds && new Set(snapshot.authorizedIds);
     if (originals.size !== original.length || original.some((b) => !b.id || typeof b.text !== 'string')) fail('Invalid document block identities.');
     let draft = original.map((b) => ({ ...b }));
+    let moves = [];
     let revision = 0;
     let sequence = 0;
     /** @type {{goal: string, requirements: string[], targetIds: string[]}|null} */
@@ -69,8 +74,9 @@ export function createDocumentModel(snapshot) {
         if (id && originals.has(id) && !readCoverage.get(id)?.complete) fail(`Read the complete block ${id} before editing or choosing this gap.`);
     }
     function permitted(id) {
-        if (contract?.targetIds.length && id && !contract.targetIds.includes(id)) fail(`Block ${id} is outside the declared write scope.`);
+        if (id && !inScope(id)) fail(`Block ${id} is outside the authorized write scope.`);
     }
+    function inScope(id) { return (!authorized || authorized.has(id)) && (!contract?.targetIds.length || contract.targetIds.includes(id)); }
     function describe(b) {
         const index = draft.indexOf(b);
         function canInsert(at, after) {
@@ -79,7 +85,7 @@ export function createDocumentModel(snapshot) {
             const owner = after ? (left || right) : (right || left);
             return !left?.structureUnavailable && !right?.structureUnavailable
                 && !((!left || left.inTable) && (!right || right.inTable))
-                && (!contract?.targetIds.length || contract.targetIds.includes(owner?.id));
+                && inScope(owner?.id) && (!authorized || [left, right].every((b) => !b || authorized.has(b.id)));
         }
         const reasons = b.readOnlyReasons || [b.structureUnavailable && 'structure_unavailable',
             b.headingLevel && 'heading', b.inTable && 'table', b.isListItem && 'list',
@@ -87,7 +93,9 @@ export function createDocumentModel(snapshot) {
         return { id: b.id, headingLevel: b.headingLevel || 0, section: b.section || '',
             hasRevisions: !!b.hasRevisions, textVersion: 'current',
             readOnly: !!b.readOnly, readOnlyReasons: reasons, inTable: !!b.inTable,
-            canReplace: !b.readOnly && (!b.original || !contract?.targetIds.length || contract.targetIds.includes(b.id)),
+            canReplace: !b.readOnly && (!b.original || inScope(b.id)),
+            canMove: b.canMove === true && inScope(b.id) && !moves.some((move) => move.blockIds.includes(b.id)),
+            canAnchorMove: b.canAnchorMove === true && inScope(b.id),
             canInsertBefore: canInsert(index, false), canInsertAfter: canInsert(index + 1, true),
             chars: b.text.length, preview: b.text.slice(0, 180) };
     }
@@ -144,8 +152,8 @@ export function createDocumentModel(snapshot) {
         contract = { goal, requirements, targetIds: [...new Set(targetIds)] };
         return { contract, revision };
     }
-    function compile(list = draft) {
-        const changes = [];
+    function compile(list = draft, structural = moves) {
+        const changes = [...structural];
         for (let i = 0; i < list.length; i++) {
             const b = list[i];
             if (b.original) {
@@ -169,10 +177,42 @@ export function createDocumentModel(snapshot) {
         if (!contract) fail('Call set_edit_contract before editing.');
         if (!Array.isArray(args.operations) || !args.operations.length || args.operations.length > 12) fail('Stage 1–12 operations at a time.');
         const next = draft.map((b) => ({ ...b }));
+        const nextMoves = moves.slice();
         let nextSequence = sequence;
         for (const op of args.operations) {
             if (!op || typeof op !== 'object') fail('Invalid operation.');
-            if (op.kind === 'insert') {
+            if (op.kind === 'move') {
+                if ((op.afterId == null) === (op.beforeId == null)) fail('Specify one destination using beforeId or afterId.');
+                const first = next.indexOf(block(op.firstId, next));
+                const last = next.indexOf(block(op.lastId, next));
+                const source = next.slice(first, last + 1);
+                const target = block(op.afterId ?? op.beforeId, next);
+                const side = op.afterId == null ? 'before' : 'after';
+                const blockIds = source.map((b) => b.id);
+                const move = { kind: 'move', id: `move-${op.firstId}`, blockIds, targetId: target.id, side,
+                    reason: text(op.reason, 'move reason', 1000) };
+                const { start, end, gap, destination } = resolveDocumentMove(next.map((b) => b.id), move);
+                if (!target.canAnchorMove || source.some((b) => b.canMove !== true)) fail('Move requires verified body paragraphs without protected content or unresolved revisions, and a verified body destination.');
+                if (blockIds.some((id, index) => originalPositions.get(id) !== originalPositions.get(blockIds[0]) + index)) fail('Choose a source that was also contiguous in the original Word document.');
+                resolveDocumentMove(next.filter((b) => b.original).map((b) => b.id), move);
+                if (nextMoves.some((item) => item.blockIds.some((id) => blockIds.includes(id)))) fail('A paragraph can be moved once per draft. Discard the latest move to revise its destination.');
+                for (const id of [...blockIds, target.id]) permitted(id);
+                const sourceNeighbors = [next[start - 1]?.id || null, next[end]?.id || null];
+                const destinationNeighbors = [next[gap - 1]?.id || null, next[gap]?.id || null];
+                for (const id of [op.firstId, op.lastId, ...sourceNeighbors, ...destinationNeighbors]) readRequired(id);
+                next.splice(start, source.length);
+                next.splice(destination, 0, ...source);
+                nextMoves.push({ ...move, sourceNeighbors, destinationNeighbors });
+            } else if (op.kind === 'discard_move') {
+                const move = nextMoves.at(-1);
+                if (!move || move.id !== op.moveId) fail('Discard moves starting with the latest moveId.');
+                const nextId = move.sourceNeighbors[1];
+                const reverse = { blockIds: move.blockIds, targetId: nextId || move.sourceNeighbors[0], side: nextId ? 'before' : 'after' };
+                const { start, destination } = resolveDocumentMove(next.map((b) => b.id), reverse);
+                const source = next.splice(start, move.blockIds.length);
+                next.splice(destination, 0, ...source);
+                nextMoves.pop();
+            } else if (op.kind === 'insert') {
                 if ((op.afterId == null) === (op.beforeId == null)) fail('Specify exactly one of afterId or beforeId. Use a real block ID, never a position default.');
                 const anchor = block(op.afterId ?? op.beforeId, next);
                 let index = next.indexOf(anchor) + (op.afterId != null ? 1 : 0);
@@ -183,6 +223,7 @@ export function createDocumentModel(snapshot) {
                 if (left?.structureUnavailable || right?.structureUnavailable) fail('Cannot insert beside a paragraph whose Word structure could not be read. Choose another location.');
                 const owner = op.afterId != null ? (left || right) : (right || left);
                 permitted(owner?.id);
+                if (authorized && [left, right].some((b) => b && !authorized.has(b.id))) fail('Insertion gap is outside the selected paragraphs.');
                 if ((!left || left.inTable) && (!right || right.inTable)) fail('Cannot insert prose inside a table. Choose a body paragraph.');
                 if (!Array.isArray(op.paragraphs) || !op.paragraphs.length || op.paragraphs.length > 12) fail('Insert 1–12 paragraphs.');
                 const reason = text(op.reason, 'placement reason', 1000);
@@ -214,10 +255,18 @@ export function createDocumentModel(snapshot) {
                 const target = block(op.blockId, next);
                 if (target.original) Object.assign(target, originals.get(target.id), { reason: '' });
                 else next.splice(next.indexOf(target), 1);
-            } else fail(`Unsupported operation ${op.kind}. Use insert, replace, format_new or discard.`);
+            } else fail(`Unsupported operation ${op.kind}. Use move, discard_move, insert, replace, format_new or discard.`);
         }
-        compile(next); // Commit only after the entire batch validates.
+        if (moves.length || nextMoves.length) {
+            let section = '';
+            for (const b of next) {
+                if (b.headingLevel) section = b.text;
+                b.section = section;
+            }
+        }
+        compile(next, nextMoves); // Commit only after the entire batch validates.
         draft = next;
+        moves = nextMoves;
         sequence = nextSequence;
         revision++;
         return { revision, changes: compile().changes, message: 'Draft updated; Word has not been changed. Read the draft and validate it before finishing.' };
@@ -225,6 +274,9 @@ export function createDocumentModel(snapshot) {
     function preview() {
         const patch = compile();
         const ids = new Set();
+        const moveEdges = new Set(moves.flatMap((move) => [move.blockIds[0], move.blockIds.at(-1),
+            ...move.sourceNeighbors, ...move.destinationNeighbors].filter(Boolean)));
+        for (const id of moveEdges) ids.add(id);
         for (const change of patch.changes) {
             for (const id of [change.blockId, 'afterId' in change ? change.afterId : null,
                 'beforeId' in change ? change.beforeId : null].filter(Boolean)) {
@@ -236,17 +288,23 @@ export function createDocumentModel(snapshot) {
         // only, so a long one is cut to the end(s) facing the nearest change.
         const edited = draft.map((b) => !b.original || b.text !== originals.get(b.id).text);
         const changedIds = new Set(draft.filter((_, i) => edited[i]).map((b) => b.id));
-        const sides = new Map(draft.map((b, i) => [b.id, { head: edited.lastIndexOf(true, i) !== -1, tail: edited.indexOf(true, i) !== -1 }]));
-        const view = (list, excerpt, include) => list.filter(include).map((b) => ({ id: b.id, text: b.text, section: b.section || '',
-            ...(changedIds.has(b.id) ? {} : elide(b.text, excerpt, sides.get(b.id))), ...(b.format ? { format: b.format } : {}) }));
+        const firstEdited = edited.indexOf(true);
+        const lastEdited = edited.lastIndexOf(true);
+        const sides = new Map(draft.map((b, i) => [b.id, { head: moveEdges.has(b.id) || (firstEdited !== -1 && i >= firstEdited),
+            tail: moveEdges.has(b.id) || i <= lastEdited }]));
+        const view = (list, excerpt, include) => list.flatMap((b, position) => include(b) ? [{ id: b.id, text: b.text, section: b.section || '',
+            ...(moves.length ? { position: position + 1 } : {}),
+            ...(changedIds.has(b.id) ? {} : elide(b.text, excerpt, sides.get(b.id))), ...(b.format ? { format: b.format } : {}) }] : []);
         const full = (list) => view(list, 0, (b) => changedIds.has(b.id));
         if (JSON.stringify({ contract, ...patch, before: full(original), after: full(draft) }).length > REVIEW_CONTEXT_CHARS) {
             fail(`Review context is too large: the proposed changes alone exceed ${REVIEW_CONTEXT_CHARS} characters. Reduce the draft to fewer or shorter paragraphs.`);
         }
         // Many long neighbours can still add up; shrink their excerpts before giving up.
         for (const excerpt of [REVIEW_EXCERPT_CHARS, 600, 200, 0]) {
-            const result = { contract, ...patch, before: view(original, excerpt, (b) => ids.has(b.id)),
-                after: view(draft, excerpt, (b) => !b.original || ids.has(b.id)) };
+            const movedIds = new Set(moves.flatMap((move) => move.blockIds));
+            const include = (b) => ids.has(b.id) || (excerpt === REVIEW_EXCERPT_CHARS && movedIds.has(b.id));
+            const result = { contract, ...patch, before: view(original, excerpt, include),
+                after: view(draft, excerpt, (b) => !b.original || include(b)) };
             if (JSON.stringify(result).length <= REVIEW_CONTEXT_CHARS) return result;
         }
         fail('Review context is too large. Reduce the draft to fewer paragraphs.');

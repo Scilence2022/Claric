@@ -327,6 +327,22 @@ retry. Reassembly aligns paragraphs and attempts to retain styles, numbering,
 and indentation. Combined amendment-and-comment runs can add comments along
 with text edits. Successful retry results return as new reviewable proposals.
 
+### Reordering Sections and Repairing Transitions
+
+Ask Claric to move an existing group of paragraphs or a section, including
+its heading, and revise the transitions together. For example, “Move the
+limitations section before the conclusion, then revise the preceding and
+following paragraphs so the argument flows.” The proposal shows the original
+and proposed paragraph positions and the wording changes. Apply writes the
+move and the transition edits to the active document. With Track Changes
+enabled, the structural move is verified as an insertion at the destination
+and a deletion at the source.
+
+Movable blocks are contiguous body paragraphs with safely readable Word
+structure. Tables, lists, images, fields, section breaks, annotated ranges
+and paragraphs with unresolved revisions are protected. Surrounding prose can
+be moved across these objects when the source and destination are independent.
+
 ### Document Summary & Comments
 
 `/summarize-contract` can use document text, comments, and tracked changes to

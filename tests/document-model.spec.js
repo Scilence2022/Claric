@@ -15,6 +15,54 @@ function ready(source = snapshot()) {
 }
 const insert = { kind: 'insert', afterId: 'p4', paragraphs: ['XXX adds another interpretation.'], reason: 'Before limitations.' };
 
+test('keeps moved identities and derives the draft outline and transitions in the new order', () => {
+    const source = snapshot();
+    source.blocks.forEach((b) => Object.assign(b, { canMove: true, canAnchorMove: true }));
+    const model = ready(source);
+    model.stage({ operations: [
+        { kind: 'move', firstId: 'p3', lastId: 'p5', beforeId: 'p1', reason: 'Put discussion before results.' },
+        { kind: 'replace', blockId: 'p4', text: 'The proposed mechanism motivates the following results.', reason: 'Connect the new order.' },
+    ] });
+    expect(model.outline().blocks.map((b) => b.id)).toEqual(['p3', 'p4', 'p5', 'p1', 'p2']);
+    expect(model.read({ ids: ['p5'] }).blocks[0]).toMatchObject({ nextId: 'p1', section: 'Discussion' });
+    expect(model.compile().changes).toMatchObject([
+        { kind: 'move', blockIds: ['p3', 'p4', 'p5'], targetId: 'p1', sourceNeighbors: ['p2', null], destinationNeighbors: [null, 'p1'] },
+        { kind: 'replace', blockId: 'p4', before: 'The mechanism explains this finding.' },
+    ]);
+    expect(model.preview().after[0]).toMatchObject({ id: 'p3', position: 1 });
+    model.stage({ operations: [{ kind: 'discard_move', moveId: 'move-p3' }] });
+    expect(model.outline().blocks.map((b) => b.id)).toEqual(['p1', 'p2', 'p3', 'p4', 'p5']);
+    expect(model.compile().changes.map((c) => c.kind)).toEqual(['replace']);
+});
+
+test('structural moves require the original boundaries, verified paragraphs and authorized scope', () => {
+    const source = snapshot();
+    source.blocks.forEach((b) => Object.assign(b, { canMove: true, canAnchorMove: true }));
+    const move = { kind: 'move', firstId: 'p3', lastId: 'p5', beforeId: 'p1', reason: 'Lead with the discussion.' };
+    const restricted = ready({ ...source, authorizedIds: ['p3', 'p4', 'p5'] });
+    expect(() => restricted.stage({ operations: [move] })).toThrow(/outside the authorized write scope/);
+    const unread = createDocumentModel(source);
+    unread.setContract({ goal: 'Reorder', requirements: ['Lead with the discussion'] });
+    unread.read({ ids: ['p1', 'p3', 'p5'] });
+    expect(() => unread.stage({ operations: [move] })).toThrow(/complete block p2/);
+    source.blocks[3].canMove = false;
+    expect(() => ready(source).stage({ operations: [move] })).toThrow(/protected/);
+});
+
+test('reviews a long section move with all identities and bounded excerpts at the changed joins', () => {
+    const source = { id: 'long', blocks: Array.from({ length: 150 }, (_, index) => ({
+        id: `p${index}`, text: `${index}. ${'Context '.repeat(300)}`, canMove: true, canAnchorMove: true,
+    })) };
+    const model = createDocumentModel(source);
+    model.setContract({ goal: 'Move the long section', requirements: ['Keep the section together'] });
+    model.read({ ids: ['p1', 'p147', 'p0', 'p148', 'p149'] });
+    model.stage({ operations: [{ kind: 'move', firstId: 'p1', lastId: 'p147', afterId: 'p149', reason: 'Place evidence after its explanation.' }] });
+    const preview = model.preview();
+    expect(preview.changes[0].blockIds).toHaveLength(147);
+    expect(preview.after.map((b) => b.id)).toEqual(['p0', 'p148', 'p149', 'p1', 'p147']);
+    expect(JSON.stringify(preview).length).toBeLessThan(60000);
+});
+
 test('inserts at a chosen gap, edits the inserted draft and compiles against original identities', () => {
     const model = ready();
     model.stage({ operations: [insert] });
