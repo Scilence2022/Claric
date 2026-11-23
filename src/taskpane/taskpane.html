@@ -107,7 +107,7 @@
                             <button id="chatDocumentTypeUseDetected" type="button" class="btn btn-compact" hidden>Use detected type</button>
                         </div>
                     </details>
-                    <button id="chatDocumentTypeRefresh" type="button" class="model-pill" title="Send short excerpts to your configured model to refresh the detected type">Refresh type</button>
+                    <button id="chatDocumentTypeRefresh" type="button" class="model-pill" title="Send short excerpts to the selected chat model to refresh the detected type">Refresh type</button>
                     <span id="chatDocumentTypeDetected" class="help-text" role="status"></span>
                 </div>
                 <textarea id="chatInput" class="chat-input" rows="1"
@@ -467,11 +467,11 @@
                         <div class="form-group">
                             <label for="documentWritingMode">Detection</label>
                             <select id="documentWritingMode" class="form-control" aria-describedby="documentWritingHelp">
-                                <option value="suggest">Suggest on request</option>
+                                <option value="suggest">Auto-detect type, suggest other settings on request</option>
                                 <option value="manual">Manual</option>
                                 <option value="automatic">Automatically update unlocked settings</option>
                             </select>
-                            <small id="documentWritingHelp" class="help-text">Detection sends short excerpts to your configured model. Settings are saved for this document in this add-in. They guide future drafts and replies.</small>
+                            <small id="documentWritingHelp" class="help-text">Automatic detection checks the document before writing and document questions. Detection sends short excerpts to the selected chat model. Use Manual to run detection only with Refresh type. These settings guide drafts and replies for this document.</small>
                         </div>
                         <div class="form-group">
                             <label for="documentWriting-type">Document type</label>

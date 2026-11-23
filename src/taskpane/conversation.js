@@ -2934,12 +2934,10 @@ export function createConversation(deps) {
                 || (turn.type === TURN_TYPE.SKILL && turn.skill.category !== 'tools');
             if (documentWriting && usesWritingSettings) {
                 const signal = owner.controller.signal;
-                if (documentWriting.settings.mode === 'automatic') {
-                    await documentWriting.detect({
-                        automatic: true, signal, log: turnDeps.log,
-                        onStart: () => msg.setStatus('Detecting document writing settings…'),
-                    });
-                }
+                await documentWriting.detect({
+                    automatic: true, signal, log: turnDeps.log,
+                    onStart: () => msg.setStatus('Detecting document writing settings…'),
+                });
                 if (signal.aborted || !owner.isCurrentSession()) return;
                 turnDeps.writingSettings = documentWriting.settings;
             }
