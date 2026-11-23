@@ -108,4 +108,24 @@ describe('applySelectionAmendment staleness guard (flat text route)', () => {
         expect(selection.insertText).not.toHaveBeenCalled();
         expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('Selection changed'), 'warning');
     });
+
+    test('a retry at a collapsed caret skips before requesting selection XML', async () => {
+        const { selection } = setupWord('');
+        selection.isEmpty = true;
+        selection.getOoxml = jest.fn(() => { throw new Error('GeneralException'); });
+        const result = await applySelectionAmendment(makeDeps(), makeProposal('Previous selection.'));
+        expect(result).toMatchObject({ skipped: true });
+        expect(selection.getOoxml).not.toHaveBeenCalled();
+        expect(selection.insertText).not.toHaveBeenCalled();
+    });
+
+    test('a failed selection read identifies the Word operation before writing', async () => {
+        const { context, selection } = setupWord('Previous selection.');
+        context.sync.mockResolvedValueOnce().mockRejectedValueOnce(Object.assign(new Error('GeneralException'), {
+            debugInfo: { errorLocation: 'Range.getOoxml' },
+        }));
+        await expect(applySelectionAmendment(makeDeps(), makeProposal(selection.text)))
+            .rejects.toThrow(/verify the selection.*GeneralException.*Range.getOoxml/);
+        expect(selection.insertText).not.toHaveBeenCalled();
+    });
 });

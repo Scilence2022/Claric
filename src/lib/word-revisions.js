@@ -95,33 +95,38 @@ export function textMismatchDetail(wanted, actual) {
     return `expected ${wanted.length} chars, received ${actual.length}; first mismatch at ${offset}; expected ${code(wanted)}, received ${code(actual)}`;
 }
 
-/** Some Word paragraph reads include the deletion immediately after an opening
- * tracked insertion. Accept that representation only if the complete reviewed
- * string equals the visible XML text with that exact deletion at its XML offset. */
-export function matchesReviewedLeadingDeletion(state, value) {
-    const deletion = state.reviewedLeadingDeletion;
-    return !!deletion && typeof value === 'string' && normalizeWordText(value) ===
-        state.text.slice(0, deletion.offset) + deletion.text + state.text.slice(deletion.offset);
+/** Reconcile one leaked deletion only at the offset proven by fresh XML. */
+export function matchesReviewedDeletion(state, value) {
+    if (typeof value !== 'string') return false;
+    const reviewed = normalizeWordText(value);
+    return !!state.reviewedDeletions?.some(({ offset, text }) =>
+        reviewed === state.text.slice(0, offset) + text + state.text.slice(offset));
 }
 
-function reviewedLeadingDeletion(paragraph) {
+function plainRevisionText(revision, revisionElement, textElement) {
+    if (revision?.namespaceURI !== W || revision.localName !== revisionElement) return '';
+    const runs = Array.from(revision.children);
+    if (runs.some((run) => run.namespaceURI !== W || run.localName !== 'r')) return '';
+    const children = runs.flatMap((run) => Array.from(run.children));
+    if (children.some((node) => node.namespaceURI !== W || !['rPr', textElement].includes(node.localName))) return '';
+    return children.filter((node) => node.localName === textElement).map((node) => node.textContent).join('');
+}
+
+function reviewedDeletions(paragraph, visibleLength) {
     const content = Array.from(paragraph.children).filter((node) => node.namespaceURI !== W
         || !['pPr', 'bookmarkStart', 'bookmarkEnd', 'proofErr'].includes(node.localName));
-    const [insertion, deletion] = content;
-    if (insertion?.namespaceURI !== W || insertion.localName !== 'ins'
-        || deletion?.namespaceURI !== W || deletion.localName !== 'del') return null;
-
-    function plainRevisionText(revision, textElement) {
-        const runs = Array.from(revision.children);
-        if (runs.some((run) => run.namespaceURI !== W || run.localName !== 'r')) return '';
-        const children = runs.flatMap((run) => Array.from(run.children));
-        if (children.some((node) => node.namespaceURI !== W || !['rPr', textElement].includes(node.localName))) return '';
-        return children.filter((node) => node.localName === textElement).map((node) => node.textContent).join('');
+    const candidates = [];
+    // Mac Word sometimes includes the deletion following an opening insertion.
+    if (content.length > 2) {
+        const leading = plainRevisionText(content[0], 'ins', 't');
+        const deleted = plainRevisionText(content[1], 'del', 'delText');
+        if (leading && deleted) candidates.push({ offset: leading.length, text: deleted });
     }
-
-    const leadingText = plainRevisionText(insertion, 't');
-    const deletedText = plainRevisionText(deletion, 'delText');
-    return leadingText && deletedText ? { offset: leadingText.length, text: deletedText } : null;
+    // A further rewrite can split the insertion into several revisions. The
+    // earlier deletion can still be read after the last visible character.
+    const trailing = plainRevisionText(content.at(-1), 'del', 'delText');
+    if (visibleLength && trailing) candidates.push({ offset: visibleLength, text: trailing });
+    return candidates;
 }
 
 export function wordErrorDetail(error) {
@@ -354,8 +359,8 @@ export function revisionTextState(ooxml, { paragraph = false, currentText = null
         ? new XMLSerializer().serializeToString(body) : ooxml);
     return { text, segments, nativeTokens, hasRevisions, hasHiddenContent, protectedStructure, paragraphCount,
         inlineFingerprint: inlineObjects.length ? JSON.stringify([inlineObjects, linkedTargets]) : null,
-        reviewedLeadingDeletion: paragraph && paragraphCount === 1 && scopeParagraph && !protectedStructure && !protectedSpans.length
-            && hasHiddenContent ? reviewedLeadingDeletion(scopeParagraph) : null,
+        reviewedDeletions: paragraph && paragraphCount === 1 && scopeParagraph && !protectedStructure && !protectedSpans.length
+            && hasHiddenContent ? reviewedDeletions(scopeParagraph, text.length) : null,
         protectedSpans, fieldOnlyProtection: protectedStructure && !nonFieldProtection,
         fingerprint: structure && linkedTargets.length ? JSON.stringify([structure, linkedTargets]) : structure };
 }
