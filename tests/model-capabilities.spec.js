@@ -444,7 +444,17 @@ describe('Claude model capabilities', () => {
     expect(getModelCapabilities('claude', 'claude-future-9').id).toBe('claude-effort');
   });
 
-  test('claude profiles never leak onto gateway providers', () => {
+  test('Zhongkeyu Opus 5.5 exposes the gateway effort controls', () => {
+    const profile = getModelCapabilities('zhongkeyu', 'anthropic/claude-opus-5-5-20261101');
+    expect(profile.options.map((option) => option.value)).toEqual(['default', 'low', 'medium', 'high', 'xhigh', 'max']);
+    expect(profile.options[0].label).toBe('Default (Medium)');
+    expect(buildThinkingRequest(profile, 'off')).toEqual({});
+    expect(isTemperatureSupported(profile, 'high')).toBe(false);
+  });
+
+  test('other gateway Claude models keep the generic profile', () => {
     expect(getModelCapabilities('zhongkeyu', 'claude-opus-4-7').id).toBe('generic');
+    expect(getModelCapabilities('zhongkeyu', 'claude-opus-5-50').id).toBe('generic');
+    expect(getModelCapabilities('custom', 'claude-opus-5-5').id).toBe('generic');
   });
 });

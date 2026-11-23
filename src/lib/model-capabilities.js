@@ -160,6 +160,14 @@ const PROFILE_OPTIONS = {
         makeOption('medium', 'Medium'),
         makeOption('high', 'High'),
     ]),
+    claudeAdaptiveOnly: freezeOptions([
+        makeOption('default', 'Default (Medium)'),
+        makeOption('low', 'Low'),
+        makeOption('medium', 'Medium'),
+        makeOption('high', 'High'),
+        makeOption('xhigh', 'Extra high'),
+        makeOption('max', 'Max'),
+    ]),
     claudeEffortXhigh: freezeOptions([
         makeOption('default', 'Default (High)'),
         makeOption('off', 'Off'),
@@ -433,6 +441,17 @@ const OPENAI_LEGACY_PROFILE = makeProfile({
     hint: 'This OpenAI model has no reasoning dial; only Temperature applies.',
 });
 
+// New API translates Chat Completions reasoning_effort into Claude effort.
+const ZHONGKEYU_CLAUDE_OPUS_55_PROFILE = makeProfile({
+    id: 'zhongkeyu-claude-opus-5-5',
+    protocol: 'openai-reasoning-effort',
+    options: PROFILE_OPTIONS.claudeAdaptiveOnly,
+    defaultLevel: 'default',
+    temperatureSupported: false,
+    temperatureHint: TEMPERATURE_UNSUPPORTED_HINT,
+    hint: 'Claude Opus 5.5 always uses adaptive thinking. Choose an effort level from Low to Max.',
+});
+
 // Claude effort era (4.6+): output_config.effort controls the whole token
 // spend, thinking included; thinking can be disabled explicitly. Claude
 // temperatures are 0-1 (the client clamps the generic 0-2 range).
@@ -609,8 +628,12 @@ const PROFILE_MATCHERS = [
         profile: OPENAI_O_SERIES_PROFILE,
         matcher: /(?:^|[/:._-])o[134](?:[^0-9a-z]|$)/i,
     },
-    // Claude generations. The wire fields are Anthropic-specific, so these
-    // profiles never apply to gateway providers.
+    {
+        providers: ['zhongkeyu'],
+        profile: ZHONGKEYU_CLAUDE_OPUS_55_PROFILE,
+        matcher: /(?:^|[/:])claude-opus-5-5(?:[^0-9a-z]|$)/i,
+    },
+    // Claude profiles for the native Messages API.
     {
         providers: ['claude'],
         profile: CLAUDE_BUDGET_PROFILE,

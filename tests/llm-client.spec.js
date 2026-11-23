@@ -839,6 +839,35 @@ describe('model-specific generation parameters', () => {
     return JSON.parse(global.fetch.mock.calls[0][1].body);
   }
 
+  test.each([
+    ['default', undefined, 16384],
+    ['low', 'low', 16384],
+    ['medium', 'medium', 16384],
+    ['high', 'high', 32768],
+    ['xhigh', 'xhigh', 65536],
+    ['max', 'max', 65536],
+    ['off', undefined, 16384],
+  ])('Zhongkeyu Claude Opus 5.5 sends an output budget at %s effort', async (thinkingLevel, effort, maxTokens) => {
+    const body = await bodyFor({
+      url: 'https://zhongkeyu.com', apiKey: 'k', provider: 'zhongkeyu',
+      model: 'claude-opus-5-5', thinkingLevel, temperature: 1,
+    });
+    expect(body).toEqual({
+      model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'Hello' }], stream: false,
+      max_tokens: maxTokens, ...(effort ? { reasoning_effort: effort } : {}),
+    });
+  });
+
+  test('Zhongkeyu DeepSeek V4 Pro uses its existing request at default effort', async () => {
+    const body = await bodyFor({
+      url: 'https://zhongkeyu.com', apiKey: 'k', provider: 'zhongkeyu',
+      model: 'deepseek-v4-pro', thinkingLevel: 'default', temperature: 1,
+    });
+    expect(body).toEqual({
+      model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'Hello' }], stream: false,
+    });
+  });
+
   test('vLLM Qwen3 sends enable_thinking and a token budget', async () => {
     const body = await bodyFor({
       url: '/vllm', apiKey: '', provider: 'vllm', model: 'qwen3.5-35b-a3b',
