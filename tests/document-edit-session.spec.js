@@ -46,6 +46,27 @@ test('a prose insertion can be formatted before the same draft is reviewed', asy
     expect(reviewRequest[1].content).toContain('"bold":true');
 });
 
+test('the reviewer receives both the new block order and the transition rewrites in a single draft', async () => {
+    const source = { ...snapshot, blocks: snapshot.blocks.map((block) => ({ ...block, canMove: true, canAnchorMove: true })) };
+    const instruction = 'Move paragraph 3 before the discussion and repair the transition.';
+    const send = scripted([
+        call('set_edit_contract', { goal: instruction, requirements: ['Put limitations first and connect the mechanism to them'] }),
+        call('read_blocks', { ids: ['p1', 'p2', 'p3'] }),
+        call('stage_patch', { operations: [
+            { kind: 'move', firstId: 'p3', lastId: 'p3', beforeId: 'p1', reason: 'Explain limitations at the beginning.' },
+            { kind: 'replace', blockId: 'p2', text: 'Despite these limitations, the mechanism remains plausible.', reason: 'Connect the new order.' },
+        ] }),
+        call('read_draft'), call('validate_patch'), review(), call('finish', { summary: 'Proposed reordered discussion.' }),
+    ]);
+    const result = await runDocumentEditSession({ snapshot: source, instruction, send });
+    expect(result.patch.changes.map((change) => change.kind)).toEqual(['move', 'replace']);
+    const [messages] = send.mock.calls.find(([value]) => value[0].content.startsWith('Review a PROPOSED'));
+    const { before, after } = JSON.parse(messages[1].content);
+    expect(before.map((block) => block.id)).toEqual(['p1', 'p2', 'p3']);
+    expect(after.map((block) => block.id)).toEqual(['p3', 'p1', 'p2']);
+    expect(after[2].text).toMatch(/^Despite these limitations/);
+});
+
 test('premature finish and invalid arguments get observations; failed semantic review can be repaired', async () => {
     const send = scripted([finish, contract, call('stage_patch', { operations: [] }), read, insert,
         call('validate_patch'), call('read_draft'), call('validate_patch'), review({ satisfied: false, issues: ['Transition is abrupt.'] }),

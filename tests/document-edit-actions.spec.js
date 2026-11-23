@@ -14,6 +14,9 @@ import { runDocumentEditSession } from '../src/lib/document-edit-session.js';
 import { applyTokenMapStrategy, applySentenceDiffStrategy, applyCharDiffStrategy } from '../src/lib/word-diff/index.js';
 import { getFile, readFile } from '../src/lib/file-store.js';
 import { sendMessages } from '../src/lib/llm-client.js';
+import { documentPartRoot } from '../src/lib/ooxml-text.js';
+
+const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
 function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.']) {
     const bookmarks = new Map();
@@ -23,12 +26,22 @@ function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.'
         maxOoxmlBatch: Infinity, failRangeOoxml: new Set(), failParagraphOoxml: new Set(), pendingOoxml: 0,
         failedBatchCount: 0 };
     const encode = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-    const xml = (p) => `<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:pPr><w:pStyle w:val="${p.style}"/></w:pPr><w:r><w:t>${encode(w.corruptReadback && p.added ? 'Incorrect text' : p.text)}</w:t></w:r>${p.extraXml || ''}</w:p>`;
+    const xml = (p, withBookmarks = false) => {
+        const names = withBookmarks ? Array.from(bookmarks).filter(([, value]) => value === p).map(([name]) => name) : [];
+        const revision = p.deleted ? 'del' : p.revised ? 'ins' : '';
+        const textTag = p.deleted ? 'delText' : 't';
+        const mark = revision ? `<w:rPr><w:${revision} w:id="1"/></w:rPr>` : '';
+        const run = `<w:r>${p.boldRun ? '<w:rPr><w:b/></w:rPr>' : ''}<w:${textTag}>${encode(w.corruptReadback && p.added ? 'Incorrect text' : p.text)}</w:${textTag}></w:r>`;
+        return `<w:p xmlns:w="${W}"><w:pPr><w:pStyle w:val="${p.style}"/>${mark}</w:pPr>`
+            + names.map((name, index) => `<w:bookmarkStart w:id="${p.key * 100 + index}" w:name="${name}"/>`).join('')
+            + (revision ? `<w:${revision} w:id="2">${run}</w:${revision}>` : run) + (p.extraXml || '')
+            + names.map((_, index) => `<w:bookmarkEnd w:id="${p.key * 100 + index}"/>`).join('') + '</w:p>';
+    };
     const collection = (items) => ({ get items() { return typeof items === 'function' ? items() : items; }, load: jest.fn(),
         getFirst() { return this.items[0]; }, getLast() { return this.items[this.items.length - 1]; } });
     function range(p) {
         return {
-            paragraph: p, get text() { return p.text; }, load: jest.fn(), isNullObject: false,
+            paragraph: p, get text() { return p.text; }, load: jest.fn(), isNullObject: false, delete: jest.fn(),
             getOoxml: jest.fn(() => {
                 if (w.failRangeOoxml.has(p.key)) throw new Error('GeneralException');
                 w.pendingOoxml++;
@@ -37,7 +50,28 @@ function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.'
             compareLocationWith: (other) => ({ value: other.paragraph === p ? 'Equal' : 'Before' }),
             insertBookmark: jest.fn((name) => bookmarks.set(name, p)),
             paragraphs: collection([p]),
-            expandTo: (other) => ({ paragraphs: collection(() => w.paragraphs.slice(w.paragraphs.indexOf(p), w.paragraphs.indexOf(other.paragraph) + 1)) }),
+            insertOoxml: (value, location) => {
+                const nodes = documentPartRoot(value).getElementsByTagNameNS(W, 'p');
+                const added = Array.from(nodes).map((node) => {
+                    const item = paragraph(node.getElementsByTagNameNS(W, 't')[0].textContent, true);
+                    item.style = node.getElementsByTagNameNS(W, 'pStyle')[0].getAttributeNS(W, 'val');
+                    item.boldRun = !w.dropMoveFormatting && !!node.getElementsByTagNameNS(W, 'b').length;
+                    item.revised = w.document.changeTrackingMode === 'TrackAll' && !w.dropMoveTracking;
+                    return item;
+                });
+                w.paragraphs.splice(w.paragraphs.indexOf(p) + (location === 'After' ? 1 : 0), 0, ...added);
+                mutations.push({ kind: 'copy', location, mode: w.document.changeTrackingMode });
+                return { paragraphs: collection(w.wrongMoveRange ? added.slice().reverse() : added) };
+            },
+            expandTo: (other) => {
+                const items = () => w.paragraphs.slice(w.paragraphs.indexOf(p), w.paragraphs.indexOf(other.paragraph) + 1);
+                return { paragraphs: collection(items), delete: () => {
+                    const source = items();
+                    mutations.push({ kind: 'remove', mode: w.document.changeTrackingMode });
+                    if (w.document.changeTrackingMode === 'TrackAll') source.forEach((item) => { item.deleted = true; });
+                    else w.paragraphs.splice(w.paragraphs.indexOf(p), source.length);
+                } };
+            },
         };
     }
     function paragraph(text, added = false) {
@@ -64,7 +98,9 @@ function world(texts = ['Discussion', 'Mechanism.', 'Limitations.', 'Untouched.'
     w.paragraphs[0].style = 'Heading 1';
     w.paragraphs[0].styleBuiltIn = 'Heading1';
     w.addParagraph = (text, index) => w.paragraphs.splice(index, 0, paragraph(text));
-    w.document = { body: { paragraphs: collection(() => w.paragraphs) }, changeTrackingMode: 'TrackMineOnly', load: jest.fn(),
+    w.document = { body: { paragraphs: collection(() => w.paragraphs), getOoxml: () => ({
+        value: `<w:body xmlns:w="${W}">${w.paragraphs.map((p) => xml(p, true)).join('')}<w:sectPr/></w:body>`,
+    }) }, changeTrackingMode: 'TrackMineOnly', load: jest.fn(),
         getBookmarkRangeOrNullObject: (name) => bookmarks.has(name) ? range(bookmarks.get(name)) : { isNullObject: true, load: jest.fn() },
         deleteBookmark: jest.fn((name) => bookmarks.delete(name)),
     };
@@ -213,6 +249,73 @@ test('inserts and verifies bold and italic on new paragraphs in one proposal', a
     expect(w.paragraphs[2].font.bold).toBe(true);
     expect(w.paragraphs[3].font.italic).toBe(true);
     expect(w.paragraphs[2].font.load).toHaveBeenCalledWith('bold');
+});
+
+const move = { id: 'm', kind: 'move', blockIds: ['p-1', 'p-2'], targetId: 'p-4', side: 'after' };
+
+test.each([true, false])('moves a section with its heading, formatting and both transition edits (tracking=%s)', async (tracked) => {
+    const w = world();
+    w.paragraphs[1].boldRun = true;
+    w.deps.appState.config.trackChangesEnabled = tracked;
+    const proposal = await prepared(w, [move,
+        { id: 'r1', kind: 'replace', blockId: 'p-3', before: 'Limitations.', after: 'First, consider the limitations.' },
+        { id: 'r2', kind: 'replace', blockId: 'p-2', before: 'Mechanism.', after: 'With those caveats, consider the mechanism.' },
+        { id: 'i', kind: 'insert', afterId: 'p-4', beforeId: 'p-1', paragraphs: ['A bridge into the discussion.'] },
+    ]);
+    expect(w.mutations).toHaveLength(0);
+    const result = await applyDocumentEdit(w.deps, proposal);
+    expect(result).toMatchObject({ applied: true, verified: true, partial: false, appliedOperationIds: ['m', 'r1', 'r2', 'i'] });
+    const current = w.paragraphs.filter((p) => !p.deleted);
+    expect(current.map((p) => p.text)).toEqual(['First, consider the limitations.', 'Untouched.',
+        'A bridge into the discussion.', 'Discussion', 'With those caveats, consider the mechanism.']);
+    expect(current[3].style).toBe('Heading 1');
+    expect(current[4].boldRun).toBe(true);
+    expect(w.mutations.slice(0, 2).map((m) => [m.kind, m.mode])).toEqual([['copy', tracked ? 'TrackAll' : 'Off'], ['remove', tracked ? 'TrackAll' : 'Off']]);
+    expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
+    await discardDocumentEdit(w.deps, proposal);
+    expect(w.bookmarks.size).toBe(0);
+});
+
+test('a second move can target a paragraph moved earlier in the same tracked proposal', async () => {
+    const w = world(['Intro', 'First.', 'First detail.', 'Second.', 'Second detail.', 'Context.', 'End.']);
+    const proposal = await prepared(w, [
+        { ...move, id: 'first', blockIds: ['p-2', 'p-3'], targetId: 'p-6' },
+        { ...move, id: 'second', blockIds: ['p-4', 'p-5'], targetId: 'p-3' },
+    ]);
+    const result = await applyDocumentEdit(w.deps, proposal);
+    expect(result).toMatchObject({ applied: true, verified: true, appliedOperationIds: ['first', 'second'] });
+    expect(w.paragraphs.filter((p) => !p.deleted).map((p) => p.text)).toEqual([
+        'Intro', 'Context.', 'First.', 'First detail.', 'Second.', 'Second detail.', 'End.',
+    ]);
+});
+
+test.each(['dropMoveFormatting', 'dropMoveTracking', 'wrongMoveRange'])('preserves the source when destination verification fails (%s)', async (failure) => {
+    const w = world();
+    w.paragraphs[1].boldRun = true;
+    const proposal = await prepared(w, [move]);
+    w[failure] = true;
+    const result = await applyDocumentEdit(w.deps, proposal);
+    expect(result).toMatchObject({ applied: false, verified: false, partial: true, appliedOperationIds: [] });
+    expect(w.paragraphs.slice(0, 2).map((p) => p.text)).toEqual(['Discussion', 'Mechanism.']);
+    expect(w.mutations.map((m) => m.kind)).toEqual(['copy']);
+    expect(w.document.changeTrackingMode).toBe('TrackMineOnly');
+});
+
+test('paragraph move preflight fails before writing when document order changes after drafting', async () => {
+    const w = world();
+    const proposal = await prepared(w, [move]);
+    w.addParagraph('A new paragraph.', 2);
+    await expect(applyDocumentEdit(w.deps, proposal)).rejects.toThrow(/structure changed/);
+    expect(w.mutations).toEqual([]);
+});
+
+test('a protected native range spanning the source blocks structural movement', async () => {
+    const w = world(['Intro', 'Source.', 'Content.', 'Destination.']);
+    w.paragraphs[0].extraXml = '<w:commentRangeStart w:id="9"/>';
+    w.paragraphs[2].extraXml = '<w:commentRangeEnd w:id="9"/>';
+    await expect(prepared(w, [{ ...move, blockIds: ['p-2'] }])).rejects.toThrow(/protected Word/);
+    expect(w.mutations).toEqual([]);
+    expect(w.bookmarks.size).toBe(0);
 });
 
 test('rejects unsupported paragraph formatting before creating anchors', async () => {

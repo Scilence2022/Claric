@@ -1,5 +1,9 @@
 import { intentText as stripConstraintClauses } from './intent-text.js';
 
+const ENGLISH_STRUCTURE = /\b(?:reorder|rearrange|reorgani[sz]e|restructure|reshuffle|swap|move)\s+(?:(?:the|this|these|all|selected|body|existing|whole|first|last|two|\d+)\s+){0,5}(?:paragraphs?|sections?|chapters?|passages?|article|paper|manuscript|document|introduction|background|methods|results|discussion|conclusion|abstract)\b/i;
+const CHINESE_STRUCTURE = /(?:重排|重组|重构|重新(?:组织|排列|安排)|调整).{0,16}(?:(?:文章|论文|文档|全文|正文)(?:的)?结构|(?:段落|章节|部分)(?:的)?(?:顺序|次序))|(?:重排|重组|重构|重新排列).{0,6}(?:段落|章节|文章|论文|正文)|(?:段落|章节)(?:的)?(?:顺序|次序).{0,12}(?:调整|改为|重排)|(?:文章|论文|文档|全文|正文)(?:的)?结构.{0,12}(?:调整|重排|重组)|(?:调整|优化).{0,12}(?:行文|叙述|论证)(?:顺序|结构)/;
+const CHINESE_MOVE = /(?:段落|章节|[一二三四五六七八九十\d]+[节章段]|摘要|引言|背景|方法|结果|讨论|结论).{0,28}(?:移到|移至|挪到|提前到|放到|放在|调到|对调|互换)|(?:移动|挪动|对调|互换).{0,12}(?:段落|章节|[节章段])/;
+
 /** Cheap routing hints only. The document session resolves the actual goal and scope. */
 export function inspectEditRequest(input) {
     let action = String(input || '').trim();
@@ -16,6 +20,8 @@ export function inspectEditRequest(input) {
     const explicitEnd = /\b(?:append|at the end|to the end|document end)\b|文末|文档末尾|追加|续写/i.test(intentText);
     const negative = /^(?:please\s+)?(?:do not|don't|never)\b|^(?:请)?(?:不要|别|禁止)/i.test(intentText);
     const question = /[?？]$|吗$/.test(action);
-    return { intentText, needsDocumentEdit: !explanatory && !question && !negative && actionVerb && (prose || placement)
-        && !objectCreation && !explicitEnd };
+    const canEdit = !explanatory && !question && !negative;
+    const needsStructureEdit = canEdit && (ENGLISH_STRUCTURE.test(intentText) || CHINESE_STRUCTURE.test(intentText) || CHINESE_MOVE.test(intentText));
+    return { intentText, needsStructureEdit, needsDocumentEdit: needsStructureEdit
+        || (canEdit && actionVerb && (prose || placement) && !objectCreation && !explicitEnd) };
 }

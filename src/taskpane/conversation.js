@@ -701,6 +701,7 @@ export function routeTurn(text, {
         const proseAndFormat = editHint.needsDocumentEdit && looksLikeFormatIntent(actionText);
         const actionCount = (actionText.match(/插入|添加|增加|创建|生成|修改|调整|润色|删除|加粗|设置|补充|整合|统一|压缩|精简|缩短|扩写|续写|\b(?:insert|add|create|edit|format|remove|delete|bold|revise|rewrite|polish|shorten|summarize|expand)\b/gi) || []).length;
         const crossActionSequence = !looksLikeQuestion(trimmed) && !imageSelected && !hasMultiCellTableRegion
+            && !editHint.needsStructureEdit
             && /(?:然后|接着|随后|并且|并|同时|再|以及|[，,;；]|\b(?:then|and|as well as)\b)/i.test(actionText)
             && actionCount >= 2
             && !(families === 1 && looksLikeFormatIntent(actionText) && looksLikeCleanupIntent(actionText));
@@ -724,7 +725,8 @@ export function routeTurn(text, {
     // A single location-dependent prose request uses the addressable draft.
     // Preservation clauses stay in the original instruction for its review.
     if (!imageSelected && !hasMultiCellTableRegion && editHint.needsDocumentEdit) {
-        return { type: TURN_TYPE.DOCUMENT_EDIT, instruction: trimmed };
+        return { type: TURN_TYPE.DOCUMENT_EDIT, instruction: trimmed,
+            ...(editHint.needsStructureEdit && explicitScope === 'selection' ? { scope: 'selection' } : {}) };
     }
 
     if (looksLikePageLayoutIntent(trimmed)) {
@@ -1374,6 +1376,7 @@ export function createConversation(deps) {
             msg.setStatus('Reading the article and drafting focused changes...');
             const proposal = await editActions.prepareDocumentEdit(turnDeps, {
                 instruction: turn.instruction, selectionText, signal: controller.signal,
+                ...(turn.scope === 'selection' ? { selectionOnly: true } : {}),
                 temporaryAttachments: turn.temporaryAttachments || [],
                 onStep: (step) => {
                     const progress = step.progress;
@@ -1395,13 +1398,23 @@ export function createConversation(deps) {
                 msg.setStatus(proposal.review?.summary || 'The document already satisfies the request.');
                 return { status: 'no_op', satisfied: true, summary: proposal.review?.summary };
             }
-            const before = proposal.preview.before.map((b) => b.text).join('\n\n');
-            const after = proposal.preview.after.map((b) => b.text).join('\n\n');
+            const moves = proposal.patch.changes.filter((change) => change.kind === 'move');
+            const previewText = (blocks) => blocks.map((b) => moves.length ? `[${b.position}] ${b.text}` : b.text).join('\n\n');
+            const before = previewText(proposal.preview.before);
+            const after = previewText(proposal.preview.after);
             const item = { id: 'document-patch', label: proposal.summary || 'Focused document changes', before, after };
-            const title = 'Proposed document changes';
+            const title = moves.length ? 'Proposed document restructuring' : 'Proposed document changes';
+            const countsText = moves.length ? `${moves.length} move(s) · ${moves.reduce((sum, move) => sum + move.blockIds.length, 0)} paragraph(s)`
+                : `${before.length} → ${after.length} chars`;
             const card = makeProposalCard({
-                title, beforeChars: before.length, afterChars: after.length,
-                comment: proposal.patch.changes.map((c) => c.reason).filter(Boolean).join('\n'),
+                title, beforeChars: before.length, afterChars: after.length, countsText,
+                comment: proposal.patch.changes.map((c) => {
+                    if (c.kind !== 'move') return c.reason;
+                    const first = proposal.preview.before.find((b) => b.id === c.blockIds[0])?.position;
+                    const last = proposal.preview.before.find((b) => b.id === c.blockIds.at(-1))?.position;
+                    const target = proposal.preview.before.find((b) => b.id === c.targetId)?.position;
+                    return `Move ${first === last ? `paragraph ${first}` : `paragraphs ${first}–${last}`} ${c.side} paragraph ${target}. ${c.reason}`;
+                }).filter(Boolean).join('\n'),
                 items: [item],
                 onApply: async (selectedIds, applyCtx = {}) => {
                     if (!selectedIds?.includes(item.id)) return;
@@ -1415,8 +1428,8 @@ export function createConversation(deps) {
                 onReject: () => resource.dispose(),
             });
             msg.attachProposal(card, { title, state: 'pending', summary: proposal.summary,
-                countsText: `${before.length} → ${after.length} chars`, items: [item] });
-            msg.setStatus('Focused changes are ready for review.');
+                countsText, items: [item] });
+            msg.setStatus(moves.length ? 'The new paragraph order and transition edits are ready for review.' : 'Focused changes are ready for review.');
             return { status: 'staged', summary: proposal.summary, artifacts: [{ kind: 'document-draft', before, after }] };
         } catch (error) {
             _reportTurnError(msg, error);
@@ -2318,6 +2331,7 @@ export function createConversation(deps) {
         const textSelected = !!hasTextSelection;
         const selectionPresent = !!hasSelection || imageSelected || textSelected || !!hasMultiCellTableRegion;
         const scope = resolveTaskScope(task, { hasSelection: selectionPresent }, originalRequest);
+        const explicitEditScope = requestedTaskScope(originalRequest) || requestedTaskScope(instruction);
         const formatScope = requestedTaskScope(originalRequest) === 'selection' || requestedTaskScope(instruction) === 'selection'
             ? 'selection' : scope;
         if (task.type === 'comment_management' || (task.type !== 'qa' && looksLikeCommentAction(instruction))) {
@@ -2334,7 +2348,8 @@ export function createConversation(deps) {
         }
         switch (task.type) {
             case 'document_edit':
-                return { type: TURN_TYPE.DOCUMENT_EDIT, instruction };
+                return { type: TURN_TYPE.DOCUMENT_EDIT, instruction,
+                    ...(explicitEditScope === 'selection' ? { scope: 'selection' } : {}) };
             case 'insert':
                 // Structural inserts (e.g. a title) belong at document scope —
                 // inserting a title into a selection would misplace it.
@@ -2353,6 +2368,8 @@ export function createConversation(deps) {
                 return { type: TURN_TYPE.PAGE_LAYOUT, instruction,
                     scope: task.scope || pageLayoutScope(instruction, originalRequest) };
             case 'edit':
+                if (inspectEditRequest(instruction).needsStructureEdit) return { type: TURN_TYPE.DOCUMENT_EDIT, instruction,
+                    ...(explicitEditScope === 'selection' ? { scope: 'selection' } : {}) };
                 if (scope === 'selection' && imageSelected && looksLikeFigureLegendIntent(instruction) && !hasMultiCellTableRegion) {
                     return {
                         type: TURN_TYPE.IMAGE_TOOL,
