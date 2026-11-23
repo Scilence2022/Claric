@@ -35,12 +35,10 @@ test('preferences reload for the same Word file and do not leak to other files',
     expect(createDocumentWritingController({ ...deps, identity: { ...FILE, documentEphemeral: true } }).settings.values.style).toBe('');
 });
 
-test('suggest mode sends only a bounded sample on request and waits for acceptance', async () => {
+test('detect settings sends a bounded sample and waits for acceptance in suggest mode', async () => {
     const { controller, deps, view } = setup({
         readText: jest.fn(async () => '前言' + '甲'.repeat(4000) + '正文' + '乙'.repeat(4000) + '结论'),
     });
-    await controller.detect({ automatic: true });
-    expect(deps.readText).not.toHaveBeenCalled();
     await controller.detect();
     expect(controller.settings.values).toEqual({ type: '', style: '', language: '' });
     expect(view().suggestion.values).toEqual({ type: 'report', style: 'technical', language: 'zh-Hans' });
@@ -51,6 +49,50 @@ test('suggest mode sends only a bounded sample on request and waits for acceptan
     expect(excerpts).toMatch(/^前言[\s\S]*正文[\s\S]*结论$/);
     controller.applySuggestion();
     expect(controller.settings.values.language).toBe('zh-Hans');
+});
+
+test('the default mode checks only the type before a turn and refreshes it when excerpts or the selected model change', async () => {
+    let backend = { provider: 'openai', model: 'first' };
+    const { controller, deps } = setup({ getBackendConfig: () => backend });
+    await controller.detect({ automatic: true });
+    expect(deps.classify.mock.lastCall[0][0].content).toContain('Return JSON with type and reason.');
+    expect(controller.settings).toMatchObject({ detectedType: 'report', values: { type: 'report', style: '', language: '' } });
+
+    await controller.detect({ automatic: true });
+    expect(deps.classify).toHaveBeenCalledTimes(1);
+
+    backend = { ...backend, model: 'second' };
+    deps.classify.mockResolvedValueOnce('{"type":"proposal"}');
+    await controller.detect({ automatic: true });
+    expect(deps.classify.mock.lastCall[3]).toEqual(backend);
+    expect(controller.settings.values.type).toBe('proposal');
+
+    deps.readText.mockResolvedValue('New document contents');
+    deps.classify.mockResolvedValueOnce('{"type":null}');
+    await controller.detect({ automatic: true });
+    expect(deps.classify).toHaveBeenCalledTimes(3);
+    expect(controller.settings).toMatchObject({ detectedType: '', values: { type: '' } });
+});
+
+test('manual mode never reads the document before a turn', async () => {
+    const { controller, deps } = setup();
+    controller.update({ mode: 'manual' });
+    await controller.detect({ automatic: true });
+    expect(deps.readText).not.toHaveBeenCalled();
+    expect(deps.classify).not.toHaveBeenCalled();
+});
+
+test('a turn waits for a manual refresh and then applies the automatically detected type', async () => {
+    const { controller, deps } = setup();
+    let finishRefresh;
+    deps.classify.mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    const refresh = controller.detect({ typeOnly: true });
+    await Promise.resolve();
+    const turn = controller.detect({ automatic: true });
+    expect(deps.readText).toHaveBeenCalledTimes(1);
+    finishRefresh(JSON.stringify(DETECTED));
+    await Promise.all([refresh, turn]);
+    expect(controller.settings.values.type).toBe('report');
 });
 
 test('authorized automatic mode keeps manual locks, skips unchanged excerpts and supports undo', async () => {

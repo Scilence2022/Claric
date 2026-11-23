@@ -3,7 +3,9 @@ import {
     writingDetectionMessages, WRITING_FIELDS, WRITING_OPTIONS,
 } from '../lib/document-writing-settings.js';
 
-export function createDocumentWritingController({ identity, readText, classify, log, storage = globalThis.localStorage }) {
+export function createDocumentWritingController({
+    identity, readText, getBackendConfig = () => ({}), classify, log, storage = globalThis.localStorage,
+}) {
     const key = identity.documentEphemeral ? null : `claric.writing.${identity.documentId}`;
     const readStored = () => {
         try {
@@ -17,7 +19,8 @@ export function createDocumentWritingController({ identity, readText, classify, 
     let storedSettings = JSON.stringify(settings);
     let suggestion = null;
     let previousSettings = null;
-    let lastSample = null;
+    let lastAutomaticCheck = null;
+    let pendingDetection = null;
     let detecting = false;
     let detectionFailed = false;
     let revision = 0;
@@ -34,7 +37,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
         settings = stored;
         storedSettings = JSON.stringify(stored);
         revision++;
-        lastSample = null;
+        lastAutomaticCheck = null;
         suggestion = null;
         previousSettings = null;
         status = '';
@@ -70,7 +73,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
         const summary = `Updated ${entries.map(([field]) => field).join(', ')} from the document.`;
         save({ ...settings, values: { ...settings.values, ...Object.fromEntries(entries) } },
             [summary, detection.reason].filter(Boolean).join(' '));
-        activityLog?.(`Document writing settings updated (${entries.map(([field, value]) => `${field}: ${WRITING_OPTIONS[field][value]}`).join(', ')}).`, 'info');
+        activityLog?.(`Document writing settings updated (${entries.map(([field, value]) => `${field}: ${WRITING_OPTIONS[field][value] || 'document context'}`).join(', ')}).`, 'info');
     }
 
     function clearTypeSuggestion() {
@@ -79,12 +82,10 @@ export function createDocumentWritingController({ identity, readText, classify, 
         suggestion = Object.keys(values).length ? { ...suggestion, values } : null;
     }
 
-    async function detect({ automatic = false, typeOnly = false, signal, onStart, log: activityLog = log } = {}) {
-        refresh();
-        if (detecting || signal?.aborted || (automatic && settings.mode !== 'automatic')) return;
-        if (!typeOnly && (settings.mode === 'manual' || WRITING_FIELDS.every((field) => settings.locked[field]))) return;
+    async function runDetection({ automatic, typeOnly, signal, onStart, log: activityLog = log }) {
         const startedAt = revision;
         const previousStatus = status;
+        const updateType = automatic || (typeOnly && settings.mode === 'automatic');
         detecting = true;
         detectionFailed = false;
         if (!typeOnly) suggestion = null;
@@ -97,29 +98,29 @@ export function createDocumentWritingController({ identity, readText, classify, 
         try {
             const sample = sampleWritingText(await readText());
             if (!isCurrent()) return;
-            if (!sample) {
-                clearTypeSuggestion();
-                save({ ...settings, detectedType: '' }, 'Add text to the document to detect writing settings.');
-                return;
-            }
-            if (automatic && sample === lastSample) {
+            const backend = getBackendConfig();
+            const model = JSON.stringify([backend.provider, backend.url, backend.apiPath, backend.model]);
+            if (automatic && sample === lastAutomaticCheck?.sample && model === lastAutomaticCheck.model) {
                 status = previousStatus;
                 return;
             }
-            onStart?.();
-            const result = parseWritingDetection(await classify(writingDetectionMessages(sample, { typeOnly }), signal, activityLog), { typeOnly });
+            let result = { values: {}, reason: '' };
+            if (sample) {
+                onStart?.();
+                const reply = await classify(writingDetectionMessages(sample, { typeOnly }), signal, activityLog, backend);
+                result = parseWritingDetection(reply, { typeOnly });
+            }
             if (!isCurrent()) return;
-            settings = { ...settings, detectedType: result.values.type || '' };
-            if (automatic) {
-                lastSample = sample;
-                applyDetection(result, activityLog);
+            const detectedType = result.values.type || '';
+            settings = { ...settings, detectedType };
+            if (automatic) lastAutomaticCheck = { sample, model };
+            if (typeOnly || !sample) clearTypeSuggestion();
+            if (updateType && (sample || (settings.values.type && !settings.locked.type))) {
+                applyDetection({ ...result, values: { ...result.values, type: detectedType } }, activityLog);
+            } else if (!sample) {
+                save(settings, 'Add text to the document to detect writing settings.');
             } else if (typeOnly) {
-                clearTypeSuggestion();
-                if (settings.mode === 'automatic' && !settings.locked.type && result.values.type) {
-                    applyDetection(result, activityLog);
-                } else {
-                    save(settings, result.reason || (settings.detectedType ? 'Document type refreshed.' : 'No clear document type detected.'));
-                }
+                save(settings, result.reason || (detectedType ? 'Document type refreshed.' : 'No clear document type detected.'));
             } else {
                 const values = Object.fromEntries(Object.entries(result.values)
                     .filter(([field, value]) => !settings.locked[field] && value !== settings.values[field]));
@@ -137,6 +138,23 @@ export function createDocumentWritingController({ identity, readText, classify, 
             if (status === 'Checking the document…') status = '';
             notify();
         }
+    }
+
+    async function detect({ automatic = false, typeOnly = false, signal, ...options } = {}) {
+        if (automatic) {
+            // A turn must wait for a Refresh type or Detect settings already in progress.
+            while (pendingDetection && !signal?.aborted) await pendingDetection;
+        }
+        refresh();
+        if (pendingDetection || signal?.aborted) return;
+        if (automatic) {
+            if (settings.mode === 'manual') return;
+            typeOnly = settings.mode === 'suggest';
+        }
+        if (!typeOnly && (settings.mode === 'manual' || WRITING_FIELDS.every((field) => settings.locked[field]))) return;
+        pendingDetection = runDetection({ ...options, automatic, typeOnly, signal })
+            .finally(() => { pendingDetection = null; });
+        return pendingDetection;
     }
     return {
         get settings() {
@@ -158,7 +176,7 @@ export function createDocumentWritingController({ identity, readText, classify, 
         },
         update(change) {
             refresh();
-            lastSample = null;
+            lastAutomaticCheck = null;
             suggestion = null;
             previousSettings = null;
             save({

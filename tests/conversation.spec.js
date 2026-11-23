@@ -20,6 +20,7 @@ jest.mock('../src/lib/file-store.js', () => {
 const { saveFile, deleteFile } = require('../src/lib/file-store.js');
 const { ATTACHMENT_LIMITS } = require('../src/lib/file-attachments.js');
 const { routeTurn, createConversation, TURN_TYPE, chunkCitation, looksLikeChainedInstruction } = require('../src/taskpane/conversation.js');
+const { createDocumentWritingController } = require('../src/taskpane/document-writing-controller.js');
 const { BUILTIN_SKILLS, listSkills } = require('../src/taskpane/skills.js');
 const { COMPOSITE_FORMAT_REQUEST, compositeFormatPlan } = require('./fixtures/composite-format-plan.js');
 
@@ -1888,6 +1889,33 @@ describe('createConversation.submit', () => {
     await conv.submit('/executive-summary');
     expect(documentWriting.detect).toHaveBeenCalledWith(expect.objectContaining({ automatic: true, signal: expect.any(AbortSignal) }));
     expect(actions.runSummarySkill).toHaveBeenCalledWith(expect.objectContaining({ writingSettings: detected }), expect.any(Object));
+  });
+
+  test.each([
+    ['', 'runDocumentSkill'],
+    ['A selected paragraph.', 'prepareSelectionAmendment'],
+  ])('/polish waits for default type detection (selection %j)', async (selection, action) => {
+    const actions = makeActions();
+    let started;
+    const detecting = new Promise((resolve) => { started = resolve; });
+    const documentWriting = createDocumentWritingController({
+      identity: { documentEphemeral: true },
+      readText: async () => 'Dear Authors, thank you for submitting your paper. Sincerely, the Editor.',
+      classify: () => new Promise((resolve) => started(resolve)),
+    });
+    const conv = createConversation({
+      appState: makeAppState(), view: makeView(), input: makeInput(), log: jest.fn(), actions, documentWriting,
+      getSelectionText: async () => selection,
+    });
+
+    const turn = conv.submit('/polish');
+    const finishDetection = await detecting;
+    expect(actions[action]).not.toHaveBeenCalled();
+    finishDetection('{"type":"correspondence"}');
+    await turn;
+    expect(actions[action]).toHaveBeenCalledWith(expect.objectContaining({
+      writingSettings: expect.objectContaining({ values: { type: 'correspondence', style: '', language: '' } }),
+    }), expect.any(Object));
   });
 
   test('chat skill answers in chat via the Q&A path', async () => {

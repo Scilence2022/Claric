@@ -107,8 +107,9 @@ async function initialize() {
     const documentWriting = createDocumentWritingController({
         identity: localIdentity,
         readText: () => extractDocumentStructured({ richness: 'plain' }),
-        classify: (messages, signal, log) => sendMessages(
-            { ...getActiveBackendConfig(), maxRetries: 0 }, messages, log, signal, 20000),
+        getBackendConfig: getActiveBackendConfig,
+        classify: (messages, signal, log, backend) => sendMessages(
+            { ...backend, maxRetries: 0 }, messages, log, signal, 20000),
         log: addLog,
     });
     void loadLazyModule('document-type-view', () => import(/* webpackChunkName: "document-type-view" */ './ui/document-type-view.js'))
