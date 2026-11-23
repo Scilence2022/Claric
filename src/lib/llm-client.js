@@ -324,6 +324,10 @@ function buildRequestConfig(config) {
   return { url, headers };
 }
 
+// Opus 5.5 counts adaptive thinking and visible text towards the same limit.
+// Set a budget explicitly so the gateway's default does not cap both.
+const ZHONGKEYU_CLAUDE_MAX_TOKENS = { high: 32768, xhigh: 65536, max: 65536 };
+
 /**
  * Builds optional generation parameters for OpenAI-compatible chat requests.
  * Invalid or missing settings use the application defaults.
@@ -345,6 +349,9 @@ function buildGenerationParams(config) {
   const profile = getModelCapabilities(config.provider, config.model);
   const level = resolveThinkingLevel(profile, config.thinkingLevel);
   const params = { ...buildThinkingRequest(profile, level) };
+  if (profile.id === 'zhongkeyu-claude-opus-5-5') {
+    params.max_tokens = ZHONGKEYU_CLAUDE_MAX_TOKENS[level] ?? 16384;
+  }
   if (isTemperatureSupported(profile, level)) {
     params.temperature = Number.isFinite(config.temperature) && config.temperature >= 0 && config.temperature <= 2
       ? config.temperature

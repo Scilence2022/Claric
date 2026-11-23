@@ -77,6 +77,26 @@ describe('sendPromptStream', () => {
     expect(body.reasoning_effort).toBe('high');
   });
 
+  test('Zhongkeyu Claude Opus 5.5 has enough streaming output budget for reasoning and the rewrite', async () => {
+    global.fetch = jest.fn(async (_url, { body }) => {
+      const { max_tokens: maxTokens = 8192 } = JSON.parse(body);
+      const finishReason = maxTokens >= 10000 ? 'stop' : 'length';
+      const finish = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n`;
+      return sseResponse([sseLine('Revised text.'), finish, 'data: [DONE]\n']);
+    });
+
+    const config = {
+      url: 'https://zhongkeyu.com', apiKey: 'k', provider: 'zhongkeyu',
+      model: 'claude-opus-5-5', thinkingLevel: 'high',
+    };
+    await expect(sendPromptStream(config, 'Polish the whole document.')).resolves.toBe('Revised text.');
+
+    const [url, request] = global.fetch.mock.calls[0];
+    expect(url).toBe('https://zhongkeyu.com/v1/chat/completions');
+    expect(request.headers.Authorization).toBe('Bearer k');
+    expect(JSON.parse(request.body)).toMatchObject({ stream: true, max_tokens: 32768, reasoning_effort: 'high' });
+  });
+
   test('handles SSE lines split across chunks', async () => {
     const payload = sseLine('abc');
     const split = Math.floor(payload.length / 2);
