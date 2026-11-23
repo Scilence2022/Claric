@@ -32,7 +32,7 @@ import { supportsTrackedRowOps } from '../lib/platform.js';
 import { fireCommentRequest } from '../lib/comment-request.js';
 import { extractAllComments, extractDocumentStructured, estimateTokenCount, extractTrackedChanges, extractCommentsOnRange } from '../lib/comment-extractor.js';
 import { formatSelectionWithComments } from '../lib/selection-with-comments.js';
-import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError } from '../lib/word-revisions.js';
+import { queueRevisionRead, resolveRevisionRead, RevisionSafetyError, wordErrorDetail } from '../lib/word-revisions.js';
 import { resolveTaskScope } from '../lib/task-scope.js';
 import { formatTableMarkdown, formatMixedContext, formatCursorContext, formatSelectionParagraphContext } from '../lib/selection-context.js';
 import { createSummaryDocument, buildSummaryHtml } from '../lib/document-generator.js';
@@ -1280,6 +1280,25 @@ async function _prepareTableAmendment(deps, { tableRegion, promptTemplate, comme
     };
 }
 
+/** Restrict a single-paragraph rewrite to the selected prose. A Word
+ * selection can include the paragraph mark, represented by a final empty
+ * paragraph in its XML. Never widen a partial selection to the paragraph. */
+async function selectionDiffTarget(context, selection, current, before, after) {
+    const original = { range: selection, text: before, options: {} };
+    const terminalMark = current.paragraphCount === 2 && current.text.endsWith('\n');
+    if (!terminalMark && !(current.hasRevisions && current.paragraphCount === 1)) return original;
+    const text = terminalMark ? before.replace(/\n$/, '') : before;
+    if (!text || /[\r\n]/.test(text + after) || !selection.compareLocationWith) return original;
+
+    const paragraph = selection.paragraphs.getFirst();
+    const whole = paragraph.getRange('Start').expandTo(paragraph.getRange('After'));
+    const relation = selection.compareLocationWith(whole);
+    await context.sync();
+    if (!['Equal', 'Inside', 'InsideStart', 'InsideEnd'].includes(relation.value)) return original;
+    return { range: selection.intersectWith(paragraph.getRange('Content')), text,
+        options: { paragraph: true, nativeTargets: true } };
+}
+
 /**
  * Applies a prepared selection amendment to the document as tracked changes
  * (per config.trackChangesEnabled), then inserts the optional comment.
@@ -1322,15 +1341,25 @@ export async function applySelectionAmendment(deps, proposal) {
         let stale = false;
         await Word.run(async (context) => {
             const selection = context.document.getSelection();
-            selection.load('text');
-            const revisionRead = queueRevisionRead(selection);
-            if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
-            await context.sync();
-            const current = resolveRevisionRead(selection, revisionRead);
-            if (_normalizeSelectionText(current.text) !== _normalizeSelectionText(selectionText)
-                || (proposal.revisionFingerprint && current.fingerprint !== proposal.revisionFingerprint)) {
-                stale = true;
-                return;
+            let current;
+            let target;
+            try {
+                selection.load('text,isEmpty');
+                if (Word.ChangeTrackingMode) context.document.load('changeTrackingMode');
+                await context.sync();
+                // Mac Word may reject getOoxml() on a collapsed selection.
+                if (selection.isEmpty) { stale = true; return; }
+                const revisionRead = queueRevisionRead(selection, { includeReviewedText: false });
+                await context.sync();
+                current = resolveRevisionRead(selection, revisionRead);
+                if (_normalizeSelectionText(current.text) !== _normalizeSelectionText(selectionText)
+                    || (proposal.revisionFingerprint && current.fingerprint !== proposal.revisionFingerprint)) {
+                    stale = true;
+                    return;
+                }
+                target = await selectionDiffTarget(context, selection, current, selectionText, amendedText);
+            } catch (error) {
+                throw new RevisionSafetyError(`Could not verify the selection before applying (${wordErrorDetail(error)}). Reselect the text and draft a fresh proposal.`);
             }
             const previousMode = Word.ChangeTrackingMode ? context.document.changeTrackingMode : null;
             if (Word.ChangeTrackingMode) {
@@ -1339,15 +1368,15 @@ export async function applySelectionAmendment(deps, proposal) {
                     : Word.ChangeTrackingMode.off;
             }
             try {
-                const strategyOptions = { trackChanges, contextScope: deps.contextScope };
+                const strategyOptions = { ...target.options, trackChanges, contextScope: deps.contextScope };
                 if (appState.config.lineDiffEnabled) {
-                    await applySentenceDiffStrategy(context, selection, selectionText, amendedText, log, strategyOptions);
+                    await applySentenceDiffStrategy(context, target.range, target.text, amendedText, log, strategyOptions);
                 } else if (hasCjk(selectionText) || hasCjk(amendedText)) {
                     // CJK text has no word boundaries for the token map — use
                     // char-level diff so e.g. a one-comma edit stays minimal.
-                    await applyCharDiffStrategy(context, selection, selectionText, amendedText, log, strategyOptions);
+                    await applyCharDiffStrategy(context, target.range, target.text, amendedText, log, strategyOptions);
                 } else {
-                    await applyTokenMapStrategy(context, selection, selectionText, amendedText, log, strategyOptions);
+                    await applyTokenMapStrategy(context, target.range, target.text, amendedText, log, strategyOptions);
                 }
             } catch (diffErr) {
                 if (diffErr instanceof RevisionSafetyError || current.hasRevisions) throw diffErr;
@@ -1362,7 +1391,7 @@ export async function applySelectionAmendment(deps, proposal) {
                         ? Word.ChangeTrackingMode.trackAll
                         : Word.ChangeTrackingMode.off;
                 }
-                selection.insertText(amendedText, Word.InsertLocation.replace);
+                target.range.insertText(amendedText, Word.InsertLocation.replace);
                 await context.sync();
             } finally {
                 if (Word.ChangeTrackingMode) {

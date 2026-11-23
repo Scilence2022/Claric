@@ -90,7 +90,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
                     const text = nativeControls && atom.symbol ? '(' : atom.text;
                     return nativeControls && atom.field ? '\u0013HYPERLINK example\u0014' + text + '\u0015' : text;
                 }).join('').replace(/\n/g, '\r').replace(/‑/g, nativeControls ? '\u001E' : '‑'),
-                { wholeParagraph: span.start === 0 && span.end === atoms.length }) })) } : {}),
+                { wholeParagraph: span.start === 0 && span.end === atoms.length, atoms: atoms.slice(span.start, span.end) }) })) } : {}),
             getRange: (location) => location === 'Start' ? makeRange(span.start, span.start)
                 : location === 'End' ? makeRange(span.end, span.end) : range,
             expandTo: (other) => makeRange(Math.min(span.start, other._span.start), Math.max(span.end, other._span.end)),
@@ -159,7 +159,7 @@ function world(parts, { padding = false, nativeReviewed = false, nativeParagraph
         InsertLocation: { before: 'Before', after: 'After', replace: 'Replace' },
         ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' } };
     const deps = { appState: { config: { trackChangesEnabled: true, lineDiffEnabled: false } }, log: jest.fn() };
-    return { atoms, scope, paragraph, context, writes, deps, bookmarks,
+    return { atoms, scope, paragraph, context, writes, deps, bookmarks, makeRange,
         xmlReadCount: () => xmlReads,
         state: () => revisionTextState(paragraphScope.getOoxml().value, { paragraph: true, singleParagraphContent: true }) };
 }
@@ -204,6 +204,14 @@ test('a Word preflight read failure identifies its stage and never attempts a wr
     await expect(tryRevisionDiff(w.context, w.scope, 'The old result.', 'The revised result.', jest.fn(),
         { paragraph: true, nativeTargets: true })).rejects.toThrow(/current-view search ranges.*Range.getReviewedText/);
     expect(w.writes).toHaveLength(0);
+});
+
+test('a deletion-only native read cannot provide a visible insertion anchor', async () => {
+    const w = world([{ text: 'Removed.', type: 'del' }], { nativeReviewed: true, exportContiguousRevisions: true,
+        reviewedTransform: () => 'Removed.' });
+    await expect(tryRevisionDiff(w.context, w.scope, '', 'Inserted.', jest.fn(), { paragraph: true, nativeTargets: true }))
+        .rejects.toThrow(/Native text and XML disagree before writing/);
+    expect(w.writes).toEqual([]);
 });
 
 test('unverifiable unchanged prose blocks the native-object path before the first write', async () => {
@@ -284,6 +292,50 @@ test('sentence editing a partial selection preserves text outside both boundarie
     expect(w.atoms.filter((atom) => atom.type !== 'del').map((atom) => atom.text).join('')).toBe(prefix + after + suffix);
     expect(w.scope.insertText).not.toHaveBeenCalled();
 });
+
+test.each(['first edit', 'second edit', 'unexplained mismatch', 'corrupt read-back'])(
+    'a selection ending at a paragraph mark preserves its boundary and revision history: %s', async (scenario) => {
+        const revised = scenario !== 'first edit';
+        const prefix = '段首。';
+        const before = '先记录结果，再说明过程。';
+        const after = '先说明过程，再记录结果。';
+        const old = '先记录结果。';
+        const suffix = '\n下一段。';
+        const w = world([{ text: prefix }, { text: before, type: revised ? 'ins' : 'plain' },
+            ...(revised ? [{ text: old, type: 'del', id: 'old' }] : []), { text: suffix }],
+        { nativeReviewed: true, nativeParagraphs: true, exportContiguousRevisions: true,
+            rejectEmptyOoxml: true,
+            reviewedTransform(text, { atoms }) {
+                if (!atoms.some((a) => a.id === 'old') || !text) return text;
+                const corrupt = scenario === 'unexplained mismatch'
+                    || (scenario === 'corrupt read-back' && w.writes.length > 0);
+                const leaked = corrupt ? old + '？' : old;
+                return text.replace(/(\r?)$/, leaked + '$1');
+            } });
+        const end = w.atoms.length - suffix.length;
+        w.scope._span.start = prefix.length;
+        w.scope._span.end = end + 1;
+        const content = w.makeRange(0, end);
+        w.paragraph.getRange = (where) => where === 'After' ? w.makeRange(end + 1, end + 1) : content.getRange(where);
+        w.scope.compareLocationWith = (range) => ({ value: range._span.start === 0 && range._span.end === end + 1 ? 'InsideEnd' : 'Unrelated' });
+        w.scope.intersectWith = (range) => w.makeRange(Math.max(range._span.start, w.scope._span.start), Math.min(range._span.end, w.scope._span.end));
+        const baseline = await readSelectionText(w.deps);
+        expect(baseline.plainSelectionText).toBe(before + '\n');
+        const apply = applySelectionAmendment(w.deps, { selectionText: baseline.plainSelectionText,
+            revisionFingerprint: baseline.revisionFingerprint, amendedText: after });
+        if (scenario === 'unexplained mismatch') {
+            await expect(apply).rejects.toThrow(/Native text and XML disagree before writing/);
+            expect(w.writes).toEqual([]);
+            return;
+        }
+        if (scenario === 'corrupt read-back') await expect(apply).rejects.toMatchObject({ mutationAttempted: true });
+        else await apply;
+        expect(w.atoms.filter((a) => a.type !== 'del').map((a) => a.text).join('')).toBe(prefix + after + suffix);
+        expect(w.atoms.filter((a) => a.id === 'old' && a.type === 'del').map((a) => a.text).join('')).toBe(revised ? old : '');
+        expect(w.writes.every((write) => write.mode === 'TrackAll')).toBe(true);
+        expect(w.scope.insertText).not.toHaveBeenCalled();
+        expect(w.deps.log).not.toHaveBeenCalledWith(expect.stringContaining('using whole-selection replacement'), 'warning');
+    });
 
 test.each([['甲\u00a0乙 丙', '甲\u00a0乙，丙', ' '],
     ['An old‑form and old-form.', 'An old‑form and new-form.', 'old']])(
