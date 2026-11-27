@@ -8,12 +8,14 @@ export function containFocus(root, onEscape, initialFocus) {
     const visible = (el) => {
         if (!el.isConnected || el.closest('[hidden], [inert]')) return false;
         for (let ancestor = el; ancestor; ancestor = ancestor.parentElement) {
+            const parent = ancestor.parentElement;
+            if (parent?.matches('details:not([open])') && ancestor !== parent.querySelector(':scope > summary')) return false;
             const style = getComputedStyle(ancestor);
             if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
         }
         return true;
     };
-    const focusable = () => [...root.querySelectorAll('button, input, select, textarea, a[href], [tabindex]')]
+    const focusable = () => [...root.querySelectorAll('button, input, select, textarea, a[href], summary, [tabindex]')]
         .filter((el) => !el.matches(':disabled') && el.tabIndex >= 0 && visible(el));
     const entry = () => {
         const items = focusable();

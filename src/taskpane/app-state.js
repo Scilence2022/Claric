@@ -133,22 +133,6 @@ export function isImageModelReady(state = appState) {
 }
 
 /**
- * Returns a debounced wrapper around fn. Repeated calls within waitMs
- * collapse into a single trailing invocation.
- *
- * @param {Function} fn
- * @param {number} waitMs
- * @returns {Function}
- */
-export function debounce(fn, waitMs) {
-    let timer = null;
-    return function debounced(...args) {
-        clearTimeout(timer);
-        timer = setTimeout(() => fn.apply(this, args), waitMs);
-    };
-}
-
-/**
  * Validates one per-provider entry against its preset defaults.
  *
  * @param {object} defaults - The built-in default entry for this provider

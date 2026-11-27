@@ -31,7 +31,7 @@ describe('settings tabs markup contract', () => {
     test('the MCP server UI lives on the MCP page, not the General page', () => {
         const generalPage = html.slice(
             html.indexOf('id="settingsPageGeneral"'),
-            html.indexOf('id="settingsPagePrompts"'),
+            html.indexOf('id="settingsPageDocument"'),
         );
         // The MCP page is the last page, right before the overlay closes;
         // slice from there to the end of the markup.
@@ -46,7 +46,7 @@ describe('settings tabs markup contract', () => {
     test('the General page exposes the conversation history budget control', () => {
         const generalPage = html.slice(
             html.indexOf('id="settingsPageGeneral"'),
-            html.indexOf('id="settingsPagePrompts"'),
+            html.indexOf('id="settingsPageDocument"'),
         );
         expect(generalPage).toContain('id="contextBudgetInput"');
         expect(generalPage).toContain('aria-label="Chat history token budget"');
@@ -59,7 +59,7 @@ describe('settings tabs markup contract', () => {
     test('the General page exposes thinking and temperature controls', () => {
         const generalPage = html.slice(
             html.indexOf('id="settingsPageGeneral"'),
-            html.indexOf('id="settingsPagePrompts"'),
+            html.indexOf('id="settingsPageDocument"'),
         );
         expect(generalPage).toContain('id="thinkingLevelSelect"');
         expect(generalPage).toContain('<option value="default">Default</option>');

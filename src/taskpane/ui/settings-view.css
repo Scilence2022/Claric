@@ -1,4 +1,180 @@
-/* Model and API-key controls load with the Settings view. */
+.settings-page {
+    display: grid;
+    gap: 12px;
+}
+
+.settings-card,
+.settings-page .prompt-block {
+    min-width: 0;
+    padding: 14px;
+    margin: 0;
+    background: var(--primary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-md);
+}
+
+.settings-section-label,
+.settings-page .prompt-block-title {
+    font-size: 15px;
+    line-height: 1.4;
+    font-weight: 650;
+    margin: 0 0 12px;
+}
+
+.settings-card > .form-group:last-child,
+.settings-details-body > .form-group:last-child,
+.settings-page .compact-toolbar {
+    margin-bottom: 0;
+}
+
+.settings-page .help-text {
+    line-height: 1.45;
+}
+
+.settings-page .help-text:empty,
+.settings-connection:empty {
+    display: none;
+}
+
+.settings-page .help-text + .form-group {
+    margin-top: 10px;
+}
+
+.settings-page .form-group label {
+    font-weight: 550;
+}
+
+.settings-page .form-control {
+    min-width: 0;
+    min-height: 34px;
+}
+
+.settings-page .form-control:focus {
+    box-shadow: 0 0 0 1px var(--accent-color);
+}
+
+.settings-page .form-control:disabled {
+    background: var(--secondary-bg);
+    color: var(--secondary-text);
+}
+
+.settings-page .checkbox-group label {
+    align-items: baseline;
+    cursor: pointer;
+}
+
+.settings-page input[type="checkbox"] {
+    accent-color: #08765d;
+    flex-shrink: 0;
+}
+
+.settings-page .btn {
+    min-height: 30px;
+    line-height: 1.25;
+}
+
+.settings-page .btn:disabled {
+    opacity: .55;
+    cursor: default;
+}
+
+.settings-danger-btn {
+    color: #a62121;
+    border-color: #e2baba;
+}
+
+.settings-connection {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--secondary-bg);
+    color: var(--secondary-text);
+    font-size: var(--font-size-sm);
+    overflow-wrap: anywhere;
+}
+
+.settings-connection::before {
+    content: '';
+    flex: 0 0 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.settings-connection[data-state="connected"] {
+    color: #075e4b;
+    background: #eaf6f1;
+}
+
+.settings-connection[data-state="error"] {
+    color: #a62121;
+    background: #fff3f2;
+}
+
+.settings-details {
+    border-top: 1px solid var(--border-color);
+}
+
+.settings-details > summary {
+    padding: 8px 0;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.settings-details:last-child > summary {
+    padding-bottom: 0;
+}
+
+.settings-details-body {
+    padding: 8px 0 12px;
+}
+
+.settings-details:last-child .settings-details-body {
+    padding-bottom: 0;
+}
+
+.settings-page .button-group,
+.settings-page .skill-import-row {
+    flex-wrap: wrap;
+}
+
+.settings-page .skill-import-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.settings-page .mcp-server-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 8px;
+    margin: 0;
+}
+
+.settings-page .mcp-server-row .form-group {
+    margin-bottom: 0;
+}
+
+.settings-page .mcp-server-row .form-group:not(:last-of-type) {
+    grid-column: 1 / -1;
+}
+
+.settings-page .mcp-server-row .btn {
+    min-height: 34px;
+}
+
+#settingsPageMcp #mcpServerList {
+    margin-bottom: 12px;
+}
+
+#settingsPageWorkspace .cross-document-connection-status {
+    margin: 10px 0;
+}
+
 .profile-actions {
     display: flex;
     flex-wrap: wrap;
@@ -13,6 +189,10 @@
 
 .model-input-row .form-control {
     flex: 1 1 auto;
+}
+
+.model-input-row > .btn {
+    flex: 0 0 auto;
 }
 
 .model-combobox {
