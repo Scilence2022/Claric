@@ -1433,16 +1433,16 @@ body {
 }
 
 /* ==========================================================================
-   Settings slide-over
+   Settings
    ========================================================================== */
 
 .settings-overlay {
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.25);
-    z-index: 30;
+    z-index: 60;
     display: flex;
-    justify-content: flex-end;
+    justify-content: flex-start;
 }
 
 /* The display:flex above overrides the UA [hidden] rule (equal specificity,
@@ -1452,8 +1452,9 @@ body {
 }
 
 .settings-panel {
-    width: min(420px, 100%);
+    width: min(680px, 100%);
     height: 100%;
+    container: settings / inline-size;
     background: var(--primary-bg);
     box-shadow: var(--shadow-lg);
     display: flex;
@@ -1464,7 +1465,6 @@ body {
    carry the exact rect; the docked flex layout resumes when they clear). */
 .settings-panel.floating {
     position: absolute;
-    right: auto;
     border: 1px solid var(--border-color);
     border-radius: 8px;
 }
@@ -1472,9 +1472,10 @@ body {
 /* The header doubles as the drag handle. */
 .settings-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: var(--spacing-md);
+    gap: var(--spacing-sm);
+    flex: 0 0 auto;
+    padding: 10px 16px;
     border-bottom: 1px solid var(--border-color);
     cursor: grab;
     user-select: none;
@@ -1538,65 +1539,81 @@ body {
 .settings-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }
 .settings-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }
 
-.settings-header-left {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-}
-
 .settings-header h2 {
-    margin: 0;
-    font-size: var(--font-size-lg);
+    font-size: var(--font-size-xl);
+    line-height: 1.2;
 }
 
-.settings-header-actions {
+.settings-content {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.settings-footer {
     display: flex;
     align-items: center;
-    gap: var(--spacing-sm);
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    flex: 0 0 auto;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border-color);
 }
 
 .settings-save-status {
     font-size: var(--font-size-sm);
-    font-weight: 500;
-    white-space: nowrap;
-    transition: opacity 0.2s ease;
-}
-
-.settings-save-status.success {
-    color: var(--success-color);
+    color: var(--secondary-text);
 }
 
 .settings-save-status.error {
-    color: var(--error-color);
+    color: #a62121;
+}
+
+#settingsSaveBtn {
+    flex: 0 0 auto;
+    background: #08765d;
+    border-color: #08765d;
+    font-weight: 600;
+    min-height: 34px;
+}
+
+#settingsSaveBtn:hover {
+    background: #075e4b;
 }
 
 .settings-tabs {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: var(--spacing-xs);
-    padding: 0 var(--spacing-md);
+    padding: 8px 12px;
     border-bottom: 1px solid var(--border-color);
 }
 
 .settings-tab {
-    border: none;
-    background: none;
-    padding: var(--spacing-sm);
+    min-height: 34px;
+    padding: 6px 3px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
     font-family: var(--font-family);
-    font-size: var(--font-size-base);
+    font-size: 13px;
+    line-height: 1.25;
     color: var(--secondary-text);
     cursor: pointer;
-    border-bottom: 2px solid transparent;
+    overflow-wrap: anywhere;
 }
 
 .settings-tab:hover {
     color: var(--primary-text);
+    background: var(--secondary-bg);
 }
 
 .settings-tab.active {
-    color: var(--primary-text);
+    color: #075e4b;
+    background: #eaf6f1;
+    border-color: #c6e5d9;
     font-weight: 600;
-    border-bottom-color: var(--accent-color);
 }
 
 .document-writing-actions {
@@ -1612,23 +1629,31 @@ body {
 
 .settings-body {
     flex: 1 1 auto;
-    overflow-y: auto;
-    padding: var(--spacing-md);
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    background: var(--secondary-bg);
+    padding: 12px;
 }
 
-.settings-section-label {
-    font-weight: 600;
-    font-size: var(--font-size-sm);
-    color: var(--secondary-text);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin: var(--spacing-sm) 0;
+@container settings (max-width: 359px) {
+    .settings-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
-.settings-divider {
-    border: none;
-    border-top: 1px solid var(--border-color);
-    margin: var(--spacing-md) 0;
+@container settings (min-width: 560px) {
+    .settings-content { flex-direction: row; }
+    .settings-tabs {
+        display: flex;
+        flex-direction: column;
+        flex: 0 0 144px;
+        overflow-y: auto;
+        border-right: 1px solid var(--border-color);
+        border-bottom: 0;
+        padding: 12px;
+    }
+    .settings-tab { text-align: start; padding-inline: 10px; }
+    .settings-body { padding: 20px; }
 }
 
 .form-group {
@@ -1970,6 +1995,10 @@ textarea.form-control {
     display: flex;
 }
 
+#savePromptModal {
+    z-index: 70;
+}
+
 .confirm-overlay {
     position: fixed;
     inset: 0;
@@ -2089,14 +2118,6 @@ textarea.form-control {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-/* MCP server add row (Settings → General) */
-.mcp-server-row {
-    display: grid;
-    grid-template-columns: 1fr 2fr 1.4fr auto;
-    gap: var(--spacing-xs);
-    margin-bottom: var(--spacing-sm);
 }
 
 /* ── Composer (ChatGPT-style input area) ─────────────────────────────── */
@@ -2452,7 +2473,6 @@ textarea.form-control {
 .workspace-body .cross-document-bar { padding: 12px 0 0; border-top: 1px solid var(--border-color); border-bottom: 0; margin-top: 16px; }
 .workspace-body .cross-document-bar .help-text { white-space: normal; flex-basis: 100%; }
 .workspace-body .shared-evidence-controls { margin: 0; }
-#settingsPageWorkspace .cross-document-connection-status { display: block; margin: 12px 0; }
 @media (max-width: 350px) {
     .workspace-header, .workspace-footer, .workspace-body { padding: 12px; }
     .workspace-document-heading { flex-wrap: wrap; }

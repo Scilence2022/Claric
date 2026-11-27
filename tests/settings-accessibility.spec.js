@@ -116,6 +116,10 @@ test('Settings tabs and nested prompt modal remain keyboard accessible', () => {
     general.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(document.activeElement.id).toBe('settingsTabDocument');
     expect(document.getElementById('settingsPageDocument').hidden).toBe(false);
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(document.activeElement.id).toBe('settingsTabEditing');
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(document.activeElement.id).toBe('settingsTabImages');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(document.activeElement.id).toBe('settingsTabPrompts');
     expect(general.tabIndex).toBe(-1);
@@ -131,6 +135,15 @@ test('Settings tabs and nested prompt modal remain keyboard accessible', () => {
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(document.activeElement).toBe(save);
     expect(document.getElementById('settingsOverlay').hidden).toBe(false);
+});
+
+test('keyboard navigation can leave a collapsed Settings disclosure', () => {
+    openSettings('general');
+    const summary = document.querySelector('#chatConnectionDetails > summary');
+    summary.focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    expect(summary.dispatchEvent(tab)).toBe(true);
+    expect(document.activeElement).toBe(summary);
 });
 
 test('connection errors are visible in the composer and settings, then clear on success', () => {
@@ -151,10 +164,10 @@ test('turning Track Changes off disables automatic writes and explains why', () 
     expect(document.getElementById('inputError').textContent).toContain('Track Changes is off');
 });
 
-test('General settings persists automatic undo cleanup and restores the saved checkbox', () => {
+test('Editing settings persists automatic undo cleanup and restores the saved checkbox', () => {
     const { loadSettings } = require('../src/taskpane/app-state.js');
     const { updateUIFromConfig } = require('../src/taskpane/ui/settings-view.js');
-    openSettings();
+    openSettings('editing');
     const checkbox = document.getElementById('clearUndoHistoryAfterApplyCheckbox');
     expect(checkbox.checked).toBe(false);
     expect(document.getElementById(checkbox.getAttribute('aria-describedby')).textContent).toContain('earlier manual edits');
@@ -169,15 +182,15 @@ test('General settings persists automatic undo cleanup and restores the saved ch
     expect(JSON.parse(localStorage.getItem('wordAI.config')).clearUndoHistoryAfterApply).toBe(false);
 });
 
-test('General settings wires the manual undo-history control and its confirmation', async () => {
+test('Editing settings wires the manual undo-history control and its confirmation', async () => {
     global.Office = { context: { requirements: { isSetSupported: () => true } } };
     global.Word = { run: jest.fn() };
-    openSettings();
+    openSettings('editing');
     const button = document.getElementById('clearUndoHistoryBtn');
     button.focus();
     button.click();
     for (let i = 0; i < 8; i++) await Promise.resolve();
-    expect(document.getElementById('settingsPageGeneral').contains(button)).toBe(true);
+    expect(document.getElementById('settingsPageEditing').contains(button)).toBe(true);
     expect(document.activeElement.dataset.confirm).toBe('cancel');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await Promise.resolve();
@@ -186,4 +199,31 @@ test('General settings wires the manual undo-history control and its confirmatio
     expect(Word.run).not.toHaveBeenCalled();
     delete global.Word;
     delete global.Office;
+});
+
+test('closing Settings flushes a pending edit without rechecking an unchanged connection', async () => {
+    await testConnectionUI();
+    testConnection.mockClear();
+    openSettings('general');
+    const model = document.getElementById('modelSelect');
+    model.value = 'new-model';
+    model.dispatchEvent(new Event('input'));
+    expect(document.getElementById('settingsSaveStatus').textContent).toBe('Saving…');
+    document.getElementById('settingsCloseBtn').click();
+    const saved = JSON.parse(localStorage.getItem('wordAI.config'));
+    expect(saved.providers[saved.backend].model).toBe('new-model');
+    expect(testConnection).not.toHaveBeenCalled();
+});
+
+test('authentication feedback distinguishes a missing key from a rejected key', async () => {
+    testConnection.mockRejectedValue(new Error('HTTP 401'));
+    const status = document.getElementById('settingsConnectionStatus');
+    await testConnectionUI();
+    expect(status.dataset.state).toBe('error');
+    expect(status.textContent).toContain('Enter an API key');
+    const key = document.getElementById('apiKey');
+    key.value = 'test-key';
+    key.dispatchEvent(new Event('input'));
+    await testConnectionUI();
+    expect(status.textContent).toContain('Check the API key and its permissions');
 });

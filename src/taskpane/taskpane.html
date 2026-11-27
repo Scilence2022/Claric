@@ -224,426 +224,469 @@
             </section>
         </div>
 
-        <!-- Settings slide-over -->
+        <!-- Settings -->
         <div id="settingsOverlay" class="settings-overlay" hidden>
-            <aside id="settingsPanel" class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
+            <aside id="settingsPanel" class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
                 <div class="settings-header">
-                    <div class="settings-header-left">
-                        <button id="settingsCloseBtn" class="icon-btn" title="Close settings" aria-label="Close settings">&times;</button>
-                        <h2>Settings</h2>
+                    <button id="settingsCloseBtn" type="button" class="icon-btn" title="Close settings" aria-label="Close settings">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+                    </button>
+                    <h2 id="settingsTitle">Settings</h2>
+                </div>
+                <div class="settings-content">
+                    <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+                        <button id="settingsTabGeneral" class="settings-tab active" type="button" role="tab" aria-selected="true" aria-controls="settingsPageGeneral" data-tab="general">General</button>
+                        <button id="settingsTabDocument" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsPageDocument" data-tab="document" tabindex="-1">Document</button>
+                        <button id="settingsTabEditing" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsPageEditing" data-tab="editing" tabindex="-1">Editing</button>
+                        <button id="settingsTabImages" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsPageImages" data-tab="images" tabindex="-1">Images</button>
+                        <button id="settingsTabPrompts" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsPagePrompts" data-tab="prompts" tabindex="-1">Prompts</button>
+                        <button id="settingsTabSkills" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsPageSkills" data-tab="skills" tabindex="-1">Skills</button>
+                        <button id="settingsTabWorkspace" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsPageWorkspace" data-tab="workspace" tabindex="-1">Workspace</button>
+                        <button id="settingsTabMcp" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settingsPageMcp" data-tab="mcp" tabindex="-1">MCP Servers</button>
                     </div>
-                    <div class="settings-header-actions">
-                        <span id="settingsSaveStatus" class="settings-save-status" hidden></span>
-                        <button id="settingsSaveBtn" class="btn btn-compact">Save</button>
+                    <div class="settings-body">
+                        <div id="settingsPageGeneral" class="settings-page" role="tabpanel" aria-labelledby="settingsTabGeneral">
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Chat model</h3>
+                                <div class="form-group">
+                                    <label for="backendSelect">Provider</label>
+                                    <select id="backendSelect" class="form-control">
+                                        <option value="ollama">Ollama</option>
+                                        <option value="vllm">vLLM (OpenAI-compatible)</option>
+                                        <optgroup label="Cloud providers">
+                                            <option value="openai">OpenAI</option>
+                                            <option value="claude">Claude (Anthropic)</option>
+                                            <option value="deepseek">DeepSeek</option>
+                                            <option value="glm">Zhipu GLM</option>
+                                            <option value="kimi">Moonshot Kimi</option>
+                                            <option value="minimax">MiniMax</option>
+                                            <option value="minimax-cn">MiniMax 中国站</option>
+                                            <option value="zhongkeyu">中科大模型 (zhongkeyu.com)</option>
+                                            <option value="openrouter">OpenRouter</option>
+                                            <option value="siliconflow">SiliconFlow</option>
+                                        </optgroup>
+                                        <option value="custom">Custom (OpenAI-compatible)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="chatProfileSelect">Configuration</label>
+                                    <select id="chatProfileSelect" class="form-control"></select>
+                                    <div class="profile-actions">
+                                        <button type="button" id="chatProfileAddBtn" class="btn btn-compact">Add configuration</button>
+                                        <button type="button" id="chatProfileRemoveBtn" class="btn btn-compact" disabled>Remove</button>
+                                    </div>
+                                    <small class="help-text">Switch configurations to use a different key, endpoint, or model.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="apiKey">API key</label>
+                                    <input type="password" id="apiKey" class="form-control" autocomplete="off" spellcheck="false" aria-describedby="apiKeyHint">
+                                    <small class="help-text" id="apiKeyHint">Required for cloud providers; leave blank for local backends</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="modelSelect">Model</label>
+                                    <div class="model-input-row">
+                                        <div class="model-combobox">
+                                            <input type="text" id="modelSelect" class="form-control"
+                                                   placeholder="Type a model name or refresh the list" autocomplete="off"
+                                                   role="combobox" aria-expanded="false" aria-controls="modelDropdown">
+                                            <div id="modelDropdown" class="model-dropdown" role="listbox" hidden></div>
+                                        </div>
+                                        <button type="button" id="refreshModelsBtn" class="btn btn-compact"
+                                                title="Refresh the model list from the provider">Refresh models</button>
+                                    </div>
+                                </div>
+                                <p id="settingsConnectionStatus" class="settings-connection" role="status"></p>
+                                <details id="chatConnectionDetails" class="settings-details">
+                                    <summary>Profile and endpoint</summary>
+                                    <div class="settings-details-body">
+                                        <div class="form-group">
+                                            <label for="chatProfileName">Configuration name</label>
+                                            <input type="text" id="chatProfileName" class="form-control" placeholder="e.g., Personal or Team" autocomplete="off">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="endpointUrl">Endpoint URL</label>
+                                            <input type="text" id="endpointUrl" aria-describedby="endpointHint" class="form-control" placeholder="e.g., /ollama or /vllm">
+                                            <small class="help-text" id="endpointHint">Base URL for the selected provider</small>
+                                        </div>
+                                    </div>
+                                </details>
+                                <details class="settings-details">
+                                    <summary>Thinking and temperature</summary>
+                                    <div class="settings-details-body">
+                                        <div class="form-group">
+                                            <label for="thinkingLevelSelect">Thinking level</label>
+                                            <select id="thinkingLevelSelect" aria-describedby="thinkingLevelHint" class="form-control">
+                                                <option value="default">Default</option>
+                                                <option value="low">Low</option>
+                                                <option value="medium">Medium</option>
+                                                <option value="high">High</option>
+                                            </select>
+                                            <small class="help-text" id="thinkingLevelHint">Options adapt to the selected model.</small>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="temperatureInput">Temperature</label>
+                                            <input type="number" id="temperatureInput" aria-describedby="temperatureHint" class="form-control" min="0" max="2" step="0.1">
+                                            <small class="help-text" id="temperatureHint">Some backends or models may ignore unsupported options.</small>
+                                        </div>
+                                    </div>
+                                </details>
+                            </section>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Conversation context</h3>
+                                <div class="form-group">
+                                    <label for="contextBudgetInput">Chat history budget (tokens)</label>
+                                    <input type="number" id="contextBudgetInput" class="form-control" min="1000" max="2000000" step="1000" aria-label="Chat history token budget">
+                                    <small class="help-text">How much of the recent conversation is sent with each request, in estimated tokens (CJK-aware). Default 128000 tokens. Raise it for 200K–1M-context models, lower it for small local models.</small>
+                                </div>
+                            </section>
+                        </div>
+                        <div id="settingsPageDocument" class="settings-page" role="tabpanel" aria-labelledby="settingsTabDocument" hidden>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Writing preferences</h3>
+                                <div class="form-group">
+                                    <label for="documentWritingMode">Detection</label>
+                                    <select id="documentWritingMode" class="form-control" aria-describedby="documentWritingHelp">
+                                        <option value="suggest">Detect type, suggest on request</option>
+                                        <option value="manual">Manual</option>
+                                        <option value="automatic">Auto-update unlocked fields</option>
+                                    </select>
+                                    <small id="documentWritingHelp" class="help-text">Detection sends short excerpts to the selected chat model. Manual mode runs detection when you request it. These preferences guide drafts and replies for this document.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="documentWriting-type">Document type</label>
+                                    <select id="documentWriting-type" class="form-control" data-writing-value="type">
+                                        <option value="">Use document context</option>
+                                    </select>
+                                    <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="type"> Lock document type</label></div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="documentWriting-style">Writing style</label>
+                                    <select id="documentWriting-style" class="form-control" data-writing-value="style">
+                                        <option value="">Follow the source style</option>
+                                    </select>
+                                    <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="style"> Lock writing style</label></div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="documentWriting-language">Output language</label>
+                                    <select id="documentWriting-language" class="form-control" data-writing-value="language">
+                                        <option value="">Follow the source language</option>
+                                    </select>
+                                    <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="language"> Lock output language</label></div>
+                                </div>
+                                <small class="help-text">Output language applies to new text. To translate existing text, use /translate or explicitly request translation.</small>
+                                <div class="document-writing-actions">
+                                    <button id="detectDocumentWriting" type="button" class="btn btn-compact">Detect settings</button>
+                                    <button id="applyDocumentWriting" type="button" class="btn btn-compact" hidden>Use detected settings</button>
+                                    <button id="undoDocumentWriting" type="button" class="btn btn-compact" hidden>Undo detection change</button>
+                                </div>
+                                <ul id="documentWritingSuggestion" hidden></ul>
+                                <p id="documentWritingStatus" class="help-text" role="status"></p>
+                            </section>
+                        </div>
+                        <div id="settingsPageEditing" class="settings-page" role="tabpanel" aria-labelledby="settingsTabEditing" hidden>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Tracked edits</h3>
+                                <div class="form-group checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="trackChangesCheckbox" checked>
+                                        Track changes in Word
+                                    </label>
+                                </div>
+                                <div class="form-group checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="lineDiffCheckbox">
+                                        Use sentence-level diffs
+                                    </label>
+                                </div>
+                            </section>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Document extraction</h3>
+                                <div class="form-group">
+                                    <label for="docRichnessSelect">Document detail</label>
+                                    <select id="docRichnessSelect" class="form-control">
+                                        <option value="plain">Plain text</option>
+                                        <option value="headings">Headings + text</option>
+                                        <option value="structured" selected>Headings, lists, and text</option>
+                                    </select>
+                                    <small class="help-text">Controls {whole document} placeholder detail level</small>
+                                </div>
+                                <div class="form-group checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="trackedChangesExtraction">
+                                        Include tracked changes in summaries
+                                    </label>
+                                    <small class="help-text">Extracts tracked changes (via OOXML) for {tracked changes} placeholder</small>
+                                </div>
+
+                                <div class="form-group checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="includeCommentsInSelectionCheckbox">
+                                        Include comments in selection
+                                    </label>
+                                    <small class="help-text">When enabled, {selection} includes Word comments and threaded replies anchored to the selected text.</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="commentGranularity">Whole-document comment frequency</label>
+                                    <select id="commentGranularity" class="form-control">
+                                        <option value="0">Per chunk</option>
+                                        <option value="1">Every paragraph</option>
+                                        <option value="2">Every 2 paragraphs</option>
+                                        <option value="5">Every 5 paragraphs</option>
+                                    </select>
+                                </div>
+                            </section>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Undo history</h3>
+                                <div class="form-group checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="clearUndoHistoryAfterApplyCheckbox" aria-describedby="autoClearUndoHistoryHelp">
+                                        Clear undo history after each ChangeSet
+                                    </label>
+                                    <small id="autoClearUndoHistoryHelp" class="help-text">After each applied ChangeSet, clear all undo history for this document, including earlier manual edits. Tracked changes are preserved.</small>
+                                </div>
+                                <div class="form-group">
+                                    <button type="button" id="clearUndoHistoryBtn" class="btn settings-danger-btn" aria-describedby="clearUndoHistoryHelp">Clear undo history</button>
+                                    <small id="clearUndoHistoryHelp" class="help-text">Clears undo history in the current document immediately. Tracked changes are preserved.</small>
+                                    <small id="clearUndoHistoryStatus" class="help-text" role="status" aria-live="polite" hidden></small>
+                                </div>
+                            </section>
+                        </div>
+                        <div id="settingsPageImages" class="settings-page" role="tabpanel" aria-labelledby="settingsTabImages" hidden>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Image generation</h3>
+                                <div class="form-group checkbox-group">
+                                    <label>
+                                        <input type="checkbox" id="imageGenEnabledCheckbox">
+                                        Use an image model for illustrations
+                                    </label>
+                                    <small class="help-text">When off, illustration requests are drawn as SVG by the chat model.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="imageProviderSelect">Provider</label>
+                                    <select id="imageProviderSelect" class="form-control">
+                                        <option value="openai">OpenAI Images</option>
+                                        <option value="glm">Zhipu CogView</option>
+                                        <option value="minimax">MiniMax Images</option>
+                                        <option value="zhongkeyu">中科云 Images</option>
+                                        <option value="openrouter">OpenRouter Images</option>
+                                        <option value="siliconflow">SiliconFlow Images</option>
+                                        <option value="custom">Custom (OpenAI-compatible)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="imageProfileSelect">Configuration</label>
+                                    <select id="imageProfileSelect" class="form-control"></select>
+                                    <div class="profile-actions">
+                                        <button type="button" id="imageProfileAddBtn" class="btn btn-compact">Add configuration</button>
+                                        <button type="button" id="imageProfileRemoveBtn" class="btn btn-compact" disabled>Remove</button>
+                                    </div>
+                                    <small class="help-text">Each configuration saves its own credentials, model, and size.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="imageApiKey">API key</label>
+                                    <input type="password" id="imageApiKey" class="form-control" autocomplete="off" spellcheck="false" aria-describedby="imageApiKeyHint">
+                                    <small class="help-text" id="imageApiKeyHint">Required by all cloud image providers.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="imageModelInput">Model</label>
+                                    <div class="model-input-row">
+                                        <div class="model-combobox">
+                                            <input type="text" id="imageModelInput" class="form-control"
+                                                   placeholder="e.g., gpt-image-1" autocomplete="off"
+                                                   role="combobox" aria-expanded="false" aria-controls="imageModelDropdown">
+                                            <div id="imageModelDropdown" class="model-dropdown" role="listbox" hidden></div>
+                                        </div>
+                                        <button type="button" id="refreshImageModelsBtn" class="btn btn-compact"
+                                                title="Refresh the image model list from the provider">Refresh models</button>
+                                    </div>
+                                    <small id="imageModelStatus" class="help-text" role="status"></small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="imageSizeSelect">Image size</label>
+                                    <select id="imageSizeSelect" class="form-control"></select>
+                                    <small class="help-text">Larger sizes cost more and take longer to generate.</small>
+                                </div>
+                                <div class="form-group">
+                                    <button type="button" id="testImageConnectionBtn" class="btn btn-compact"
+                                            title="Generate a tiny test image to verify the settings">Test image connection</button>
+                                    <small class="help-text" id="imageTestStatus" role="status"></small>
+                                </div>
+                                <details class="settings-details">
+                                    <summary>Profile and endpoint</summary>
+                                    <div class="settings-details-body">
+                                        <div class="form-group">
+                                            <label for="imageProfileName">Configuration name</label>
+                                            <input type="text" id="imageProfileName" class="form-control" placeholder="e.g., Personal or Team" autocomplete="off">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="imageEndpointUrl">Endpoint URL</label>
+                                            <input type="text" id="imageEndpointUrl" aria-describedby="imageEndpointHint" class="form-control" placeholder="e.g., /openai">
+                                            <small class="help-text" id="imageEndpointHint">Base URL for the selected image provider</small>
+                                        </div>
+                                    </div>
+                                </details>
+                            </section>
+                        </div>
+                        <div id="settingsPagePrompts" class="settings-page" role="tabpanel" aria-labelledby="settingsTabPrompts" hidden>
+                            <p class="help-text">Saved prompts are available as slash commands. Changes to a template are applied when you save that prompt.</p>
+
+                            <div class="prompt-block" data-category="context">
+                                <h3 class="prompt-block-title">Context</h3>
+                                <p class="help-text">Prepended to every request — overall instructions that always apply.</p>
+                                <div class="form-group">
+                                    <select id="promptSelect-context" class="form-control" aria-label="Context prompt selection">
+                                        <option value="">(None)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <textarea id="promptTextarea-context" class="form-control" rows="4"
+                                        placeholder="Enter overall context instructions (no {selection} placeholder needed)" aria-label="Context prompt template"></textarea>
+                                </div>
+                                <div class="button-group compact-toolbar">
+                                    <button id="savePromptBtn-context" class="btn btn-compact">Save prompt</button>
+                                    <button id="deletePromptBtn-context" class="btn btn-compact">Delete</button>
+                                    <button id="resetPromptBtn-context" class="btn btn-compact">Clear</button>
+                                </div>
+                            </div>
+
+                            <div class="prompt-block" data-category="amendment">
+                                <h3 class="prompt-block-title">Amendment</h3>
+                                <p class="help-text">Used for text-revision runs. Each saved prompt also becomes a slash command.</p>
+                                <div class="form-group">
+                                    <select id="promptSelect-amendment" class="form-control" aria-label="Amendment prompt selection">
+                                        <option value="">(None)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <textarea id="promptTextarea-amendment" class="form-control" rows="4"
+                                        placeholder="Enter your prompt. Use {selection} for the selected text." aria-label="Amendment prompt template"></textarea>
+                                </div>
+                                <div class="form-group comment-field-group">
+                                    <label for="commentInstructions" class="comment-field-label">Comment Instructions (optional):</label>
+                                    <textarea id="commentInstructions" class="form-control comment-instructions-textarea" rows="3"
+                                        placeholder="Optionally add comment instructions. The LLM will return both the amendment and a comment in one response."></textarea>
+                                    <small class="help-text">When filled, amendment turns produce both tracked changes and a comment in a single call.</small>
+                                </div>
+                                <div class="button-group compact-toolbar">
+                                    <button id="savePromptBtn-amendment" class="btn btn-compact">Save prompt</button>
+                                    <button id="deletePromptBtn-amendment" class="btn btn-compact">Delete</button>
+                                    <button id="resetPromptBtn-amendment" class="btn btn-compact">Clear</button>
+                                </div>
+                            </div>
+
+                            <div class="prompt-block" data-category="comment">
+                                <h3 class="prompt-block-title">Comment</h3>
+                                <p class="help-text">Used for margin-comment runs. Each saved prompt also becomes a slash command.</p>
+                                <div class="form-group">
+                                    <select id="promptSelect-comment" class="form-control" aria-label="Comment prompt selection">
+                                        <option value="">(None)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <textarea id="promptTextarea-comment" class="form-control" rows="4"
+                                        placeholder="Enter your prompt. Use {selection} for the selected text." aria-label="Comment prompt template"></textarea>
+                                </div>
+                                <div class="button-group compact-toolbar">
+                                    <button id="savePromptBtn-comment" class="btn btn-compact">Save prompt</button>
+                                    <button id="deletePromptBtn-comment" class="btn btn-compact">Delete</button>
+                                    <button id="resetPromptBtn-comment" class="btn btn-compact">Clear</button>
+                                </div>
+                            </div>
+
+                            <div class="prompt-block" data-category="summary">
+                                <h3 class="prompt-block-title">Summary</h3>
+                                <p class="help-text">Used when generating a summary document in a new file.</p>
+                                <div class="form-group">
+                                    <select id="promptSelect-summary" class="form-control" aria-label="Summary prompt selection">
+                                        <option value="">(None)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <textarea id="promptTextarea-summary" class="form-control" rows="4"
+                                        placeholder="Enter summary prompt. Available placeholders:&#10;  {comments} — extracted comment data&#10;  {whole document} — full document text&#10;  {tracked changes} — tracked changes data (enable in Settings → Editing)" aria-label="Summary prompt template"></textarea>
+                                </div>
+                                <div class="button-group compact-toolbar">
+                                    <button id="savePromptBtn-summary" class="btn btn-compact">Save prompt</button>
+                                    <button id="deletePromptBtn-summary" class="btn btn-compact">Delete</button>
+                                    <button id="resetPromptBtn-summary" class="btn btn-compact">Clear</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settingsPageSkills" class="settings-page" role="tabpanel" aria-labelledby="settingsTabSkills" hidden>
+                            <div class="prompt-block">
+                                <h3 class="prompt-block-title">Built-in slash commands</h3>
+                                <p class="help-text">Always available in the chat input — type / to browse.</p>
+                                <div id="builtinSkillList"></div>
+                            </div>
+                            <div class="prompt-block">
+                                <h3 class="prompt-block-title">Import a skill package</h3>
+                                <p class="help-text">Choose a Markdown file or paste its SKILL.md content to add a slash command.</p>
+                                <div class="form-group">
+                                    <input type="file" id="skillImportFile" class="form-control" accept=".md,.markdown,text/markdown,text/plain" aria-label="Skill package file">
+                                </div>
+                                <div class="form-group">
+                                    <textarea id="skillImportText" class="form-control" rows="5"
+                                        placeholder="---&#10;name: literature-review&#10;description: Review a draft against the literature and flag gaps&#10;category: chat&#10;---&#10;Instructions for the model. Use {selection} where the selected text should go." aria-label="Skill package markdown"></textarea>
+                                </div>
+                                <div class="button-group compact-toolbar">
+                                    <button id="skillImportBtn" class="btn btn-compact">Import</button>
+                                    <button id="skillImportClearBtn" class="btn btn-compact">Clear</button>
+                                </div>
+                                <div id="skillImportList" aria-live="polite"></div>
+                            </div>
+                        </div>
+                        <div id="settingsPageWorkspace" class="settings-page" role="tabpanel" aria-labelledby="settingsTabWorkspace" hidden>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Cross-document connection</h3>
+                                <p class="help-text">Connect open Word documents through your local coordination service. The address is remembered on this device. Pairing tokens are used once and never saved.</p>
+                                <div class="form-group">
+                                    <label for="crossDocumentUrl">Local coordination URL</label>
+                                    <input id="crossDocumentUrl" class="form-control" type="url" placeholder="Same-origin /coordination" autocomplete="off">
+                                </div>
+                                <div class="form-group">
+                                    <label for="crossDocumentToken">Pairing token (if configured)</label>
+                                    <input id="crossDocumentToken" class="form-control" type="password" autocomplete="off">
+                                </div>
+                                <button id="crossDocumentConnectBtn" type="button" class="btn btn-compact">Connect this document</button>
+                                <span id="crossDocumentConnectionStatus" class="cross-document-connection-status help-text" role="status">Connecting automatically…</span>
+                                <p class="help-text">Manage linked documents and access from the workspace button in the top toolbar. Edits always require review in the target document.</p>
+                            </section>
+                        </div>
+                        <div id="settingsPageMcp" class="settings-page" role="tabpanel" aria-labelledby="settingsTabMcp" hidden>
+                            <p class="help-text">The /mcp command uses Streamable HTTP servers. Enter an absolute URL or a same-origin proxy path.</p>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Add a server</h3>
+                                <div class="mcp-server-row">
+                                    <div class="form-group">
+                                        <label for="mcpServerName">Name</label>
+                                        <input type="text" id="mcpServerName" class="form-control" placeholder="e.g., Research tools">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="mcpServerUrl">Server URL</label>
+                                        <input type="text" id="mcpServerUrl" class="form-control" placeholder="https://…/mcp">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="mcpServerToken">Bearer token (optional)</label>
+                                        <input type="password" id="mcpServerToken" class="form-control" autocomplete="off">
+                                    </div>
+                                    <button type="button" id="mcpServerAddBtn" class="btn btn-compact">Add</button>
+                                </div>
+                            </section>
+                            <section class="settings-card">
+                                <h3 class="settings-section-label">Configured servers</h3>
+                                <div id="mcpServerList"></div>
+                                <div class="form-group">
+                                    <label for="mcpStepBudget">Maximum tool steps per /mcp turn</label>
+                                    <input type="number" id="mcpStepBudget" class="form-control" min="1" max="48" step="1" aria-label="MCP step budget">
+                                </div>
+                            </section>
+                        </div>
                     </div>
                 </div>
-                <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-                    <button id="settingsTabGeneral" class="settings-tab active" role="tab" aria-selected="true" data-tab="general">General</button>
-                    <button id="settingsTabDocument" class="settings-tab" role="tab" aria-selected="false" data-tab="document">Document</button>
-                    <button id="settingsTabPrompts" class="settings-tab" role="tab" aria-selected="false" data-tab="prompts">Prompts</button>
-                    <button id="settingsTabSkills" class="settings-tab" role="tab" aria-selected="false" data-tab="skills">Skills</button>
-                    <button id="settingsTabWorkspace" class="settings-tab" role="tab" aria-selected="false" data-tab="workspace">Workspace</button>
-                    <button id="settingsTabMcp" class="settings-tab" role="tab" aria-selected="false" data-tab="mcp">MCP Servers</button>
-                </div>
-                <div class="settings-body">
-                    <div id="settingsPageGeneral" class="settings-page" role="tabpanel" aria-labelledby="settingsTabGeneral">
-                    <p class="settings-section-label">LLM Backend</p>
-                    <p id="settingsConnectionStatus" class="help-text" role="status"></p>
-                    <div class="form-group">
-                        <label for="backendSelect">Provider:</label>
-                        <select id="backendSelect" class="form-control">
-                            <option value="ollama">Ollama</option>
-                            <option value="vllm">vLLM (OpenAI-compatible)</option>
-                            <optgroup label="Cloud providers">
-                                <option value="openai">OpenAI</option>
-                                <option value="claude">Claude (Anthropic)</option>
-                                <option value="deepseek">DeepSeek</option>
-                                <option value="glm">Zhipu GLM</option>
-                                <option value="kimi">Moonshot Kimi</option>
-                                <option value="minimax">MiniMax</option>
-                                <option value="minimax-cn">MiniMax 中国站</option>
-                                <option value="zhongkeyu">中科大模型 (zhongkeyu.com)</option>
-                                <option value="openrouter">OpenRouter</option>
-                                <option value="siliconflow">SiliconFlow</option>
-                            </optgroup>
-                            <option value="custom">Custom (OpenAI-compatible)</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="chatProfileSelect">API key configuration:</label>
-                        <select id="chatProfileSelect" class="form-control"></select>
-                        <div class="profile-actions">
-                            <button type="button" id="chatProfileAddBtn" class="btn btn-compact">Add API key</button>
-                            <button type="button" id="chatProfileRemoveBtn" class="btn btn-compact" disabled>Remove selected</button>
-                        </div>
-                        <small class="help-text">Each configuration keeps its own API key, endpoint, model and generation settings. Requests use the selected configuration.</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="chatProfileName">Configuration name:</label>
-                        <input type="text" id="chatProfileName" class="form-control" placeholder="e.g., Personal or Team" autocomplete="off">
-                    </div>
-                    <div class="form-group">
-                        <label for="modelSelect">Model:</label>
-                        <div class="model-input-row">
-                            <div class="model-combobox">
-                                <input type="text" id="modelSelect" class="form-control"
-                                       placeholder="Type a model name or refresh the list" autocomplete="off"
-                                       role="combobox" aria-expanded="false" aria-controls="modelDropdown">
-                                <div id="modelDropdown" class="model-dropdown" role="listbox" hidden></div>
-                            </div>
-                            <button type="button" id="refreshModelsBtn" class="btn btn-compact"
-                                    title="Refresh the model list from the provider">Refresh</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="endpointUrl">Endpoint URL:</label>
-                        <input type="text" id="endpointUrl" class="form-control" placeholder="e.g., /ollama or /vllm">
-                        <small class="help-text" id="endpointHint">Base URL for the selected provider</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="apiKey">API Key (Optional):</label>
-                        <input type="password" id="apiKey" class="form-control" placeholder="Optional API key">
-                        <small class="help-text" id="apiKeyHint">Required for cloud providers; leave blank for local backends</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="thinkingLevelSelect">Thinking level:</label>
-                        <select id="thinkingLevelSelect" class="form-control">
-                            <option value="default">Default</option>
-                            <option value="low">Low</option>
-                            <option value="medium">Medium</option>
-                            <option value="high">High</option>
-                        </select>
-                        <small class="help-text" id="thinkingLevelHint">Options adapt to the selected model.</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="temperatureInput">Temperature:</label>
-                        <input type="number" id="temperatureInput" class="form-control" min="0" max="2" step="0.1">
-                        <small class="help-text" id="temperatureHint">Some backends or models may ignore unsupported options.</small>
-                    </div>
-                    <div class="form-group checkbox-group">
-                        <label>
-                            <input type="checkbox" id="trackChangesCheckbox" checked>
-                            Enable Track Changes
-                        </label>
-                    </div>
-                    <div class="form-group checkbox-group">
-                        <label>
-                            <input type="checkbox" id="lineDiffCheckbox">
-                            Force Line Diff (Sentence Mode)
-                        </label>
-                    </div>
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="clearUndoHistoryAfterApplyCheckbox" aria-describedby="autoClearUndoHistoryHelp">
-                            Clear undo history after each ChangeSet
-                        </label>
-                        <small id="autoClearUndoHistoryHelp" class="help-text">Off by default. After each successfully applied ChangeSet (each section in document edits), automatically clear all Undo history, including earlier manual edits. You cannot undo those edits afterward. Existing tracked changes are preserved.</small>
-                    </div>
-                    <div class="form-group">
-                        <button type="button" id="clearUndoHistoryBtn" class="btn btn-secondary" aria-describedby="clearUndoHistoryHelp">Clear undo history</button>
-                        <small id="clearUndoHistoryHelp" class="help-text">Clears all Undo history in the current document. Existing tracked changes are preserved. Previous edits can no longer be undone.</small>
-                        <small id="clearUndoHistoryStatus" class="help-text" role="status" aria-live="polite" hidden></small>
-                    </div>
-
-                    <hr class="settings-divider">
-                    <p class="settings-section-label">Image Generation</p>
-                    <div class="form-group checkbox-group">
-                        <label>
-                            <input type="checkbox" id="imageGenEnabledCheckbox">
-                            Use an image model for illustrations
-                        </label>
-                        <small class="help-text">When off, illustration requests are drawn as SVG by the chat model.</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="imageProviderSelect">Image provider:</label>
-                        <select id="imageProviderSelect" class="form-control">
-                            <option value="openai">OpenAI Images</option>
-                            <option value="glm">Zhipu CogView</option>
-                            <option value="minimax">MiniMax Images</option>
-                            <option value="zhongkeyu">中科云 Images</option>
-                            <option value="openrouter">OpenRouter Images</option>
-                            <option value="siliconflow">SiliconFlow Images</option>
-                            <option value="custom">Custom (OpenAI-compatible)</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="imageProfileSelect">Image API key configuration:</label>
-                        <select id="imageProfileSelect" class="form-control"></select>
-                        <div class="profile-actions">
-                            <button type="button" id="imageProfileAddBtn" class="btn btn-compact">Add API key</button>
-                            <button type="button" id="imageProfileRemoveBtn" class="btn btn-compact" disabled>Remove selected</button>
-                        </div>
-                        <small class="help-text">Each configuration keeps its own API key, endpoint, image model and size.</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="imageProfileName">Configuration name:</label>
-                        <input type="text" id="imageProfileName" class="form-control" placeholder="e.g., Personal or Team" autocomplete="off">
-                    </div>
-                    <div class="form-group">
-                        <label for="imageModelInput">Image model:</label>
-                        <div class="model-input-row">
-                            <div class="model-combobox">
-                                <input type="text" id="imageModelInput" class="form-control"
-                                       placeholder="e.g., gpt-image-1" autocomplete="off"
-                                       role="combobox" aria-expanded="false" aria-controls="imageModelDropdown">
-                                <div id="imageModelDropdown" class="model-dropdown" role="listbox" hidden></div>
-                            </div>
-                            <button type="button" id="refreshImageModelsBtn" class="btn btn-compact"
-                                    title="Refresh the image model list from the provider">Refresh</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="imageEndpointUrl">Endpoint URL:</label>
-                        <input type="text" id="imageEndpointUrl" class="form-control" placeholder="e.g., /openai">
-                        <small class="help-text" id="imageEndpointHint">Base URL for the selected image provider</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="imageApiKey">API Key:</label>
-                        <input type="password" id="imageApiKey" class="form-control" placeholder="Image provider API key">
-                        <small class="help-text" id="imageApiKeyHint">Required by all cloud image providers.</small>
-                    </div>
-                    <div class="form-group">
-                        <label for="imageSizeSelect">Image size:</label>
-                        <select id="imageSizeSelect" class="form-control"></select>
-                        <small class="help-text">Larger sizes cost more and take longer to generate.</small>
-                    </div>
-                    <div class="form-group">
-                        <button type="button" id="testImageConnectionBtn" class="btn btn-compact"
-                                title="Generate a tiny test image to verify the settings">Test image connection</button>
-                        <small class="help-text" id="imageTestStatus"></small>
-                    </div>
-
-                    <hr class="settings-divider">
-                    <p class="settings-section-label">Summary Mode Settings</p>
-                    <div class="form-group">
-                        <label for="docRichnessSelect">Document Extraction Richness:</label>
-                        <select id="docRichnessSelect" class="form-control">
-                            <option value="plain">Plain text</option>
-                            <option value="headings">Headings + text</option>
-                            <option value="structured" selected>Full structure (headings, lists)</option>
-                        </select>
-                        <small class="help-text">Controls {whole document} placeholder detail level</small>
-                    </div>
-                    <div class="form-group checkbox-group">
-                        <label>
-                            <input type="checkbox" id="trackedChangesExtraction">
-                            Include Tracked Changes in Summary
-                        </label>
-                        <small class="help-text">Extracts tracked changes (via OOXML) for {tracked changes} placeholder</small>
-                    </div>
-
-                    <hr class="settings-divider">
-                    <p class="settings-section-label">Selection Settings</p>
-                    <div class="form-group checkbox-group">
-                        <label>
-                            <input type="checkbox" id="includeCommentsInSelectionCheckbox">
-                            Include comments in selection
-                        </label>
-                        <small class="help-text">When enabled, {selection} includes Word comments and threaded replies anchored to the selected text.</small>
-                    </div>
-
-                    <hr class="settings-divider">
-                    <p class="settings-section-label">Conversation Context</p>
-                    <div class="form-group">
-                        <label for="contextBudgetInput">Chat history budget (tokens):</label>
-                        <input type="number" id="contextBudgetInput" class="form-control" min="1000" max="2000000" step="1000" aria-label="Chat history token budget">
-                        <small class="help-text">How much of the recent conversation is sent with each request, in estimated tokens (CJK-aware). Default 128000 — raise it for 200K–1M-context models, lower it for small local models.</small>
-                    </div>
-
-                    <hr class="settings-divider">
-                    <p class="settings-section-label">Whole-Document Processing Settings</p>
-                    <div class="form-group">
-                        <label for="commentGranularity">Comment granularity:</label>
-                        <select id="commentGranularity" class="form-control">
-                            <option value="0">Per chunk</option>
-                            <option value="1">Every paragraph</option>
-                            <option value="2">Every 2 paragraphs</option>
-                            <option value="5">Every 5 paragraphs</option>
-                        </select>
-                    </div>
-                    </div><!-- /settingsPageGeneral -->
-
-                    <div id="settingsPageDocument" class="settings-page" role="tabpanel" aria-labelledby="settingsTabDocument" hidden>
-                        <div class="form-group">
-                            <label for="documentWritingMode">Detection</label>
-                            <select id="documentWritingMode" class="form-control" aria-describedby="documentWritingHelp">
-                                <option value="suggest">Auto-detect type, suggest other settings on request</option>
-                                <option value="manual">Manual</option>
-                                <option value="automatic">Automatically update unlocked settings</option>
-                            </select>
-                            <small id="documentWritingHelp" class="help-text">Automatic detection checks the document before writing and document questions. Detection sends short excerpts to the selected chat model. Use Manual to run detection only with Refresh type. These settings guide drafts and replies for this document.</small>
-                        </div>
-                        <div class="form-group">
-                            <label for="documentWriting-type">Document type</label>
-                            <select id="documentWriting-type" class="form-control" data-writing-value="type">
-                                <option value="">Use document context</option>
-                            </select>
-                            <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="type"> Lock document type</label></div>
-                        </div>
-                        <div class="form-group">
-                            <label for="documentWriting-style">Writing style</label>
-                            <select id="documentWriting-style" class="form-control" data-writing-value="style">
-                                <option value="">Follow the source style</option>
-                            </select>
-                            <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="style"> Lock writing style</label></div>
-                        </div>
-                        <div class="form-group">
-                            <label for="documentWriting-language">Output language</label>
-                            <select id="documentWriting-language" class="form-control" data-writing-value="language">
-                                <option value="">Follow the source language</option>
-                            </select>
-                            <div class="checkbox-group"><label><input type="checkbox" data-writing-lock="language"> Lock output language</label></div>
-                        </div>
-                        <small class="help-text">Output language applies to new text. To translate existing text, use /translate or explicitly request translation.</small>
-                        <div class="document-writing-actions">
-                            <button id="detectDocumentWriting" type="button" class="btn btn-compact">Detect settings</button>
-                            <button id="applyDocumentWriting" type="button" class="btn btn-compact" hidden>Use detected settings</button>
-                            <button id="undoDocumentWriting" type="button" class="btn btn-compact" hidden>Undo detection change</button>
-                        </div>
-                        <ul id="documentWritingSuggestion" hidden></ul>
-                        <p id="documentWritingStatus" class="help-text" role="status"></p>
-                    </div>
-
-                    <div id="settingsPageWorkspace" class="settings-page" role="tabpanel" aria-labelledby="settingsTabWorkspace" hidden>
-                        <p class="settings-section-label">Cross-document connection</p>
-                        <p class="help-text">Connect open Word documents through your local coordination service. The address is remembered on this device. Pairing tokens are used once and never saved.</p>
-                        <div class="form-group"><label for="crossDocumentUrl">Local coordination URL</label>
-                            <input id="crossDocumentUrl" type="url" placeholder="Same-origin /coordination" autocomplete="off"></div>
-                        <div class="form-group"><label for="crossDocumentToken">Pairing token (if configured)</label>
-                            <input id="crossDocumentToken" type="password" autocomplete="off"></div>
-                        <button id="crossDocumentConnectBtn" type="button" class="btn btn-compact">Connect this document</button>
-                        <span id="crossDocumentConnectionStatus" class="cross-document-connection-status help-text" role="status">Connecting automatically…</span>
-                        <p class="help-text">Manage linked documents and access from the workspace button in the top toolbar. Edits always require review in the target document.</p>
-                    </div>
-                    <div id="settingsPagePrompts" class="settings-page" role="tabpanel" aria-labelledby="settingsTabPrompts" hidden>
-                    <p class="settings-section-label">Prompt Management</p>
-                    <p class="help-text">Saved prompts also appear as slash commands in the chat input. The active Context prompt is prepended to every request.</p>
-
-                    <div class="prompt-block" data-category="context">
-                        <p class="prompt-block-title">Context</p>
-                        <p class="help-text">Prepended to every request — overall instructions that always apply.</p>
-                        <div class="form-group">
-                            <select id="promptSelect-context" class="form-control" aria-label="Context prompt selection">
-                                <option value="">(None)</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <textarea id="promptTextarea-context" class="form-control" rows="4"
-                                placeholder="Enter overall context instructions (no {selection} placeholder needed)" aria-label="Context prompt template"></textarea>
-                        </div>
-                        <div class="button-group compact-toolbar">
-                            <button id="savePromptBtn-context" class="btn btn-compact">Save</button>
-                            <button id="deletePromptBtn-context" class="btn btn-compact">Delete</button>
-                            <button id="resetPromptBtn-context" class="btn btn-compact">Clear</button>
-                        </div>
-                    </div>
-
-                    <div class="prompt-block" data-category="amendment">
-                        <p class="prompt-block-title">Amendment</p>
-                        <p class="help-text">Used for text-revision runs. Each saved prompt also becomes a slash command.</p>
-                        <div class="form-group">
-                            <select id="promptSelect-amendment" class="form-control" aria-label="Amendment prompt selection">
-                                <option value="">(None)</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <textarea id="promptTextarea-amendment" class="form-control" rows="4"
-                                placeholder="Enter your prompt. Use {selection} for the selected text." aria-label="Amendment prompt template"></textarea>
-                        </div>
-                        <div class="form-group comment-field-group">
-                            <label for="commentInstructions" class="comment-field-label">Comment Instructions (optional):</label>
-                            <textarea id="commentInstructions" class="form-control comment-instructions-textarea" rows="3"
-                                placeholder="Optionally add comment instructions. The LLM will return both the amendment and a comment in one response."></textarea>
-                            <small class="help-text">When filled, amendment turns produce both tracked changes and a comment in a single call.</small>
-                        </div>
-                        <div class="button-group compact-toolbar">
-                            <button id="savePromptBtn-amendment" class="btn btn-compact">Save</button>
-                            <button id="deletePromptBtn-amendment" class="btn btn-compact">Delete</button>
-                            <button id="resetPromptBtn-amendment" class="btn btn-compact">Clear</button>
-                        </div>
-                    </div>
-
-                    <div class="prompt-block" data-category="comment">
-                        <p class="prompt-block-title">Comment</p>
-                        <p class="help-text">Used for margin-comment runs. Each saved prompt also becomes a slash command.</p>
-                        <div class="form-group">
-                            <select id="promptSelect-comment" class="form-control" aria-label="Comment prompt selection">
-                                <option value="">(None)</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <textarea id="promptTextarea-comment" class="form-control" rows="4"
-                                placeholder="Enter your prompt. Use {selection} for the selected text." aria-label="Comment prompt template"></textarea>
-                        </div>
-                        <div class="button-group compact-toolbar">
-                            <button id="savePromptBtn-comment" class="btn btn-compact">Save</button>
-                            <button id="deletePromptBtn-comment" class="btn btn-compact">Delete</button>
-                            <button id="resetPromptBtn-comment" class="btn btn-compact">Clear</button>
-                        </div>
-                    </div>
-
-                    <div class="prompt-block" data-category="summary">
-                        <p class="prompt-block-title">Summary</p>
-                        <p class="help-text">Used when generating a summary document in a new file.</p>
-                        <div class="form-group">
-                            <select id="promptSelect-summary" class="form-control" aria-label="Summary prompt selection">
-                                <option value="">(None)</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <textarea id="promptTextarea-summary" class="form-control" rows="4"
-                                placeholder="Enter summary prompt. Available placeholders:&#10;  {comments} — extracted comment data&#10;  {whole document} — full document text&#10;  {tracked changes} — tracked changes data (enable above)" aria-label="Summary prompt template"></textarea>
-                        </div>
-                        <div class="button-group compact-toolbar">
-                            <button id="savePromptBtn-summary" class="btn btn-compact">Save</button>
-                            <button id="deletePromptBtn-summary" class="btn btn-compact">Delete</button>
-                            <button id="resetPromptBtn-summary" class="btn btn-compact">Clear</button>
-                        </div>
-                    </div>
-</div><!-- /settingsPagePrompts -->
-                    <div id="settingsPageSkills" class="settings-page" role="tabpanel" aria-labelledby="settingsTabSkills" hidden>
-                    <p class="settings-section-label">Skills — slash commands</p>
-                    <p class="help-text">Skill packages are portable instruction files in the SKILL.md format. Each imported package appears as a slash command in the chat input, alongside built-ins and saved prompts; remove it here to retire the command. Paste a SKILL.md document (or load a .md file) and import. Optional frontmatter fields: category (amendment/comment/summary/chat), scope (selection-first/document/chat).</p>
-                    <div class="prompt-block">
-                        <p class="prompt-block-title">Built-in slash commands</p>
-                        <p class="help-text">Always available in the chat input — type / to browse.</p>
-                        <div id="builtinSkillList"></div>
-                    </div>
-                    <div class="prompt-block">
-                        <p class="prompt-block-title">Import a skill package</p>
-                        <div class="form-group">
-                            <input type="file" id="skillImportFile" class="form-control" accept=".md,.markdown,text/markdown,text/plain" aria-label="Skill package file">
-                        </div>
-                        <div class="form-group">
-                            <textarea id="skillImportText" class="form-control" rows="5"
-                                placeholder="---&#10;name: literature-review&#10;description: Review a draft against the literature and flag gaps&#10;category: chat&#10;---&#10;Instructions for the model. Use {selection} where the selected text should go." aria-label="Skill package markdown"></textarea>
-                        </div>
-                        <div class="button-group compact-toolbar">
-                            <button id="skillImportBtn" class="btn btn-compact">Import</button>
-                            <button id="skillImportClearBtn" class="btn btn-compact">Clear</button>
-                        </div>
-                        <div id="skillImportList" aria-live="polite"></div>
-                    </div>
-</div><!-- /settingsPageSkills -->
-                    <div id="settingsPageMcp" class="settings-page" role="tabpanel" aria-labelledby="settingsTabMcp" hidden>
-                    <p class="settings-section-label">MCP Servers (Model Context Protocol)</p>
-                    <p class="help-text">Tool servers the /mcp command can use. Point at an HTTP (Streamable) MCP endpoint — an absolute URL, or a same-origin proxy path (set CUSTOM_PROXY_PATH/CUSTOM_PROXY_TARGET in .env to proxy a CORS-bound server).</p>
-                    <div class="prompt-block">
-                        <p class="prompt-block-title">Add a server</p>
-                        <div class="mcp-server-row">
-                            <input type="text" id="mcpServerName" class="form-control" placeholder="Name" aria-label="MCP server name">
-                            <input type="text" id="mcpServerUrl" class="form-control mcp-server-url" placeholder="https://…/mcp" aria-label="MCP server URL">
-                            <input type="password" id="mcpServerToken" class="form-control" placeholder="Bearer token (optional)" aria-label="MCP server token">
-                            <button type="button" id="mcpServerAddBtn" class="btn btn-compact">Add</button>
-                        </div>
-                        <div id="mcpServerList"></div>
-                        <div class="form-group">
-                            <label for="mcpStepBudget">Tool-loop step budget per /mcp turn:</label>
-                            <input type="number" id="mcpStepBudget" class="form-control" min="1" max="48" step="1" aria-label="MCP step budget">
-                        </div>
-                    </div>
-</div><!-- /settingsPageMcp -->
-
+                <div class="settings-footer">
+                    <span id="settingsSaveStatus" class="settings-save-status" role="status">Preferences save automatically</span>
+                    <button id="settingsSaveBtn" class="btn btn-primary" type="button">Save settings</button>
                 </div>
             </aside>
         </div>

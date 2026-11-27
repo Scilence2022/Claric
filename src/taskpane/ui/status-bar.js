@@ -187,7 +187,8 @@ export function setConnectionStatus(state, text) {
         if (feedback) {
             feedback.textContent = text;
             feedback.hidden = id === 'connectionError' && state !== 'error';
-            feedback.classList.toggle('connection-error', state === 'error');
+            if (id === 'settingsConnectionStatus') feedback.dataset.state = state;
+            else feedback.classList.toggle('connection-error', state === 'error');
         }
     }
 }

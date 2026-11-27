@@ -1,11 +1,8 @@
 /**
  * Settings View Module
  *
- * The settings slide-over: a tabbed panel (General, Prompts, Skills, MCP
- * Servers) that can be dragged by its header and resized from any edge or
- * corner once floated. LLM provider settings auto-save (debounced for
- * free-text fields, connection re-tested on change); prompts support
- * per-category list/edit/save/delete/clear plus the save-prompt modal.
+ * Settings tabs, provider profiles, prompt management, and panel geometry.
+ * Preferences auto-save, with one debounced write for free-text edits.
  *
  * Element IDs match the pre-refactor markup so the logic stays a straight
  * port; localStorage keys (wordAI.config, wordAI.prompts.*) are unchanged.
@@ -43,7 +40,7 @@ import { importServerPrompts } from '../../lib/mcp-tools.js';
 import { TOOL_LOOP_LIMITS } from '../../lib/tool-registry.js';
 import { DEFAULT_HISTORY_BUDGET_TOKENS } from '../../lib/conversation-history.js';
 import { loadImportedSkills, addImportedSkill, removeImportedSkill } from '../../lib/skill-store.js';
-import { appState, getActiveBackendConfig, getActiveImageConfig, debounce, persistSettings } from '../app-state.js';
+import { appState, getActiveBackendConfig, getActiveImageConfig, persistSettings } from '../app-state.js';
 import { BUILTIN_SKILLS, RESERVED_MCP_SKILL } from '../skills.js';
 import { addLog, setConnectionStatus } from './status-bar.js';
 
@@ -55,7 +52,9 @@ let _onConfigChanged = () => {};
 let _lastFocusedElement = null;
 let _availableModels = [];
 let _connectionSequence = 0;
+let _probedConnection = null;
 let _imageConnectionSequence = 0;
+let _pendingSave = null;
 let _chatFormProvider = null;
 // Provider whose values are currently shown in the image form. The select
 // changes before the three text inputs are re-rendered, so this separate
@@ -114,7 +113,6 @@ function initProfileControls(prefix, image, onTextInput) {
         syncChatFormToProvider();
         syncImageFormToProvider();
         action(entry());
-        _connectionSequence += 1;
         _imageConnectionSequence += 1;
         _chatCombo?.close();
         _imageCombo?.close();
@@ -122,7 +120,14 @@ function initProfileControls(prefix, image, onTextInput) {
         saveSettings();
     };
     select.addEventListener('change', () => change((current) => selectProviderProfile(current, select.value)));
-    document.getElementById(`${prefix}ProfileAddBtn`).addEventListener('click', () => change(addProviderProfile));
+    document.getElementById(`${prefix}ProfileAddBtn`).addEventListener('click', () => {
+        change(addProviderProfile);
+        const name = document.getElementById(`${prefix}ProfileName`);
+        const details = name.closest('details');
+        if (details) details.open = true;
+        name.focus();
+        name.select();
+    });
     document.getElementById(`${prefix}ProfileRemoveBtn`).addEventListener('click', () => change((current) => {
         const provider = image ? appState.config.imageGeneration.provider : appState.config.backend;
         if (removeProviderProfile(current)) clearCachedModels(image ? 'image' : 'chat', provider, current);
@@ -145,12 +150,7 @@ export function initSettings({ onConfigChanged, documentWriting, bindOpenButton 
 
     if (bindOpenButton) document.getElementById('settingsBtn').addEventListener('click', openSettings);
     document.getElementById('settingsCloseBtn').addEventListener('click', closeSettings);
-    document.getElementById('settingsSaveBtn').addEventListener('click', () => {
-        // Explicit Save gives visible feedback (settings are auto-saved too);
-        // saveSettings returns true/false so we can show the outcome inline.
-        const ok = saveSettings();
-        showSaveConfirmation(ok);
-    });
+    document.getElementById('settingsSaveBtn').addEventListener('click', saveSettings);
     const tabs = [...document.querySelectorAll('.settings-tab')];
     for (const [index, tab] of tabs.entries()) {
         tab.tabIndex = tab.classList.contains('active') ? 0 : -1;
@@ -158,8 +158,8 @@ export function initSettings({ onConfigChanged, documentWriting, bindOpenButton 
         tab.addEventListener('click', () => switchSettingsTab(tab.dataset.tab));
         tab.addEventListener('keydown', (event) => {
             const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
-                : event.key === 'ArrowRight' ? (index + 1) % tabs.length
-                    : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : -1;
+                : ['ArrowRight', 'ArrowDown'].includes(event.key) ? (index + 1) % tabs.length
+                    : ['ArrowLeft', 'ArrowUp'].includes(event.key) ? (index + tabs.length - 1) % tabs.length : -1;
             if (next < 0) return;
             event.preventDefault();
             switchSettingsTab(tabs[next].dataset.tab);
@@ -186,15 +186,11 @@ export function initSettings({ onConfigChanged, documentWriting, bindOpenButton 
 
     document.getElementById('backendSelect').addEventListener('change', handleBackendSwitch);
 
-    // Auto-save settings on every change. Free-text inputs (URL, API key,
-    // model) are debounced so a burst of keystrokes does not fire a save +
-    // connection probe per character. The header Save button is an explicit
-    // affordance for the same saveSettings path.
-    const debouncedSaveSettings = debounce(saveSettings, 400);
+    // Keep provider state current as the user types and persist after a pause.
     const onChatTextInput = () => {
         syncChatFormToProvider();
         refreshCachedModels();
-        debouncedSaveSettings();
+        scheduleSettingsSave();
     };
     initProfileControls('chat', false, onChatTextInput);
     const modelInput = document.getElementById('modelSelect');
@@ -280,9 +276,16 @@ export function initSettings({ onConfigChanged, documentWriting, bindOpenButton 
             // Keep in-memory state current immediately. The debounced call is
             // only for localStorage persistence and the connection side effect;
             // it must not be the sole owner of the user's latest keystroke.
+            const image = appState.config.imageGeneration;
+            const entry = image.providers[image.provider];
+            const identity = modelConnectionIdentity(image.provider, entry);
             syncImageFormToProvider();
+            if (identity !== modelConnectionIdentity(image.provider, entry)) {
+                _imageConnectionSequence += 1;
+                document.getElementById('imageModelStatus')?.replaceChildren();
+            }
             refreshCachedModels();
-            debouncedSaveSettings();
+            scheduleSettingsSave();
         };
         initProfileControls('image', true, onImageTextInput);
         document.getElementById('imageEndpointUrl').addEventListener('input', onImageTextInput);
@@ -369,6 +372,7 @@ export function openSettings(section) {
 /** Closes the settings slide-over and restores the docked panel layout. */
 export function closeSettings() {
     if (_releasePromptFocus) hideSavePromptModal();
+    if (_pendingSave !== null) saveSettings();
     _chatCombo?.close();
     _imageCombo?.close();
     resetPanelGeometry();
@@ -378,8 +382,7 @@ export function closeSettings() {
 }
 
 /**
- * Activates a settings tab ("general", "prompts", "skills", or "mcp") and
- * shows its page.
+ * Activates a settings tab and shows its page from the top.
  *
  * @param {string} name - The tab's data-tab value
  */
@@ -393,6 +396,8 @@ function switchSettingsTab(name) {
     for (const page of document.querySelectorAll('.settings-page')) {
         page.toggleAttribute('hidden', page.id !== `settingsPage${capitalize(name)}`);
     }
+    const body = document.querySelector('.settings-body');
+    if (body) body.scrollTop = 0;
 }
 
 /**
@@ -423,8 +428,16 @@ function syncChatFormToProvider(provider = _chatFormProvider || appState.config.
     syncProfileName(entry, 'chat');
 }
 
-/** Persists settings and refreshes connection status and the model pill. */
+function scheduleSettingsSave() {
+    clearTimeout(_pendingSave);
+    updateSaveStatus('Saving…');
+    _pendingSave = setTimeout(saveSettings, 400);
+}
+
+/** Persists preferences and checks the connection when its identity changes. */
 function saveSettings() {
+    clearTimeout(_pendingSave);
+    _pendingSave = null;
     const config = appState.config;
     syncChatFormToProvider();
     config.trackChangesEnabled = document.getElementById('trackChangesCheckbox').checked;
@@ -453,14 +466,14 @@ function saveSettings() {
 
     try {
         persistSettings(appState);
+        updateSaveStatus('Saved on this device');
         addLog('Settings saved.', 'success');
         _onConfigChanged();
-        // Re-test connection with new settings
-        testConnectionUI();
-        return true;
+        const identity = modelConnectionIdentity(config.backend, config.providers[config.backend]);
+        if (identity !== _probedConnection) void testConnectionUI();
     } catch (e) {
+        updateSaveStatus('Save failed. Try again.', true);
         addLog(`Failed to save settings: ${e.message}`, 'error');
-        return false;
     }
 }
 
@@ -514,27 +527,12 @@ export function applyChatSelection({ model, thinkingLevel } = {}) {
     _onConfigChanged();
 }
 
-/**
- * Shows a transient inline confirmation next to the Save button after an
- * explicit save attempt ("Saved ✓" / "Save failed"). Auto-hides after 2s.
- *
- * @param {boolean} ok - Whether the save succeeded
- */
-function showSaveConfirmation(ok) {
+function updateSaveStatus(text, error = false) {
     const el = document.getElementById('settingsSaveStatus');
     if (!el) return;
-    el.textContent = ok ? 'Saved ✓' : 'Save failed';
-    el.classList.toggle('success', ok);
-    el.classList.toggle('error', !ok);
-    el.hidden = false;
-    clearTimeout(_saveStatusTimer);
-    _saveStatusTimer = setTimeout(() => {
-        el.hidden = true;
-    }, 2000);
+    el.textContent = text;
+    el.classList.toggle('error', error);
 }
-
-/** Timer handle for the transient Save confirmation. */
-let _saveStatusTimer = null;
 
 /**
  * Commits the image text fields currently shown in the form to one provider
@@ -632,6 +630,7 @@ function updateImageUIFromConfig() {
     updateImageProviderHints();
     const status = document.getElementById('imageTestStatus');
     if (status) status.textContent = '';
+    document.getElementById('imageModelStatus')?.replaceChildren();
 }
 
 /**
@@ -680,9 +679,11 @@ async function handleRefreshImageModels() {
     const requestedProvider = providerEl ? providerEl.value : null;
     const entry = image && image.providers && image.providers[requestedProvider];
     if (!requestedProvider || !entry) return;
+    const status = document.getElementById('imageModelStatus');
     // Commit the visible form first: Refresh should query what the user sees.
     syncImageFormToProvider(requestedProvider);
     if (!entry.url) {
+        if (status) status.textContent = 'Enter an endpoint URL under Profile and endpoint.';
         addLog('Enter an image endpoint URL before refreshing the model list.', 'warning');
         return;
     }
@@ -695,6 +696,7 @@ async function handleRefreshImageModels() {
         && image.provider === requestedProvider
         && identity === modelConnectionIdentity(requestedProvider, image.providers[requestedProvider]);
     addLog(`Refreshing image model list for ${label}...`, 'info');
+    if (status) status.textContent = 'Refreshing models…';
     try {
         const result = await llmTestConnection({ url: entry.url, apiPath: entry.apiPath, apiKey: entry.apiKey });
         if (!isCurrent()) return;
@@ -706,10 +708,12 @@ async function handleRefreshImageModels() {
         if (entry.model && !ids.includes(entry.model)) ids.unshift(entry.model);
         cacheModels('image', requestedProvider, entry, ids);
         _imageModels = ids;
+        if (status) status.textContent = ids.length ? `${ids.length} available ${ids.length === 1 ? 'model' : 'models'}` : 'Enter a model name to continue.';
         addLog(`Found ${ids.length} image model(s) for ${label}.`, 'success');
         if (_imageCombo) _imageCombo.refreshIfOpen();
     } catch (error) {
         if (!isCurrent()) return;
+        if (status) status.textContent = 'Could not refresh models. Check the endpoint and API key.';
         addLog(`${label} image model refresh failed: ${error.message}`, 'error');
     }
 }
@@ -849,9 +853,6 @@ function handleBackendSwitch() {
     syncChatFormToProvider();
     syncImageFormToProvider();
     appState.config.backend = document.getElementById('backendSelect').value;
-    // Any in-flight connection probe belongs to the previous provider now;
-    // its results must not repopulate this provider's model list or status.
-    _connectionSequence += 1;
     _chatCombo?.close();
     updateUIFromConfig();
     saveSettings();
@@ -881,12 +882,12 @@ function updateProviderHints() {
             // point the user at the two real options.
             endpointHint.textContent = `${preset.label} base URL — the default works when this add-in is served by its local server. From a static install (e.g. marketplace), enter an HTTPS ${preset.label} endpoint (CORS enabled, e.g. via OLLAMA_ORIGINS); http://localhost is blocked by Word's WebView.`;
         } else {
-            endpointHint.textContent = `Base URL for ${preset ? preset.label : config.backend} — the default adapts to how the add-in is served: direct to the provider on static installs, same-origin proxy path behind the local server`;
+            endpointHint.textContent = 'Use the default address or enter a different base URL.';
         }
     }
     const keyHint = document.getElementById('apiKeyHint');
-    if (keyHint && preset && preset.keyHint) {
-        keyHint.textContent = `Get an API key at ${preset.keyHint} (leave blank for local backends)`;
+    if (keyHint) {
+        keyHint.textContent = preset?.keyHint ? `Get a key at ${preset.keyHint}.` : 'Enter a key if your server requires one.';
     }
 }
 
@@ -907,12 +908,15 @@ export async function testConnectionUI() {
     const identity = modelConnectionIdentity(backend, appState.config.providers[backend]);
     const isCurrent = () => sequence === _connectionSequence && backend === appState.config.backend
         && identity === modelConnectionIdentity(backend, appState.config.providers[backend]);
+    _probedConnection = identity;
 
     setConnectionStatus('connecting', `${backendLabel}: Connecting...`);
 
     // A custom provider with no URL yet cannot be probed.
     if (!backendConfig.url) {
-        setConnectionStatus('error', `${backendLabel}: enter an endpoint URL`);
+        const details = document.getElementById('chatConnectionDetails');
+        if (details) details.open = true;
+        setConnectionStatus('error', `${backendLabel}: enter an endpoint URL under Profile and endpoint.`);
         return;
     }
 
@@ -924,14 +928,21 @@ export async function testConnectionUI() {
         populateModels(result.models);
     } catch (error) {
         if (!isCurrent()) return;
-        if (error.message && (error.message.includes('401') || error.message.includes('403'))) {
-            setConnectionStatus('error', `${backendLabel}: API key required`);
+        if (/^HTTP (401|403)\b/.test(error.message || '')) {
+            const guidance = backendConfig.apiKey
+                ? 'Access denied. Check the API key and its permissions.'
+                : 'Enter an API key, then select Refresh models.';
+            setConnectionStatus('error', `${backendLabel}: ${guidance}`);
             addLog(`${backendLabel} authentication failed: ${error.message}`, 'error');
         } else {
-            setConnectionStatus('error', `${backendLabel}: Connection Error. Check the endpoint, network and browser CORS access, then Refresh.`);
+            setConnectionStatus('error', `${backendLabel}: Could not connect. Check the endpoint and network, then select Refresh models.`);
             addLog(`${backendLabel} connection failed: ${error.message}`, 'error');
         }
         console.error('Connection error:', error);
+    } finally {
+        // A credentials edit can invalidate a response before its debounced
+        // save runs. If the edit is reverted, the next save can check again.
+        if (sequence === _connectionSequence && !isCurrent()) _probedConnection = null;
     }
 }
 
@@ -1609,7 +1620,7 @@ const RESIZE_DIRECTIONS = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'];
 
 /**
  * Makes the settings panel draggable by its header and resizable from any
- * edge or corner. The panel starts docked (flex right edge, full height);
+ * edge or corner. The panel starts docked on the left at full height;
  * the first drag or resize gesture floats it with explicit absolute
  * geometry inside the fixed overlay. Closing resets to the docked layout.
  */
@@ -1619,8 +1630,13 @@ function initPanelGeometry() {
     if (!overlay || !panel) return; // markup absent — nothing to wire
 
     const header = panel.querySelector('.settings-header');
-    header.title = 'Drag to move — double-click to dock';
-    header.classList.add('settings-drag-handle');
+    const tabs = panel.querySelector('.settings-tabs');
+    if (tabs && typeof ResizeObserver !== 'undefined') {
+        new ResizeObserver(() => {
+            const vertical = getComputedStyle(tabs).display === 'flex';
+            tabs.setAttribute('aria-orientation', vertical ? 'vertical' : 'horizontal');
+        }).observe(panel);
+    }
 
     for (const dir of RESIZE_DIRECTIONS) {
         const handle = document.createElement('div');
@@ -1631,13 +1647,20 @@ function initPanelGeometry() {
 
     header.addEventListener('pointerdown', (e) => {
         // The header chrome drags the panel; its controls still click.
-        if (e.target.closest('button, input, select, textarea, a')) return;
+        if (e.button !== 0 || e.target.closest('button, input, select, textarea, a')) return;
         e.preventDefault();
         startPanelDrag(e, overlay, panel, header);
     });
     header.addEventListener('dblclick', (e) => {
         if (e.target.closest('button, input, select, textarea, a')) return;
         resetPanelGeometry();
+    });
+    window.addEventListener('resize', () => {
+        if (!panel.classList.contains('floating')) return;
+        panel.style.width = `${Math.min(panel.offsetWidth, overlay.clientWidth)}px`;
+        panel.style.height = `${Math.min(panel.offsetHeight, overlay.clientHeight)}px`;
+        panel.style.left = `${clamp(panel.offsetLeft, 0, overlay.clientWidth - panel.offsetWidth)}px`;
+        panel.style.top = `${clamp(panel.offsetTop, 0, overlay.clientHeight - panel.offsetHeight)}px`;
     });
 }
 
@@ -1699,6 +1722,7 @@ function startPanelDrag(e, overlay, panel, header) {
  * 'e'/'s' grow the box, everything clamped to the minimum size and overlay.
  */
 function startPanelResize(e, overlay, panel, dir) {
+    if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     floatPanel(panel);
@@ -1744,7 +1768,7 @@ function startPanelResize(e, overlay, panel, dir) {
     handle.addEventListener('pointercancel', onUp);
 }
 
-/** Clamps value into [min, max]; tolerates a max below min (degenerate). */
+/** Fits the value even when available space is smaller than the minimum. */
 function clamp(value, min, max) {
-    return Math.min(Math.max(value, min), Math.max(min, max));
+    return Math.min(Math.max(value, min), Math.max(0, max));
 }

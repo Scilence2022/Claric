@@ -112,12 +112,12 @@ where older installer examples show a download-and-execute one-liner.
 
 ### Connect your model
 
-Open **Settings → General**, choose a chat provider, confirm the endpoint and
-model, and enter your own API key if needed. Keep **Enable Track Changes**
-checked, then click **Save**. Saving automatically checks the chat connection;
-watch the connection status under **LLM Backend**. **Refresh** beside the
-**Model** field updates the model list. Leave **Auto-apply** off in the
-composer for your first run.
+Open **Settings → General**, choose a chat provider and model, and enter an
+API key if needed. To confirm or change the endpoint, open **Profile and
+endpoint**. Connection details save automatically and trigger a connection
+check. Select **Refresh models** to check again and update the model list.
+Keep **Track changes in Word** enabled in **Settings → Editing** and leave
+**Auto-apply** off in the composer for your first run.
 
 A failed connection may mean an invalid key or model, quota limits, an
 unreachable endpoint, or CORS restrictions. Check the
@@ -456,13 +456,14 @@ origins starts with separate settings. The activity log and connection or
 pending-comment indicators expose progress and failures.
 
 A provider can have multiple named **API key configurations** in
-**Settings → General**. Use **Add API key**, name the configuration (for example,
-Personal or Team), and enter its key. Each configuration saves its own endpoint,
-model and generation settings; image configurations also save their image size.
+**Settings → General** for chat and **Settings → Images** for illustrations.
+Select **Add configuration**, enter a name (for example, Personal or Team),
+and enter its key. Each configuration saves its own endpoint, model and
+generation settings. Image configurations also save their image size.
 Select a configuration before refreshing its model list or sending a request.
 Model suggestions are isolated by configuration and credentials, so keys with
 different model access do not share a catalog. Existing single-key settings
-remain the Default configuration. **Remove selected** deletes only that
+remain the Default configuration. **Remove** deletes only the selected
 configuration, and at least one configuration is retained for each provider.
 
 </details>
