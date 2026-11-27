@@ -1163,3 +1163,60 @@ describe('processChunksParallel', () => {
     });
   });
 });
+
+describe('document-order editing across parallel chunks', () => {
+  const { extractContext } = require('../src/lib/context-extractor.js');
+  const intro = mockChunk('intro', 'The confidence interval (CI) was wide.', 1, 1);
+  const later = mockChunk('results', 'The CI was narrower at follow-up.', 10, 10);
+  const documentContext = extractContext({ paragraphs: [...intro.paragraphs, ...later.paragraphs] });
+  const repeated = later.paragraphs[0].text.replace('CI', 'confidence interval (CI)');
+
+  test('repairs a new repeated definition while preserving a separate wording change', async () => {
+    const corrected = 'The CI narrowed at follow-up.';
+    const send = jest.fn(async (_config, messages) => {
+      const prefix = messages[0].content;
+      if (prefix.includes('within this passage')) return intro.paragraphs[0].text;
+      expect(prefix).toContain('[p2, before this passage]');
+      return messages.at(-1).content.includes('Recheck the added definition of CI')
+        ? corrected : corrected.replace('CI', 'confidence interval (CI)');
+    });
+    const results = await processChunksParallel([intro, later], {
+      documentContext, config: {}, sendMessagesFn: send, promptManager: mockPromptManager(), log,
+    });
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(results.map((r) => r.amendment)).toEqual([intro.paragraphs[0].text, corrected]);
+  });
+
+  test('rechecks a duplicate in a later paragraph of the same chunk', async () => {
+    const combined = { ...intro, endIndex: later.endIndex, paragraphs: [...intro.paragraphs, ...later.paragraphs] };
+    const original = combined.paragraphs.map((p) => p.text).join('\n');
+    const send = jest.fn().mockResolvedValueOnce(intro.paragraphs[0].text + '\n' + repeated).mockResolvedValueOnce(original);
+    const [result] = await processChunksParallel([combined], {
+      documentContext, config: {}, sendMessagesFn: send, promptManager: mockPromptManager(), log,
+    });
+    expect(result.amendment).toBe(original);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  test('a single-section retry can retain an explicitly requested reintroduction', async () => {
+    const send = jest.fn().mockResolvedValue(repeated);
+    const logger = jest.fn();
+    const [result] = await processChunksParallel([later], {
+      documentContext, config: {}, sendMessagesFn: send, log: logger,
+      promptManager: mockPromptManager('amendment', { amendmentTemplate: 'Define abbreviations in each standalone passage. {selection}' }),
+    });
+    expect(result.amendment).toBe(repeated);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining('retains a repeated definition of CI'), 'warning');
+  });
+
+  test('repeating a definition already in the source costs no repair request', async () => {
+    const caption = mockChunk('caption', repeated, 20, 20);
+    const send = jest.fn().mockResolvedValue(repeated);
+    const [result] = await processChunksParallel([caption], {
+      documentContext, config: {}, sendMessagesFn: send, promptManager: mockPromptManager(), log,
+    });
+    expect(result.amendment).toBe(repeated);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});

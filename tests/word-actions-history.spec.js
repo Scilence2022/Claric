@@ -13,7 +13,8 @@ jest.mock('../src/lib/document-generator.js', () => ({
 jest.mock('../src/lib/document-parser.js', () => ({ parseDocument: jest.fn() }));
 jest.mock('../src/lib/document-chunker.js', () => ({ chunkDocument: jest.fn() }));
 jest.mock('../src/lib/context-extractor.js', () => ({
-    extractContext: jest.fn(() => ({ definitions: [], outline: [] })),
+    ...jest.requireActual('../src/lib/context-extractor.js'),
+    extractContext: jest.fn(() => ({ definitions: [], abbreviations: [], outline: [] })),
     formatContextPrefix: jest.fn(() => 'Document context'),
 }));
 jest.mock('../src/lib/reassembler.js', () => ({

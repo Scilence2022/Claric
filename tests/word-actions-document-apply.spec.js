@@ -6,7 +6,7 @@ jest.mock('../src/lib/context-extractor.js', () => ({ extractContext: () => ({ d
 jest.mock('../src/lib/reassembler.js', () => ({
   bookmarkChunkRanges: jest.fn(), applyChunkResults: jest.fn(), cleanupBookmarks: jest.fn(), readChunkSnapshot: jest.fn(),
 }));
-jest.mock('../src/lib/orchestrator.js', () => ({ processChunksParallel: jest.fn() }));
+jest.mock('../src/lib/orchestrator.js', () => ({ ...jest.requireActual('../src/lib/orchestrator.js'), processChunksParallel: jest.fn() }));
 
 const { runDocumentSkill } = require('../src/taskpane/word-actions.js');
 const { parseDocument } = require('../src/lib/document-parser.js');

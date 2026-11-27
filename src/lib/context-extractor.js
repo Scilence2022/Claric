@@ -18,6 +18,7 @@ import { defangProtocolMarkers } from './response-parser.js';
  * @property {Array<{term: string, definition: string, paragraphIndex: number}>} definitions
  * @property {Array<{abbreviation: string, expansion: string, paragraphIndex: number}>} abbreviations
  * @property {Array<{level: number, text: string, paragraphIndex: number}>} outline
+ * @property {Map<string, {paragraphIndex: number, excerpt: string}>} [firstUses] First source mentions of identifiers and numbered references
  * @property {Array<object>} [paragraphs] Complete source paragraphs for cross-chunk review
  */
 
@@ -63,10 +64,39 @@ const EXCLUDED_COLON_TERMS = new Set([
   'except', 'including', 'save', 'otherwise', 'notwithstanding',
 ]);
 
-/**
- * Regex pattern for abbreviations: (XX) or (XXX) where XX is 2+ uppercase letters.
- */
-const ABBREVIATION_PATTERN = /\(([A-Z]{2,})\)/g;
+// Match complete identifiers so that e.g. RNA, mRNA and RNA-seq stay distinct.
+const IDENTIFIER = /[A-Za-z0-9_]+(?:[-‐‑][A-Za-z0-9_]+)*/g;
+const SHORT_FORM = /^(?=[A-Za-z0-9‐‑-]{2,24}$)(?=.*[A-Z].*[A-Z])[a-zA-Z][a-zA-Z0-9‐‑-]*$/;
+const CONNECTORS = new Set(['and', 'of', 'the', 'for', 'in', 'on', 'to', 'de']);
+const REFERENCE = /\b(fig(?:ure)?|tab(?:le)?|eq(?:uation)?|section|appendix)\.?\s+\(?(\d+(?:\.\d+)*[a-z]?|[A-Z])\b|(?:图|表|公式|附录)\s*[A-Za-z]?\d+(?:\.\d+)*/gi;
+
+function* sourceMentions(text) {
+  for (const match of text.matchAll(IDENTIFIER)) {
+    if (SHORT_FORM.test(match[0])) yield { key: match[0], offset: match.index };
+    // A lower-case plural suffix can also refer to the singular declaration.
+    if (match[0].endsWith('s') && SHORT_FORM.test(match[0].slice(0, -1))) {
+      yield { key: match[0].slice(0, -1), offset: match.index };
+    }
+  }
+  for (const match of text.matchAll(REFERENCE)) {
+    if (match[2] && /^[a-z]$/.test(match[2])) continue;
+    const kind = match[1]?.toLowerCase().replace(/^figure$/, 'fig').replace(/^table$/, 'tab').replace(/^equation$/, 'eq');
+    const key = kind ? kind + ' ' + match[2] : match[0].replace(/\s/g, '');
+    yield { key, offset: match.index };
+  }
+}
+
+function* abbreviationDeclarations(text) {
+  for (const match of text.matchAll(/[(（]([A-Za-z0-9‐‑-]{2,24})[)）]/g)) {
+    if (!SHORT_FORM.test(match[1])) continue;
+    const expansion = extractExpansion(text.slice(Math.max(0, match.index - 240), match.index).trimEnd(), match[1]);
+    if (expansion) yield { abbreviation: match[1], expansion };
+  }
+  const glossary = text.match(/^\s*([A-Za-z0-9‐‑-]{2,24})\s*[:：–—-]\s+(.+?)\s*$/);
+  if (glossary && SHORT_FORM.test(glossary[1]) && extractExpansion(glossary[2], glossary[1]) === glossary[2]) {
+    yield { abbreviation: glossary[1], expansion: glossary[2] };
+  }
+}
 
 /**
  * Extracts global document context from the parsed document model.
@@ -81,12 +111,13 @@ export function extractContext(docModel) {
   const abbreviations = [];
   const outline = [];
 
-  const seenTerms = new Set();
-  const seenAbbreviations = new Set();
+  const firstUses = new Map();
 
   for (const para of docModel.paragraphs) {
     const text = para.text || '';
 
+    // Several patterns can describe the same declaration in one paragraph.
+    const seenTerms = new Set();
     // Extract definitions
     for (const pattern of DEFINITION_PATTERNS) {
       pattern.lastIndex = 0;
@@ -102,39 +133,22 @@ export function extractContext(docModel) {
           seenTerms.add(term.toLowerCase());
           definitions.push({
             term,
-            definition: text.substring(0, 200),
+            definition: text.slice(Math.max(0, match.index - 80), Math.max(0, match.index - 80) + 200),
             paragraphIndex: para.index,
           });
         }
       }
     }
 
-    // Extract abbreviations
-    ABBREVIATION_PATTERN.lastIndex = 0;
-    let abbrMatch;
-    while ((abbrMatch = ABBREVIATION_PATTERN.exec(text)) !== null) {
-      const abbreviation = abbrMatch[1];
-      if (!seenAbbreviations.has(abbreviation)) {
-        const beforeAbbr = text.substring(0, abbrMatch.index).trim();
-        const expansion = extractExpansion(beforeAbbr, abbreviation);
-        // A bare parenthetical occurrence is not a definition. In particular,
-        // never label an arbitrary preceding sentence fragment as an expansion,
-        // or let an early use hide a later genuine declaration.
-        if (expansion) {
-          seenAbbreviations.add(abbreviation);
-          abbreviations.push({ abbreviation, expansion, paragraphIndex: para.index });
-        }
-      }
+    for (const declaration of abbreviationDeclarations(text)) {
+      abbreviations.push({ ...declaration, paragraphIndex: para.index });
     }
-    const glossary = text.match(/^\s*([A-Z]{2,})\s*[:–—-]\s+(.+?)\s*$/);
-    if (glossary && !seenAbbreviations.has(glossary[1])) {
-      const expansion = extractExpansion(glossary[2], glossary[1]);
-      if (expansion === glossary[2]) {
-        seenAbbreviations.add(glossary[1]);
-        abbreviations.push({ abbreviation: glossary[1], expansion, paragraphIndex: para.index });
-      }
+    for (const { key, offset } of sourceMentions(text)) {
+      if (!firstUses.has(key)) firstUses.set(key, {
+        paragraphIndex: para.index,
+        excerpt: text.slice(Math.max(0, offset - 100), offset + key.length + 65),
+      });
     }
-
     // Build outline from headings
     if (para.headingLevel > 0) {
       outline.push({
@@ -145,7 +159,7 @@ export function extractContext(docModel) {
     }
   }
 
-  return { definitions, abbreviations, outline, paragraphs: docModel.paragraphs };
+  return { definitions, abbreviations, outline, firstUses, paragraphs: docModel.paragraphs };
 }
 
 /**
@@ -157,18 +171,20 @@ export function extractContext(docModel) {
  * @returns {string|null} The expansion if found, null otherwise
  */
 function extractExpansion(beforeText, abbreviation) {
-  const words = beforeText.split(/\s+/);
-  const connectors = new Set(['and', 'of', 'the', 'for', 'in', 'on', 'to', 'de']);
-  for (let count = 1; count <= Math.min(words.length, 12); count++) {
+  const words = beforeText.split(/\s+/).slice(-12);
+  const letters = abbreviation.replace(/[-‐‑]/g, '').toUpperCase();
+  const initials = (parts) => parts.map((word) => /^\d+$/.test(word) ? word : word[0].toUpperCase()).join('');
+  for (let count = 1; count <= words.length; count++) {
     const candidate = words.slice(-count);
-    if (connectors.has(candidate[0]) || connectors.has(candidate.at(-1))) continue;
-    if (!candidate.every((word) => connectors.has(word) || /^[A-Z][a-zA-Z’'\u2010-\u2011-]*$/.test(word))) continue;
-    const significant = candidate.filter((word) => !connectors.has(word)).flatMap((word) => word.split(/[-\u2010\u2011]/));
-    const initials = significant.map((word) => word[0]).join('');
-    if (initials === abbreviation) return candidate.join(' ');
+    if (CONNECTORS.has(candidate[0].toLowerCase()) || CONNECTORS.has(candidate.at(-1).toLowerCase())) continue;
+    if (!candidate.every((word) => /^[a-zA-Z0-9]+(?:[-‐‑’'][a-zA-Z0-9]+)*$/.test(word))) continue;
+    const parts = candidate.flatMap((word) => word.split(/[-‐‑]/));
+    if (initials(parts) === letters || initials(parts.filter((word) => !CONNECTORS.has(word.toLowerCase()))) === letters) {
+      return candidate.join(' ');
+    }
     // Single-word scientific names can use internal letters (Urogynaecology,
     // UG). Require the first letter and every abbreviation letter in order.
-    if (candidate.length === 1 && candidate[0].length > abbreviation.length) {
+    if (candidate.length === 1 && /^[A-Z][a-z]+$/.test(candidate[0]) && candidate[0].length > abbreviation.length) {
       let offset = 0;
       const upper = candidate[0].toUpperCase();
       if (upper[0] === abbreviation[0] && Array.from(abbreviation).every((letter) => {
@@ -180,11 +196,42 @@ function extractExpansion(beforeText, abbreviation) {
     // RM explicitly names Reproductive Medicine and Surgery: a joined suffix
     // need not contribute another initial, but it must belong to the same name.
     const joined = candidate.indexOf('and');
-    if (joined > 0 && candidate.length === joined + 2
+    if (joined > 0 && /^[A-Z]/.test(candidate.at(-1)) && candidate.length === joined + 2
         && candidate.slice(0, joined).map((word) => word[0]).join('') === abbreviation) return candidate.join(' ');
   }
 
   return null;
+}
+
+/**
+ * Find newly added declarations that repeat an expansion introduced before or within the passage. This
+ * is a reason to reconsider a draft, since explicit per-section editing
+ * instructions or a standalone caption can legitimately call for repetition.
+ */
+export function repeatedDraftAbbreviations(context, chunk, draft) {
+  if (!context?.abbreviations?.length || !Number.isInteger(chunk.startIndex)) return [];
+  const established = new Set(context.abbreviations
+    .filter((entry) => entry.paragraphIndex <= chunk.endIndex)
+    .map((entry) => entry.abbreviation + '=' + entry.expansion.toLowerCase()));
+  if (!established.size) return [];
+
+  function counts(paragraphs) {
+    const totals = new Map();
+    for (const text of paragraphs) {
+      for (const { abbreviation, expansion } of abbreviationDeclarations(text)) {
+        const key = abbreviation + '=' + expansion.toLowerCase();
+        if (established.has(key)) totals.set(key, (totals.get(key) || 0) + 1);
+      }
+    }
+    return totals;
+  }
+
+  const proposed = counts(draft.split('\n'));
+  if (!proposed.size) return [];
+  const original = counts(chunk.paragraphs.map((p) => p.text));
+  return Array.from(proposed)
+    .filter(([key, count]) => count > (original.get(key) || 0))
+    .map(([key]) => key.split('=')[0]);
 }
 
 // Untrusted-data fence around document-derived reference material. The
@@ -207,6 +254,16 @@ const FENCE_CLOSE = '--- END UNTRUSTED DOCUMENT DATA ---';
 // to injected instructions.
 const FENCE_MARKER_RE = /-{2,}\s*(BEGIN|END)\s+UNTRUSTED\s+DOCUMENT\s+DATA\s*-{2,}/gi;
 
+// Keep Latin names on token boundaries, including next to Chinese prose.
+function mentionsPhrase(textLower, phrase) {
+  const needle = phrase.toLowerCase();
+  if (!needle) return false;
+  for (let i = textLower.indexOf(needle); i !== -1; i = textLower.indexOf(needle, i + 1)) {
+    if (!/[a-z0-9_]/.test(textLower.charAt(i - 1)) && !/[a-z0-9_]/.test(textLower.charAt(i + needle.length))) return true;
+  }
+  return false;
+}
+
 /**
  * Builds the reference-material prefix for one chunk: the definitions,
  * abbreviations, and outline entries whose text appears in the chunk,
@@ -216,43 +273,62 @@ const FENCE_MARKER_RE = /-{2,}\s*(BEGIN|END)\s+UNTRUSTED\s+DOCUMENT\s+DATA\s*-{2
  * @param {string} chunkText - The chunk's text (for relevance filtering)
  * @param {number} [maxTokens=4000] - Max tokens for the whole prefix,
  *   including the fence
+ * @param {{startIndex: number, endIndex: number}} [range] Original document indexes, including for single-chunk retries
  * @returns {string} Formatted context prefix
  */
-export function formatContextPrefix(context, chunkText, maxTokens = 4000) {
+export function formatContextPrefix(context, chunkText, maxTokens = 4000, range = undefined) {
   const sections = [];
   const chunkLower = chunkText.toLowerCase();
-
-  // Filter definitions to those whose term appears in the chunk text
-  const relevantDefs = context.definitions.filter((d) =>
-    chunkLower.includes(d.term.toLowerCase())
-  );
-
-  // Build definitions section
-  if (relevantDefs.length > 0) {
-    let defSection = 'DOCUMENT DEFINITIONS:\n';
-    for (const def of relevantDefs) {
-      defSection += `- "${def.term}": ${def.definition}\n`;
-    }
-    sections.push(defSection.trimEnd());
+  const mentions = new Set(Array.from(sourceMentions(chunkText), ({ key }) => key));
+  const positioned = Number.isInteger(range?.startIndex) && Number.isInteger(range?.endIndex);
+  function location(index) {
+    if (!positioned || !Number.isInteger(index)) return '';
+    const where = index < range.startIndex ? 'before' : index > range.endIndex ? 'after' : 'within';
+    return ` [p${index + 1}, ${where} this passage]`;
   }
 
-  // Build abbreviations section (filter to those referenced in chunk)
-  const relevantAbbrs = context.abbreviations.filter((a) =>
-    chunkLower.includes(a.abbreviation.toLowerCase())
+  if (positioned) {
+    const heading = context.outline.filter((entry) => entry.paragraphIndex <= range.startIndex).at(-1);
+    sections.push(`CURRENT PASSAGE: p${range.startIndex + 1}–p${range.endIndex + 1}`
+      + (heading ? ` (starts under "${heading.text}")` : ''));
+  }
+  const relevantAbbrs = context.abbreviations.filter((entry) =>
+    mentions.has(entry.abbreviation) || mentionsPhrase(chunkLower, entry.expansion)
   );
-  if (relevantAbbrs.length > 0) {
-    let abbrSection = 'ABBREVIATIONS:\n';
-    for (const abbr of relevantAbbrs) {
-      abbrSection += `- ${abbr.abbreviation}: ${abbr.expansion}\n`;
+  if (relevantAbbrs.length) {
+    sections.push('ABBREVIATIONS:\n' + relevantAbbrs.map((entry) =>
+      `- ${entry.abbreviation}: ${entry.expansion}${location(entry.paragraphIndex)}`
+    ).join('\n'));
+  }
+  const definitions = context.definitions.filter((entry) => mentionsPhrase(chunkLower, entry.term));
+  if (definitions.length) {
+    sections.push('DOCUMENT DEFINITIONS:\n' + definitions.map((entry) =>
+      `- "${entry.term}"${location(entry.paragraphIndex)}: ${entry.definition}`
+    ).join('\n'));
+  }
+
+  // First use is evidence even when an expansion cannot be verified (including
+  // non-English names). An earlier mention of a figure is not proof of a caption.
+  if (positioned && context.firstUses) {
+    const declaredAtFirstUse = new Set(relevantAbbrs
+      .filter((entry) => entry.paragraphIndex === context.firstUses.get(entry.abbreviation)?.paragraphIndex)
+      .map((entry) => entry.abbreviation));
+    const earlier = [];
+    for (const key of mentions) {
+      const use = context.firstUses.get(key);
+      if (use && use.paragraphIndex < range.startIndex
+          && !declaredAtFirstUse.has(key)) {
+        earlier.push(`- ${key}${location(use.paragraphIndex)}: ${use.excerpt}`);
+      }
     }
-    sections.push(abbrSection.trimEnd());
+    if (earlier.length) sections.push('EARLIER SOURCE MENTIONS (excerpts):\n' + earlier.join('\n'));
   }
 
   // Build document structure section
   if (context.outline.length > 0) {
     let outlineSection = 'DOCUMENT STRUCTURE:\n';
     for (const heading of context.outline) {
-      outlineSection += '  '.repeat(heading.level - 1) + heading.text + '\n';
+      outlineSection += '  '.repeat(heading.level - 1) + heading.text + location(heading.paragraphIndex) + '\n';
     }
     sections.push(outlineSection.trimEnd());
   }
@@ -294,5 +370,5 @@ export function formatContextPrefix(context, chunkText, maxTokens = 4000) {
     result = `${FENCE_OPEN}\n${body}\n${FENCE_CLOSE}`;
   }
 
-  return result;
+  return estimateTokenCount(result) <= maxTokens ? result : '';
 }

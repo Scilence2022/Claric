@@ -322,7 +322,15 @@ complex documents.
 ### Whole-Document Processing
 
 Heading-aware, token-bounded chunks keep tables together and share nearby
-context. Parallel processing provides progress, cancellation, and failed-section
+context. Before parallel editing, Claric indexes abbreviations, defined names,
+and source mentions of numbered figures, tables, equations and sections. Each
+passage receives relevant evidence with its position in the original document.
+A mention can establish earlier usage even when Claric cannot verify an
+expansion. If a draft adds a recognized abbreviation definition from an earlier
+passage, Claric requests one recheck. An intentional repeat in a standalone
+caption or abstract can be retained and is logged for review.
+
+Parallel processing provides progress, cancellation, and failed-section
 retry. Reassembly aligns paragraphs and attempts to retain styles, numbering,
 and indentation. Combined amendment-and-comment runs can add comments along
 with text edits. Successful retry results return as new reviewable proposals.

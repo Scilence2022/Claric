@@ -3,7 +3,7 @@ jest.mock('../src/lib/document-parser.js', () => ({ parseDocument: jest.fn() }))
 jest.mock('../src/lib/document-chunker.js', () => ({ chunkDocument: jest.fn() }));
 jest.mock('../src/lib/context-extractor.js', () => ({ extractContext: () => ({ definitions: [], outline: [] }) }));
 jest.mock('../src/lib/reassembler.js', () => ({ bookmarkChunkRanges: jest.fn(async () => new Map()), cleanupBookmarks: jest.fn(), applyChunkResults: jest.fn() }));
-jest.mock('../src/lib/orchestrator.js', () => ({ processChunksParallel: jest.fn() }));
+jest.mock('../src/lib/orchestrator.js', () => ({ ...jest.requireActual('../src/lib/orchestrator.js'), processChunksParallel: jest.fn() }));
 const { runDocumentSkill } = require('../src/taskpane/word-actions.js');
 const { parseDocument } = require('../src/lib/document-parser.js');
 const { chunkDocument } = require('../src/lib/document-chunker.js');

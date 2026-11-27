@@ -43,7 +43,6 @@ import {
 } from '../lib/response-parser.js';
 import { parseDocument } from '../lib/document-parser.js';
 import { chunkDocument } from '../lib/document-chunker.js';
-import { extractContext } from '../lib/context-extractor.js';
 import { bookmarkChunkRanges, applyChunkResults, cleanupBookmarks, readChunkSnapshot, _alignParagraphs, _normalizeLineEndings } from '../lib/reassembler.js';
 import {
     buildIllustrationPrompt, buildImagePrompt, parseIllustration, sanitizeSvg,
@@ -3158,6 +3157,8 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     const chunks = chunkDocument(docModel, { maxTokens: 6000 });
     log(`Split into ${chunks.length} chunks`, 'info');
 
+    // Load whole-document evidence and dispatch together on first use.
+    const { extractContext, processChunksParallel } = await loadChunkProcessor({ signal });
     // Step 3: Extract context
     const documentContext = extractContext(docModel);
     log(`Extracted ${documentContext.definitions.length} definitions, ${documentContext.outline.length} headings`, 'info');
@@ -3180,8 +3181,6 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
     const backendConfig = getActiveBackendConfig(appState);
     const concurrency = chunks.some(c => c.tokenCount > 8000) ? 4 : 6;
 
-    // Chunk processing runs only for whole-document skills, so it loads on demand.
-    const { processChunksParallel } = await loadChunkProcessor({ signal });
     const results = await processChunksParallel(chunks, {
         config: backendConfig,
         promptManager: promptShim,
@@ -3320,7 +3319,6 @@ export async function runDocumentSkill(deps, { category, promptTemplate, comment
                 checkOperationSignal(signal);
                 proposal = { ...original, chunk, comment: null };
                 if (mode === 'regenerate') {
-                    const { processChunksParallel } = await loadChunkProcessor({ signal });
                     const regenerated = await processChunksParallel([chunk], {
                         config: backendConfig, promptManager: promptShim,
                         documentContext: extractContext({ ...docModel, paragraphs: docModel.paragraphs.map((p) =>
