@@ -19,7 +19,8 @@
  */
 
 import { sendMessages as defaultSendMessages, sendMessagesStream as defaultSendMessagesStream, stripMarkdown, stripChunkDelimiters } from './llm-client.js';
-import { formatContextPrefix as defaultFormatContextPrefix } from './context-extractor.js';
+import { formatContextPrefix as defaultFormatContextPrefix, repeatedDraftAbbreviations } from './context-extractor.js';
+export { extractContext } from './context-extractor.js';
 import { withConversationHistory } from './conversation-history.js';
 import {
   parseDelimitedResponse as defaultParseDelimitedResponse,
@@ -76,10 +77,11 @@ const loadDocumentReview = (options) => loadLazyModule('document-review',
  * @param {string} mode - 'amendment'|'comment'|'both'
  * @param {string} commentInstructions - For merged mode
  * @param {function} formatContextPrefixFn
+ * @param {DocumentChunk} sourceChunk - Original source for matching evidence before masking native objects
  * @returns {Array<{role: string, content: string}>}
  * @private
  */
-function _composeChunkMessages(chunk, documentContext, promptManager, mode, commentInstructions, formatContextPrefixFn) {
+function _composeChunkMessages(chunk, documentContext, promptManager, mode, commentInstructions, formatContextPrefixFn, sourceChunk) {
   const messages = [];
 
   // Build chunk text from paragraphs
@@ -90,7 +92,7 @@ function _composeChunkMessages(chunk, documentContext, promptManager, mode, comm
   // A null/undefined context (e.g. retry runs that skip re-extraction)
   // contributes no prefix instead of crashing the prefix formatter.
   const docContextPrefix = documentContext
-    ? formatContextPrefixFn(documentContext, chunkText, 4000)
+    ? formatContextPrefixFn(documentContext, sourceChunk.paragraphs.map((p) => p.text).join('\n'), 4000, sourceChunk)
     : '';
 
   let systemContent = '';
@@ -141,6 +143,13 @@ function _composeChunkMessages(chunk, documentContext, promptManager, mode, comm
   } else {
     userContent = promptTemplate + '\n\n' + textContent;
   }
+
+  userContent += '\n\nThis passage belongs to a larger document. Unless the requested edit or style guide specifies otherwise, '
+    + 'keep established abbreviations and defined names in their existing form on subsequent use. Preserve the introduction where it belongs. '
+    + 'Use the source paragraph order: a later definition is not an earlier introduction. A prior mention alone does not establish a meaning. '
+    + 'Avoid coining a new short form for a recurring concept unless requested. Keep distinct meanings and intentionally standalone abstracts, captions or glossaries in their own context. '
+    + 'Retain established notation, units, citation numbers and figure, table, equation and section labels. '
+    + 'A passage boundary alone is no reason to introduce a term, restart numbering or report a missing reference.';
 
   // Add output format constraints for amendment mode
   if (mode === 'amendment' || mode === 'both') {
@@ -320,7 +329,8 @@ export async function processChunksParallel(chunks, options) {
         promptManager,
         mode,
         commentInstructions,
-        formatContextPrefixFn
+        formatContextPrefixFn,
+        chunk
       ), options.conversationHistory);
       if (protectedText?.entries.length) messages.at(-1).content += protectedText.instructions;
 
@@ -475,7 +485,17 @@ export async function processChunksParallel(chunks, options) {
         const check = restorationError ? { valid: false, issues: [restorationError] }
           : amendment && checkChunkAmendment ? checkChunkAmendment(chunk, amendment, { preserveNbsp }) : null;
         if (!check) break;
+        // A semantic check gets the same single repair opportunity as a
+        // structural issue. The second draft can retain an intentional repeat.
         if (check.valid) {
+          const repeats = repeatedDraftAbbreviations(documentContext, chunk, check.amendment);
+          if (repeats.length && attempt === 0) {
+            check.issues.push(`Recheck the added definition of ${repeats.join(', ')} against the earlier source. Keep the short form unless the requested style or standalone context requires reintroduction.`);
+          } else if (repeats.length) {
+            requestLog(`The revised draft retains a repeated definition of ${repeats.join(', ')}. Check whether the passage requires a standalone definition.`, 'warning');
+          }
+        }
+        if (!check.issues.length) {
           amendment = check.amendment;
           requestLog(`Amendment check passed${attempt ? ' after repair' : ''}.`, 'info');
           break;
